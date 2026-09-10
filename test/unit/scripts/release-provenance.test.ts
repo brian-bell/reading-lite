@@ -7,7 +7,7 @@ function fixture() {
     deployments: { deployments: [{ versions: [{ version_id: "version-1", percentage: 100 }] }] },
     version: { id: "version-1", annotations: { "workers/tag": sha }, resources: { bindings: [
       { name: "APP_ENV", type: "plain_text", text: "staging" },
-      { name: "WEB_BASE_URL", type: "plain_text", text: "https://reading-lite-staging.bbell.dev/" },
+      { name: "WEB_BASE_URL", type: "plain_text", text: "https://staging.readinglite.ai/" },
       { name: "TENANT_DATA_PLANE", type: "plain_text", text: "1" },
       { name: "CONTROL_PLANE", type: "d1", id: "staging-d1" },
       { name: "AUTH_ROOT_SECRET", type: "secret_text", text: "SECRET" },

@@ -1,10 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { cookieAuthAllowed, isSameOriginRequest } from "../../../src/control-plane/origin";
+import { cookieAuthAllowed, isSameOriginRequest, PUBLIC_WEB_ORIGINS } from "../../../src/control-plane/origin";
 
 const same = {
   url: "https://reading-lite.bbell.dev/api/whoami",
   webBaseUrl: "https://reading-lite.bbell.dev/",
 };
+
+describe("PUBLIC_WEB_ORIGINS", () => {
+  it("names every production and staging host this project serves", () => {
+    expect(PUBLIC_WEB_ORIGINS).toEqual([
+      "https://reading-lite.bbell.dev",
+      "https://readinglite.ai",
+      "https://readinglite.app",
+      "https://reading-lite-staging.bbell.dev",
+      "https://staging.readinglite.ai",
+      "https://staging.readinglite.app",
+    ]);
+  });
+});
 
 describe("isSameOriginRequest", () => {
   it("requires a matching Origin", () => {

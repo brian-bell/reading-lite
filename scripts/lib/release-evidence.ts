@@ -8,7 +8,7 @@ import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { cloudflareActivationRequest, readTenantDeployTarget, resolveActivationAuth } from "../ops-lib/tenant-activation-preflight";
 
-export const STAGING_ORIGIN = "https://reading-lite-staging.bbell.dev";
+export const STAGING_ORIGIN = "https://staging.readinglite.ai";
 export const ShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const ProvenanceSchema = z.object({

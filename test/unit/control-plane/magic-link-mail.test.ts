@@ -31,6 +31,15 @@ describe("publicWebBase", () => {
     expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request")).toBe(
       "https://readinglite.app",
     );
+    expect(publicWebBase(CONFIGURED_BASE, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
+      "https://reading-lite-staging.bbell.dev",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://staging.readinglite.ai/api/auth/request")).toBe(
+      "https://staging.readinglite.ai",
+    );
+    expect(publicWebBase(CONFIGURED_BASE, "https://staging.readinglite.app/api/auth/request")).toBe(
+      "https://staging.readinglite.app",
+    );
   });
 
   it("produces a verify URL on the host the request arrived at", () => {
@@ -51,19 +60,29 @@ describe("publicWebBase", () => {
     expect(publicWebBase(CONFIGURED_BASE, "https://www.readinglite.app/api/auth/request")).toBe(
       "https://reading-lite.bbell.dev",
     );
+    expect(publicWebBase(CONFIGURED_BASE, "https://www.staging.readinglite.ai/api/auth/request")).toBe(
+      "https://reading-lite.bbell.dev",
+    );
     expect(publicWebBase(CONFIGURED_BASE, "not a url")).toBe("https://reading-lite.bbell.dev");
   });
 
-  it("leaves loopback and staging requests on the configured base", () => {
+  it("leaves loopback requests on the configured base", () => {
     expect(publicWebBase("http://127.0.0.1:5173", "http://127.0.0.1:8787/api/auth/request")).toBe(
       "http://127.0.0.1:5173",
     );
-    expect(
-      publicWebBase(
-        "https://reading-lite-staging.bbell.dev/",
-        "https://reading-lite-staging.bbell.dev/api/auth/request",
-      ),
-    ).toBe("https://reading-lite-staging.bbell.dev");
+  });
+
+  it("mails staging logins back to the staging host they arrived on", () => {
+    const stagingBase = "https://staging.readinglite.ai/";
+    expect(publicWebBase(stagingBase, "https://staging.readinglite.ai/api/auth/request")).toBe(
+      "https://staging.readinglite.ai",
+    );
+    expect(publicWebBase(stagingBase, "https://staging.readinglite.app/api/auth/request")).toBe(
+      "https://staging.readinglite.app",
+    );
+    expect(publicWebBase(stagingBase, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
+      "https://reading-lite-staging.bbell.dev",
+    );
   });
 
   it("still derives the origin from the request when no base is configured", () => {

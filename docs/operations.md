@@ -411,7 +411,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | same-origin `reading-lite-staging.bbell.dev` (Pages + `/api/*` `/health` `/mcp*`) |
+| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (Pages + `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; `reading-lite-staging.bbell.dev` retained |
 | production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; `reading-lite.bbell.dev` retained for compatibility/rollback |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
@@ -573,6 +573,12 @@ npm run ops -- deploy worker --env staging --execute
 npm run ops -- deploy web --branch staging --execute
 ```
 
+`deploy web --branch staging` is what creates the Pages preview named `staging`
+on project `reading-lite`. There is no separate Pages project. After that
+preview exists, bind `staging.readinglite.ai` and `staging.readinglite.app` to
+it (not to `main`). A first-time preview deploy does not move existing custom
+domains; re-point them in the dashboard if they were bound to production.
+
 Production is the same sequence with `reading-lite-control`, `--env production`,
 `.prd.vars`, and:
 
@@ -672,13 +678,16 @@ bootstrap of `dev-local-token`).
 The SPA is served from Cloudflare Pages on the same hostname as the Worker;
 Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
 path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging uses `https://reading-lite-staging.bbell.dev`. Production
-canonical host is `https://readinglite.ai`; `https://readinglite.app` also serves
-the application; `https://reading-lite.bbell.dev` is retained as a compatibility
-and rollback host (see "readinglite.ai / readinglite.app dual-serve" below).
-Magic-link mail prefers the recognized public host the sign-in request arrived
-on, and falls back to `WEB_BASE_URL`
-(`https://reading-lite-staging.bbell.dev/` on staging,
+does not 404. Staging canonical host is `https://staging.readinglite.ai`;
+`https://staging.readinglite.app` also serves; `https://reading-lite-staging.bbell.dev`
+is retained. The staging SPA is the Pages **preview** deployment created by
+`ops deploy web --branch staging` on project `reading-lite` — it is not a
+second Pages project. Production canonical host is `https://readinglite.ai`;
+`https://readinglite.app` also serves the application; `https://reading-lite.bbell.dev`
+is retained as a compatibility and rollback host (see
+"readinglite.ai / readinglite.app dual-serve" below). Magic-link mail prefers
+the recognized public host the sign-in request arrived on, and falls back to
+`WEB_BASE_URL` (`https://staging.readinglite.ai/` on staging,
 `https://readinglite.ai/` on production). Digest mail, reading-notification
 mail, and MCP `public_url` follow `WEB_BASE_URL`. Browser sessions are
 host-scoped (`__Host-` cookie); bearer tokens are host-independent.
@@ -889,7 +898,8 @@ the script but fails with authentication error 10000 on
 `/zones/.../workers/routes`, add the missing route in the dashboard (Worker
 `reading-lite`, matching `hostname/mcp*` pattern) or use the `/api/mcp` alias
 which is already covered by `/api/*`. Staging has the same trio of Worker
-routes on `reading-lite-staging.bbell.dev` (`/api/*`, `/health`, `/mcp*`).
+routes on `staging.readinglite.ai`, `staging.readinglite.app`, and
+`reading-lite-staging.bbell.dev` (`/api/*`, `/health`, `/mcp*`).
 
 `MCP_ALLOWED_ORIGINS` is the Origin allowlist. The code default
 (`DEFAULT_MCP_ALLOWED_ORIGINS` in `src/mcp/origin.ts`, used when the var is
@@ -897,7 +907,8 @@ empty) is `https://reading-lite.bbell.dev`, `https://readinglite.ai`, and
 `https://readinglite.app`. Production `[env.production.vars]` is configured to
 those three. Local `wrangler.toml` `[vars]` currently sets only
 `https://reading-lite.bbell.dev`; staging sets
-`https://reading-lite-staging.bbell.dev`. Requests with no `Origin` pass
+`https://reading-lite-staging.bbell.dev`, `https://staging.readinglite.ai`, and
+`https://staging.readinglite.app`. Requests with no `Origin` pass
 (non-browser clients). Unknown Origins are 403.
 
 Smoke the handshake after a worker deploy:
