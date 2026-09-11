@@ -10,12 +10,9 @@
 // binds (verified against wrangler 4.130; the older "different local store"
 // caveat no longer holds). Local dev leaves TENANT_DATA_PLANE unset, so the
 // local founder account reads global-rooted keys — exactly the keys this
-// seeder writes. The dev server must be stopped first: the CLI has no
-// conditional put, so the list-index merge would have no concurrency guard
-// against a live worker's own index writes. The command refuses to run while
-// anything is listening on the dev port.
+// seeder writes. Seeding overwrites index/list.json with the pack's rows only:
+// any other local reading keeps its objects but drops out of the list.
 
-import net from "node:net";
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildLocalSeed, type LocalSeedObject } from "../test/fixtures/local-seed";
@@ -27,8 +24,6 @@ import { ListIndexSchema } from "../src/schemas/api";
 
 // bucket_name of the READINGS_BUCKET binding in wrangler.toml (local dev).
 const BUCKET = "reading-lite";
-// The default `wrangler dev` port (no [dev] port override in wrangler.toml).
-const DEV_PORT = 8787;
 // Concurrent `wrangler r2 object put --local` processes each boot their own
 // handle to the shared local store; too much overlap surfaces SQLite-lock
 // flakes ("Unspecified error (0)"), so keep the pool small and retry the
@@ -68,12 +63,7 @@ function putObject(object: LocalSeedObject): Promise<PutResult> {
   });
 }
 
-/**
- * A read that distinguishes a confirmed missing object from an operational
- * failure: treating a transient wrangler/SQLite error as absence would let the
- * seeder overwrite an index it could not read, losing exactly the pre-existing
- * rows the merge exists to preserve.
- */
+/** Verification read-back; a transient wrangler/SQLite error is retried. */
 export type ReadResult =
   | { kind: "found"; body: string }
   | { kind: "missing" }
@@ -102,23 +92,6 @@ function readObject(key: string): Promise<ReadResult> {
   });
 }
 
-/** True when something is already listening on the dev port. */
-function devServerListening(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.connect({ port, host: "127.0.0.1" });
-    socket.setTimeout(1_000);
-    socket.on("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-    socket.on("timeout", () => {
-      socket.destroy();
-      resolve(false);
-    });
-    socket.on("error", () => resolve(false));
-  });
-}
-
 export async function runSeed(
   deps: {
     put?: (object: LocalSeedObject) => Promise<PutResult>;
@@ -126,7 +99,6 @@ export async function runSeed(
     log?: (line: string) => void;
     nowIso?: () => string;
     sleep?: (ms: number) => Promise<void>;
-    listening?: (port: number) => Promise<boolean>;
   } = {},
 ): Promise<number> {
   const put = deps.put ?? putObject;
@@ -134,22 +106,11 @@ export async function runSeed(
   const log = deps.log ?? ((line: string) => console.log(line));
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  const listening = deps.listening ?? devServerListening;
-
-  // The list-index merge below has no compare-and-set (the CLI offers no
-  // conditional put), so a live dev server's own index writes could be lost.
-  // Refuse to seed against a running dev server instead.
-  if (await listening(DEV_PORT)) {
-    console.error(
-      `refusing to seed: something is listening on 127.0.0.1:${DEV_PORT}. ` +
-        "Stop `npm run dev` before seeding — the list-index merge is not " +
-        "concurrency-guarded against a live dev server.",
-    );
-    return 1;
-  }
 
   const plan = buildLocalSeed(nowIso());
-  const listKey = plan.objects.find((o) => o.key === LIST_INDEX_KEY);
+  // Write index/list.json last so it never lists a reading whose objects are
+  // not in place yet.
+  const listObject = plan.objects.find((o) => o.key === LIST_INDEX_KEY);
   const putObjects = plan.objects.filter((o) => o.key !== LIST_INDEX_KEY);
 
   const putWithRetry = async (object: LocalSeedObject): Promise<PutResult> => {
@@ -170,48 +131,6 @@ export async function runSeed(
     return result;
   };
 
-  // Read and validate the existing index BEFORE writing anything, so every
-  // failure mode below is side-effect-free. Merge, don't replace: preserve
-  // rows the developer seeded by hand or by other tooling, replacing only
-  // this pack's own rows in place. An index that exists but cannot be read
-  // or parsed fails closed — its rows keep their manifests and pointers
-  // either way, and the store never rebuilds a present-but-unparseable
-  // index.
-  const existingRead = listKey === undefined
-    ? ({ kind: "missing" } as const)
-    : await readWithRetry(LIST_INDEX_KEY);
-  let mergedItems = [...plan.listIndex.items];
-  if (existingRead.kind === "error") {
-    console.error(
-      `refusing to seed: could not read ${LIST_INDEX_KEY} from local R2 ` +
-        `(after ${PUT_ATTEMPTS} attempts): ${existingRead.output}`,
-    );
-    return 1;
-  }
-  if (existingRead.kind === "found") {
-    let existing: ReturnType<typeof ListIndexSchema.safeParse> | null = null;
-    try {
-      existing = ListIndexSchema.safeParse(JSON.parse(existingRead.body));
-    } catch {
-      existing = null;
-    }
-    if (existing === null || !existing.success) {
-      console.error(
-        `refusing to seed: the existing ${LIST_INDEX_KEY} does not parse, and ` +
-          "overwriting it would hide every non-fixture reading. Repair or remove " +
-          "it first (a pristine reset is `rm -rf .wrangler/state/v3/r2`, then " +
-          "re-run this command).",
-      );
-      return 1;
-    }
-    const fixtureIds = new Set(plan.listIndex.items.map((i) => i.id));
-    const preserved = existing.data.items.filter((i) => !fixtureIds.has(i.id));
-    mergedItems = [...preserved, ...plan.listIndex.items];
-    if (preserved.length > 0) {
-      log(`Preserved ${preserved.length} pre-existing list rows.`);
-    }
-  }
-
   log(`Seeding ${plan.fixtures.length} fixture readings (${plan.objects.length} objects) into local R2 bucket "${BUCKET}"…`);
   const results = await mapWithConcurrency(putObjects, PUT_CONCURRENCY, putWithRetry);
   const failures = results.filter((r) => !r.ok);
@@ -223,10 +142,9 @@ export async function runSeed(
   }
   log(`Wrote ${putObjects.length} objects.`);
 
-  const mergedListResult =
-    listKey === undefined ? null : await putWithRetry({ ...listKey, body: JSON.stringify({ version: 1, items: mergedItems }) });
-  if (mergedListResult !== null && !mergedListResult.ok) {
-    console.error(`put failed: ${LIST_INDEX_KEY}\n${mergedListResult.output}`);
+  const listResult = listObject === undefined ? null : await putWithRetry(listObject);
+  if (listResult !== null && !listResult.ok) {
+    console.error(`put failed: ${LIST_INDEX_KEY}\n${listResult.output}`);
     return 1;
   }
 
@@ -263,7 +181,7 @@ export async function runSeed(
   }
   log("");
   log("Next steps:");
-  log("  • Start `npm run dev` and sign in at http://localhost:8787");
+  log("  • Start (or restart) `npm run dev` and sign in at http://localhost:8787");
   log("  • The pending fixture is stamped from this run's clock; re-run this command");
   log("    to refresh it once it passes the 15-minute pending TTL.");
   if (pending !== undefined) {

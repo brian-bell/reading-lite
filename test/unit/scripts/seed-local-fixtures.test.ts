@@ -13,22 +13,12 @@ const FOREIGN_ROW = {
   created_at: "2026-08-01T00:00:00.000Z",
   updated_at: "2026-08-01T00:01:00.000Z",
 } as const;
-const STALE_FIXTURE_ROW = {
-  id: "rd_FXATTENT01",
-  key_prefix: "readings/2026/09/07T093000Z-rd_FXATTENT01",
-  url: "https://fieldnotes.example/2026/a-quieter-internet",
-  status: "ready",
-  created_at: "2026-09-07T09:30:00.000Z",
-  updated_at: "2026-09-07T09:31:00.000Z",
-} as const;
 
 interface DepsOptions {
   failingKeys?: Set<string>;
   flakyKeys?: Set<string>;
   /** What reads of index/list.json return, in call order. */
   listReads?: ReadResult[];
-  /** When true, the dev-server guard reports a listener. */
-  devServerUp?: boolean;
 }
 
 function makeDeps(opts: DepsOptions = {}) {
@@ -44,7 +34,6 @@ function makeDeps(opts: DepsOptions = {}) {
   };
   return {
     deps: {
-      listening: async () => opts.devServerUp === true,
       put: async (object: LocalSeedObject) => {
         attemptsByKey.set(object.key, (attemptsByKey.get(object.key) ?? 0) + 1);
         puts.push(object);
@@ -59,10 +48,9 @@ function makeDeps(opts: DepsOptions = {}) {
       read: async (key: string): Promise<ReadResult> => {
         if (key !== LIST_KEY) return { kind: "missing" };
         const script = opts.listReads ?? [];
-        // The pre-merge reads happen before any put (failures are
-        // side-effect-free), so replay the first scripted result for every
-        // pre-merge attempt, then the second for verification, and otherwise
-        // verify against whatever the seeder last wrote.
+        // Replay the first scripted result for any read before a put (what a
+        // pre-existing index would return), then the second for verification,
+        // and otherwise verify against whatever the seeder last wrote.
         if (puts.length === 0) {
           return script[0] ?? ({ kind: "missing" } as ReadResult);
         }
@@ -122,12 +110,9 @@ describe("seed-local-fixtures runSeed", () => {
     }
   });
 
-  it("merges fixture rows into an existing list index, preserving foreign rows and replacing fixture rows", async () => {
-    const existing = JSON.stringify({
-      version: 1,
-      items: [FOREIGN_ROW, STALE_FIXTURE_ROW],
-    });
-    const { deps, puts, logs, restoreWarn } = makeDeps({
+  it("overwrites any existing list index with the pack's rows, written last", async () => {
+    const existing = JSON.stringify({ version: 1, items: [FOREIGN_ROW] });
+    const { deps, puts, restoreWarn } = makeDeps({
       listReads: [{ kind: "found", body: existing }],
     });
     try {
@@ -135,61 +120,9 @@ describe("seed-local-fixtures runSeed", () => {
       expect(code).toBe(0);
       const list = lastWrittenList(puts);
       const ids = list.items.map((i) => i.id);
-      expect(ids).toContain("rd_HANDSEED01");
-      expect(ids.filter((id) => id === "rd_FXATTENT01")).toHaveLength(1);
-      expect(logs.some((l) => l.includes("Preserved 1 pre-existing list rows"))).toBe(true);
-    } finally {
-      restoreWarn();
-    }
-  });
-
-  it("seeds a fixture-only index when none exists", async () => {
-    const { deps, puts, restoreWarn } = makeDeps({ listReads: [{ kind: "missing" }] });
-    try {
-      const code = await runSeed(deps);
-      expect(code).toBe(0);
-      const list = lastWrittenList(puts);
-      expect(list.items.length).toBeGreaterThanOrEqual(18);
-    } finally {
-      restoreWarn();
-    }
-  });
-
-  it("writes nothing when the dev server is running", async () => {
-    const { deps, puts, errors, restoreWarn } = makeDeps({ devServerUp: true });
-    try {
-      const code = await runSeed(deps);
-      expect(code).toBe(1);
-      expect(puts).toHaveLength(0);
-      expect(errors.some((e) => e.includes("Stop `npm run dev`"))).toBe(true);
-    } finally {
-      restoreWarn();
-    }
-  });
-
-  it("writes nothing when the existing index cannot be read, even after retries", async () => {
-    const { deps, puts, errors, restoreWarn } = makeDeps({
-      listReads: [{ kind: "error", output: "simulated SQLite lock" }],
-    });
-    try {
-      const code = await runSeed(deps);
-      expect(code).toBe(1);
-      expect(puts).toHaveLength(0);
-      expect(errors.some((e) => e.includes("could not read index/list.json"))).toBe(true);
-    } finally {
-      restoreWarn();
-    }
-  });
-
-  it("writes nothing when the existing index does not parse", async () => {
-    const { deps, puts, errors, restoreWarn } = makeDeps({
-      listReads: [{ kind: "found", body: "not json" }],
-    });
-    try {
-      const code = await runSeed(deps);
-      expect(code).toBe(1);
-      expect(puts).toHaveLength(0);
-      expect(errors.some((e) => e.includes("does not parse"))).toBe(true);
+      expect(ids).not.toContain("rd_HANDSEED01");
+      expect(ids).toHaveLength(18);
+      expect(puts.at(-1)?.key).toBe(LIST_KEY);
     } finally {
       restoreWarn();
     }

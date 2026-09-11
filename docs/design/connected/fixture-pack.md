@@ -69,11 +69,9 @@ and the detail route 404s ("arrived from a removed target").
   events, including the dead-letter shape for `fail-stopped`.
 - Seeded ids satisfy the worker's `parseReadingId` shape, so reprocess,
   lookup, and MCP paths treat fixtures like any other reading.
-- The seeder merges into an existing `index/list.json` instead of replacing
-  it: hand-seeded rows survive a re-seed, and only the pack's own rows are
-  written or replaced. It refuses to run while the dev server is up (the CLI
-  has no conditional put, so the merge is not concurrency-guarded) and fails
-  closed when an existing index does not parse.
+- The seeder overwrites `index/list.json` with the pack's rows only. Any
+  other local reading keeps its objects but drops out of the list; see
+  [resetting](../../operations.md#seeding-local-r2) for a pristine store.
 - The library lists the pack's 18 rows, newest first: `pending`, the eight
   failures, then the ready baselines — matching the store's `created_at`
   sort.
