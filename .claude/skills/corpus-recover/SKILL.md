@@ -24,8 +24,9 @@ Each audit row maps to one action:
 
 | Audit category / reason | Action |
 |---|---|
-| Pending **stranded**; `BadToolInputError` (summarize); `FetchTimeoutError`; HTTP 5xx origin errors | **reprocess** — `POST /api/readings/:id/reprocess {force:true}` |
+| Pending **stranded**; `BadToolInputError` (summarize); `FetchTimeoutError`; HTTP 5xx origin errors; **`DestinationResolutionError`** on the originating submit/import (or a missing `last_attempt.trigger`) | **reprocess** — `POST /api/readings/:id/reprocess {force:true}` |
 | Fetch-blocked **HTTP 403 / 429**; **oversized** (article) | **local-extract** — fetch locally (browser UA), re-import via `POST /api/readings/import-markdown` |
+| **`DestinationResolutionError`** after a recover (`last_attempt.trigger` is `reprocess`) | **skip** — originating attempt + one recover already used; resolver cannot tell a dead name from a blip |
 | Dead links (404/410); paywalls (401/402/451); not-articles (PDF); teasers; **enrichment-degraded** YouTube (`--degraded` audit rows) | **skip** — recorded, no action. YouTube floor misses: recover with the **`youtube-import`** skill |
 | **`SourceRejectedError` / `OpenAISourceRejectedError`** | **skip** — the summarizer refused a thin extraction; reprocess would resubmit the same source. YouTube: recover with the **`youtube-import`** skill |
 | **Reddit** (`reddit.com` / `redd.it`) | **skip** — can't fetch from a script (bot-challenge); import with the **`reddit-import`** skill (drives a logged-in Chrome session) |

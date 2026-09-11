@@ -220,6 +220,13 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
         deps.io.stderr(`  [plan ${a}] ${r.short} — ${recoveryAction(r).why}`);
       }
     }
+    // Skip is not a write, so it does not consume --limit. Default plan lists
+    // each skip why (DestinationResolutionError ceiling, dead links, …).
+    if (!args.only) {
+      for (const r of plan.skip) {
+        deps.io.stderr(`  [plan skip] ${r.short} — ${recoveryAction(r).why}`);
+      }
+    }
     deps.io.stderr(
       "Rerun with --execute to act. Realtime --execute first verifies the bearer token's " +
         "tenant against --tenant via GET /api/whoami and refuses on mismatch.",
@@ -587,6 +594,7 @@ Options:
   --help            Show this message.
 
 Policy (per audit row): stranded/transient/5xx/summarize hiccups -> reprocess;
+DestinationResolutionError after originating attempt + one recover -> skip;
 fetch-blocked 403/429 + oversized -> local-extract + markdown import;
 dead links / paywalls / non-articles / teasers / thin-source rejects -> skip;
 reddit -> skip (reddit-import skill); thin YouTube floors -> skip

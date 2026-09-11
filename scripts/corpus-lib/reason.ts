@@ -1,3 +1,5 @@
+import type { AttemptTrigger } from "./types";
+
 // Human-readable failure reasons. Most are derived from the manifest error
 // (code + the HTTP status embedded in BadStatusError messages); a handful of
 // URLs get a hand-verified override (probed locally — PDF vs paywall vs dead).
@@ -14,6 +16,19 @@ export function httpStatusFromMessage(message: string | undefined): number {
   return Number(message?.match(/status (\d{3})/)?.[1] ?? 0);
 }
 
+// DestinationResolutionError: one originating attempt (submit/import/absent) plus
+// one corpus recover. A last_attempt.trigger of "reprocess" means that ceiling
+// is already spent. workerd reports NXDOMAIN, SERVFAIL, and a missing address
+// family as ENOTFOUND, so this rule cannot split those cases.
+export const DESTINATION_RESOLUTION_RETRY_CEILING_WHY =
+  "originating attempt + one recover already used; resolver cannot tell a dead name from a blip";
+
+const DESTINATION_RESOLUTION_REASON = "Destination would not resolve";
+
+export function destinationResolutionRetryExhausted(trigger: string | undefined): boolean {
+  return trigger === "reprocess";
+}
+
 const STATUS_LABEL: Record<number, string> = {
   401: "Unauthorized",
   402: "Payment required (paywall)",
@@ -28,6 +43,7 @@ export function reasonForFailure(
   code: string | undefined,
   message: string | undefined,
   url: string,
+  lastAttemptTrigger?: AttemptTrigger,
 ): string {
   if (FAILURE_OVERRIDES[url]) return FAILURE_OVERRIDES[url];
   if (/reddit\.com|redd\.it/i.test(url)) return "Reddit — import via local reddit-import skill";
@@ -44,6 +60,11 @@ export function reasonForFailure(
       return "Summarization failed — invalid model tool output";
     case "FetchTimeoutError":
       return "Fetch timed out";
+    case "DestinationResolutionError":
+      if (destinationResolutionRetryExhausted(lastAttemptTrigger)) {
+        return `${DESTINATION_RESOLUTION_REASON} — not auto-selected: ${DESTINATION_RESOLUTION_RETRY_CEILING_WHY}`;
+      }
+      return DESTINATION_RESOLUTION_REASON;
     case "SourceRejectedError":
     case "OpenAISourceRejectedError":
       if (/youtube\.com|youtu\.be/i.test(url)) {
