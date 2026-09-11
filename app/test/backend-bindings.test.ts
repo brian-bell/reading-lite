@@ -95,4 +95,16 @@ describe("checked-in Wrangler configs", () => {
     expect(backendViews.production.name).toBe("reading-lite");
     expect(checkBackendBindings(read("wrangler.jsonc"), backendViews)).toEqual([]);
   });
+
+  // Wrangler defaults workers_dev to true, so an environment that omits it
+  // (including a bare deploy of the local config) would be publicly reachable
+  // before any route is added deliberately.
+  it.each(ENVIRONMENTS)("keep the $label frontend off workers.dev and preview URLs", ({ env }) => {
+    const config: { workers_dev?: boolean; preview_urls?: boolean } = unstable_readConfig(
+      { config: "wrangler.jsonc", env },
+      { hideWarnings: true },
+    );
+    expect(config.workers_dev).toBe(false);
+    expect(config.preview_urls).toBe(false);
+  });
 });
