@@ -3,6 +3,7 @@ import { unstable_readConfig } from "wrangler";
 import { describe, expect, it } from "vitest";
 import {
   BACKEND_BINDING,
+  BACKEND_ENTRYPOINT,
   ENVIRONMENTS,
   checkBackendBindings,
   type EnvironmentLabel,
@@ -17,7 +18,7 @@ const backend: Record<EnvironmentLabel, WorkerConfigView> = {
 
 function frontendBinding(label: EnvironmentLabel, service: string): WorkerConfigView {
   const names = { local: "reading-lite-app-dev", staging: "reading-lite-app-staging", production: "reading-lite-app" };
-  return { name: names[label], services: [{ binding: BACKEND_BINDING, service }] };
+  return { name: names[label], services: [{ binding: BACKEND_BINDING, service, entrypoint: BACKEND_ENTRYPOINT }] };
 }
 
 const correct: Record<EnvironmentLabel, WorkerConfigView> = {
@@ -62,6 +63,17 @@ describe("checkBackendBindings", () => {
     expect(errors.join("\n")).toMatch(/staging.*BACKEND/);
   });
 
+  it.each([
+    ["missing", undefined],
+    ["the default export", "default"],
+    ["another class", "OperatorStatus"],
+  ])("rejects a backend binding whose entrypoint is %s", (_label, entrypoint) => {
+    const production = frontendBinding("production", "reading-lite");
+    production.services[0] = { binding: BACKEND_BINDING, service: "reading-lite", entrypoint };
+    const errors = checkBackendBindings({ ...correct, production }, backend);
+    expect(errors.join("\n")).toMatch(/production.*entrypoint.*FrontendReads/);
+  });
+
   it("rejects a frontend Worker named like a backend Worker", () => {
     const errors = checkBackendBindings(
       { ...correct, production: { ...correct.production, name: "reading-lite" } },
@@ -83,7 +95,11 @@ describe("checked-in Wrangler configs", () => {
       );
       views[label] = {
         name: config.name ?? "",
-        services: (config.services ?? []).map(({ binding, service }) => ({ binding, service })),
+        services: (config.services ?? []).map(({ binding, service, entrypoint }) => ({
+          binding,
+          service,
+          ...(entrypoint === undefined ? {} : { entrypoint }),
+        })),
       };
     }
     return views;

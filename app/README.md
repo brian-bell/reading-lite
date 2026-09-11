@@ -29,9 +29,20 @@ wired into any workflow yet.
 - **Caching.** Every rendered response is `Cache-Control: private, no-store`.
   Only `/assets/*` (content-hashed) is publicly cacheable, via `public/_headers`.
 - **Service bindings.** Each environment's `BACKEND` binding in
-  `wrangler.jsonc` names the backend Worker of the same environment.
-  `test/backend-bindings.test.ts` reads both configs through Wrangler and fails
-  on a crossed binding. Environments do not inherit bindings.
+  `wrangler.jsonc` names the backend Worker of the same environment and its
+  `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
+  through Wrangler and fails on a crossed binding or a missing entrypoint.
+  Environments do not inherit bindings.
+- **Identity.** Server renders read `whoami` through `BACKEND`
+  (`src/identity-query.ts`), forwarding only the incoming `Cookie` header and
+  host; the browser calls same-origin `/api/whoami`. Both map the response in
+  `src/identity.ts`: 401 is signed out, any other failure (403 included) shows
+  neither the account menu nor the sign-in link. `getRouter()` creates the
+  QueryClient, so each request has its own, and dehydrates it into that
+  response only. Browser writes use `src/api/client.ts`, which takes the CSRF
+  token from the caller's QueryClient, never from module state. Local
+  `npm run dev` reaches the backend's `npm run dev` for both paths; the smoke
+  tests bind a stub entrypoint (`smoke/backend-stub.js`).
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

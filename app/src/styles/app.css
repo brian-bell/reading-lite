@@ -216,6 +216,83 @@ textarea {
   outline-offset: 4px;
 }
 
+/* Account menu or sign-in link, after the theme control (src/components/AccountMenu.tsx). */
+.account-menu,
+.account-sign-in {
+  margin-top: var(--space-3);
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-menu summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.account-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.account-menu[open] summary {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.account-menu-panel {
+  position: absolute;
+  bottom: 0;
+  left: calc(100% + 12px);
+  z-index: 10;
+  min-width: 200px;
+  max-width: min(320px, 80vw);
+  padding: var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+}
+
+.account-menu-email {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.account-menu-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.account-menu-items a,
+.account-menu-items button {
+  display: block;
+  width: 100%;
+  padding: 6px var(--space-2);
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+}
+
+.account-menu-items a:hover {
+  background: var(--accent-soft);
+}
+
+.account-menu-items button:disabled {
+  color: var(--muted);
+}
+
 .shell-main {
   min-width: 0;
 }
@@ -316,6 +393,18 @@ textarea {
     width: 44px;
     min-height: 44px;
     padding: 0;
+  }
+
+  .account-menu,
+  .account-sign-in {
+    margin-top: 0;
+  }
+
+  .account-menu-panel {
+    top: calc(100% + 6px);
+    right: 0;
+    bottom: auto;
+    left: auto;
   }
 
   .page {

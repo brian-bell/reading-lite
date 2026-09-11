@@ -9,14 +9,19 @@ import {
 import { act, render, renderHook, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { AppShell } from "../src/components/AppShell";
+import { AppShell, type AccountState } from "../src/components/AppShell";
 import { useThemePreference } from "../src/components/use-theme-preference";
 import type { ThemePreference } from "../src/theme";
 
-async function renderShell(path = "/", theme: ThemePreference = "system", onThemeChange = vi.fn()) {
+async function renderShell(
+  path = "/",
+  theme: ThemePreference = "system",
+  onThemeChange = vi.fn(),
+  account: AccountState = { status: "unknown" },
+) {
   const rootRoute = createRootRoute({
     component: () => (
-      <AppShell theme={theme} onThemeChange={onThemeChange}>
+      <AppShell theme={theme} onThemeChange={onThemeChange} account={account}>
         <Outlet />
       </AppShell>
     ),
@@ -74,6 +79,49 @@ describe("AppShell", () => {
     const { onThemeChange } = await renderShell("/", "system");
     await userEvent.setup().click(screen.getByRole("radio", { name: "Light" }));
     expect(onThemeChange).toHaveBeenCalledWith("light");
+  });
+});
+
+describe("AppShell account menu", () => {
+  it("shows the signed-in email, Account, and a Sign out placeholder inside the navigation", async () => {
+    await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" });
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    const menu = within(nav).getByRole("group", { name: "Account menu, signed in as a@example.com" });
+    const toggle = within(menu).getByText("Account", { selector: "summary *" });
+    expect(within(menu).getByText("a@example.com")).toBeInTheDocument();
+    expect(within(menu).getByRole("link", { name: "Account" })).toHaveAttribute("href", "/account/security");
+    // Sign-out lands with #369.
+    expect(within(menu).getByRole("button", { name: "Sign out" })).toBeDisabled();
+    expect(within(nav).queryByRole("link", { name: "Sign in" })).toBeNull();
+
+    const details = menu.closest("details")!;
+    expect(details.open).toBe(false);
+    await userEvent.setup().click(toggle);
+    expect(details.open).toBe(true);
+  });
+
+  it("closes the open menu on Escape and returns focus to its toggle", async () => {
+    await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" });
+    const user = userEvent.setup();
+    const summary = document.querySelector<HTMLElement>(".account-menu summary")!;
+    await user.click(summary);
+    await user.keyboard("{Escape}");
+    expect(summary.closest("details")!.open).toBe(false);
+    expect(summary).toHaveFocus();
+  });
+
+  it("shows a sign-in link that returns to the current URL when signed out", async () => {
+    await renderShell("/save", "system", vi.fn(), { status: "signed-out" });
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login?next=%2Fsave");
+    expect(within(nav).queryByRole("group", { name: /Account menu/ })).toBeNull();
+  });
+
+  it("shows neither while identity is unknown or unavailable", async () => {
+    await renderShell("/", "system", vi.fn(), { status: "unknown" });
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).queryByRole("link", { name: "Sign in" })).toBeNull();
+    expect(within(nav).queryByRole("group", { name: /Account menu/ })).toBeNull();
   });
 });
 
