@@ -152,7 +152,13 @@ has no reading-deletion control, and the status refresh numbers in the
 [acceptance matrix](acceptance-matrix.md#status-refresh-contract) are approved.
 Later that day he dropped the estimated reading time, accepted the core screens
 (library, reading, capture/status, provider concept) without further prototype
-changes, and adopted the proposed light-mode contrast palette.
+changes, and adopted the proposed light-mode contrast palette. He then reviewed
+and accepted each remaining section below. Choices he made in that review:
+images in the source view load only when clicked, the connection trail stays in
+history state, the Summary/Source switch replaces the history entry, the theme
+control lives in the navigation, Details is one collapsed section, and focus
+moves to the page heading after a route change. The whole Phase 2 specification
+is accepted.
 
 ### Data mapping
 
@@ -255,8 +261,11 @@ replaces captured content. Failed readings retry without a prompt.
 - Render Markdown without raw HTML, through a sanitizer. Demote source headings
   one level below the reading title.
 - Links open in a new tab with `rel="noopener noreferrer nofollow"`.
-- Do not load remote images. Render each as a link labelled with its alt text,
-  to avoid disclosing reading activity to third parties.
+- Do not load remote images automatically, so image hosts don't learn what is
+  being read. Render each as a placeholder showing its alt text and host, with a
+  "Load image" button that loads that image in place. Only `http:` and `https:`
+  image URLs can load, with `referrerpolicy="no-referrer"`. The frontend's
+  content-security policy must allow remote `https:` images for this.
 - Code blocks and tables scroll horizontally in their own container. Long unbroken
   text uses `overflow-wrap: anywhere`.
 - Readable width: 68ch for the lead, summary, and source.

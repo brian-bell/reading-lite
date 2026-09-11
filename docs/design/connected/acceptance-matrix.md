@@ -24,6 +24,11 @@ Row outcomes:
 - The status refresh numbers below are approved.
 - The core screens are accepted as captured, with no further prototype changes
   for Phase 2, and the proposed contrast palette is adopted.
+- This matrix is accepted. URL capture lives only on `/save` (no inline form on
+  the library). Only ready readings ask for confirmation before reprocessing. A
+  URL already in the library opens that reading with a notice. Failure
+  categories come from a frontend mapping pinned by a test; the backend does not
+  add a category field.
 
 ## Routes
 
@@ -61,7 +66,7 @@ tests are this defect; the new tests must cover it.
 | Filter by tag | `GET /api/readings?tag=` | Tag chips on rows; clear chip | Tag buttons on cards and detail; clear control | Preserve |
 | Paginate | `offset`, `has_more` | Previous/Next with page number | Same | Preserve |
 | Open a reading | — | Row title link | Card title link, stretched over the card; tag buttons stay separate targets | Preserve |
-| Submit URL | `POST /api/readings` | Library form | `/save`, URL tab | Relocate |
+| Submit URL | `POST /api/readings` | Library form | `/save`, URL tab only; no inline library form | Relocate |
 | Import Markdown | `POST /api/readings/import-markdown` | None | `/save`, Markdown tab: source URL (required), title (optional), Markdown (required) | New, approved |
 | Reprocess | `POST /api/readings/:id/reprocess` | Detail button, no confirmation | Detail action; confirm on ready readings, none on failed | Preserve with confirmation |
 | Reprocess from Markdown | same, `source.kind = "markdown"` | None | "Import a copy" on failed readings and unavailable source | New, approved |
@@ -135,7 +140,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | State | Signal | Presentation | Actions |
 | --- | --- | --- | --- |
 | Invalid input | Client URL check, or 400 | Field-level error, focus the field | Correct |
-| Already saved | 200 with a manifest | "Already in your library." | Open reading |
+| Already saved | 200 with a manifest | Navigate to that reading with an "Already in your library" notice at the top | — |
 | Accepted | 202 | Navigate to `/readings/:id`; watch starts | — |
 | Owner initializing | 409 with `id` and `poll` | Navigate to that reading; watch starts | — |
 | Already processing | 409 active attempt | "This reading is already processing." | Open reading |

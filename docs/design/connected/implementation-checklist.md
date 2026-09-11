@@ -16,31 +16,36 @@ structure; no new product features or release dates are implied.
 ## Phase 2 — design decisions and acceptance (#337)
 
 Drafted September 10, 2026 in the [design specification](design-spec.md#phase-2-specification)
-and [acceptance matrix](acceptance-matrix.md). Items stay unchecked until Brian
-approves them, except where he has already decided.
+and [acceptance matrix](acceptance-matrix.md). Brian reviewed and accepted every
+item on September 10, 2026.
 
 - [x] Review core library, reading, capture/status, and provider concepts with
   Brian: accepted September 10 without further prototype changes.
 - [x] Reconcile product scope's older React Router wording with the approved
   TanStack Start frontend on a separate Worker; retain functional requirements.
-- [ ] Route/action parity matrix against current main (4031711): drafted in the
-  [acceptance matrix](acceptance-matrix.md#routes). Reading deletion stays out of
-  the UI (Brian, September 10).
-- [ ] Loading, empty, no-results, unavailable source/target, failure categories,
+- [x] Route/action parity matrix against current main (4031711): accepted, in the
+  [acceptance matrix](acceptance-matrix.md#routes). Capture lives only on `/save`;
+  only ready readings confirm before reprocessing; reading deletion stays out of
+  the UI.
+- [x] Loading, empty, no-results, unavailable source/target, failure categories,
   offline, expired session, permission denied, and account-deletion states:
-  drafted in the [acceptance matrix](acceptance-matrix.md#states).
+  accepted, in the [acceptance matrix](acceptance-matrix.md#states). Failure
+  categories use a frontend mapping pinned by a test; an already-saved URL opens
+  the existing reading with a notice.
 - [x] Status refresh contract: approved September 10, with acceptance checks in the
   [acceptance matrix](acceptance-matrix.md#status-refresh-contract).
-- [ ] Readable width and rich source content: drafted in
-  [source content](design-spec.md#source-content).
-- [ ] URL encoding, back/forward, reload, deep links, and scroll restoration:
-  drafted in [routes and navigation state](design-spec.md#routes-and-navigation-state).
-- [ ] Reusable components: drafted in [components](design-spec.md#components).
-- [ ] Contrast, focus, keyboard, target size, zoom, and reduced motion: drafted in
+- [x] Readable width and rich source content: accepted, in
+  [source content](design-spec.md#source-content). Images load only when clicked.
+- [x] URL encoding, back/forward, reload, deep links, and scroll restoration:
+  accepted, in [routes and navigation state](design-spec.md#routes-and-navigation-state).
+  The trail stays in history state; the view switch replaces the history entry.
+- [x] Reusable components: accepted, in [components](design-spec.md#components).
+  Theme control in navigation; Details is one collapsed section.
+- [x] Contrast, focus, keyboard, target size, zoom, and reduced motion: accepted, in
   [themes and contrast](design-spec.md#themes-and-contrast) and
-  [keyboard, focus, and motion](design-spec.md#keyboard-focus-and-motion). The
-  darker light `--muted`/`--positive` tokens and `--control-border` were adopted
-  September 10. Screen-reader and zoom checks run against the implementation.
+  [keyboard, focus, and motion](design-spec.md#keyboard-focus-and-motion). Focus
+  moves to the page heading after route changes. Screen-reader and zoom checks
+  run against the implementation in Phases 3–4.
 - [x] Map prototype-only data (author, publication, key points, novelty text,
   relationship titles) to real fields: see [data mapping](design-spec.md#data-mapping).
   Relationship targets are enriched at read time (Brian, September 10).
