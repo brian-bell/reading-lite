@@ -61,6 +61,9 @@ Approved dependencies, pinned to exact versions in `app/`:
   `rehype-sanitize`.
 - Development: `@cloudflare/vite-plugin`, `@vitejs/plugin-react`, `vite`,
   `wrangler`, `typescript`, `vitest`, `@testing-library/react`.
+- Type and test support (development, approved September 10, 2026; mirrors
+  `web/`): `@types/react`, `@types/react-dom`, `jsdom` as the Vitest DOM
+  environment, `@testing-library/jest-dom`, `@testing-library/user-event`.
 - Browser evidence (development, approved September 10, 2026 for
   [#374](https://github.com/brian-bell/reading-lite/issues/374)):
   `@playwright/test`, `@axe-core/playwright`.
