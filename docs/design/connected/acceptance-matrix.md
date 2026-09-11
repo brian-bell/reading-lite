@@ -4,8 +4,7 @@ Phase 2 draft for [issue #337](https://github.com/brian-bell/reading-lite/issues
 September 10, 2026. Use with the [design specification](design-spec.md). This
 matrix maps current behavior on `main` (4031711) to the new TanStack Start
 frontend, lists the states each screen must handle, and records the approved
-status refresh contract. Core-screen approval by Brian is still pending; rows
-marked **needs review** are recommendations, not decisions.
+status refresh contract. Brian accepted the core screens on September 10, 2026.
 
 Row outcomes:
 
@@ -23,6 +22,8 @@ Row outcomes:
 - The new frontend has no reading-deletion control. Deletion stays in the API
   (`readings:delete` scope) and operator tooling.
 - The status refresh numbers below are approved.
+- The core screens are accepted as captured, with no further prototype changes
+  for Phase 2, and the proposed contrast palette is adopted.
 
 ## Routes
 

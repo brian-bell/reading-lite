@@ -246,7 +246,6 @@ These choices are still open:
 
 | Choice | When needed |
 |---|---|
-| Approval of the Connected core screens (direction selected; status refresh decided September 10, 2026) | Before full UI implementation |
 | Launch provider/model choices; whether Anthropic is included alongside OpenAI embeddings | Before finalizing onboarding and provider contracts |
 | Configuration snapshot, key rotation/revocation, and retry/checkpoint semantics | Before B implementation |
 | Hosting budget, archive limits, throughput, and customer spend controls | Before beta; adjust from measurements before public signup |

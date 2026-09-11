@@ -4,8 +4,8 @@ Status: captured design baseline, September 9, 2026, with the Phase 2
 specification drafted September 10, 2026 (see
 [Phase 2 specification](#phase-2-specification) and the
 [acceptance matrix](acceptance-matrix.md)). See the [frozen source and
-reproduction instructions](README.md). Core-screen approval by Brian is still
-pending.
+reproduction instructions](README.md). Brian reviewed and accepted the core
+screens on September 10, 2026, and adopted the proposed contrast palette.
 
 ## Decisions recorded from Brian
 
@@ -72,13 +72,14 @@ the corrected rendering.
 | `--bg` | `#f1eadd` | `#211e1b` | Page, with a faint tiled paper grain |
 | `--surface` | `#f8f3e9` | `#2a2623` | Cards/navigation |
 | `--ink` | `#2c2620` | `#f0eae1` | Main text |
-| `--muted` | `#78695a` | `#b3a89b` | Secondary text |
+| `--muted` | `#6c5e50` (captured `#78695a`) | `#b3a89b` | Secondary text |
 | `--border` | `#dccfbd` | `#443d36` | Dividers |
 | `--soft` | `#e9dfcf` | `#332e29` | Secondary fills |
 | `--accent` | `#4e4aa2` | `#b6b1ee` | Actions/selection |
 | `--accent-soft` | `#e9e2ec` | `#36324a` | Connections/novelty |
 | `--danger` | `#a34133` | `#edac91` | Failure/tension rule |
-| `--positive` | `#3c755f` | `#91d0b2` | Ready/success |
+| `--positive` | `#356b56` (captured `#3c755f`) | `#91d0b2` | Ready/success |
+| `--control-border` | `#948069` | `#857869` | Input, search, and toggle borders (3:1) |
 | `--card-shadow` | warm `rgba(84, 62, 36)` at 5–7% | black at 25–28% | Library cards, forms, status cards |
 
 Warm revision, September 9/10, 2026: the palette moved from cool blue-grey to parchment and cream in light mode (no pure white surfaces remain) and warm charcoal in dark mode, the page and novelty panel carry a low-opacity SVG grain, cards take a faint warm shadow, and the lead and source paragraphs use Charter, Iowan Old Style, Palatino, then Georgia. The September 10 screenshots reflect this revision.
@@ -149,7 +150,9 @@ Drafted September 10, 2026 for review. Brian decided three points that day:
 relationship targets are enriched at read time by the backend, the new frontend
 has no reading-deletion control, and the status refresh numbers in the
 [acceptance matrix](acceptance-matrix.md#status-refresh-contract) are approved.
-Everything else below is a recommendation awaiting review.
+Later that day he dropped the estimated reading time, accepted the core screens
+(library, reading, capture/status, provider concept) without further prototype
+changes, and adopted the proposed light-mode contrast palette.
 
 ### Data mapping
 
@@ -275,10 +278,12 @@ Contrast of the captured tokens (WCAG 2.2):
 | `--positive` on `--bg`/`--soft` | 4.50 / **4.08** | 9.4 / 7.6 |
 | `--border` on `--bg` | 1.28 | 1.55 |
 
-Proposed light adjustments, **needs review**: `--muted` `#6c5e50` (5.2 on bg,
-4.75 on soft) and `--positive` `#356b56` (5.2 on bg, 4.7 on soft). Add a
+Adopted September 10, 2026 (Brian): light `--muted` `#6c5e50` (5.2 on bg,
+4.75 on soft) and `--positive` `#356b56` (5.2 on bg, 4.7 on soft), plus a
 `--control-border` for inputs and toggles that meets 3:1: light `#948069`
 (3.2 on bg), dark `#857869` (3.9 on bg). `--border` stays for decorative dividers.
+The [color tokens](#color-tokens) table carries the adopted values; the
+prototype's Proposed palette switch shows them.
 
 ### Spacing and controls
 
@@ -346,8 +351,6 @@ decisions above. They are for Brian to adjust, not commitments.
 
 ## Still open
 
-- Brian's review and approval of the library, reading, capture/status, and
-  provider concepts, and of the items marked **needs review**.
 - Provider/model support, key validation/replacement/removal, billing
   disclosure, queued-job behavior, and hosting limits, before BYOK (Phase 6).
 - Archive export design (Phase 6).

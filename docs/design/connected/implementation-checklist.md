@@ -19,7 +19,8 @@ Drafted September 10, 2026 in the [design specification](design-spec.md#phase-2-
 and [acceptance matrix](acceptance-matrix.md). Items stay unchecked until Brian
 approves them, except where he has already decided.
 
-- [ ] Review core library, reading, capture/status, and provider concepts with Brian.
+- [x] Review core library, reading, capture/status, and provider concepts with
+  Brian: accepted September 10 without further prototype changes.
 - [x] Reconcile product scope's older React Router wording with the approved
   TanStack Start frontend on a separate Worker; retain functional requirements.
 - [ ] Route/action parity matrix against current main (4031711): drafted in the
@@ -38,9 +39,8 @@ approves them, except where he has already decided.
 - [ ] Contrast, focus, keyboard, target size, zoom, and reduced motion: drafted in
   [themes and contrast](design-spec.md#themes-and-contrast) and
   [keyboard, focus, and motion](design-spec.md#keyboard-focus-and-motion). The
-  light `--muted` and `--positive` tokens and input borders fail today; proposed
-  replacements need review. Screen-reader and zoom checks run against the
-  implementation.
+  darker light `--muted`/`--positive` tokens and `--control-border` were adopted
+  September 10. Screen-reader and zoom checks run against the implementation.
 - [x] Map prototype-only data (author, publication, key points, novelty text,
   relationship titles) to real fields: see [data mapping](design-spec.md#data-mapping).
   Relationship targets are enriched at read time (Brian, September 10).
