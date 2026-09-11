@@ -63,6 +63,16 @@ it("keeps the phone, theme, and edge-state controls available", async () => {
   expect(window.location.hash).toBe("#/reading/unavailable");
 });
 
+it("switches between the captured and proposed Phase 2 palettes", async () => {
+  const user = userEvent.setup(); render(<ConnectedPrototype/>);
+  const surface = screen.getByTestId("prototype-surface");
+  expect(surface).toHaveAttribute("data-palette", "current");
+  expect(screen.getByRole("button", { name: "Current palette" })).toHaveAttribute("aria-pressed", "true");
+  await user.click(screen.getByRole("button", { name: "Proposed palette" }));
+  expect(surface).toHaveAttribute("data-palette", "proposed");
+  expect(screen.getByRole("button", { name: "Proposed palette" })).toHaveAttribute("aria-pressed", "true");
+});
+
 it("normalizes old comparison links and cannot switch to another design", async () => {
   window.location.hash = "#/workbench/reading/long-title";
   const user = userEvent.setup(); render(<ConnectedPrototype/>);

@@ -39,6 +39,15 @@
   padding: 0;
 }
 .connected-prototype .prototype { box-shadow: none; }
+.connected-prototype .palette-toggle button { font-size: 12px; padding: 6px 9px; }
+
+/* Phase 2 contrast proposal (design-spec.md, Themes and contrast). */
+.prototype[data-direction=connected][data-palette=proposed] { --muted: #6c5e50; --positive: #356b56; --control-border: #948069; }
+.prototype[data-direction=connected][data-palette=proposed][data-theme=dark] { --muted: #b3a89b; --positive: #91d0b2; --control-border: #857869; }
+.prototype[data-palette=proposed] .search-field,
+.prototype[data-palette=proposed] .field input,
+.prototype[data-palette=proposed] .field textarea,
+.prototype[data-palette=proposed] .demo-controls select { border-color: var(--control-border); }
 .connected-prototype .stage.phone { margin-block: 16px; }
 .connected-prototype .app.connected { min-height: calc(100dvh - 56px); }
 @media (max-width: 750px) {

@@ -15,53 +15,45 @@ structure; no new product features or release dates are implied.
 
 ## Phase 2 — design decisions and acceptance (#337)
 
-- [ ] Review core library, reading, capture/status, and provider concepts with Brian.
-- [ ] Reconcile product scope's older React Router wording with the approved
+Drafted September 10, 2026 in the [design specification](design-spec.md#phase-2-specification)
+and [acceptance matrix](acceptance-matrix.md). Brian reviewed and accepted every
+item on September 10, 2026.
+
+- [x] Review core library, reading, capture/status, and provider concepts with
+  Brian: accepted September 10 without further prototype changes.
+- [x] Reconcile product scope's older React Router wording with the approved
   TanStack Start frontend on a separate Worker; retain functional requirements.
-- [ ] Finish the route/action inventory below against current main. This snapshot
-  used `web/src/App.tsx` at the frozen revision, whose base was five commits
-  behind origin/main when captured.
-- [ ] Define loading, no readings, no search results, unavailable source/target,
-  source failure, invalid key, provider limit, hosting limit, offline/reconnect,
-  expired session, permission denied, and account-deletion states.
-- [ ] Approve a status refresh contract: interval/backoff, maximum elapsed time or
-  checks, pending-only admission, stop on terminal/auth/permission/unmount,
-  hidden-tab pause, visible-tab resume, network-failure handling, manual fallback.
-  The prototype's Check status control does not decide these rules.
-- [ ] Specify readable width and rich source content: headings, links, images,
-  lists, code, tables, very long titles, and long unbroken text.
-- [ ] Define URL/query encoding for search/tag/page and per-reading source view;
-  define back/forward, reload, deep-link, and scroll restoration behavior.
-- [ ] Specify reusable navigation, reading card, tabs, relationship card, novelty,
-  form, status, diagnostic disclosure, and empty/error components.
-- [ ] Verify contrast and focus in both themes, keyboard-only navigation,
-  screen-reader names/order, target sizes, zoom/reflow, and reduced motion.
-  Keep mobile numbered points on one line and move focus meaningfully after jumps.
-
-## Route and action inventory to finish
-
-Existing routes below were verified in `web/src/App.tsx`. Preserve their behavior
-unless an explicit migration decision replaces it. “Unspecified” means the
-prototype does not supply a complete design, not permission to remove a workflow.
-
-| Existing route or workflow | Prototype evidence | Replacement acceptance still required |
-| --- | --- | --- |
-| `/` | `#/library` | Keep home/auth behavior; map library search, tags, pagination, and scroll; support direct URLs/history |
-| `/readings/:id` | `#/reading/:id`, `#/status/:id` | Preserve existing reading URLs; authenticated detail, source/summary, novelty, connections, missing/failed/pending |
-| `/login` | Unspecified | Sign-in states, return destination, rate limits, expired sessions |
-| `/login/verify`, `/auth/verify` | Unspecified | Both verification entrypoints and cross-tab continuation; clear consumed return state |
-| `/account/security` | Provider concept covers a small subset | Sessions, tokens, notification/digest controls, key lifecycle, account deletion; inventory placement/actions |
-| `/terms`, `/privacy`, `/dmca` | Unspecified | Keep public routes and legal content accessible |
-| Unknown routes | Prototype normalizes invalid routes | Decide production fallback without breaking preserved links |
-| URL submission/import | `#/capture` | Existing/pending duplicate, initializing/conflict, invalid input, queue unavailable, quotas and request limits |
-| Reprocessing/recovery | Reprocess sample, Retry sample, Import a copy | Existing backend attempt ownership, confirmation where appropriate, duplicate-write avoidance, diagnostics |
-| Reading deletion/account deletion | Unspecified | Existing guards and explicit confirmation; suppress inaccessible data and retain recovery/error information |
-| Sample onboarding/provider settings | `#/provider` | Agree actual new route and credential contract in Phase 6 |
-| Full archive export | Unspecified | Phase 6 formats, inclusion rules, progress/errors, archive completeness |
-| Existing REST/MCP actions | No API calls in prototype | Preserve backend behavior; do not derive contracts from fixtures |
+- [x] Route/action parity matrix against current main (4031711): accepted, in the
+  [acceptance matrix](acceptance-matrix.md#routes). Capture lives only on `/save`;
+  only ready readings confirm before reprocessing; reading deletion stays out of
+  the UI.
+- [x] Loading, empty, no-results, unavailable source/target, failure categories,
+  offline, expired session, permission denied, and account-deletion states:
+  accepted, in the [acceptance matrix](acceptance-matrix.md#states). Failure
+  categories use a frontend mapping pinned by a test; an already-saved URL opens
+  the existing reading with a notice.
+- [x] Status refresh contract: approved September 10, with acceptance checks in the
+  [acceptance matrix](acceptance-matrix.md#status-refresh-contract).
+- [x] Readable width and rich source content: accepted, in
+  [source content](design-spec.md#source-content). Images load only when clicked.
+- [x] URL encoding, back/forward, reload, deep links, and scroll restoration:
+  accepted, in [routes and navigation state](design-spec.md#routes-and-navigation-state).
+  The trail stays in history state; the view switch replaces the history entry.
+- [x] Reusable components: accepted, in [components](design-spec.md#components).
+  Theme control in navigation; Details is one collapsed section.
+- [x] Contrast, focus, keyboard, target size, zoom, and reduced motion: accepted, in
+  [themes and contrast](design-spec.md#themes-and-contrast) and
+  [keyboard, focus, and motion](design-spec.md#keyboard-focus-and-motion). Focus
+  moves to the page heading after route changes. Screen-reader and zoom checks
+  run against the implementation in Phases 3–4.
+- [x] Map prototype-only data (author, publication, key points, novelty text,
+  relationship titles) to real fields: see [data mapping](design-spec.md#data-mapping).
+  Relationship targets are enriched at read time (Brian, September 10).
 
 ## Phase 3 — foundation and reading detail (#338)
 
+- [ ] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
+  OpenAPI, SPA type, and test updates.
 - [ ] Create the approved TanStack Start application on its own Cloudflare Worker.
 - [ ] Use same-origin browser API access and explicit request-scoped identity for
   server reads through the service binding. Keep the backend authoritative.
