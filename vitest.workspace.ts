@@ -94,6 +94,7 @@ export default [
         "test/unit/staleness/**/*.test.ts",
         "test/unit/manifest-drafting/**/*.test.ts",
         "test/unit/lib/**/*.test.ts",
+        "test/unit/fixtures/**/*.test.ts",
         "test/unit/import-bookmarks/**/*.test.ts",
         "test/unit/import-markdown/**/*.test.ts",
         "test/unit/deploy/**/*.test.ts",

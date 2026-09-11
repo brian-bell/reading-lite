@@ -18,6 +18,7 @@ deployment, deletion, and corpus procedures. Tasks are tracked in
 npm ci
 cp .dev.vars.example .dev.vars   # first setup only
 npm run dev                     # local D1 setup, founder bootstrap, Worker :8787
+npm run seed:local              # seed the accepted-state fixture pack into local R2
 npm run test:quiet              # preferred; same suite as npm test
 npm run types:check             # verify checked-in Wrangler runtime types
 npm run typecheck
@@ -119,7 +120,8 @@ Do not drain a queue before asserting an active pending state.
 
 Local `wrangler dev` has neither Queue nor Vectorize. Submit/import/reprocess
 return 503; vector similarity is empty. List, detail, content, lookup, and `q`
-text search work with [seeded local R2](docs/operations.md#seeding-local-r2).
+text search work with the [seeded local R2 fixture
+pack](docs/design/connected/fixture-pack.md) (`npm run seed:local`).
 The example provider keys are fake; integration tests cover the pipeline.
 For local login, request a magic link and read `/api/dev/mailbox?email=…` on
 loopback. Never enable `LOCAL_MAIL_SINK` in deployed environments.
