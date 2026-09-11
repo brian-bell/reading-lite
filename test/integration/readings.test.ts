@@ -4213,6 +4213,22 @@ describe("submit-time safe-url guard", () => {
       env,
     );
     expect(await get.json()).toMatchObject({ url: CREDS_URL, status: "ready" });
+
+    // The import owns the by-url slot; resubmitting the same userinfo URL
+    // returns the existing manifest (200), not a 400.
+    const resubmit = await app.request(
+      "/api/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: CREDS_URL }),
+      },
+      env,
+      createExecutionContext(),
+    );
+    expect(resubmit.status).toBe(200);
+    expect(await resubmit.json()).toMatchObject({ id, url: CREDS_URL, status: "ready" });
+    expect(queuedJobs).toHaveLength(0);
   });
 });
 

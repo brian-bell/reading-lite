@@ -101,10 +101,6 @@ export class ReadingIntake {
   }
 
   async submit(url: string, opts: { email: boolean }): Promise<IntakeOutcome> {
-    // Before any state is written: a URL the extractor categorically rejects
-    // must not claim the by-url slot, which it could never succeed at (262).
-    const rejected = unsafeUrlOutcome(url);
-    if (rejected) return rejected;
     const gated = await this.gateRequest();
     if (gated) return gated;
     return this.guardContention(async () => {
@@ -237,6 +233,12 @@ export class ReadingIntake {
     email: boolean,
     replaceEtag: string | undefined,
   ): Promise<IntakeOutcome> {
+    // Only a genuinely new claim enforces the extractor's categorical URL
+    // policy: an existing owner still resolves normally in submit() above — a
+    // userinfo source_url that was markdown-imported is a valid owner, and a
+    // failed one reaches reprocessManifest's own guard (262).
+    const rejected = unsafeUrlOutcome(url);
+    if (rejected) return rejected;
     const args = await newReadingArgs(url, this.deps.services);
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);

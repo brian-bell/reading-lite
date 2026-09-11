@@ -532,6 +532,77 @@ describe("ReadingIntake safe-url guard", () => {
     const found = await reader.loadReadingById(out.id);
     expect(found?.manifest).toMatchObject({ url: CREDS_URL, source_type: "markdown" });
   });
+
+  it("returns the existing manifest when a ready userinfo owner already holds the url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS_READY",
+      status: "ready",
+      source_type: "markdown",
+    });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toEqual({ kind: "existing", manifest: owner.manifest });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("returns the existing pending manifest for a userinfo import owner, not 400", async () => {
+    const { intake, sent } = makeIntake();
+    const imported = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
+    if (imported.kind !== "activated") throw new Error("unreachable");
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "existing",
+      manifest: { id: imported.id, status: "pending" },
+    });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("returns invalid_url when a failed URL-backed userinfo owner is resubmitted, without a doomed reprocess", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS_FAILED",
+      status: "failed",
+      content_status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404", failed_at: NOW, retryable: false },
+    });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({ kind: "invalid_url", reason: expect.stringContaining("userinfo") });
+    expect(sent).toHaveLength(0);
+    const manifest = await reader.readManifest(owner.keyPrefix);
+    expect(manifest?.status).toBe("failed");
+  });
+
+  it("counts a rejected submit against the request-rate admission", async () => {
+    const usage = recordingUsage();
+    const { intake } = makeIntake({ usage });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({ kind: "invalid_url" });
+    expect(usage.ops).toEqual(["admit"]);
+  });
+
+  it("returns rate_limited for an unfetchable url when admission denies first", async () => {
+    const usage: TenantUsage = {
+      ...allowAllUsage(),
+      admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
+    };
+    const { intake } = makeIntake({ usage });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toEqual({
+      kind: "rate_limited",
+      limit: "request_rate",
+      resetAtMs: Date.parse(NOW) + 60_000,
+    });
+  });
 });
 
 function recordingUsage(): TenantUsage & { ops: string[] } {
