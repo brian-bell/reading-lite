@@ -14,13 +14,19 @@ function parseNodeTriple(version: string): [number, number, number] | null {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-export function isDevNodeSupported(version: string): boolean {
+/** Fail-closed: unparseable `version` or `minimum` is not supported. */
+export function isNodeAtLeast(version: string, minimum: string): boolean {
   const parsed = parseNodeTriple(version);
-  if (!parsed) return false;
-  const [major, minor] = parsed;
-  if (major > 22) return true;
-  if (major < 22) return false;
-  return minor >= 12;
+  const floor = parseNodeTriple(minimum);
+  if (!parsed || !floor) return false;
+  for (let i = 0; i < 3; i++) {
+    if (parsed[i] !== floor[i]) return parsed[i]! > floor[i]!;
+  }
+  return true;
+}
+
+export function isDevNodeSupported(version: string): boolean {
+  return isNodeAtLeast(version, DEV_NODE_MINIMUM);
 }
 
 export function evaluateDevNode(version: string): { ok: true } | { ok: false; message: string } {

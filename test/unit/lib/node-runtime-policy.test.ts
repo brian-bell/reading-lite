@@ -6,6 +6,7 @@ import {
   DEV_NODE_MINIMUM,
   evaluateDevNode,
   isDevNodeSupported,
+  isNodeAtLeast,
 } from "../../../scripts/require-dev-node";
 
 const repoRoot = process.cwd();
@@ -59,6 +60,7 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(isDevNodeSupported("22.13.0")).toBe(true);
     expect(isDevNodeSupported("23.0.0")).toBe(true);
     expect(evaluateDevNode("22.12.0")).toEqual({ ok: true });
+    expect(isDevNodeSupported("22.12.0")).toBe(isNodeAtLeast("22.12.0", DEV_NODE_MINIMUM));
 
     for (const version of ["20.19.2", "20.19.0", "21.0.0", "22.0.0", "22.11.9"]) {
       expect(evaluateDevNode(version), version).toEqual({
@@ -78,6 +80,19 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(DEV_NODE_GATE_MESSAGE).toMatch(/Node 22\.12\+/);
     expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run dev/);
     expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run ops/);
+  });
+
+  it("compares major, minor, and patch against parsed DEV_NODE_MINIMUM", () => {
+    expect(isNodeAtLeast("22.12.0", DEV_NODE_MINIMUM)).toBe(true);
+    expect(isNodeAtLeast("22.12.1", DEV_NODE_MINIMUM)).toBe(true);
+    expect(isNodeAtLeast("22.12.0", "22.12.1")).toBe(false);
+    expect(isNodeAtLeast("22.11.99", DEV_NODE_MINIMUM)).toBe(false);
+    expect(isNodeAtLeast("22.12.0", "not-a-version")).toBe(false);
+
+    const src = readFileSync(path.join(repoRoot, "scripts/require-dev-node.ts"), "utf8");
+    expect(src).toMatch(/isNodeAtLeast\(\s*version,\s*DEV_NODE_MINIMUM\s*\)/);
+    expect(src).not.toMatch(/major\s*[<>]=?\s*22/);
+    expect(src).not.toMatch(/minor\s*[<>]=?\s*12/);
   });
 
   it("keeps the Node policy table identical in README, AGENTS.md, and operations.md", () => {
