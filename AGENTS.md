@@ -27,13 +27,20 @@ npm ci
 npm run dev                     # SPA :5173, in a separate terminal
 npm test
 npm run build                   # TypeScript check plus Vite build
+
+cd app                          # new TanStack Start frontend (ADR 0003)
+npm ci
+npm run dev                     # :5174, proxies /api to :8787
+npm run typecheck && npm test
+npm run build && npm run test:smoke
 ```
 
 There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; SPA verification is `npm test`
-plus `npm run build` in `web/`. CI runs Worker and Node tests, SPA tests/build,
-and the ops compatibility check on Node 20.19.2. Documentation-only changes
-skip runtime CI and deployment.
+plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
+`build`, and `test:smoke` in `app/`. CI runs Worker and Node tests, SPA
+tests/build, the `app/` checks on Node 22, and the ops compatibility check on
+Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
 
 Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
@@ -58,6 +65,7 @@ See [operator Node](docs/operations.md#operator-node).
 | R2 and Vectorize | `src/modules/stores/`, especially `layout.ts` for keys |
 | Operator commands | `scripts/ops.ts`, `scripts/ops-lib/registry.ts`, `scripts/ops-lib/commands/`, shared `scripts/*-lib/` |
 | Contracts and SPA | `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, `web/` |
+| New frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
 
 ## Development constraints
 
