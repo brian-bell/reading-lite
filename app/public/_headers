@@ -1,0 +1,4 @@
+# Workers Assets headers. Only content-hashed build output is publicly
+# cacheable; every rendered HTML response is `private, no-store` (src/start.ts).
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable

@@ -118,3 +118,27 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+
+  app:
+    name: App (typecheck + test + build + smoke)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7
+      # @tanstack/react-start requires Node >=22.12 (ADR 0003).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      # Includes the cross-environment service-binding check.
+      - run: npm test
+      - run: npm run build
+      # Runs the built Worker: 404 for backend paths, cache headers, themed SSR.
+      - run: npm run test:smoke

@@ -1,0 +1,51 @@
+// reading-lite frontend Worker (TanStack Start). See ADR 0003,
+// docs/decisions/0003-frontend-worker-topology.md.
+//
+// Three environments, mirroring the backend's root wrangler.toml:
+//   * top level (local) — `npm run dev` only, never deployed. The distinct -dev
+//                         name guards against a bare deploy.
+//   * staging           — reading-lite-app-staging, binds reading-lite-staging.
+//   * production        — reading-lite-app, binds reading-lite.
+//
+// The build fixes the environment (CLOUDFLARE_ENV=staging|production npm run
+// build). Deploys need separate authorization and are not wired up yet.
+//
+// There are no routes. The frontend is attached per host later with a `host/*`
+// route; the backend keeps its more specific /api/*, /health, and /mcp* routes,
+// and this Worker returns 404 for those paths instead of proxying them.
+//
+// test/backend-bindings.test.ts fails when an environment's BACKEND service
+// binding names another environment's backend. Environments do not inherit
+// bindings: repeat BACKEND in each one.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "reading-lite-app-dev",
+  "main": "@tanstack/react-start/server-entry",
+  // No public hostnames until a route is added deliberately. Wrangler defaults
+  // workers_dev to true, so a bare deploy of this local config would otherwise
+  // publish reading-lite-app-dev on workers.dev. Repeated in each environment.
+  "workers_dev": false,
+  "preview_urls": false,
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": { "enabled": true, "invocation_logs": true }
+  },
+  "services": [{ "binding": "BACKEND", "service": "reading-lite-dev" }],
+  "env": {
+    "staging": {
+      "name": "reading-lite-app-staging",
+      "workers_dev": false,
+      "preview_urls": false,
+      "services": [{ "binding": "BACKEND", "service": "reading-lite-staging" }]
+    },
+    "production": {
+      "name": "reading-lite-app",
+      "workers_dev": false,
+      "preview_urls": false,
+      "services": [{ "binding": "BACKEND", "service": "reading-lite" }]
+    }
+  }
+}
