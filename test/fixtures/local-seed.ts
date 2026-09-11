@@ -161,6 +161,24 @@ function addMs(iso: string, ms: number): string {
   return new Date(Date.parse(iso) + ms).toISOString();
 }
 
+function stageMs(stage: ProcessingStage): number {
+  return STAGE_MS[stage as Exclude<ProcessingStage, "prepare_markdown">] ?? 3_000;
+}
+
+/** When `stage` completes, walking the spec's stage list from the attempt start. */
+function stageCompletionAt(
+  startedAt: string,
+  stages: readonly ProcessingStage[],
+  stage: ProcessingStage,
+): string {
+  let ms = 0;
+  for (const s of stages) {
+    ms += stageMs(s);
+    if (s === stage) return addMs(startedAt, ms);
+  }
+  throw new Error(`stageCompletionAt: stage ${stage} never runs in the given stage list`);
+}
+
 interface AttemptLogSpec {
   attemptId: string;
   trigger: "submit" | "import";
@@ -168,33 +186,49 @@ interface AttemptLogSpec {
   startedAt: string;
   /** Stages that ran to completion, in order (queued included). */
   stages: readonly ProcessingStage[];
-  /** Failing stage; events stop with a failed event and no further stages run. */
-  failAt?: { stage: ProcessingStage; error: ManifestError };
+  /**
+   * Failing stage; events stop with a failed event and no further stages run.
+   * The error arrives without `failed_at` — it is stamped here from the
+   * failure event's time so the manifest, the attempt summary, and the event
+   * log can never disagree about when the failure happened.
+   */
+  failAt?: { stage: ProcessingStage; error: Omit<ManifestError, "failed_at"> };
   /** Dead-letter shape: only the queued `started` event, stage copied forward. */
   dlq?: boolean;
+  /** Dead-letter only: seconds from attempt start until retries exhausted. */
+  dlqSeconds?: number;
 }
 
 function attemptLog(spec: AttemptLogSpec): ProcessingAttempt {
   const events: ProcessingAttemptEvent[] = [];
   let at = spec.startedAt;
   let stage: ProcessingStage = "queued";
+  let failedError: ManifestError | undefined;
+  // The worker stamps `succeeded`/`finished_at` right after the last processing
+  // stage (embed_summary) — before the terminal write stages run — so the
+  // terminal manifest's updated_at and the attempt's finished_at are the same
+  // moment, with the write_manifest/write_indexes/send_email events following.
+  let succeededAt: string | undefined;
 
   if (spec.dlq) {
     events.push({ stage: "queued", status: "started", at });
     stage = spec.failAt?.stage ?? "queued";
+    at = addMs(spec.startedAt, (spec.dlqSeconds ?? 900) * 1000);
+    failedError = { ...spec.failAt!.error, failed_at: at };
   } else {
     for (const s of spec.stages) {
-      const ms = STAGE_MS[s as Exclude<ProcessingStage, "prepare_markdown">] ?? 3_000;
+      const ms = stageMs(s);
       const startedAt = at;
       events.push({ stage: s, status: "started", at: startedAt });
       if (spec.failAt !== undefined && s === spec.failAt.stage) {
         const failedAt = addMs(startedAt, ms);
+        failedError = { ...spec.failAt.error, failed_at: failedAt };
         events.push({
           stage: s,
           status: "failed",
           at: failedAt,
           duration_ms: ms,
-          error: spec.failAt.error,
+          error: failedError,
         });
         at = failedAt;
         stage = s;
@@ -204,11 +238,12 @@ function attemptLog(spec: AttemptLogSpec): ProcessingAttempt {
       events.push({ stage: s, status: "succeeded", at: finishedAt, duration_ms: ms });
       at = finishedAt;
       stage = s;
+      if (s === "embed_summary") succeededAt = finishedAt;
     }
   }
 
   const failed = spec.failAt !== undefined;
-  const finishedAt = failed ? at : spec.stages.length > 0 ? at : undefined;
+  const finishedAt = failed ? at : succeededAt;
   const attempt = {
     id: spec.attemptId,
     trigger: spec.trigger,
@@ -216,7 +251,7 @@ function attemptLog(spec: AttemptLogSpec): ProcessingAttempt {
     stage,
     started_at: spec.startedAt,
     ...(finishedAt === undefined ? {} : { finished_at: finishedAt }),
-    ...(spec.failAt === undefined ? {} : { error: spec.failAt.error }),
+    ...(failedError === undefined ? {} : { error: failedError }),
     reading_id: spec.reading.id,
     url: spec.reading.url,
     url_hash: spec.reading.urlHash,
@@ -242,11 +277,10 @@ interface ReadySpec {
   id: string;
   url: string;
   createdAt: string;
-  /** Seconds from created_at until the attempt finished. */
-  processingSeconds: number;
   trigger: "submit" | "import";
   summary: ReadingSummary;
-  similarity?: SimilaritySnapshot;
+  /** Without computed_at: it is derived from the attempt's query_similar stage. */
+  similarity?: Omit<SimilaritySnapshot, "computed_at">;
   contentKey: keyof typeof FIXTURE_CONTENT;
   neighbourhoodIds: string[];
   usage: { summarization: ReadingSummaryUsage; openai_embedding_tokens: number };
@@ -341,7 +375,6 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
   const keyPrefix = buildKeyPrefix(spec.id, spec.createdAt);
   const urlHashValue = urlHash(spec.url);
   const startedAt = addMs(spec.createdAt, 4_000);
-  const finishedAt = addMs(startedAt, spec.processingSeconds * 1000);
   const isMarkdownImport = spec.trigger === "import";
   const stages =
     content.extractedMarkdown === null
@@ -356,6 +389,15 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
     startedAt,
     stages,
   });
+  // The terminal timestamp is the attempt's own finished_at (stamped after
+  // embed_summary, exactly as the worker stamps it), and similarity is
+  // measured when query_similar completes — both derived from the generated
+  // attempt so manifest, summary, and event log share one chronology.
+  const finishedAt = attempt.finished_at!;
+  const similarity =
+    spec.similarity === undefined
+      ? undefined
+      : { ...spec.similarity, computed_at: stageCompletionAt(startedAt, stages, "query_similar") };
 
   let manifest = readyManifest(
     {
@@ -367,7 +409,7 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
       },
       sourceType: isMarkdownImport ? "markdown" : "url",
       summary: spec.summary,
-      ...(spec.similarity === undefined ? {} : { similarity: spec.similarity }),
+      ...(similarity === undefined ? {} : { similarity }),
       content: {
         ...contentFacts(content),
         ...(spec.enrichmentDegradation === undefined
@@ -468,24 +510,19 @@ interface FailedSpec {
   createdAt: string;
   /** Seconds from created_at until the attempt started. */
   queueSeconds: number;
-  error: ManifestError;
+  /** Without failed_at: it is stamped from the attempt's failure event time. */
+  error: Omit<ManifestError, "failed_at">;
   stage: ProcessingStage;
   /** Stages that ran before the failure (queued included). */
   stages: readonly ProcessingStage[];
   /** Dead-letter shape (queue retries exhausted). */
   dlq?: boolean;
-  /** Seconds from attempt start until the failure surfaced. */
-  failSeconds?: number;
 }
 
 function assembleFailed(spec: FailedSpec): AssembledFixture {
   const keyPrefix = buildKeyPrefix(spec.id, spec.createdAt);
   const urlHashValue = urlHash(spec.url);
   const startedAt = addMs(spec.createdAt, spec.queueSeconds * 1000);
-  const finishedAt = addMs(
-    startedAt,
-    (spec.dlq ? 900 : spec.failSeconds ?? 30) * 1000,
-  );
   const attempt = attemptLog({
     attemptId: `at_${spec.id.slice(3)}`,
     trigger: "submit",
@@ -495,6 +532,10 @@ function assembleFailed(spec: FailedSpec): AssembledFixture {
     failAt: { stage: spec.stage, error: spec.error },
     dlq: spec.dlq,
   });
+  // Terminal time, error, and attempt all come from the generated attempt, so
+  // updated_at, error.failed_at, and the failure event can never disagree.
+  const finishedAt = attempt.finished_at!;
+  const error = attempt.error!;
   // The worker failure path always drafts the empty-content placeholder with
   // content_status "failed" (process-reading markFailed), even when earlier
   // stages wrote objects, so failed fixtures carry no raw/extracted objects.
@@ -505,7 +546,7 @@ function assembleFailed(spec: FailedSpec): AssembledFixture {
       urlHash: urlHashValue,
       createdAt: spec.createdAt,
     },
-    { sourceType: "url", error: spec.error, attempt: attemptSummary(attempt) },
+    { sourceType: "url", error, attempt: attemptSummary(attempt) },
     finishedAt,
   );
   return {
@@ -539,7 +580,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.attention,
     url: "https://fieldnotes.example/2026/a-quieter-internet",
     createdAt: "2026-09-07T09:30:00.000Z",
-    processingSeconds: 51,
     trigger: "submit",
     summary: {
       title: "A quieter internet is a choice we can make",
@@ -571,7 +611,7 @@ const READY_SPECS: ReadySpec[] = [
         "The essay closes with a design criterion: measure a reading tool by the quality of its endings. A session that ends because you understood something is a success, not a failure to re-engage.",
       ].join("\n"),
     },
-    similarity: { count: 2, max: 0.61, mean: 0.58, computed_at: "2026-09-07T09:30:50.000Z" },
+    similarity: { count: 2, max: 0.61, mean: 0.58 },
     contentKey: "attention",
     neighbourhoodIds: [IDS.gardens, IDS.friction, IDS.longTitle, IDS.sparseArchive],
     usage: {
@@ -595,7 +635,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.gardens,
     url: "https://commonplace.example/libraries-are-gardens",
     createdAt: "2026-09-04T10:00:00.000Z",
-    processingSeconds: 47,
     trigger: "submit",
     summary: {
       title: "Libraries are gardens, not warehouses",
@@ -630,7 +669,7 @@ const READY_SPECS: ReadySpec[] = [
         "The maintenance itself is thinking: letting older readings change meaning as your interests change is the work the garden metaphor names.",
       ].join("\n"),
     },
-    similarity: { count: 2, max: 0.64, mean: 0.6, computed_at: "2026-09-04T10:00:46.000Z" },
+    similarity: { count: 2, max: 0.64, mean: 0.6 },
     contentKey: "gardens",
     neighbourhoodIds: [IDS.attention, IDS.friction, IDS.sparseArchive],
     usage: {
@@ -645,7 +684,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.friction,
     url: "https://adjacent.example/the-case-for-a-little-friction",
     createdAt: "2026-09-02T13:45:00.000Z",
-    processingSeconds: 44,
     trigger: "submit",
     summary: {
       title: "The case for a little friction",
@@ -664,7 +702,7 @@ const READY_SPECS: ReadySpec[] = [
         "Leave the starting point visible and let the reader choose — that is the difference between a deepening tangent and a lost thread.",
       ].join("\n"),
     },
-    similarity: { count: 2, max: 0.57, mean: 0.55, computed_at: "2026-09-02T13:45:43.000Z" },
+    similarity: { count: 2, max: 0.57, mean: 0.55 },
     contentKey: "friction",
     neighbourhoodIds: [IDS.attention, IDS.gardens],
     usage: {
@@ -688,7 +726,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.sparseArchive,
     url: "https://small-hours.example/against-the-endless-queue",
     createdAt: "2026-09-06T18:25:00.000Z",
-    processingSeconds: 39,
     trigger: "submit",
     summary: {
       title: "Against the endless queue",
@@ -705,7 +742,7 @@ const READY_SPECS: ReadySpec[] = [
         "An unread item does not have to be an unfinished task; a saved article can be available without being a commitment.",
       ].join("\n"),
     },
-    similarity: { count: 0, computed_at: "2026-09-06T18:25:38.000Z" },
+    similarity: { count: 0 },
     contentKey: "sparse-archive",
     neighbourhoodIds: [],
     usage: {
@@ -719,7 +756,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.longTitle,
     url: "https://working-notes.example/tools-for-thinking",
     createdAt: "2026-08-29T15:20:00.000Z",
-    processingSeconds: 42,
     trigger: "submit",
     summary: {
       title:
@@ -737,7 +773,7 @@ const READY_SPECS: ReadySpec[] = [
         "Measure whether a system helps you begin the actual task, and reconsider routines that create more maintenance than insight.",
       ].join("\n"),
     },
-    similarity: { count: 3, max: 0.72, mean: 0.66, computed_at: "2026-08-29T15:20:41.000Z" },
+    similarity: { count: 3, max: 0.72, mean: 0.66 },
     contentKey: "long-title",
     neighbourhoodIds: [IDS.attention, IDS.gardens, IDS.sparseArchive],
     usage: {
@@ -751,7 +787,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.unavailable,
     url: "https://margin.example/the-web-we-can-no-longer-revisit",
     createdAt: "2026-08-25T11:05:00.000Z",
-    processingSeconds: 40,
     trigger: "submit",
     summary: {
       title: "The web we can no longer revisit",
@@ -773,7 +808,7 @@ const READY_SPECS: ReadySpec[] = [
         "A saved summary and a captured source have different roles, and showing missing source content explicitly lets readers judge what is still available.",
       ].join("\n"),
     },
-    similarity: { count: 1, max: 0.48, mean: 0.48, computed_at: "2026-08-25T11:05:39.000Z" },
+    similarity: { count: 1, max: 0.48, mean: 0.48 },
     contentKey: "unavailable-source",
     neighbourhoodIds: [IDS.gardens, IDS.sparseArchive],
     usage: {
@@ -787,7 +822,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.markdown,
     url: "https://notes.example/slow-reading-week",
     createdAt: "2026-08-28T08:30:00.000Z",
-    processingSeconds: 38,
     trigger: "import",
     summary: {
       title: "Slow reading week",
@@ -809,7 +843,7 @@ const READY_SPECS: ReadySpec[] = [
         "Starting was easier with the question already open; rereading replaced new tabs; and the Friday summary proved more useful than anything saved that week.",
       ].join("\n"),
     },
-    similarity: { count: 1, max: 0.41, mean: 0.41, computed_at: "2026-08-28T08:30:37.000Z" },
+    similarity: { count: 1, max: 0.41, mean: 0.41 },
     contentKey: "imported-markdown",
     neighbourhoodIds: [IDS.attention, IDS.sparseArchive],
     usage: {
@@ -823,7 +857,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.youtube,
     url: "https://www.youtube.com/watch?v=FxFixture01",
     createdAt: "2026-08-20T16:40:00.000Z",
-    processingSeconds: 43,
     trigger: "submit",
     summary: {
       title: "Building a quiet reading app — chapter 4",
@@ -840,7 +873,7 @@ const READY_SPECS: ReadySpec[] = [
         "The video walks through the quiet-library idea, the queue-versus-feed distinction, and a demo of what broke along the way.",
       ].join("\n"),
     },
-    similarity: { count: 1, max: 0.44, mean: 0.44, computed_at: "2026-08-20T16:40:42.000Z" },
+    similarity: { count: 1, max: 0.44, mean: 0.44 },
     contentKey: "degraded-youtube",
     neighbourhoodIds: [IDS.sparseArchive],
     usage: {
@@ -860,7 +893,6 @@ const READY_SPECS: ReadySpec[] = [
     id: IDS.old,
     url: "https://adjacent.example/before-the-archive",
     createdAt: "2026-04-14T09:15:00.000Z",
-    processingSeconds: 46,
     trigger: "submit",
     summary: {
       title: "Before the archive",
@@ -907,7 +939,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "BadStatusError",
       message: "bad response status 403: https://registration-wall.example/members-only-report",
       stage: "fetch_source",
-      failed_at: "2026-09-10T14:10:11.000Z",
       retryable: false,
     },
   },
@@ -925,7 +956,6 @@ const FAILED_SPECS: FailedSpec[] = [
       message:
         "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
       stage: "summarize",
-      failed_at: "2026-09-09T16:42:39.000Z",
       retryable: false,
     },
   },
@@ -942,7 +972,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "RateLimitedError",
       message: "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
       stage: "summarize",
-      failed_at: "2026-09-09T09:05:47.000Z",
       retryable: true,
     },
   },
@@ -959,7 +988,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "BadStatusError",
       message: "bad response status 500: https://api.openai.com/v1/embeddings",
       stage: "embed_source",
-      failed_at: "2026-09-08T22:18:26.000Z",
       retryable: true,
     },
   },
@@ -976,7 +1004,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "BadStatusError",
       message: "bad response status 401: https://api.openai.com/v1/responses",
       stage: "summarize",
-      failed_at: "2026-09-08T11:55:38.000Z",
       retryable: false,
     },
   },
@@ -993,7 +1020,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "SpendAdmissionError",
       message: "paid spend admission: monthly budget exhausted",
       stage: "summarize",
-      failed_at: "2026-09-05T21:30:34.000Z",
       retryable: true,
     },
   },
@@ -1011,7 +1037,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "QueueRetriesExhaustedError",
       message: "queue delivery retries exhausted (upstream stayed rate-limited)",
       stage: "summarize",
-      failed_at: "2026-09-04T07:27:03.000Z",
       retryable: true,
     },
   },
@@ -1028,7 +1053,6 @@ const FAILED_SPECS: FailedSpec[] = [
       code: "TypeError",
       message: "Cannot read properties of undefined (reading 'score')",
       stage: "query_similar",
-      failed_at: "2026-08-30T19:47:24.000Z",
     },
   },
 ];

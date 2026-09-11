@@ -56,6 +56,11 @@ and the detail route 404s ("arrived from a removed target").
 - Every manifest is built through `src/modules/manifest-drafting.ts` and
   parses with `ManifestSchema`; the test enforces it, plus list-row/manifest
   equality, by-id/by-url pointer agreement, and `url_hash` correctness.
+- Every terminal timestamp is derived from the fixture's own generated
+  attempt: ready `updated_at`/`fetched_at` equal `last_attempt.finished_at`,
+  `similarity.computed_at` is the `query_similar` completion, and failed
+  `updated_at`/`error.failed_at` equal the failure event — so the manifest,
+  the attempt summary, and the event log share one chronology.
 - Content hashes and byte counts in the manifests match the seeded artifacts,
   so diagnostics stay coherent.
 - Failed readings carry the empty-content placeholder with
@@ -64,8 +69,14 @@ and the detail route 404s ("arrived from a removed target").
   events, including the dead-letter shape for `fail-stopped`.
 - Seeded ids satisfy the worker's `parseReadingId` shape, so reprocess,
   lookup, and MCP paths treat fixtures like any other reading.
-- The library lists 18 rows, newest first: `pending`, the eight failures,
-  then the ready baselines — matching the store's `created_at` sort.
+- The seeder merges into an existing `index/list.json` instead of replacing
+  it: hand-seeded rows survive a re-seed, and only the pack's own rows are
+  written or replaced. It refuses to run while the dev server is up (the CLI
+  has no conditional put, so the merge is not concurrency-guarded) and fails
+  closed when an existing index does not parse.
+- The library lists the pack's 18 rows, newest first: `pending`, the eight
+  failures, then the ready baselines — matching the store's `created_at`
+  sort.
 
 ## What the pack deliberately does not cover
 

@@ -177,7 +177,70 @@ describe("local seed fixture pack", () => {
       expect(manifestAttempt?.id).toBe(attempt.id);
       expect(manifestAttempt?.status).toBe(attempt.status);
       expect(manifestAttempt?.stage).toBe(attempt.stage);
+      expect(manifestAttempt?.finished_at).toBe(attempt.finished_at);
     }
+  });
+
+  it("derives every terminal timestamp from the generated attempt so manifest, summary, and event log share one chronology", () => {
+    for (const fixture of plan.fixtures) {
+      const attemptKey = plan.objects.find((k) =>
+        k.key.startsWith(`${fixture.keyPrefix}/attempts/`),
+      )!;
+      const attempt = ProcessingAttemptSchema.parse(JSON.parse(attemptKey.body));
+
+      if (fixture.manifest.status === "ready") {
+        expect(attempt.status).toBe("succeeded");
+        expect(fixture.manifest.updated_at).toBe(attempt.finished_at);
+        expect(fixture.manifest.fetched_at).toBe(attempt.finished_at);
+        // similarity is measured when query_similar completes, mid-run. The
+        // old-manifest fixture predates similarity and has none.
+        const querySimilarAt = attempt.events.find(
+          (e) => e.stage === "query_similar" && e.status === "succeeded",
+        )?.at;
+        if (fixture.manifest.similarity !== undefined) {
+          expect(fixture.manifest.similarity.computed_at).toBe(querySimilarAt);
+          expect(Date.parse(querySimilarAt!)).toBeLessThanOrEqual(
+            Date.parse(fixture.manifest.updated_at),
+          );
+        }
+      }
+      if (fixture.manifest.status === "failed") {
+        expect(attempt.status).toBe("failed");
+        const failureAt = attempt.events.at(-1)?.at;
+        expect(fixture.manifest.updated_at).toBe(attempt.finished_at);
+        expect(fixture.manifest.error?.failed_at).toBe(attempt.finished_at);
+        expect(attempt.error?.failed_at).toBe(attempt.finished_at);
+        // Ordinary failures stamp finished_at at the failure event; the
+        // dead-letter shape outlives its only event (retries exhausted later).
+        expect(Date.parse(attempt.finished_at!)).toBeGreaterThanOrEqual(
+          Date.parse(failureAt!),
+        );
+      }
+      if (fixture.manifest.status === "pending") continue;
+
+      // Events never precede the attempt's own start.
+      for (const event of attempt.events) {
+        expect(Date.parse(event.at)).toBeGreaterThanOrEqual(
+          Date.parse(attempt.started_at),
+        );
+      }
+    }
+  });
+
+  it("gives the dead-lettered stopped fixture the DLQ attempt shape", () => {
+    const stopped = byId.get("rd_FXERR00007")!;
+    const attemptKey = plan.objects.find((o) =>
+      o.key.startsWith(`${stopped.keyPrefix}/attempts/`),
+    )!;
+    const attempt = ProcessingAttemptSchema.parse(JSON.parse(attemptKey.body));
+    expect(attempt.events).toEqual([
+      { stage: "queued", status: "started", at: attempt.started_at },
+    ]);
+    expect(attempt.stage).toBe("summarize");
+    // Retries exhausted 15 minutes after the attempt started.
+    expect(Date.parse(attempt.finished_at!)).toBe(
+      Date.parse(attempt.started_at) + 900_000,
+    );
   });
 
   it("represents the sparse archive as similarity.count = 0 with no connections", () => {

@@ -2431,9 +2431,10 @@ npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to pre
 
 ## Seeding local R2
 
-To exercise the read path or the SPA against real data locally, seed the local
-bucket and then restart `wrangler dev`; the running dev server caches R2
-in-process.
+To exercise the read path or the SPA against real data locally, stop
+`wrangler dev` first — the seed command refuses to run against a live dev
+server (its list-index merge has no compare-and-set to guard against the
+server's own writes) — then seed and start `npm run dev` again.
 
 The fixture pack from [issue #366](https://github.com/brian-bell/reading-lite/issues/366)
 seeds every accepted reading state (ready baselines with connections and
@@ -2448,10 +2449,14 @@ npm run seed:local
 Objects are written by `wrangler r2 object put --local` into the same
 on-disk store `.wrangler/state/v3/r2` that the dev server binds (verified
 against wrangler 4.130 — the older "different local store" caveat for
-`--local` no longer holds). The command is idempotent: re-run it to refresh
-the pending fixture once it passes the 15-minute pending TTL, and to restore
-the pack after deleting readings while testing. A pristine reset is
-`rm -rf .wrangler/state/v3/r2` followed by the seed command and a dev restart.
+`--local` no longer holds). The command is idempotent and merges rather than
+replaces: pre-existing hand-seeded `index/list.json` rows are preserved, and
+only the pack's own rows are written or replaced in place. An existing index
+that does not parse fails closed rather than being overwritten. Re-run the
+command to refresh the pending fixture once it passes the 15-minute pending
+TTL, and to restore the pack after deleting readings while testing. A pristine
+reset is `rm -rf .wrangler/state/v3/r2` followed by the seed command and a dev
+restart.
 
 Local dev leaves `TENANT_DATA_PLANE` unset, so the local founder account reads
 global-rooted keys — which is exactly what the seeder writes. Do not seed under
