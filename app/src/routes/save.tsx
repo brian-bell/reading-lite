@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { PageHeading } from "../components/PageHeading";
 
 // Placeholder until URL and Markdown capture land (Phase 4, #339).
 export const Route = createFileRoute("/save")({
@@ -9,7 +10,7 @@ export const Route = createFileRoute("/save")({
 function SavePage() {
   return (
     <div className="page">
-      <h1 className="page-title">Save reading</h1>
+      <PageHeading>Save reading</PageHeading>
     </div>
   );
 }

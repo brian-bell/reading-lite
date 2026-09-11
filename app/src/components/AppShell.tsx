@@ -14,11 +14,13 @@ export function AppShell({
   theme,
   onThemeChange,
   account,
+  onSignOut,
   children,
 }: {
   theme: ThemePreference;
   onThemeChange: (next: ThemePreference) => void;
   account: AccountState;
+  onSignOut: () => Promise<void>;
   children: ReactNode;
 }) {
   return (
@@ -54,7 +56,7 @@ export function AppShell({
                 </li>
               </ul>
               <ThemeControl value={theme} onChange={onThemeChange} />
-              <AccountArea account={account} />
+              <AccountArea account={account} onSignOut={onSignOut} />
             </nav>
           </header>
           <main id="main" className="shell-main" tabIndex={-1}>

@@ -1,6 +1,8 @@
-import { QueryClient, QueryClientProvider, dehydrate, hydrate } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider, dehydrate, hydrate } from "@tanstack/react-query";
 import { createRouter } from "@tanstack/react-router";
+import { createQueryClient, hrefOnScreen } from "./auth/session";
 import { routeTree } from "./routeTree.gen";
+import { plainSearch } from "./search";
 
 export interface RouterContext {
   queryClient: QueryClient;
@@ -11,11 +13,13 @@ export interface RouterContext {
 // caching). The dehydrated cache, including whoami's CSRF token, goes only into
 // this request's HTML. Query data is API JSON, so the cache travels as a JSON
 // string, which the router's serializer accepts and escapes for the page.
+// A 401 from any query marks the session ended at the page on screen.
 export function getRouter() {
-  const queryClient = new QueryClient();
-  return createRouter({
+  const queryClient = createQueryClient(() => hrefOnScreen(router));
+  const router = createRouter({
     routeTree,
     context: { queryClient },
+    ...plainSearch,
     scrollRestoration: true,
     defaultPreload: "intent",
     dehydrate: () => ({ queryClientState: JSON.stringify(dehydrate(queryClient)) }),
@@ -24,6 +28,7 @@ export function getRouter() {
     },
     Wrap: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
   });
+  return router;
 }
 
 declare module "@tanstack/react-router" {
