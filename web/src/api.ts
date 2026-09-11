@@ -3,6 +3,7 @@ import type {
   AuthLoginOptionsResponse,
   ListReadingsResponse,
   Manifest,
+  ReadingDetail,
   ReadingDiagnostics,
   ReprocessReadingBody,
   ReprocessReadingResponse,
@@ -318,13 +319,13 @@ export async function listReadings(params: ListReadingsParams): Promise<ListRead
   return (await response.json()) as ListReadingsResponse;
 }
 
-export async function getReading(id: string): Promise<Manifest> {
+export async function getReading(id: string): Promise<ReadingDetail> {
   const url = new URL(`/api/readings/${encodeURIComponent(id)}`, window.location.origin);
   const response = await apiFetch(url);
   if (!response.ok) {
     throw new ApiError(response.status, await errorMessageOf(response, "failed to get reading"));
   }
-  return (await response.json()) as Manifest;
+  return (await response.json()) as ReadingDetail;
 }
 
 export async function getReadingDiagnostics(id: string): Promise<ReadingDiagnostics> {

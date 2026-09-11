@@ -52,8 +52,8 @@ item on September 10, 2026.
 
 ## Phase 3 — foundation and reading detail (#338)
 
-- [ ] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
-  OpenAPI, SPA type, and test updates.
+- [x] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
+  OpenAPI, SPA type, and test updates (#367).
 - [ ] Add the backend's read-only frontend `WorkerEntrypoint` (whoami, reading
   detail) per [ADR 0003](../../decisions/0003-frontend-worker-topology.md#server-reads-backend-rpc-entrypoint),
   with 401 and cross-tenant tests.

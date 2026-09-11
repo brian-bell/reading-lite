@@ -856,17 +856,20 @@ paths:
     get:
       tags: [readings]
       operationId: getReading
-      summary: Get a reading manifest
+      summary: Get a reading manifest with its relationship targets
       security:
         - bearerAuth: []
         - sessionCookie: []
       responses:
         "200":
-          description: Manifest (stale pending/attempts may be annotated as failed at read time)
+          description: |
+            Manifest (stale pending/attempts may be annotated as failed at read
+            time) plus relationship_targets resolved from the tenant's list
+            index. Missing ids are removed or unavailable targets.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Manifest"
+                $ref: "#/components/schemas/ReadingDetail"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -2209,8 +2212,51 @@ components:
         - $ref: "#/components/schemas/UsageV2"
 
     Manifest:
+      description: |
+        Stored reading manifest. The field set lives in ManifestFields so
+        ReadingDetail can extend it; both stay closed to unknown properties.
+      allOf:
+        - $ref: "#/components/schemas/ManifestFields"
+      unevaluatedProperties: false
+
+    ReadingDetail:
+      description: |
+        GET /api/readings/{id} body: the manifest plus response-only
+        relationship_targets, computed at read time from the same tenant's
+        list index. Never stored on the manifest.
+      allOf:
+        - $ref: "#/components/schemas/ManifestFields"
+        - type: object
+          required:
+            - relationship_targets
+          properties:
+            relationship_targets:
+              type: object
+              description: |
+                Connection and tension target ids mapped to their current list
+                row. An id absent from the map is removed or unavailable.
+              additionalProperties:
+                $ref: "#/components/schemas/RelationshipTarget"
+      unevaluatedProperties: false
+
+    RelationshipTarget:
       type: object
       additionalProperties: false
+      required:
+        - url
+        - status
+      properties:
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          minLength: 1
+        status:
+          $ref: "#/components/schemas/ManifestStatus"
+
+    ManifestFields:
+      type: object
       required:
         - id
         - url

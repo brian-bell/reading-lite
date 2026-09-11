@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GetReadingResponseSchema,
   ListIndexItemSchema,
   ListReadingsResponseSchema,
   ListSessionsResponseSchema,
@@ -23,6 +24,7 @@ import { ManifestSchema } from "../../../src/schemas/manifest";
 // the wire and the SPA simply ignores them.
 import type {
   Manifest as SpaManifest,
+  ReadingDetail as SpaReadingDetail,
   ListReading as SpaListReading,
   ListReadingsResponse as SpaListReadingsResponse,
   ListSessionsResponse as SpaListSessionsResponse,
@@ -119,6 +121,33 @@ describe("SPA type mirror — Manifest", () => {
     for (const usage of usages) {
       expect(() => ManifestSchema.parse({ ...mWithUsageBase, usage })).not.toThrow();
     }
+  });
+});
+
+describe("SPA type mirror — ReadingDetail", () => {
+  it("a SpaReadingDetail with relationship targets parses through GetReadingResponseSchema", () => {
+    const detail: SpaReadingDetail = {
+      ...mWithUsageBase,
+      connections: [
+        { id: "rd_A", reason: "a" },
+        { id: "rd_GONE", reason: "removed target" },
+      ],
+      relationship_targets: {
+        rd_A: { url: "https://example.com/a", title: "A", status: "ready" },
+        rd_B: { url: "https://example.com/b", status: "pending" },
+      },
+    };
+    expect(GetReadingResponseSchema.parse(detail).relationship_targets).toEqual(
+      detail.relationship_targets,
+    );
+  });
+
+  it("the stored ManifestSchema strips relationship_targets", () => {
+    const parsed = ManifestSchema.parse({
+      ...mWithUsageBase,
+      relationship_targets: { rd_A: { url: "https://example.com/a", status: "ready" } },
+    });
+    expect(parsed).not.toHaveProperty("relationship_targets");
   });
 });
 

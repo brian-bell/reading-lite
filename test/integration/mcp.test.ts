@@ -288,6 +288,7 @@ async function seedReady(opts: {
   markdown: string;
   createdAt?: string;
   tenant?: ReturnType<typeof founderTenant>;
+  connections?: Manifest["connections"];
 }): Promise<void> {
   const store = testReadingStore(env, opts.tenant ?? founderTenant());
   const created_at = opts.createdAt ?? "2026-04-26T20:00:00.000Z";
@@ -312,6 +313,7 @@ async function seedReady(opts: {
     created_at,
     updated_at: created_at,
     fetched_at: created_at,
+    ...(opts.connections ? { connections: opts.connections } : {}),
   };
   await store.writeManifest(prefix, manifest);
   await store.writeByIdPointer(opts.id, { id: opts.id, key_prefix: prefix });
@@ -498,6 +500,38 @@ describe("POST /mcp", () => {
     expect(readings.length).toBe(1);
     expect(readings[0]?.id).toBe("rd_KARPATHY1");
     expect(JSON.stringify(search.payload)).not.toMatch(/# Karpathy/);
+  });
+
+  it("get_reading leaves out the HTTP-only relationship_targets map", async () => {
+    await seedReady({
+      id: "rd_TARGET001",
+      url: "https://example.com/target",
+      title: "Target",
+      tldr: "t",
+      markdown: "# Target",
+    });
+    await seedReady({
+      id: "rd_SOURCE001",
+      url: "https://example.com/source",
+      title: "Source",
+      tldr: "s",
+      markdown: "# Source",
+      connections: [{ id: "rd_TARGET001", reason: "related" }],
+    });
+
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const http = await app.request(
+      "/api/readings/rd_SOURCE001",
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    const httpBody = (await http.json()) as { relationship_targets?: Record<string, unknown> };
+    expect(Object.keys(httpBody.relationship_targets ?? {})).toEqual(["rd_TARGET001"]);
+
+    const meta = await callTool(app, "get_reading", { id: "rd_SOURCE001" });
+    expect(meta.rpc.result?.isError).not.toBe(true);
+    expect(meta.payload.connections).toEqual([{ id: "rd_TARGET001", reason: "related" }]);
+    expect(meta.payload).not.toHaveProperty("relationship_targets");
   });
 
   it("get_reading and get_reading_content return summary plus markdown, and truncate huge bodies", async () => {
