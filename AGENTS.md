@@ -8,8 +8,8 @@ the terminal manifest, list row, and vector.
 Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
 module map and write-order details; [operations](docs/operations.md) contains
-deployment, deletion, and corpus procedures. Tasks live in the
-[Reading Lite Notion project](https://app.notion.com/p/Reading-Lite-3ca374f5e57480b9b226c239a6d94114).
+deployment, deletion, and corpus procedures. Tasks are tracked in
+[GitHub issues](https://github.com/brian-bell/reading-lite/issues).
 `CLAUDE.md` must remain a symlink to this file.
 
 ## Commands
