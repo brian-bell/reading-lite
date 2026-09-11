@@ -4079,6 +4079,143 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   });
 });
 
+// Issue #262: URLs the extractor categorically rejects (userinfo, blocked
+// literal hosts) must fail at submit time instead of claiming the by-url slot,
+// returning 202, and only failing at extraction.
+describe("submit-time safe-url guard", () => {
+  const CREDS_URL = "https://user:secretpass@example.com/creds";
+
+  it("returns 400 unsupported_url for a userinfo url without claiming the slot", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: CREDS_URL }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(submit.status).toBe(400);
+    expect(await submit.json()).toMatchObject({
+      error: expect.stringContaining("userinfo"),
+      code: "unsupported_url",
+    });
+    expect(queuedJobs).toHaveLength(0);
+
+    const lookup = await app.request(
+      `/api/readings/lookup?url=${encodeURIComponent(CREDS_URL)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(404);
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("returns 400 unsupported_url for a loopback literal host", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "http://127.0.0.1/admin" }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(submit.status).toBe(400);
+    expect(await submit.json()).toMatchObject({ code: "unsupported_url" });
+    expect(queuedJobs).toHaveLength(0);
+    await waitOnExecutionContext(ctx);
+  });
+
+  it("returns 400 for a URL-backed reprocess of a ready userinfo reading and leaves it ready", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = testReadingStore(env);
+    const urlHash = await sha256Hex(CREDS_URL);
+    const createdAt = "2026-04-26T19:00:00.000Z";
+    const id = "rd_CREDS_READY";
+    const keyPrefix = buildKeyPrefix(id, createdAt);
+    const ready: Manifest = {
+      id,
+      url: CREDS_URL,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "ready",
+      content_type: "text/html; charset=utf-8",
+      content_status: "captured",
+      content_bytes: 10,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    };
+    await reader.writeManifest(keyPrefix, ready);
+    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
+    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, keyPrefix));
+
+    const retry = await app.request(
+      `/api/readings/${id}/reprocess`,
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({}),
+      },
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(400);
+    expect(await retry.json()).toMatchObject({ code: "unsupported_url" });
+    expect(queuedJobs).toHaveLength(0);
+
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({ id, status: "ready" });
+  });
+
+  it("still accepts import-markdown with a userinfo source_url because it is identity only", async () => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const imported = await app.fetch(
+      new Request("http://t/api/readings/import-markdown", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ source_url: CREDS_URL, markdown: "# Imported\n\nbody" }),
+      }),
+      env,
+      ctx,
+    );
+
+    expect(imported.status).toBe(202);
+    expect(queuedJobs).toHaveLength(1);
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const { id } = (await imported.json()) as { id: string };
+    const get = await app.request(
+      `/api/readings/${id}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(await get.json()).toMatchObject({ url: CREDS_URL, status: "ready" });
+  });
+});
+
 describe("POST /api/readings/:id/reprocess — markdown source", () => {
   const AGENT_MARKDOWN = "# Agent Extraction\n\nThe local agent captured the full article text.";
 

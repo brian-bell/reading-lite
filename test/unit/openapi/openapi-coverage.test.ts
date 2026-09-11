@@ -120,6 +120,7 @@ const REQUIRED_SCHEMAS = [
   "DeleteReadingResponse",
   "GetReadingDiagnosticsResponse",
   "QuotaDeniedResponse",
+  "UnsupportedUrlError",
 ] as const;
 
 type OpenApiDoc = {
@@ -245,6 +246,32 @@ describe("docs/openapi.yaml", () => {
       const refs = (op?.parameters ?? []).map((p) => p.$ref);
       expect(refs, `${method.toUpperCase()} ${path} missing CsrfToken`).toContain(csrfRef);
     }
+  });
+
+  it("documents the unsupported_url 400 on submit and reprocess (issue #262)", () => {
+    const doc = loadSpec();
+    const ref = "#/components/responses/InvalidBodyOrUrl";
+    const submit = doc.paths?.["/api/readings"]?.post as
+      | { responses?: Record<string, { $ref?: string }> }
+      | undefined;
+    const reprocess = doc.paths?.["/api/readings/{id}/reprocess"]?.post as
+      | { responses?: Record<string, { $ref?: string }> }
+      | undefined;
+    expect(submit?.responses?.["400"]?.$ref).toBe(ref);
+    expect(reprocess?.responses?.["400"]?.$ref).toBe(ref);
+
+    const unsupported = doc.components?.schemas?.UnsupportedUrlError as
+      | { properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+    expect(unsupported?.properties?.code).toMatchObject({ const: "unsupported_url" });
+    expect(unsupported?.required).toEqual(["error", "code"]);
+
+    // import-markdown keeps the plain InvalidBody 400: its source_url is
+    // identity only and stays permissive.
+    const importOp = doc.paths?.["/api/readings/import-markdown"]?.post as
+      | { responses?: Record<string, { $ref?: string }> }
+      | undefined;
+    expect(importOp?.responses?.["400"]?.$ref).toBe("#/components/responses/InvalidBody");
   });
 
   it("accepts a full processing attempt returned by diagnostics", () => {

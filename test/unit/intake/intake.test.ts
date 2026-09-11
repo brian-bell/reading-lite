@@ -426,6 +426,114 @@ describe("ReadingIntake.reprocess", () => {
   });
 });
 
+// The extractor's safe-fetch guard (assertSafeUrl) rejects some URLs
+// categorically — userinfo, blocked literal hosts — as its first step.
+// Intake applies the same predicate before claiming a by-url slot or
+// starting an attempt, so a doomed URL never takes the slot (issue #262).
+describe("ReadingIntake safe-url guard", () => {
+  const CREDS_URL = "https://user:secretpass@example.com/creds";
+
+  it("rejects a userinfo url on submit without claiming the by-url slot", async () => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("userinfo"),
+    });
+    expect(sent).toHaveLength(0);
+    // Nothing was written: no manifest, no pointers, no list row.
+    const { objects } = await env.READINGS_BUCKET.list();
+    expect(objects).toHaveLength(0);
+  });
+
+  it.each([
+    "http://127.0.0.1/admin",
+    "http://localhost/x",
+    "http://[::1]/x",
+    "http://10.0.0.5/x",
+  ])("rejects the blocked literal host %s on submit before any claim", async (url) => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("private/loopback"),
+    });
+    expect(sent).toHaveLength(0);
+    const { objects } = await env.READINGS_BUCKET.list();
+    expect(objects).toHaveLength(0);
+  });
+
+  it("still activates a safe url with a port", async () => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit("https://example.com:8443/ported", { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", status: "pending" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("rejects a URL-backed reprocess of a stored userinfo url without flipping the manifest", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS", status: "ready" });
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("userinfo"),
+    });
+    expect(sent).toHaveLength(0);
+    const manifest = await reader.readManifest(owner.keyPrefix);
+    expect(manifest).toMatchObject({ status: "ready" });
+    expect(manifest?.active_attempt).toBeUndefined();
+  });
+
+  it("allows a markdown-supplied reprocess of a stored userinfo url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS2", status: "ready" });
+
+    const out = await intake.reprocess(owner.id, {
+      email: false,
+      source: { kind: "markdown", markdown: "# Fresh\n\nsupplied body" },
+    });
+
+    expect(out).toMatchObject({ kind: "activated", id: owner.id });
+    expect(sent[0]!.job).toMatchObject({ source: { kind: "markdown" } });
+  });
+
+  it("allows a stored-markdown reprocess of a userinfo url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS3",
+      status: "failed",
+      source_type: "markdown",
+      title: "Stored title",
+    });
+    await reader.writeExtracted(owner.keyPrefix, "# Stored\n\nstored body");
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", id: owner.id });
+    expect(sent[0]!.job).toMatchObject({ source: { kind: "markdown" } });
+  });
+
+  it("accepts a userinfo source_url on import because imports never fetch it", async () => {
+    const { intake, reader, sent } = makeIntake();
+
+    const out = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", status: "pending" });
+    if (out.kind !== "activated") throw new Error("unreachable");
+    expect(sent).toHaveLength(1);
+    const found = await reader.loadReadingById(out.id);
+    expect(found?.manifest).toMatchObject({ url: CREDS_URL, source_type: "markdown" });
+  });
+});
+
 function recordingUsage(): TenantUsage & { ops: string[] } {
   const ops: string[] = [];
   return {
