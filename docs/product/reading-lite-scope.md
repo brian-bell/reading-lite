@@ -1,7 +1,8 @@
 # Reading Lite product scope
 
-Updated September 6, 2026. Companion to the
-[product brief](reading-lite-portfolio-brief.md). This replaces the August
+Updated September 6, 2026; frontend wording reconciled September 10, 2026 with
+[issue #335](https://github.com/brian-bell/reading-lite/issues/335). Companion to
+the [product brief](reading-lite-portfolio-brief.md). This replaces the August
 subscription-first roadmap, effort estimates, launch dates, and private-source
 recommendation. The work below remains to be done.
 
@@ -19,7 +20,10 @@ part of this scope or prerequisites for the free launch.
 
 ## What already exists
 
-Preserve and extend the current Worker and React application. Accounts, tenant
+Preserve and extend the current Worker. Replace the current React SPA with a new
+React frontend built on TanStack Start and deployed as a separate Cloudflare
+Worker; keep the current SPA available until the replacement and rollback checks
+pass. Accounts, tenant
 R2 roots and Vectorize namespaces, scoped tokens, quotas, processing leases,
 spend admission, digests, and account deletion already exist. Verify them as the
 new work lands. The founder cutover is complete and must not be rerun.
@@ -45,8 +49,12 @@ be able to save an article, read it, and follow its connections without help.
   explain the novelty verdict, and let readers follow connections to other
   articles. Handle unavailable content and deleted connection targets.
 - Establish typography, spacing, color, light/dark treatments, responsive
-  layouts, focus states, and reusable controls. Keep React and the current
-  routing and query libraries. Extract components where the redesign needs them.
+  layouts, focus states, and reusable controls. Build them in the new frontend
+  with TanStack Start, TanStack Router, and TanStack Query, using the existing
+  backend for authentication, storage, processing, REST, and MCP. This replaces
+  the September 6 instruction to keep React Router and extend the current SPA.
+  The selected direction is Connected; see its
+  [design specification](../design/connected/design-spec.md).
 - Apply the design to the library, text search and tags, URL capture, Markdown
   import, reprocessing, and processing status. Distinguish source failures,
   credential problems, provider limits, and hosting limits where known.
@@ -66,11 +74,14 @@ be able to save an article, read it, and follow its connections without help.
 - Complete save → processing → ready/failed → detail → related reading on
   desktop and phone layouts, with keyboard navigation and visible focus.
 - Users can see when processing finishes or fails. The current SPA does not
-  poll. Choose and test either a refresh control or automatic refresh with a
-  limit on how long it polls.
-- Existing routes and actions remain available. Account and provider errors
-  explain what users can do next. Empty search results explain what was searched.
-- Relevant component tests, SPA tests/build, and accessibility checks pass.
+  poll. The new frontend uses bounded automatic refresh with a manual fallback,
+  as specified and tested in the
+  [status refresh contract](../design/connected/acceptance-matrix.md#status-refresh-contract).
+- Existing routes and actions remain available, as mapped in the
+  [acceptance matrix](../design/connected/acceptance-matrix.md). Account and
+  provider errors explain what users can do next. Empty search results explain
+  what was searched.
+- Relevant component tests, frontend tests/build, and accessibility checks pass.
   Review the screens with representative content in both color themes, including
   keyboard use and phone layouts.
 
@@ -235,7 +246,7 @@ These choices are still open:
 
 | Choice | When needed |
 |---|---|
-| Visual design and manual or automatic status refresh | Before full UI implementation |
+| Approval of the Connected core screens (direction selected; status refresh decided September 10, 2026) | Before full UI implementation |
 | Launch provider/model choices; whether Anthropic is included alongside OpenAI embeddings | Before finalizing onboarding and provider contracts |
 | Configuration snapshot, key rotation/revocation, and retry/checkpoint semantics | Before B implementation |
 | Hosting budget, archive limits, throughput, and customer spend controls | Before beta; adjust from measurements before public signup |

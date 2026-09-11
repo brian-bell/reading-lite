@@ -22,8 +22,10 @@ carrying an accent-ink left rule. See the
 
 - [Design specification](design-spec.md): selected direction, visual values,
   interactions, simulation boundaries, and unresolved details.
-- [Implementation checklist](implementation-checklist.md): acceptance checks and
-  route/action inventory to carry into the new frontend.
+- [Acceptance matrix](acceptance-matrix.md): route/action parity, screen states,
+  and the approved status refresh contract.
+- [Implementation checklist](implementation-checklist.md): acceptance checks to
+  carry into the new frontend, by phase.
 - [Screenshot index](screenshots.md): 22 desktop and phone captures with exact
   reproduction steps.
 - [Walkthrough](walkthrough.html): offline screenshot replay with captions,
