@@ -8,6 +8,7 @@
   },
   "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist to R2 + Vectorize.",
   "scripts": {
+    "predev": "tsx scripts/require-dev-node.ts",
     "dev": "npm run dev:setup && wrangler dev",
     "dev:setup": "tsx scripts/dev-setup.ts",
     "ops": "tsx scripts/ops.ts",
