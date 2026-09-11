@@ -5,6 +5,7 @@ import {
   DEV_NODE_GATE_MESSAGE,
   DEV_NODE_MINIMUM,
   evaluateDevNode,
+  formatDevNodeFloor,
   isDevNodeSupported,
   isNodeAtLeast,
 } from "../../../scripts/require-dev-node";
@@ -77,7 +78,10 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
       });
     }
 
-    expect(DEV_NODE_GATE_MESSAGE).toMatch(/Node 22\.12\+/);
+    expect(DEV_NODE_GATE_MESSAGE).toBe(
+      `Use Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+ for \`npm run dev\`. Node 20.19.x is for \`npm run ops\` only.`,
+    );
+    expect(DEV_NODE_GATE_MESSAGE).toContain(`Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+`);
     expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run dev/);
     expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run ops/);
   });
@@ -93,6 +97,18 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(src).toMatch(/isNodeAtLeast\(\s*version,\s*DEV_NODE_MINIMUM\s*\)/);
     expect(src).not.toMatch(/major\s*[<>]=?\s*22/);
     expect(src).not.toMatch(/minor\s*[<>]=?\s*12/);
+  });
+
+  it("derives the gate message floor from DEV_NODE_MINIMUM", () => {
+    expect(formatDevNodeFloor("22.12.0")).toBe("22.12");
+    expect(formatDevNodeFloor("23.0.0")).toBe("23.0");
+    expect(formatDevNodeFloor("22.12.1")).toBe("22.12.1");
+    expect(formatDevNodeFloor("not-a-version")).toBe("not-a-version");
+    expect(DEV_NODE_GATE_MESSAGE).toContain(`Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+`);
+
+    const src = readFileSync(path.join(repoRoot, "scripts/require-dev-node.ts"), "utf8");
+    expect(src).toMatch(/formatDevNodeFloor\(\s*DEV_NODE_MINIMUM\s*\)/);
+    expect(src).not.toMatch(/Use Node 22\.12\+/);
   });
 
   it("keeps the Node policy table identical in README, AGENTS.md, and operations.md", () => {

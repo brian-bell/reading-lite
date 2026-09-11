@@ -5,14 +5,22 @@ import { pathToFileURL } from "node:url";
 
 export const DEV_NODE_MINIMUM = "22.12.0";
 
-export const DEV_NODE_GATE_MESSAGE =
-  "Use Node 22.12+ for `npm run dev`. Node 20.19.x is for `npm run ops` only.";
-
 function parseNodeTriple(version: string): [number, number, number] | null {
   const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
   if (!match) return null;
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
+
+/** `22.12.0` → `22.12`; non-zero patch keeps the triple. */
+export function formatDevNodeFloor(minimum: string): string {
+  const parsed = parseNodeTriple(minimum);
+  if (!parsed) return minimum;
+  const [major, minor, patch] = parsed;
+  return patch === 0 ? `${major}.${minor}` : `${major}.${minor}.${patch}`;
+}
+
+export const DEV_NODE_GATE_MESSAGE =
+  `Use Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+ for \`npm run dev\`. Node 20.19.x is for \`npm run ops\` only.`;
 
 /** Fail-closed: unparseable `version` or `minimum` is not supported. */
 export function isNodeAtLeast(version: string, minimum: string): boolean {
