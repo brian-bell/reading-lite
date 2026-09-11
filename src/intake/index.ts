@@ -1,5 +1,7 @@
 import type { ProcessReadingEnvelopeV1 } from "../control-plane/envelope";
 import type { AuthenticatedPrincipal } from "../control-plane/principal";
+import { BlockedHostError } from "../modules/extractor/errors";
+import { assertSafeUrl } from "../modules/extractor/safe-fetch";
 import {
   OwnerResolutionContentionError,
   ReadingClaim,
@@ -29,6 +31,12 @@ import { activateAttempt, type ActivationOutcome } from "./activation";
 // adapter) maps onto statuses. Inputs arrive already parsed: zod body
 // validation, the email defaults, and env parsing all stay at the HTTP seam.
 // The read paths (list/detail/content/lookup) stay outside intake.
+//
+// Intake also enforces the extractor's categorical URL policy (assertSafeUrl):
+// a URL with userinfo or a blocked literal host can never extract, so submit
+// refuses it before claiming and reprocess refuses to start a URL-backed
+// attempt for one. importMarkdown keeps accepting such source URLs — they are
+// identity only and are never fetched.
 
 type MarkdownSource = Extract<ProcessReadingSource, { kind: "markdown" }>;
 
@@ -42,6 +50,10 @@ type MarkdownSource = Extract<ProcessReadingSource, { kind: "markdown" }>;
  * - `initializing`  — a concurrent owner claimed the slot but has not written
  *                     its manifest yet (→ 409, poll the id).
  * - `conflict`      — the reading cannot accept this attempt right now (→ 409).
+ * - `invalid_url`   — the URL fails the extractor's categorical safe-fetch
+ *                     guard (userinfo, blocked literal host), so no slot is
+ *                     claimed and no attempt starts (→ 400). Reached from
+ *                     submit and from URL-backed reprocess of stored readings.
  * - `not_found`     — reprocess only: the id does not resolve (→ 404).
  * - `unavailable`   — retryable service condition (→ 503): the queue binding is
  *                     absent, ownership stayed contended, or activation failed
@@ -54,6 +66,7 @@ export type IntakeOutcome =
   | { kind: "existing"; manifest: Manifest }
   | { kind: "initializing"; id: string }
   | { kind: "conflict"; reason: "active_attempt" | "missing_markdown" }
+  | { kind: "invalid_url"; reason: string }
   | { kind: "not_found" }
   | {
       kind: "unavailable";
@@ -220,6 +233,12 @@ export class ReadingIntake {
     email: boolean,
     replaceEtag: string | undefined,
   ): Promise<IntakeOutcome> {
+    // Only a genuinely new claim enforces the extractor's categorical URL
+    // policy: an existing owner still resolves normally in submit() above — a
+    // userinfo source_url that was markdown-imported is a valid owner, and a
+    // failed one reaches reprocessManifest's own guard (262).
+    const rejected = unsafeUrlOutcome(url);
+    if (rejected) return rejected;
     const args = await newReadingArgs(url, this.deps.services);
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
@@ -424,6 +443,14 @@ export class ReadingIntake {
     if (effective.active_attempt?.status === "running" && !opts.force) {
       return { kind: "conflict", reason: "active_attempt" };
     }
+    // A URL-backed attempt runs assertSafeUrl on the stored url as its first
+    // extraction step; refuse a categorically unfetchable one here instead of
+    // flipping the manifest pending and failing the attempt. Supplied or
+    // stored markdown never fetches the url, so those paths stay open.
+    if (opts.source === undefined && effective.source_type !== "markdown") {
+      const rejected = unsafeUrlOutcome(effective.url);
+      if (rejected) return rejected;
+    }
     const queue = this.deps.queue;
     if (!queue) return { kind: "unavailable", reason: "queue_unbound" };
 
@@ -485,4 +512,21 @@ export class ReadingIntake {
 function nowMs(services: { now: () => string }): number {
   const parsed = Date.parse(services.now());
   return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+// The extractor's safe-fetch guard rejects some URLs categorically — scheme,
+// userinfo, blocked literal hosts. Claiming a by-url slot or starting an
+// attempt for one can only end in a deterministic failure, so the intake
+// verbs run the same predicate up front. assertSafeUrl is pure (no DNS), and
+// BlockedHostError already redacts userinfo, so the reason is safe to return.
+function unsafeUrlOutcome(url: string): IntakeOutcome | null {
+  try {
+    assertSafeUrl(url);
+    return null;
+  } catch (err) {
+    if (err instanceof BlockedHostError) {
+      return { kind: "invalid_url", reason: err.reason };
+    }
+    throw err;
+  }
 }

@@ -426,6 +426,185 @@ describe("ReadingIntake.reprocess", () => {
   });
 });
 
+// The extractor's safe-fetch guard (assertSafeUrl) rejects some URLs
+// categorically — userinfo, blocked literal hosts — as its first step.
+// Intake applies the same predicate before claiming a by-url slot or
+// starting an attempt, so a doomed URL never takes the slot (issue #262).
+describe("ReadingIntake safe-url guard", () => {
+  const CREDS_URL = "https://user:secretpass@example.com/creds";
+
+  it("rejects a userinfo url on submit without claiming the by-url slot", async () => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("userinfo"),
+    });
+    expect(sent).toHaveLength(0);
+    // Nothing was written: no manifest, no pointers, no list row.
+    const { objects } = await env.READINGS_BUCKET.list();
+    expect(objects).toHaveLength(0);
+  });
+
+  it.each([
+    "http://127.0.0.1/admin",
+    "http://localhost/x",
+    "http://[::1]/x",
+    "http://10.0.0.5/x",
+  ])("rejects the blocked literal host %s on submit before any claim", async (url) => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit(url, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("private/loopback"),
+    });
+    expect(sent).toHaveLength(0);
+    const { objects } = await env.READINGS_BUCKET.list();
+    expect(objects).toHaveLength(0);
+  });
+
+  it("still activates a safe url with a port", async () => {
+    const { intake, sent } = makeIntake();
+
+    const out = await intake.submit("https://example.com:8443/ported", { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", status: "pending" });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("rejects a URL-backed reprocess of a stored userinfo url without flipping the manifest", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS", status: "ready" });
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "invalid_url",
+      reason: expect.stringContaining("userinfo"),
+    });
+    expect(sent).toHaveLength(0);
+    const manifest = await reader.readManifest(owner.keyPrefix);
+    expect(manifest).toMatchObject({ status: "ready" });
+    expect(manifest?.active_attempt).toBeUndefined();
+  });
+
+  it("allows a markdown-supplied reprocess of a stored userinfo url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS2", status: "ready" });
+
+    const out = await intake.reprocess(owner.id, {
+      email: false,
+      source: { kind: "markdown", markdown: "# Fresh\n\nsupplied body" },
+    });
+
+    expect(out).toMatchObject({ kind: "activated", id: owner.id });
+    expect(sent[0]!.job).toMatchObject({ source: { kind: "markdown" } });
+  });
+
+  it("allows a stored-markdown reprocess of a userinfo url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS3",
+      status: "failed",
+      source_type: "markdown",
+      title: "Stored title",
+    });
+    await reader.writeExtracted(owner.keyPrefix, "# Stored\n\nstored body");
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", id: owner.id });
+    expect(sent[0]!.job).toMatchObject({ source: { kind: "markdown" } });
+  });
+
+  it("accepts a userinfo source_url on import because imports never fetch it", async () => {
+    const { intake, reader, sent } = makeIntake();
+
+    const out = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
+
+    expect(out).toMatchObject({ kind: "activated", status: "pending" });
+    if (out.kind !== "activated") throw new Error("unreachable");
+    expect(sent).toHaveLength(1);
+    const found = await reader.loadReadingById(out.id);
+    expect(found?.manifest).toMatchObject({ url: CREDS_URL, source_type: "markdown" });
+  });
+
+  it("returns the existing manifest when a ready userinfo owner already holds the url", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS_READY",
+      status: "ready",
+      source_type: "markdown",
+    });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toEqual({ kind: "existing", manifest: owner.manifest });
+    expect(sent).toHaveLength(0);
+  });
+
+  it("returns the existing pending manifest for a userinfo import owner, not 400", async () => {
+    const { intake, sent } = makeIntake();
+    const imported = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
+    if (imported.kind !== "activated") throw new Error("unreachable");
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({
+      kind: "existing",
+      manifest: { id: imported.id, status: "pending" },
+    });
+    expect(sent).toHaveLength(1);
+  });
+
+  it("returns invalid_url when a failed URL-backed userinfo owner is resubmitted, without a doomed reprocess", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const owner = await writeOwnedReading(reader, CREDS_URL, {
+      id: "rd_CREDS_FAILED",
+      status: "failed",
+      content_status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404", failed_at: NOW, retryable: false },
+    });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({ kind: "invalid_url", reason: expect.stringContaining("userinfo") });
+    expect(sent).toHaveLength(0);
+    const manifest = await reader.readManifest(owner.keyPrefix);
+    expect(manifest?.status).toBe("failed");
+  });
+
+  it("counts a rejected submit against the request-rate admission", async () => {
+    const usage = recordingUsage();
+    const { intake } = makeIntake({ usage });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toMatchObject({ kind: "invalid_url" });
+    expect(usage.ops).toEqual(["admit"]);
+  });
+
+  it("returns rate_limited for an unfetchable url when admission denies first", async () => {
+    const usage: TenantUsage = {
+      ...allowAllUsage(),
+      admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
+    };
+    const { intake } = makeIntake({ usage });
+
+    const out = await intake.submit(CREDS_URL, { email: false });
+
+    expect(out).toEqual({
+      kind: "rate_limited",
+      limit: "request_rate",
+      resetAtMs: Date.parse(NOW) + 60_000,
+    });
+  });
+});
+
 function recordingUsage(): TenantUsage & { ops: string[] } {
   const ops: string[] = [];
   return {

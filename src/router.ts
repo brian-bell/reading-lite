@@ -409,7 +409,7 @@ const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 404 | 409 | 429 | 503;
+  status: 200 | 202 | 400 | 404 | 409 | 429 | 503;
   headers?: Record<string, string>;
 } {
   switch (out.kind) {
@@ -446,6 +446,11 @@ function toHttp(out: IntakeOutcome): {
       };
     case "not_found":
       return { body: { error: "not found" }, status: 404 };
+    case "invalid_url":
+      return {
+        body: { error: `url rejected: ${out.reason}`, code: "unsupported_url" },
+        status: 400,
+      };
     case "unavailable":
       return {
         body: {

@@ -665,7 +665,9 @@ paths:
       description: |
         Claims by-url ownership, writes a pending manifest, and enqueues a job.
         Ready/pending owners return 200 with the existing manifest. Failed
-        owners reprocess the same id (202).
+        owners reprocess the same id (202). URLs with embedded userinfo or a
+        blocked literal host (loopback/private) are rejected 400 before
+        claiming — they can never extract.
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -691,7 +693,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ActivatedReading"
         "400":
-          $ref: "#/components/responses/InvalidBody"
+          $ref: "#/components/responses/InvalidBodyOrUrl"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -959,7 +961,10 @@ paths:
         reading rolls back to its preserved manifest. Raw/extracted artifacts
         written before failure are not restored with that manifest. Markdown must
         fit the Cloudflare 128 KB queue-message limit or the attempt rolls back
-        with 503.
+        with 503. A URL-backed reprocess of a reading whose stored URL is
+        categorically unfetchable (userinfo, blocked literal host) returns 400
+        `unsupported_url` without starting an attempt; supply `source` markdown
+        instead.
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -985,7 +990,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ActivatedReading"
         "400":
-          $ref: "#/components/responses/InvalidBody"
+          $ref: "#/components/responses/InvalidBodyOrUrl"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -1141,6 +1146,21 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ValidationError"
+    InvalidBodyOrUrl:
+      description: |
+        Invalid body (zod), or a URL the worker categorically refuses to
+        fetch: embedded userinfo, or a blocked literal host (loopback /
+        private / link-local). Refused before any by-url slot is claimed or
+        attempt started.
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: "#/components/schemas/ValidationError"
+              - $ref: "#/components/schemas/UnsupportedUrlError"
+          example:
+            error: "url rejected: userinfo is not allowed"
+            code: unsupported_url
     InvalidQuery:
       description: Query string failed zod validation
       content:
@@ -1282,6 +1302,18 @@ components:
         error:
           type: string
           const: usage guard unavailable
+
+    UnsupportedUrlError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+          description: Human-readable rejection reason; credentials are never echoed
+        code:
+          type: string
+          const: unsupported_url
 
     WhoamiResponse:
       type: object
@@ -1674,6 +1706,11 @@ components:
       properties:
         url:
           $ref: "#/components/schemas/HttpUrl"
+          description: >
+            Must also be worker-fetchable: no embedded userinfo and no blocked
+            literal host (loopback/private/link-local) — rejected 400
+            unsupported_url otherwise. Stricter than import-markdown's
+            source_url, which is identity only and never fetched.
         email:
           type: boolean
           description: Send completion email when configured (default true on submit)
