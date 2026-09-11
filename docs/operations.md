@@ -2432,13 +2432,35 @@ npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to pre
 ## Seeding local R2
 
 To exercise the read path or the SPA against real data locally, seed the local
-bucket and then restart `wrangler dev`, the running dev server caches R2
-in-process. Seed via **Miniflare** (persist path `.wrangler/state/v3/r2`, bucket
-`reading-lite`), *not* `wrangler r2 object put --local`, which writes to a
-different local store the dev server never reads.
+bucket and then restart `wrangler dev`; the running dev server caches R2
+in-process.
 
-`key_prefix` already begins with `readings/`; do not prepend it again.
-A minimal `ready` reading needs:
+The fixture pack from [issue #366](https://github.com/brian-bell/reading-lite/issues/366)
+seeds every accepted reading state (ready baselines with connections and
+tensions, sparse archive, unavailable source, degraded YouTube, old manifest,
+long title, imported Markdown, pending, and one failed reading per failure
+category) with one command, in the state names Phase 3 slices cite:
+
+```sh
+npm run seed:local
+```
+
+Objects are written by `wrangler r2 object put --local` into the same
+on-disk store `.wrangler/state/v3/r2` that the dev server binds (verified
+against wrangler 4.130 — the older "different local store" caveat for
+`--local` no longer holds). The command is idempotent: re-run it to refresh
+the pending fixture once it passes the 15-minute pending TTL, and to restore
+the pack after deleting readings while testing. A pristine reset is
+`rm -rf .wrangler/state/v3/r2` followed by the seed command and a dev restart.
+
+Local dev leaves `TENANT_DATA_PLANE` unset, so the local founder account reads
+global-rooted keys — which is exactly what the seeder writes. Do not seed under
+`u/<tenantId>/` for local dev.
+
+To hand-write additional data, seed via **Miniflare** (persist path
+`.wrangler/state/v3/r2`, bucket `reading-lite`) or the wrangler CLI's
+`r2 object put --local`; the two share the store with wrangler 4.130. A minimal
+`ready` reading needs:
 
 - `<key_prefix>/manifest.json`, a valid `ManifestSchema` with
   `content_status: "captured"`
@@ -2449,6 +2471,7 @@ A minimal `ready` reading needs:
 - `<key_prefix>/raw.{ext}` matching the manifest's `content_type`, for
   `/content/raw`
 
+`key_prefix` already begins with `readings/`; do not prepend it again.
 `/lookup` requires the by-url pointer and does not discover pointerless readings.
 
 ## Paid-work policy and accounting

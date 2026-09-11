@@ -26,6 +26,8 @@ carrying an accent-ink left rule. See the
   and the approved status refresh contract.
 - [Implementation checklist](implementation-checklist.md): acceptance checks to
   carry into the new frontend, by phase.
+- [Fixture pack](fixture-pack.md): the named local seed states Phase 3/4
+  slices develop against (`npm run seed:local`).
 - [Screenshot index](screenshots.md): 22 desktop and phone captures with exact
   reproduction steps.
 - [Walkthrough](walkthrough.html): offline screenshot replay with captions,

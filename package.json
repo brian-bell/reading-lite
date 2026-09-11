@@ -11,6 +11,7 @@
     "predev": "tsx scripts/require-dev-node.ts",
     "dev": "npm run dev:setup && wrangler dev",
     "dev:setup": "tsx scripts/dev-setup.ts",
+    "seed:local": "tsx scripts/seed-local-fixtures.ts",
     "ops": "tsx scripts/ops.ts",
     "types:generate": "wrangler types worker-configuration.d.ts --include-env=false",
     "types:check": "npm run types:generate -- --check",
