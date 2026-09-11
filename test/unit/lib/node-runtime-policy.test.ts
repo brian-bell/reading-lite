@@ -111,6 +111,14 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(src).not.toMatch(/Use Node 22\.12\+/);
   });
 
+  it("uses a valid npm engine override for the Node 20 ops install", () => {
+    for (const file of [".github/workflows/ci.yml", "README.md", "docs/operations.md"]) {
+      const text = readFileSync(path.join(repoRoot, file), "utf8");
+      expect(text, file).toContain("npm ci --engine-strict=false");
+      expect(text, file).not.toContain("--ignore-engines");
+    }
+  });
+
   it("keeps the Node policy table identical in README, AGENTS.md, and operations.md", () => {
     const table = [
       "| Path | Supported Node | How Wrangler is launched |",

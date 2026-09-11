@@ -34,8 +34,8 @@ automatic fallback. See [configuration](docs/configuration.md).
 | CI | Worker + SPA: Node **22**; ops compatibility: **20.19.2** | Worker tests stay on workerd |
 
 Use Node 22.12 or newer for `npm run dev`. On the operator machine stay on
-Node 20.19.x and install with `npm ci --ignore-engines` (Wrangler's engines
-are ≥22). Do not upgrade that machine just to run the CLI; see
+Node 20.19.x and install with `npm ci --engine-strict=false` (Wrangler's
+engines are ≥22). Do not upgrade that machine just to run the CLI; see
 [operator Node](docs/operations.md#operator-node).
 
 In the repository root:

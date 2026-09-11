@@ -95,7 +95,7 @@ jobs:
           node-version: "20.19.2"
           cache: npm
           cache-dependency-path: package-lock.json
-      - run: npm ci --ignore-engines
+      - run: npm ci --engine-strict=false
       # Wrangler 4.87+ advertises engines.node >=22; ops launches
       # wrangler-dist/cli.js on Node 20.19.x instead of the bin wrapper.
       - run: npm run ops -- --help

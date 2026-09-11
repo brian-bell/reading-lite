@@ -19,8 +19,8 @@ plan by default and acts only with `--execute`.
 `npm run ops` is supported on **Node 20.19.x** (`/usr/bin/node` on Debian).
 That is the supported operator path. Do not upgrade the operator laptop to
 Node 22. It will not launch under the security boundary Snipe runs in.
-Install on that machine with `npm ci --ignore-engines` because Wrangler's
-own `engines` are ≥22.
+Install on that machine with `npm ci --engine-strict=false` because
+Wrangler's own `engines` are ≥22.
 
 Wrangler 4.87+ hard-fails in `bin/wrangler.js` on Node < 22. Ops does not
 spawn that wrapper: it execs `node_modules/wrangler/wrangler-dist/cli.js`
