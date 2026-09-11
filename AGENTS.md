@@ -61,6 +61,7 @@ guarantee. See [operator Node](docs/operations.md#operator-node).
 | Area | Entry points |
 |---|---|
 | HTTP and MCP | `src/router.ts`, `src/middleware.ts`, `src/mcp/` |
+| Frontend server reads | `src/frontend-reads.ts` (`FrontendReads` entrypoint), `app/src/server/backend-reads.ts` |
 | Intake and processing | `src/intake/`, `src/process-reading.ts`, `src/attempt-ownership.ts` |
 | Publication and purge | `src/reading-visibility.ts`, `src/reading-purge.ts` |
 | Tenant auth, quotas, leases, spend | `src/control-plane/`, `src/modules/paid-pricing/` |

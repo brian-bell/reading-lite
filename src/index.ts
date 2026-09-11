@@ -309,6 +309,7 @@ export default {
 };
 
 export { createApp } from "./router";
+export { FrontendReads } from "./frontend-reads";
 export { AuthRateGuard } from "./control-plane/auth-rate-guard";
 export { TenantUsageGuard } from "./control-plane/tenant-usage-guard";
 export { GlobalUsageGuard } from "./control-plane/global-usage-guard";

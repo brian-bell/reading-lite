@@ -156,6 +156,19 @@ for request limits, hourly/monthly reading slots, and processing leases.
 Runtime auth looks up the imported founder bearer in D1; it never falls back
 to the `READER_API_TOKEN` secret. See the [API guide](api.md).
 
+`FrontendReads` (`src/frontend-reads.ts`) is a named `WorkerEntrypoint` for the
+`app/` frontend's server renders, reachable only through a service binding
+([ADR 0003](decisions/0003-frontend-worker-topology.md)). Its RPC methods,
+`whoami` and `reading`, rebuild a GET from the browser's Cookie header and
+host and dispatch it through the Worker's own Hono app, so auth, tenant
+resolution, `x-expected-tenant`, and handlers match the HTTP API. The rebuilt
+`Request` object is registered in `control-plane/frontend-read-trust.ts`;
+`requirePrincipal` accepts its cookie as same-origin instead of requiring
+`Origin` or `Sec-Fetch-Site`, and nothing on the wire can reach that set. Results
+are `{ status, body }` with no headers, so the entrypoint never sets cookies.
+Session auth still refreshes `last_seen_at_ms`, as on any authenticated GET.
+Every prototype method is RPC-callable, so add one only for an allowlisted read.
+
 `src/index.ts` dispatches fetch, queue, and scheduled events. Cron runs every
 15 minutes for digest/wipe work, with a separate gated nightly relationship
 scan at 03:07 UTC. The job families have separate queues and DLQs:
