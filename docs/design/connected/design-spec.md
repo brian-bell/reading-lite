@@ -218,7 +218,9 @@ the reading's connection and tension targets, built from the same tenant's
 - Stored manifests and their schema do not change. The map is computed on read,
   with one list-index read, no claims or repairs, and tenant-scoped stores.
 - Keep `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, and tests in sync.
-- MCP reading output is unchanged unless separately decided.
+- MCP reading output is unchanged. The `get_reading` tool in `src/mcp/tools.ts`
+  spreads the whole `GET /api/readings/:id` response into its result, so it must
+  strip `relationship_targets` explicitly, with a test (Brian, September 10).
 
 ### Routes and navigation state
 

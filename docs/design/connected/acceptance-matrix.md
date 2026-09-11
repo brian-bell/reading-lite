@@ -53,7 +53,8 @@ Evidence: routes in `web/src/App.tsx` on current main.
 `safeAppReturnPath` in `web/src/login-return-path.ts` accepts only
 `/readings/:id` and `/account/security`, and rejects any `?` or `#`. The new
 frontend extends the allowlist to same-origin `/` with only `q`, `tag`, and
-`offset`, and `/readings/:id` with only `view`. Parse candidates with `URL`
+`offset`, `/readings/:id` with only `view`, and `/save` with no parameters
+(`/account/security` stays). Parse candidates with `URL`
 against the app origin and drop unknown parameters. Clear the stored return
 path once it is consumed. The two login-return failures in the current SPA
 tests are this defect; the new tests must cover it.
@@ -102,7 +103,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | Expired session | 401 from any request | "Your session ended." Keep the current URL | "Sign in" to `/login?next=` with the current path |
 | Permission denied | 403 | "You don't have access to this." Never treated as sign-out; the session stays | Back to library |
 | Account changed | 412 expected-tenant mismatch | "This tab is signed in to a different account than the page expects." | Reload |
-| Account closing | Deletion started here or in another tab: 401 after revocation, or 403 for an inactive account | Signed-out page explaining the account is being deleted; sign-in during the grace period follows the backend (confirm in Phase 5) | None |
+| Account closing | Only the tab that started deletion, from a successful `DELETE /api/account` | Signed-out page explaining the account is being deleted; sign-in during the grace period follows the backend (confirm in Phase 5) | None |
 | Offline | Fetch throws while `navigator.onLine` is false | Inline banner; keep form input and loaded content | Retry; refetch active queries on `online` |
 | Server error | 5xx or unparseable body | "Something went wrong on our side." plus the error text | Retry |
 
@@ -140,10 +141,11 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | State | Signal | Presentation | Actions |
 | --- | --- | --- | --- |
 | Invalid input | Client URL check, or 400 | Field-level error, focus the field | Correct |
-| Already saved | 200 with a manifest | Navigate to that reading with an "Already in your library" notice at the top | — |
+| Already saved, ready | 200 with a ready manifest | Navigate to that reading with an "Already in your library" notice at the top | — |
+| Already saved, processing | 200 with a pending manifest (or a running attempt) | Navigate to that reading with an "Already saved and still processing" notice; the status watch starts | — |
 | Accepted | 202 | Navigate to `/readings/:id`; watch starts | — |
 | Owner initializing | 409 with `id` and `poll` | Navigate to that reading; watch starts | — |
-| Already processing | 409 active attempt | "This reading is already processing." | Open reading |
+| Already processing | 409 active attempt, from an explicit reprocess (URL and Markdown capture return 200 for a pending owner instead) | "This reading is already processing." | Open reading |
 | Request rate or quota | 429 `rate_limited` or `quota_exhausted`, `limit`, `reset_at` | Names the limit (request rate, hourly, monthly) and when it resets | Try again after reset |
 | Usage guard unavailable | 429 `usage guard unavailable` | "Limits can't be checked right now." | Try again |
 | Saving unavailable | 503; optional `id` | "Saving is unavailable right now." Includes a link when `id` is present | Try again |
@@ -180,6 +182,11 @@ Placement: last section of the account page.
 - A recent sign-in (10 minutes) is required. On that 403, show the existing
   step-up message and link (`/login?step_up=1&next=/account/security`).
 - On success, clear identity caches and show a signed-out confirmation page.
+- Only this tab shows the deletion page. Other open tabs cannot tell deletion
+  from an ordinary sign-out: the backend answers them with the same 401 (revoked
+  session) or 403 (inactive account) as any other case. They show the ordinary
+  expired-session or permission state; a cross-tab deletion signal would need a
+  separate backend decision.
 
 ## Status refresh contract
 
@@ -201,8 +208,14 @@ attempt:
 
 **Cap.** Stop automatic checks at 16 minutes. `PENDING_TTL_SECONDS` is 900 in
 every `wrangler.toml` environment, and the backend reports older pending
-attempts as failed at read time, so the cap covers the whole attempt lifetime
-plus a minute.
+attempts as failed at read time, so for ordinary attempts the cap covers the
+whole attempt lifetime plus a minute.
+
+The exception is offline batch work: `isBatchOwnedPending` in
+`src/modules/staleness.ts` exempts `batch_*` import and reprocess attempts at the
+`summarize` stage, which can stay pending well past the TTL. The frontend does
+not assume these become terminal at the cap. They reach the "Still processing"
+state and rely on the manual check, like any watch that hits the cap.
 
 **Stop conditions.**
 
@@ -249,3 +262,5 @@ Automated with fake timers and a stubbed `fetch`:
 9. A reprocess started from the page starts a new watch for the new attempt id.
 10. The library refreshes only while its visible page has an active row.
 11. A ready reading, and a reading whose attempt has finished, make no refresh requests.
+12. A batch-owned pending reading still pending at 16 minutes shows "Still
+    processing" with the manual check, and no further automatic requests.
