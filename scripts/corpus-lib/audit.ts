@@ -1,12 +1,17 @@
 import { classifyPending, dedupeByUrl, shortUrl, siblingStatuses } from "./classify";
 import { reasonForFailure } from "./reason";
-import type { AuditRow, ListItem } from "./types";
+import type { AttemptTrigger, AuditRow, ListItem } from "./types";
 
 // Mirrors PENDING_TTL_SECONDS (900s, see wrangler.toml): below this a pending
 // may still be in-flight or backing off, so we don't treat it as stranded.
 export const STRANDED_AFTER_MS = 900_000;
 
+function asAttemptTrigger(raw: string | undefined): AttemptTrigger | undefined {
+  return raw === "submit" || raw === "reprocess" || raw === "import" ? raw : undefined;
+}
+
 function failedRow(rep: ListItem, count: number): AuditRow {
+  const last_attempt_trigger = asAttemptTrigger(rep.last_attempt?.trigger);
   return {
     category: "failed",
     url: rep.url,
@@ -17,7 +22,8 @@ function failedRow(rep: ListItem, count: number): AuditRow {
     code: rep.error?.code ?? "?",
     stage: rep.error?.stage ?? "—",
     message: rep.error?.message ?? "",
-    reason: reasonForFailure(rep.error?.code, rep.error?.message, rep.url),
+    reason: reasonForFailure(rep.error?.code, rep.error?.message, rep.url, last_attempt_trigger),
+    ...(last_attempt_trigger === undefined ? {} : { last_attempt_trigger }),
   };
 }
 

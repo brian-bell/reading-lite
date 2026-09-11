@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { httpStatusFromMessage, reasonForFailure } from "../../../scripts/corpus-lib/reason";
+import {
+  DESTINATION_RESOLUTION_RETRY_CEILING_WHY,
+  httpStatusFromMessage,
+  reasonForFailure,
+} from "../../../scripts/corpus-lib/reason";
 
 describe("httpStatusFromMessage", () => {
   it("pulls the 3-digit status out of a BadStatusError message", () => {
@@ -23,6 +27,20 @@ describe("reasonForFailure", () => {
     expect(reasonForFailure("OversizedResponseError", "", "https://a.com/x")).toMatch(/byte cap/);
     expect(reasonForFailure("BadToolInputError", "", "https://a.com/x")).toMatch(/Summarization failed/);
     expect(reasonForFailure("FetchTimeoutError", "", "https://a.com/x")).toMatch(/timed out/);
+    expect(
+      reasonForFailure("DestinationResolutionError", "getaddrinfo ENOTFOUND x", "https://a.com/x"),
+    ).toBe("Destination would not resolve");
+    expect(
+      reasonForFailure("DestinationResolutionError", "ENOTFOUND", "https://a.com/x", "submit"),
+    ).toBe("Destination would not resolve");
+    expect(
+      reasonForFailure("DestinationResolutionError", "ENOTFOUND", "https://a.com/x", "import"),
+    ).toBe("Destination would not resolve");
+    expect(
+      reasonForFailure("DestinationResolutionError", "ENOTFOUND", "https://a.com/x", "reprocess"),
+    ).toBe(
+      `Destination would not resolve — not auto-selected: ${DESTINATION_RESOLUTION_RETRY_CEILING_WHY}`,
+    );
     expect(
       reasonForFailure("SourceRejectedError", "teaser of the URL", "https://a.com/x"),
     ).toMatch(/Thin extraction — not a full article or transcript/);

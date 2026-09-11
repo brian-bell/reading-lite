@@ -2144,6 +2144,7 @@ processed in deterministic lexical order.
 `ops corpus recover` has two execution paths: `--wave` paces realtime
 submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
 same work through the offline provider Batch API path described below.
+`DestinationResolutionError` is reprocessed once after the originating attempt, then skipped — the resolver cannot tell a dead name from a blip.
 
 ```sh
 npm run ops -- corpus audit --tenant "$TENANT" --execute      # writes index.json + INDEX.md

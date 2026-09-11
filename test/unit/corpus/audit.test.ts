@@ -28,6 +28,36 @@ describe("buildFailedRows", () => {
     expect(x.reason).toMatch(/403/);
   });
 
+  it("copies last_attempt.trigger onto failed rows", () => {
+    const rows = buildFailedRows([
+      item({
+        id: "f1",
+        url: "https://a.com/x",
+        status: "failed",
+        error: { code: "DestinationResolutionError", message: "ENOTFOUND", stage: "fetch_source" },
+        last_attempt: { trigger: "submit" },
+      }),
+      item({
+        id: "f2",
+        url: "https://b.com/y",
+        status: "failed",
+        error: { code: "DestinationResolutionError", message: "ENOTFOUND", stage: "fetch_source" },
+        last_attempt: { trigger: "reprocess" },
+      }),
+      item({
+        id: "f3",
+        url: "https://c.com/z",
+        status: "failed",
+        error: { code: "DestinationResolutionError", message: "ENOTFOUND", stage: "fetch_source" },
+        last_attempt: { trigger: "import" },
+      }),
+    ]);
+    expect(rows.find((r) => r.url === "https://a.com/x")!.last_attempt_trigger).toBe("submit");
+    expect(rows.find((r) => r.url === "https://b.com/y")!.last_attempt_trigger).toBe("reprocess");
+    expect(rows.find((r) => r.url === "https://c.com/z")!.last_attempt_trigger).toBe("import");
+    expect(rows.find((r) => r.url === "https://b.com/y")!.reason).toMatch(/not auto-selected/);
+  });
+
   it("drops a failed url once a ready sibling exists (recovery drained it)", () => {
     const rows = buildFailedRows([
       item({ id: "f1", url: "https://a.com/x", status: "failed", error: { code: "BadStatusError", message: "status 403", stage: "fetch_source" } }),

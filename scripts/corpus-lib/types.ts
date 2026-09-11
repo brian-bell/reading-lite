@@ -22,6 +22,8 @@ export interface ListItem {
 
 export type AuditCategory = "failed" | "pending" | "teaser" | "degraded";
 export type PendingClass = "stranded" | "orphan-dup" | "fresh";
+// Hand-typed copy of ProcessingAttemptTrigger — corpus-lib does not import worker schemas.
+export type AttemptTrigger = "submit" | "reprocess" | "import";
 
 // One row of the audit inventory — also the unit corpus-recover consumes.
 export interface AuditRow {
@@ -36,6 +38,7 @@ export interface AuditRow {
   stage?: string;
   message?: string;
   reason?: string;
+  last_attempt_trigger?: AttemptTrigger;
   // pending
   class?: PendingClass;
   stuck_stage?: string;

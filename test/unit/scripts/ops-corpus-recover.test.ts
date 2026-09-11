@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { corpusRecoverCommand, type CorpusRecoverDeps } from "../../../scripts/ops-lib/commands/corpus-recover";
 import { UsageError } from "../../../scripts/ops-lib/contract";
+import { DESTINATION_RESOLUTION_RETRY_CEILING_WHY } from "../../../scripts/corpus-lib/reason";
 import type { AuditRow } from "../../../scripts/corpus-lib/types";
 import type { WhoamiOutcome } from "../../../scripts/lib/reading-api";
 
@@ -27,6 +28,13 @@ const ROWS: AuditRow[] = [
     category: "failed", url: "https://c.example/z", short: "c.example/z",
     reading_id: "rd_c", key_prefix: "readings/rd_c", attempts: 1,
     code: "BadStatusError", message: "status 404", reason: "dead link (HTTP 404)",
+  },
+  {
+    category: "failed", url: "https://d.example/dead", short: "d.example/dead",
+    reading_id: "rd_d", key_prefix: "readings/rd_d", attempts: 1,
+    code: "DestinationResolutionError", message: "getaddrinfo ENOTFOUND d.example",
+    last_attempt_trigger: "reprocess",
+    reason: `Destination would not resolve — not auto-selected: ${DESTINATION_RESOLUTION_RETRY_CEILING_WHY}`,
   },
 ];
 
@@ -264,7 +272,8 @@ describe("ops corpus recover — realtime routing", () => {
     const text = r.err.join("\n");
     expect(text).toContain("[plan reprocess] a.example/x");
     expect(text).toContain("[plan local-extract] b.example/y");
-    expect(text).not.toContain("c.example/z —"); // skip rows are not acted on
+    expect(text).toContain(`[plan skip] c.example/z — dead link (HTTP 404)`);
+    expect(text).toContain(`[plan skip] d.example/dead — ${DESTINATION_RESOLUTION_RETRY_CEILING_WHY}`);
     expect(r.out.join("\n")).toContain('"executed": false');
   });
 
@@ -274,10 +283,14 @@ describe("ops corpus recover — realtime routing", () => {
     expect(code).toBe(0);
     expect(r.reprocessed).toEqual(["rd_a"]);
     expect(r.imported).toEqual([{ source_url: "https://b.example/y", markdown: "# extracted body" }]);
+    expect(r.reprocessed).not.toContain("rd_d");
+    expect(r.imported.map((row) => row.source_url)).not.toContain("https://d.example/dead");
     expect(r.indexWrites).toHaveLength(1);
     const doc = JSON.parse(r.indexWrites[0].body);
     expect(doc.rows[0].result).toBe("reprocess: activated");
     expect(doc.rows[1].result).toContain("local-extract+import: activated");
+    expect(doc.rows[2].result).toBeUndefined();
+    expect(doc.rows[3].result).toBeUndefined();
     expect(r.out.join("\n")).toContain('"executed": true');
     expect(r.apiOpts).toEqual([{ expectedTenant: "global" }]);
   });

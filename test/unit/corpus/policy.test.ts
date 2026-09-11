@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planByAction, recoveryAction } from "../../../scripts/corpus-lib/policy";
+import { DESTINATION_RESOLUTION_RETRY_CEILING_WHY, planByAction, recoveryAction } from "../../../scripts/corpus-lib/policy";
 import { reasonForFailure } from "../../../scripts/corpus-lib/reason";
 import type { AuditRow } from "../../../scripts/corpus-lib/types";
 
@@ -139,6 +139,51 @@ describe("recoveryAction", () => {
         row({ code: "BadStatusError", message: "status 503", reason: "Stuck on a YouTube watch page" }),
       ).action,
     ).toBe("reprocess");
+  });
+
+  it("reprocesses DestinationResolutionError from submit, import, or a missing trigger", () => {
+    for (const last_attempt_trigger of ["submit", "import", undefined] as const) {
+      expect(
+        recoveryAction(row({ code: "DestinationResolutionError", last_attempt_trigger })),
+      ).toMatchObject({ action: "reprocess" });
+    }
+  });
+
+  it("skips DestinationResolutionError once last_attempt.trigger is reprocess", () => {
+    expect(
+      recoveryAction(row({ code: "DestinationResolutionError", last_attempt_trigger: "reprocess" })),
+    ).toEqual({
+      action: "skip",
+      why: DESTINATION_RESOLUTION_RETRY_CEILING_WHY,
+    });
+  });
+
+  it("does not split DestinationResolutionError eligibility by DNS failure text", () => {
+    // workerd collapses NXDOMAIN, SERVFAIL, and a missing address family onto
+    // ENOTFOUND / DestinationResolutionError. Policy only sees that code.
+    for (const message of [
+      "getaddrinfo ENOTFOUND example.invalid",
+      "queryA ESERVFAIL example.invalid",
+      "destination resolved to no addresses: https://a.com/p",
+    ]) {
+      expect(
+        recoveryAction(
+          row({ code: "DestinationResolutionError", message, last_attempt_trigger: "submit" }),
+        ).action,
+      ).toBe("reprocess");
+      expect(
+        recoveryAction(
+          row({
+            code: "DestinationResolutionError",
+            message,
+            last_attempt_trigger: "reprocess",
+          }),
+        ),
+      ).toEqual({
+        action: "skip",
+        why: DESTINATION_RESOLUTION_RETRY_CEILING_WHY,
+      });
+    }
   });
 
   it("routes reddit reasons to skip (import via the local skill), overriding status", () => {

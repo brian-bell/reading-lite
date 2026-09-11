@@ -1,5 +1,11 @@
-import { httpStatusFromMessage } from "./reason";
+import {
+  DESTINATION_RESOLUTION_RETRY_CEILING_WHY,
+  destinationResolutionRetryExhausted,
+  httpStatusFromMessage,
+} from "./reason";
 import type { AuditRow, RecoveryAction } from "./types";
+
+export { DESTINATION_RESOLUTION_RETRY_CEILING_WHY, destinationResolutionRetryExhausted };
 
 export interface ActionDecision {
   action: RecoveryAction;
@@ -50,6 +56,11 @@ export function recoveryAction(row: AuditRow): ActionDecision {
       return { action: "reprocess", why: "summarize hiccup — re-run" };
     case "FetchTimeoutError":
       return { action: "reprocess", why: "transient fetch timeout" };
+    case "DestinationResolutionError":
+      if (destinationResolutionRetryExhausted(row.last_attempt_trigger)) {
+        return { action: "skip", why: DESTINATION_RESOLUTION_RETRY_CEILING_WHY };
+      }
+      return { action: "reprocess", why: "transient destination resolution — try once" };
     case "SourceRejectedError":
     case "OpenAISourceRejectedError":
       if (isYoutube) {
