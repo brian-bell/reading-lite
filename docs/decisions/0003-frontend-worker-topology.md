@@ -61,6 +61,9 @@ Approved dependencies, pinned to exact versions in `app/`:
   `rehype-sanitize`.
 - Development: `@cloudflare/vite-plugin`, `@vitejs/plugin-react`, `vite`,
   `wrangler`, `typescript`, `vitest`, `@testing-library/react`.
+- Browser evidence (development, approved September 10, 2026 for
+  [#374](https://github.com/brian-bell/reading-lite/issues/374)):
+  `@playwright/test`, `@axe-core/playwright`.
 
 Anything else needs separate approval. The Wrangler config keeps
 `nodejs_compat`, uses `@tanstack/react-start/server-entry` as `main`, and enables
