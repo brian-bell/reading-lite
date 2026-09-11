@@ -293,6 +293,27 @@ export const ListReadingsResponseSchema = z.object({
 });
 export type ListReadingsResponse = z.infer<typeof ListReadingsResponseSchema>;
 
+// Read-time enrichment on GET /api/readings/:id: each connection and tension
+// target id resolved against the same tenant's list index. Response-only — the
+// stored ManifestSchema never carries it. An id absent from the map is removed
+// or unavailable.
+export const RelationshipTargetSchema = z
+  .object({
+    url: z.string().url(),
+    title: z.string().min(1).optional(),
+    status: ManifestStatusSchema,
+  })
+  .strict();
+export type RelationshipTarget = z.infer<typeof RelationshipTargetSchema>;
+
+export const RelationshipTargetsSchema = z.record(z.string().min(1), RelationshipTargetSchema);
+export type RelationshipTargets = z.infer<typeof RelationshipTargetsSchema>;
+
+export const GetReadingResponseSchema = ManifestSchema.extend({
+  relationship_targets: RelationshipTargetsSchema,
+});
+export type GetReadingResponse = z.infer<typeof GetReadingResponseSchema>;
+
 export const SimilarItemSchema = z.object({
   id: z.string(),
   url: z.string().url(),

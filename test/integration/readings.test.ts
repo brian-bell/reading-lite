@@ -18,7 +18,9 @@ import { SimilarityStore, tenantVectorId } from "../../src/modules/stores/simila
 import {
   buildKeyPrefix,
   manifestToIndexItem,
+  ReadingStore,
 } from "../../src/modules/stores/reading-store";
+import { GetReadingResponseSchema } from "../../src/schemas/api";
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
@@ -5669,6 +5671,152 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     expect(body.readings).toHaveLength(1);
     expect(body.readings[0]!.status).toBe("failed");
     expect(body.readings[0]!.error?.code).toBe("stale_pending");
+  });
+});
+
+// Phase 3 (#367): GET /api/readings/:id resolves connection and tension
+// targets against the same tenant's list index at read time.
+describe("GET /api/readings/:id — relationship_targets", () => {
+  const T0 = "2026-04-26T20:00:00.000Z";
+
+  function seededManifest(id: string, over: Partial<Manifest> = {}): Manifest {
+    return {
+      id,
+      url: `https://example.com/${id}`,
+      url_hash: "a".repeat(64),
+      status: "ready",
+      title: `Title ${id}`,
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "0".repeat(64),
+      created_at: T0,
+      updated_at: T0,
+      ...over,
+    } as Manifest;
+  }
+
+  async function seed(tenant: ReturnType<typeof founderTenant>, m: Manifest, opts: { indexed?: boolean } = {}) {
+    const reader = testReadingStore(env, tenant);
+    const keyPrefix = buildKeyPrefix(m.id, m.created_at);
+    await reader.writeManifest(keyPrefix, m);
+    await reader.writeByIdPointer(m.id, { id: m.id, key_prefix: keyPrefix });
+    if (opts.indexed ?? true) {
+      await reader.appendOrReplaceListIndexItem(manifestToIndexItem(m, keyPrefix));
+    }
+    return keyPrefix;
+  }
+
+  function getDetail(id: string, token = TOKEN) {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    return app.request(`/api/readings/${id}`, { headers: { authorization: `Bearer ${token}` } }, env);
+  }
+
+  it("maps every indexed connection and tension target and omits removed ones", async () => {
+    await seed(founderTenant(), seededManifest("rd_TGTREADY1"));
+    await seed(founderTenant(), seededManifest("rd_TGTPEND01", { status: "pending", title: undefined }));
+    await seed(founderTenant(), seededManifest("rd_TGTFAIL01", { status: "failed" }));
+    const source = seededManifest("rd_SOURCE001", {
+      connections: [
+        { id: "rd_TGTREADY1", reason: "same topic" },
+        { id: "rd_TGTPEND01", reason: "follow-up" },
+        { id: "rd_VANISHED1", reason: "was deleted" },
+      ],
+      tensions: [
+        { id: "rd_TGTFAIL01", kind: "contradicts", reason: "disagrees", computed_at: T0 },
+      ],
+    });
+    const keyPrefix = await seed(founderTenant(), source);
+    const storedBefore = await (await env.READINGS_BUCKET.get(founderObjectKey(`${keyPrefix}/manifest.json`)))!.text();
+
+    const res = await getDetail(source.id);
+    expect(res.status).toBe(200);
+    const body = GetReadingResponseSchema.parse(await res.json());
+    expect(body.relationship_targets).toEqual({
+      rd_TGTREADY1: { url: "https://example.com/rd_TGTREADY1", title: "Title rd_TGTREADY1", status: "ready" },
+      rd_TGTPEND01: { url: "https://example.com/rd_TGTPEND01", status: "pending" },
+      rd_TGTFAIL01: { url: "https://example.com/rd_TGTFAIL01", title: "Title rd_TGTFAIL01", status: "failed" },
+    });
+
+    // Computed on read: the stored manifest is untouched and never carries the map.
+    const storedAfter = await (await env.READINGS_BUCKET.get(founderObjectKey(`${keyPrefix}/manifest.json`)))!.text();
+    expect(storedAfter).toBe(storedBefore);
+    expect(storedAfter).not.toContain("relationship_targets");
+  });
+
+  it("reads the list index exactly once, and not at all without relationships or on 404", async () => {
+    await seed(founderTenant(), seededManifest("rd_TGTREADY1"));
+    await seed(founderTenant(), seededManifest("rd_TGTREADY2"));
+    await seed(founderTenant(), seededManifest("rd_SOURCE001", {
+      connections: [
+        { id: "rd_TGTREADY1", reason: "a" },
+        { id: "rd_TGTREADY2", reason: "b" },
+      ],
+      tensions: [{ id: "rd_TGTREADY2", kind: "qualifies", reason: "c", computed_at: T0 }],
+    }));
+    await seed(founderTenant(), seededManifest("rd_LONELY001"));
+    const spy = vi.spyOn(ReadingStore.prototype, "readListIndex");
+    try {
+      expect((await getDetail("rd_SOURCE001")).status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      spy.mockClear();
+      const lonely = await getDetail("rd_LONELY001");
+      expect(lonely.status).toBe(200);
+      expect(((await lonely.json()) as { relationship_targets: unknown }).relationship_targets).toEqual({});
+      expect(spy).not.toHaveBeenCalled();
+
+      spy.mockClear();
+      expect((await getDetail("rd_0000000000")).status).toBe(404);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("reports a stale pending target as failed, like the list view", async () => {
+    // An hour older than makeServices' clock, well past the default 300s TTL.
+    const hourAgo = "2026-04-26T19:00:00.000Z";
+    await seed(founderTenant(), seededManifest("rd_TGTSTALE1", {
+      status: "pending",
+      created_at: hourAgo,
+      updated_at: hourAgo,
+    }));
+    await seed(founderTenant(), seededManifest("rd_SOURCE001", {
+      connections: [{ id: "rd_TGTSTALE1", reason: "a" }],
+    }));
+    const body = (await (await getDetail("rd_SOURCE001")).json()) as {
+      relationship_targets: Record<string, { status: string }>;
+    };
+    expect(body.relationship_targets.rd_TGTSTALE1?.status).toBe("failed");
+  });
+
+  it("never resolves a target from another tenant's list index", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    // The other tenant owns a row whose id matches the founder's target, and
+    // the founder's own index lacks it: the founder must see it as removed.
+    await seed(otherTenant(), seededManifest("rd_SHAREDID1", { title: "Other tenant's row" }));
+    await seed(founderTenant(), seededManifest("rd_SOURCE001", {
+      connections: [{ id: "rd_SHAREDID1", reason: "a" }],
+    }));
+    // And the other tenant's own reading does not resolve the founder's rows.
+    await seed(founderTenant(), seededManifest("rd_FOUNDERT1"));
+    await seed(otherTenant(), seededManifest("rd_OTHERSRC1", {
+      connections: [
+        { id: "rd_FOUNDERT1", reason: "a" },
+        { id: "rd_SHAREDID1", reason: "b" },
+      ],
+    }));
+
+    const founder = (await (await getDetail("rd_SOURCE001")).json()) as { relationship_targets: object };
+    expect(founder.relationship_targets).toEqual({});
+
+    const other = (await (await getDetail("rd_OTHERSRC1", OTHER_TOKEN_SECRET)).json()) as {
+      relationship_targets: object;
+    };
+    expect(other.relationship_targets).toEqual({
+      rd_SHAREDID1: { url: "https://example.com/rd_SHAREDID1", title: "Other tenant's row", status: "ready" },
+    });
   });
 });
 

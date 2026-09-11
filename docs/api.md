@@ -64,7 +64,7 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 | `POST /api/readings/import-markdown` | `{ source_url, markdown, title?, email? }`; uses the URL for ownership and supplied Markdown for content. Email defaults to false; send-time import is always silent |
 | `GET /api/readings` | Newest-first list; `q` matches title/TLDR/URL/keywords by case-insensitive substring; `tag` is an exact case-insensitive tag. `offset` defaults to 0, `limit` to 20 with range 1 to 100. Returns `{ readings, limit, offset, has_more }` |
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No pointer claims, repair writes, or deep scans |
-| `GET /api/readings/:id` | Full manifest with pending/ready/failed status |
+| `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |
 | `GET /api/readings/:id/diagnostics` | Manifest, pointers, list row, R2 inventory, and recent attempt records |
 | `POST /api/readings/:id/reprocess` | Fresh attempt on the same ID; optional `force` bypasses an active-attempt conflict, and optional `source: { kind: "markdown", markdown, title? }` supplies replacement text |
 | `GET /api/readings/:id/content` | Streams `extracted.md`; 404 if content is not captured |
@@ -96,6 +96,11 @@ connections, similarity, provider usage, and active/last attempts. Offline tensi
 refresh adds directional `tensions` and `tensions_judged`. Use
 [the manifest schema](../src/schemas/manifest.ts) for exact optional fields;
 [diagnostics](operations.md#diagnosing-a-single-reading) explains recovery.
+
+The detail response also carries `relationship_targets`, a map from each
+connection and tension target id to `{ url, title?, status }`, resolved at read
+time from the same tenant's list index. It is never stored on the manifest, and
+an id absent from the map is removed or unavailable. MCP `get_reading` omits it.
 
 ## MCP connector
 

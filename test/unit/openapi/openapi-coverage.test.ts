@@ -109,6 +109,9 @@ const REQUIRED_SCHEMAS = [
   "PostReadingReprocessBody",
   "ListReadingsResponse",
   "Manifest",
+  "ManifestFields",
+  "ReadingDetail",
+  "RelationshipTarget",
   "EnrichmentDegradation",
   "Tension",
   "TensionKind",
@@ -183,7 +186,7 @@ describe("docs/openapi.yaml", () => {
   });
 
   it("documents the optional relationship computation timestamp", () => {
-    const manifest = loadSpec().components?.schemas?.Manifest as
+    const manifest = loadSpec().components?.schemas?.ManifestFields as
       | { properties?: Record<string, unknown>; required?: string[] }
       | undefined;
     expect(manifest?.properties?.connections_computed_at).toMatchObject({
@@ -194,7 +197,7 @@ describe("docs/openapi.yaml", () => {
   });
 
   it("documents the optional neighbourhood considered by the latest relationship judgement", () => {
-    const manifest = loadSpec().components?.schemas?.Manifest as
+    const manifest = loadSpec().components?.schemas?.ManifestFields as
       | { properties?: Record<string, unknown>; required?: string[] }
       | undefined;
     expect(manifest?.properties?.connections_neighbourhood_ids).toMatchObject({
@@ -206,7 +209,7 @@ describe("docs/openapi.yaml", () => {
 
   it("documents optional directional tensions on the manifest", () => {
     const doc = loadSpec();
-    const manifest = doc.components?.schemas?.Manifest as
+    const manifest = doc.components?.schemas?.ManifestFields as
       | { properties?: Record<string, unknown>; required?: string[] }
       | undefined;
     expect(manifest?.properties?.tensions).toMatchObject({
@@ -306,5 +309,68 @@ describe("docs/openapi.yaml", () => {
     expect(validate).toBeDefined();
     expect(validate?.(attempt)).toBe(true);
     expect(validate?.({ ...attempt, unexpected: true })).toBe(false);
+  });
+
+  describe("reading detail relationship_targets", () => {
+    const manifest = {
+      id: "rd_SOURCE",
+      url: "https://example.com/source",
+      url_hash: "a".repeat(64),
+      status: "ready",
+      connections: [{ id: "rd_TARGET", reason: "related" }],
+      content_type: "text/html",
+      content_status: "captured",
+      content_bytes: 1,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-09-11T12:00:00.000Z",
+      updated_at: "2026-09-11T12:00:00.000Z",
+    };
+    const targets = {
+      rd_TARGET: { url: "https://example.com/target", title: "Target", status: "pending" },
+    };
+
+    function validator(name: string) {
+      const ajv = new Ajv2020({ strict: false });
+      addFormats(ajv);
+      ajv.addSchema(loadSpec(), "reading-lite-openapi");
+      const validate = ajv.getSchema(`reading-lite-openapi#/components/schemas/${name}`);
+      expect(validate, `missing schema ${name}`).toBeDefined();
+      return validate!;
+    }
+
+    it("GET /api/readings/{id} returns a ReadingDetail", () => {
+      const get = loadSpec().paths?.["/api/readings/{id}"]?.get as
+        | { responses?: Record<string, { content?: Record<string, { schema?: { $ref?: string } }> }> }
+        | undefined;
+      expect(get?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref).toBe(
+        "#/components/schemas/ReadingDetail",
+      );
+    });
+
+    it("ReadingDetail requires the map and accepts targets with optional titles", () => {
+      const validate = validator("ReadingDetail");
+      expect(validate({ ...manifest, relationship_targets: targets })).toBe(true);
+      expect(validate({ ...manifest, relationship_targets: {} })).toBe(true);
+      expect(
+        validate({
+          ...manifest,
+          relationship_targets: { rd_TARGET: { url: "https://example.com/target", status: "ready" } },
+        }),
+      ).toBe(true);
+      expect(validate(manifest)).toBe(false);
+      expect(validate({ ...manifest, relationship_targets: targets, unexpected: true })).toBe(false);
+      expect(
+        validate({
+          ...manifest,
+          relationship_targets: { rd_TARGET: { url: "https://example.com/target", status: "removed" } },
+        }),
+      ).toBe(false);
+    });
+
+    it("the stored Manifest schema stays closed to relationship_targets", () => {
+      const validate = validator("Manifest");
+      expect(validate(manifest)).toBe(true);
+      expect(validate({ ...manifest, relationship_targets: targets })).toBe(false);
+    });
   });
 });

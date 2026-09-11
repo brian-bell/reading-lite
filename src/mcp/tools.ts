@@ -164,7 +164,9 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     async (args) => {
       const out = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(args.id)}`);
       if (!out.ok) return apiErrorResult(out);
-      const rec = asRecord(out.json) ?? {};
+      // relationship_targets is HTTP-only enrichment for the web UI; MCP
+      // reading output stays the manifest shape.
+      const { relationship_targets: _targets, ...rec } = asRecord(out.json) ?? {};
       const publicUrl = publicReadingUrl(ctx.webBaseUrl, args.id);
       return jsonToolResult({
         ...rec,

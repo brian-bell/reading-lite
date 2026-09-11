@@ -19,7 +19,9 @@ import {
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
+  type GetReadingResponse,
 } from "./schemas/api";
+import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
 import { readingStoreFor, ReadingStore } from "./modules/stores/reading-store";
 import { similarityStoreFor } from "./modules/stores/similarity-store";
 import { ReadingClaim } from "./modules/reading-claim";
@@ -350,7 +352,19 @@ export function createApp(opts: AppOptions = {}) {
     const reader = storeForPrincipal(c.env, c.get("principal"));
     const found = await reader.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
-    return c.json(applyStaleness(found.manifest, pendingTtlSeconds(c.env), services.now()));
+    const ttl = pendingTtlSeconds(c.env);
+    const now = services.now();
+    // Read-time only: one tenant-scoped list-index read, skipped when there is
+    // nothing to resolve. Never written back to the manifest.
+    const targetIds = relationshipTargetIds(found.manifest);
+    const relationship_targets = targetIds.length === 0
+      ? {}
+      : projectRelationshipTargets(targetIds, await reader.readListIndex(), ttl, now);
+    const body: GetReadingResponse = {
+      ...applyStaleness(found.manifest, ttl, now),
+      relationship_targets,
+    };
+    return c.json(body);
   });
 
   app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
