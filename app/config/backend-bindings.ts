@@ -1,9 +1,11 @@
 // Guard for ADR 0003: each frontend environment binds only the backend Worker of
-// the same environment. The test in test/backend-bindings.test.ts reads the
+// the same environment, through its read-only FrontendReads entrypoint
+// (src/frontend-reads.ts at the repo root), never its default HTTP handler. The test in test/backend-bindings.test.ts reads the
 // checked-in app/wrangler.jsonc and root wrangler.toml through Wrangler and
 // fails CI when a service binding crosses environments.
 
 export const BACKEND_BINDING = "BACKEND";
+export const BACKEND_ENTRYPOINT = "FrontendReads";
 
 export type EnvironmentLabel = "local" | "staging" | "production";
 
@@ -16,7 +18,7 @@ export const ENVIRONMENTS: ReadonlyArray<{ label: EnvironmentLabel; env: string 
 
 export interface WorkerConfigView {
   name: string;
-  services: Array<{ binding: string; service: string }>;
+  services: Array<{ binding: string; service: string; entrypoint?: string }>;
 }
 
 export function checkBackendBindings(
@@ -39,10 +41,15 @@ export function checkBackendBindings(
       errors.push(`${label}: expected exactly one ${BACKEND_BINDING} service binding, found ${backendBindings.length}`);
     }
 
-    for (const { binding, service } of config.services) {
-      if (binding === BACKEND_BINDING && service !== own) {
-        errors.push(`${label}: ${binding} binds "${service}", expected "${own}"`);
-      } else if (binding !== BACKEND_BINDING && backendNames.has(service) && service !== own) {
+    for (const { binding, service, entrypoint } of config.services) {
+      if (binding === BACKEND_BINDING) {
+        if (service !== own) {
+          errors.push(`${label}: ${binding} binds "${service}", expected "${own}"`);
+        }
+        if (entrypoint !== BACKEND_ENTRYPOINT) {
+          errors.push(`${label}: ${binding} entrypoint is "${entrypoint ?? "default"}", expected "${BACKEND_ENTRYPOINT}"`);
+        }
+      } else if (backendNames.has(service) && service !== own) {
         errors.push(`${label}: ${binding} binds another environment's backend "${service}"`);
       }
     }

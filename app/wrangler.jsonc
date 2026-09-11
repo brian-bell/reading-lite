@@ -14,9 +14,12 @@
 // route; the backend keeps its more specific /api/*, /health, and /mcp* routes,
 // and this Worker returns 404 for those paths instead of proxying them.
 //
-// test/backend-bindings.test.ts fails when an environment's BACKEND service
-// binding names another environment's backend. Environments do not inherit
-// bindings: repeat BACKEND in each one.
+// BACKEND binds the backend's read-only FrontendReads entrypoint (the repo
+// root's src/frontend-reads.ts), used for server renders; browser API calls go
+// to the backend's own /api/* routes. test/backend-bindings.test.ts fails when
+// an environment's BACKEND service binding names another environment's backend
+// or another entrypoint. Environments do not inherit bindings: repeat BACKEND
+// in each one.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reading-lite-app-dev",
@@ -33,19 +36,19 @@
     "head_sampling_rate": 1,
     "logs": { "enabled": true, "invocation_logs": true }
   },
-  "services": [{ "binding": "BACKEND", "service": "reading-lite-dev" }],
+  "services": [{ "binding": "BACKEND", "service": "reading-lite-dev", "entrypoint": "FrontendReads" }],
   "env": {
     "staging": {
       "name": "reading-lite-app-staging",
       "workers_dev": false,
       "preview_urls": false,
-      "services": [{ "binding": "BACKEND", "service": "reading-lite-staging" }]
+      "services": [{ "binding": "BACKEND", "service": "reading-lite-staging", "entrypoint": "FrontendReads" }]
     },
     "production": {
       "name": "reading-lite-app",
       "workers_dev": false,
       "preview_urls": false,
-      "services": [{ "binding": "BACKEND", "service": "reading-lite" }]
+      "services": [{ "binding": "BACKEND", "service": "reading-lite", "entrypoint": "FrontendReads" }]
     }
   }
 }

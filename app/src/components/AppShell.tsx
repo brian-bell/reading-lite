@@ -1,19 +1,24 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import type { ThemePreference } from "../theme";
+import { AccountArea, type AccountState } from "./AccountMenu";
 import { Icon } from "./Icon";
 import { ThemeControl } from "./ThemeControl";
 
+export type { AccountState } from "./AccountMenu";
+
 // Connected navigation shell (design spec, Layout and Components): an 80 px
 // column at desktop widths, a brand row plus horizontal bar at container width
-// ≤650 px. The account menu joins the navigation with signed-in identity.
+// ≤650 px. The account menu (or a sign-in link) follows the theme control.
 export function AppShell({
   theme,
   onThemeChange,
+  account,
   children,
 }: {
   theme: ThemePreference;
   onThemeChange: (next: ThemePreference) => void;
+  account: AccountState;
   children: ReactNode;
 }) {
   return (
@@ -49,6 +54,7 @@ export function AppShell({
                 </li>
               </ul>
               <ThemeControl value={theme} onChange={onThemeChange} />
+              <AccountArea account={account} />
             </nav>
           </header>
           <main id="main" className="shell-main" tabIndex={-1}>

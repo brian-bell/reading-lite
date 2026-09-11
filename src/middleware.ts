@@ -3,6 +3,7 @@ import { authenticateRequest } from "./control-plane/authenticate";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { cookieCsrfRequired, verifyCsrfToken } from "./control-plane/csrf";
 import { fromD1 } from "./control-plane/db";
+import { isTrustedFrontendRead } from "./control-plane/frontend-read-trust";
 import { cookieAuthAllowed } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import { principalHasRecentAuth } from "./control-plane/recent-auth";
@@ -27,13 +28,15 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
     }
 
-    const cookieAllowed = cookieAuthAllowed({
-      method: c.req.method,
-      origin: c.req.header("origin"),
-      secFetchSite: c.req.header("sec-fetch-site"),
-      url: c.req.url,
-      webBaseUrl: c.env.WEB_BASE_URL,
-    });
+    const cookieAllowed =
+      isTrustedFrontendRead(c.req.raw) ||
+      cookieAuthAllowed({
+        method: c.req.method,
+        origin: c.req.header("origin"),
+        secFetchSite: c.req.header("sec-fetch-site"),
+        url: c.req.url,
+        webBaseUrl: c.env.WEB_BASE_URL,
+      });
 
     const verdict = await authenticateRequest(fromD1(c.env.CONTROL_PLANE), {
       authorization: c.req.header("authorization"),

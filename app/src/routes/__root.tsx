@@ -1,13 +1,20 @@
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { HeadContent, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { AppShell } from "../components/AppShell";
+import { AppShell, type AccountState } from "../components/AppShell";
 import { useThemePreference } from "../components/use-theme-preference";
+import { whoamiQueryOptions } from "../identity-query";
+import type { RouterContext } from "../router";
 import stylesUrl from "../styles/app.css?url";
 import { getThemePreference } from "../theme-preference";
 import { themeAttribute } from "../theme";
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<RouterContext>()({
   beforeLoad: () => ({ theme: getThemePreference() }),
+  // Identity for the account menu, read during the server render and
+  // dehydrated with this request's QueryClient. prefetchQuery never throws: an
+  // unavailable backend renders the shell without identity instead of failing.
+  loader: ({ context }) => context.queryClient.prefetchQuery(whoamiQueryOptions()),
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -22,13 +29,20 @@ export const Route = createRootRoute({
 function RootDocument({ children }: { children: ReactNode }) {
   const { theme: initialTheme } = Route.useRouteContext();
   const [theme, setTheme] = useThemePreference(initialTheme);
+  const { data: identity } = useQuery(whoamiQueryOptions());
+  const account: AccountState =
+    identity === undefined
+      ? { status: "unknown" }
+      : identity === null
+        ? { status: "signed-out" }
+        : { status: "signed-in", email: identity.email };
   return (
     <html lang="en" data-theme={themeAttribute(theme)}>
       <head>
         <HeadContent />
       </head>
       <body>
-        <AppShell theme={theme} onThemeChange={setTheme}>
+        <AppShell theme={theme} onThemeChange={setTheme} account={account}>
           {children}
         </AppShell>
         <Scripts />

@@ -1,29 +1,39 @@
-import { unstable_startWorker } from "wrangler";
+import { createTestHarness } from "wrangler";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Requests against the built Worker, including Workers Assets and _headers.
-// The shell makes no backend reads, so BACKEND is replaced with an inert value:
-// workerd refuses to start with a service binding to a Worker it isn't running.
+// smoke/backend-stub.js stands in for the backend. It runs under the local
+// backend's Worker name, so the built config's BACKEND binding (service and
+// FrontendReads entrypoint) resolves unchanged and server renders cross a real
+// service binding. Requests use an absolute URL so the Worker sees the host the
+// stub expects.
 
-let worker: Awaited<ReturnType<typeof unstable_startWorker>>;
-let origin: URL;
+const HOST = "next.readinglite.test";
+const origin = `http://${HOST}`;
+
+const server = createTestHarness({
+  workers: [
+    { configPath: "dist/server/wrangler.json" },
+    {
+      config: {
+        name: "reading-lite-dev",
+        main: "smoke/backend-stub.js",
+        compatibility_date: "2026-09-01",
+      },
+    },
+  ],
+});
 
 beforeAll(async () => {
-  worker = await unstable_startWorker({
-    config: "dist/server/wrangler.json",
-    bindings: { BACKEND: { type: "plain_text", value: "unused by the shell" } },
-    dev: { server: { hostname: "127.0.0.1", port: 0 }, inspector: false, logLevel: "error" },
-  });
-  await worker.ready;
-  origin = await worker.url;
+  await server.listen();
 });
 
 afterAll(async () => {
-  await worker?.dispose();
+  await server.close();
 });
 
-function request(path: string, init: RequestInit = {}) {
-  return fetch(new URL(path, origin), { redirect: "manual", ...init });
+function request(path: string, init: { method?: string; headers?: Record<string, string> } = {}) {
+  return server.fetch(new URL(path, origin), { redirect: "manual", ...init });
 }
 
 function checkedTheme(html: string): string | undefined {
@@ -74,6 +84,65 @@ describe("rendered pages", () => {
     expect([302, 307]).toContain(response.status);
     expect(new URL(response.headers.get("Location") ?? "", origin).pathname).toBe("/");
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+});
+
+describe("signed-in identity", () => {
+  const A = { cookie: "__Host-session=session-a", email: "reader-a@example.com", csrf: "csrf-token-for-a" };
+  const B = { cookie: "__Host-session=session-b", email: "reader-b@example.com", csrf: "csrf-token-for-b" };
+
+  it("server-renders the account menu for a session, as private, uncacheable HTML", async () => {
+    const response = await request("/", { headers: { Cookie: `theme=dark; ${A.cookie}` } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    const html = await response.text();
+    expect(html).toContain(`aria-label="Account menu, signed in as ${A.email}"`);
+    expect(html).toContain('href="/account/security"');
+    expect(html).toContain(`<html lang="en" data-theme="dark">`);
+    // Dehydrated whoami, CSRF token included, for this response only.
+    expect(html).toContain(A.csrf);
+    expect(html).not.toContain("Sign in");
+  });
+
+  it("renders a sign-in link back to the current URL without a session", async () => {
+    for (const cookie of ["", "theme=light", "__Host-session=unknown"]) {
+      const response = await request("/save", { headers: cookie ? { Cookie: cookie } : {} });
+      expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+      const html = await response.text();
+      expect(html, cookie).toContain('href="/login?next=%2Fsave"');
+      expect(html, cookie).not.toContain("Account menu");
+      expect(html, cookie).not.toMatch(/reader-[ab]@example\.com|csrf-token-for/);
+    }
+  });
+
+  it("renders neither account state when the backend is unavailable", async () => {
+    const response = await request("/", { headers: { Cookie: "__Host-session=backend-down" } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain('<nav aria-label="Main">');
+    expect(html).not.toContain("Account menu");
+    expect(html).not.toContain("Sign in");
+  });
+
+  it("keeps identity and dehydrated state separate across concurrent renders for two tenants", async () => {
+    // A answers slower than B, so renders overlap and finish out of order.
+    const order = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? A : B));
+    const pages = await Promise.all(
+      order.map(async (tenant) => ({
+        tenant,
+        response: await request(tenant === A ? "/" : "/save", { headers: { Cookie: tenant.cookie } }),
+      })),
+    );
+    for (const { tenant, response } of pages) {
+      const other = tenant === A ? B : A;
+      expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+      const html = await response.text();
+      expect(html).toContain(tenant.email);
+      expect(html).toContain(tenant.csrf);
+      expect(html).not.toContain(other.email);
+      expect(html).not.toContain(other.csrf);
+    }
   });
 });
 
