@@ -77,6 +77,8 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # Wrangler 4.87+ npm bin wrapper requires Node 22; this job is Node 22.
+      - run: npx wrangler --version
       - run: npm run types:check
       - run: npm run typecheck
       - run: npm test
@@ -99,6 +101,16 @@ jobs:
       - run: npm run ops -- --help
       - run: npm run ops -- deploy worker --help
       - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
+      # The npm bin wrapper must keep refusing Node 20; ops uses wrangler-dist.
+      - name: Wrangler npm wrapper refuses Node 20
+        run: |
+          set +e
+          output="$(node node_modules/wrangler/bin/wrangler.js --version 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          printf '%s\n' "$output" | grep -E 'Wrangler requires at least Node\.js v22|Please update your version of Node\.js'
 
   web:
     name: Web (test + build)

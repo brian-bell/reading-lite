@@ -10,19 +10,28 @@ plan by default and acts only with `--execute`.
 
 ### Operator Node
 
+| Path | Supported Node | How Wrangler is launched |
+| --- | --- | --- |
+| `npm run ops` | Node **20.19.x** (Debian); also runs on Node 22 | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
+| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
+| CI | Worker + SPA: Node **22**; ops compatibility: **20.19.2** | Worker tests stay on workerd |
+
 `npm run ops` is supported on **Node 20.19.x** (`/usr/bin/node` on Debian).
 That is the supported operator path. Do not upgrade the operator laptop to
 Node 22. It will not launch under the security boundary Snipe runs in.
+Install on that machine with `npm ci --ignore-engines` because Wrangler's
+own `engines` are ≥22.
 
 Wrangler 4.87+ hard-fails in `bin/wrangler.js` on Node < 22. Ops does not
 spawn that wrapper: it execs `node_modules/wrangler/wrangler-dist/cli.js`
 with the current Node (see `scripts/lib/wrangler-cli.ts`). Corpus, deploy,
 staging, and founder commands therefore run on 20.19.x. Wrangler may print
 a Node 22 warning on the banner; that is wrangler's advertised floor, not a
-reading-lite failure. CI remains Node 22. The production Worker stays on
-workerd.
+reading-lite failure. The production Worker stays on workerd.
 
-`package.json` `engines.node` is `>=20.19.0` so npm does not reject Node 20.
+Root `package.json` `engines.node` (`>=20.19.0`) is the ops/install floor,
+not a `npm run dev` guarantee. Local `npm run dev` is gated to Node 22.12+
+via `predev`.
 
 Every `corpus` command additionally requires `--tenant <selector>` before it
 plans anything. There is no default. A missing or malformed selector is a
