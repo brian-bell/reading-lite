@@ -54,9 +54,15 @@ item on September 10, 2026.
 
 - [ ] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
   OpenAPI, SPA type, and test updates.
-- [ ] Create the approved TanStack Start application on its own Cloudflare Worker.
+- [ ] Add the backend's read-only frontend `WorkerEntrypoint` (whoami, reading
+  detail) per [ADR 0003](../../decisions/0003-frontend-worker-topology.md#server-reads-backend-rpc-entrypoint),
+  with 401 and cross-tenant tests.
+- [ ] Create the approved TanStack Start application in `app/` on its own
+  Cloudflare Worker, with pinned approved dependencies and a Node 22 CI job.
 - [ ] Use same-origin browser API access and explicit request-scoped identity for
   server reads through the service binding. Keep the backend authoritative.
+- [ ] Return 404 from the frontend for `/api/*`, `/health`, and `/mcp*`; add a CI
+  check that each environment's service binding targets the same environment.
 - [ ] Make authenticated reading detail the first selective SSR slice; prevent
   private readings, identity, and provider data from entering shared caches or
   static prerender output.
@@ -67,6 +73,10 @@ item on September 10, 2026.
 
 ## Phase 4 — daily reading workflow (#339)
 
+- [ ] Stand up `next.readinglite.ai`: add it to `PUBLIC_WEB_ORIGINS`, add the
+  backend `/api/*` and `/health` routes and the frontend `/*` route, and verify
+  route precedence. The first deploy needs separate authorization and passing
+  isolation and cache-header tests.
 - [ ] Implement backend-backed library search, tags, pagination, and return state.
 - [ ] Implement URL capture and Markdown import through existing intake outcomes.
 - [ ] Implement the approved bounded status refresh and manual fallback; ensure

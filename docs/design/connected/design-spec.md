@@ -349,15 +349,19 @@ decisions above. They are for Brian to adjust, not commitments.
 | Phase | Slice | Size |
 | --- | --- | --- |
 | 3 (#338) | Backend `relationship_targets` enrichment, schema, OpenAPI, tests | S |
-| 3 | TanStack Start app on its own Worker, identity, service binding, cache rules | L |
+| 3 | Backend read-only frontend entrypoint ([ADR 0003](../../decisions/0003-frontend-worker-topology.md)) with 401 and cross-tenant tests | S |
+| 3 | TanStack Start app in `app/` on its own Worker, identity, service binding, cache rules, Node 22 CI | L |
+| 3 | Sign-in, both verify links, return paths, sign-out, expired session | M |
 | 3 | Tokens, themes, navigation, and the reading summary view with SSR | M |
 | 3 | Novelty panel, relationship cards, removed targets, return trail | M |
 | 3 | Source view with sanitizer and rich-content handling | M |
-| 4 (#339) | Library search, tags, pagination, return state | M |
+| 4 (#339) | `next.readinglite.ai` host: allowlist entry, routes, precedence smoke check | S |
+| 4 | Library search, tags, pagination, return state | M |
 | 4 | `/save` URL and Markdown capture with intake outcomes | M |
 | 4 | Status refresh contract and failure categories | M |
 | 4 | Reprocess, import a copy, Details and diagnostics | S |
-| 5 (#340) | Sign-in, verify, return paths, account page parity | L |
+| 5 (#340) | Account page parity: sessions, tokens, email, notifications, digests | L |
+| 5 | Staging and production cutover, rollback rehearsal, release chain | M |
 | 5 | Account deletion UI | S |
 
 ## Still open
