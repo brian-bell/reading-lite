@@ -59,17 +59,31 @@ function forgetAccount(queryClient: QueryClient): void {
   queryClient.setQueryData(sessionEndedQueryKey, null);
 }
 
-/** Signs out and drops the account's cached data, whatever logout answers. */
-export async function signOut(queryClient: QueryClient): Promise<void> {
+export type SignOutResult = "signed-out" | "still-signed-in";
+
+/**
+ * Signs out and drops the account's cached data.
+ *
+ * A failed logout leaves the session and its cookie alone, so the reader is
+ * still signed in and a reload would prove it. Rather than show a signed-out
+ * page over a live session, ask the backend who we are: only a session it no
+ * longer accepts is forgotten here. (401 from logout is already signed out.)
+ */
+export async function signOut(queryClient: QueryClient): Promise<SignOutResult> {
   try {
     // Before dropping whoami: logout sends its CSRF token.
     await logoutSession(queryClient);
   } catch {
-    // The session may outlive a failed logout; this tab forgets it regardless.
-  } finally {
-    forgetAccount(queryClient);
-    queryClient.setQueryData(whoamiQueryKey, null);
+    const identity = await fetchIdentity().catch(() => undefined);
+    // Signed in, or unknown: either way this session is not ours to discard.
+    if (identity !== null) {
+      if (identity) queryClient.setQueryData(whoamiQueryKey, identity);
+      return "still-signed-in";
+    }
   }
+  forgetAccount(queryClient);
+  queryClient.setQueryData(whoamiQueryKey, null);
+  return "signed-out";
 }
 
 /**

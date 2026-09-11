@@ -92,13 +92,57 @@ describe("signOut", () => {
     expect(queryClient.getQueryData(["login-options"])).toEqual({ turnstile_site_key: null });
   });
 
-  it.each([401, 500])("forgets the account even when logout returns %i", async (status) => {
+  it("forgets the account when logout reports the session was already gone", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => Response.json({ error: "x" }, { status })),
+      vi.fn(async () => Response.json({ error: "unauthorized" }, { status: 401 })),
     );
     const queryClient = signedIn();
-    await signOut(queryClient);
+    await expect(signOut(queryClient)).resolves.toBe("signed-out");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
+    expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
+  });
+
+  // A failed logout revokes nothing and leaves the cookie in place, so the
+  // reader is still signed in and a reload would show it (#369 review).
+  it("keeps the session when logout fails and the backend still knows the reader", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        new URL(request.url).pathname === "/api/auth/logout"
+          ? Response.json({ error: "boom" }, { status: 500 })
+          : Response.json(identity),
+      ),
+    );
+    const queryClient = signedIn();
+    await expect(signOut(queryClient)).resolves.toBe("still-signed-in");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(identity);
+    expect(queryClient.getQueryData(["reading", "rd_ONE"])).toEqual({ id: "rd_ONE" });
+  });
+
+  it("keeps the session when logout fails and identity cannot be determined", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        Response.json({ error: "boom" }, { status: new URL(request.url).pathname === "/api/auth/logout" ? 500 : 503 }),
+      ),
+    );
+    const queryClient = signedIn();
+    await expect(signOut(queryClient)).resolves.toBe("still-signed-in");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(identity);
+  });
+
+  it("signs out when a failed logout left no session behind", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        new URL(request.url).pathname === "/api/auth/logout"
+          ? Response.json({ error: "boom" }, { status: 500 })
+          : Response.json({ error: "unauthorized" }, { status: 401 }),
+      ),
+    );
+    const queryClient = signedIn();
+    await expect(signOut(queryClient)).resolves.toBe("signed-out");
     expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
     expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
   });

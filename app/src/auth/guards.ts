@@ -52,6 +52,8 @@ export async function redirectSignedInFromLogin({
   search: LoginSearch;
 }): Promise<void> {
   if (search.step_up) return;
+  // Signed out (null) shows the form; unavailable (undefined) shows its own
+  // retryable state on the page. Neither is a reason to redirect.
   if (!(await identityOf(context.queryClient))) return;
   // This path is consumed here, so an older stored one must not outlive it.
   clearReturnPath();

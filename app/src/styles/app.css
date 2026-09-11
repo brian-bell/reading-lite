@@ -293,6 +293,11 @@ textarea {
   color: var(--muted);
 }
 
+.account-menu-error {
+  margin: var(--space-2) 0 0;
+  color: var(--danger);
+}
+
 .shell-main {
   min-width: 0;
 }

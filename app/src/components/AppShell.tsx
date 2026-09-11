@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
+import type { SignOutResult } from "../auth/session";
 import type { ThemePreference } from "../theme";
 import { AccountArea, type AccountState } from "./AccountMenu";
 import { Icon } from "./Icon";
@@ -20,7 +21,7 @@ export function AppShell({
   theme: ThemePreference;
   onThemeChange: (next: ThemePreference) => void;
   account: AccountState;
-  onSignOut: () => Promise<void>;
+  onSignOut: () => Promise<SignOutResult>;
   children: ReactNode;
 }) {
   return (

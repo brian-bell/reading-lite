@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { getLoginOptions, requestLoginLink } from "../api/auth";
 import { rememberReturnPath } from "../auth/return-path";
+import { whoamiQueryOptions } from "../identity-query";
 import { PageHeading } from "./PageHeading";
 import { TurnstileWidget } from "./TurnstileWidget";
 
@@ -11,7 +12,25 @@ import { TurnstileWidget } from "./TurnstileWidget";
 
 const loginOptionsQueryKey = ["login-options"] as const;
 
-export function SignInPage({ next, lockedEmail }: { next?: string; lockedEmail?: string }) {
+export function SignInPage({ next, stepUp }: { next?: string; stepUp?: boolean }) {
+  const identity = useQuery(whoamiQueryOptions());
+  // Identity could not be determined (a 403 or an unreadable body is never a
+  // sign-out). Offering the form here would ask a signed-in reader to sign in
+  // again, and would show step-up with an editable address.
+  if (identity.isError) {
+    return (
+      <div className="page auth-page">
+        <PageHeading>Sign in</PageHeading>
+        <p className="auth-lede">We couldn’t check whether you’re signed in.</p>
+        <div className="form-actions">
+          <button type="button" className="button" onClick={() => void identity.refetch()}>
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+  const lockedEmail = stepUp && identity.data ? identity.data.email : undefined;
   return (
     <div className="page auth-page">
       <PageHeading>Sign in</PageHeading>

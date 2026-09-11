@@ -15,6 +15,7 @@ import { CSRF_HEADER, apiFetch } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { redirectSignedInFromLogin, requireSignedIn, validateLoginSearch } from "../src/auth/guards";
 import { clearMagicLinkCredential } from "../src/auth/magic-link-credential";
+import { LEGACY_BEARER_TOKEN_KEY } from "../src/auth/legacy-storage";
 import { LOGIN_NEXT_STORAGE_KEY } from "../src/auth/return-path";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
 import { resetTurnstileLoaderForTests } from "../src/auth/turnstile";
@@ -108,8 +109,7 @@ const loginRoute = createRoute({
   beforeLoad: redirectSignedInFromLogin,
   component: function Login() {
     const { next, step_up } = loginRoute.useSearch();
-    const { data: identity } = useQuery<Identity | null>({ queryKey: whoamiQueryKey, enabled: false });
-    return <SignInPage next={next} lockedEmail={step_up && identity ? identity.email : undefined} />;
+    return <SignInPage next={next} stepUp={step_up === "1"} />;
   },
 });
 const authVerifyRoute = createRoute({
@@ -141,9 +141,11 @@ const routeTree = rootRoute.addChildren([
   authedRoute.addChildren([readingRoute]),
 ]);
 
-async function openTab(path: string, identity: Identity | null) {
+async function openTab(path: string, identity: Identity | null | "unavailable") {
   const queryClient = createQueryClient(() => hrefOnScreen(router));
-  queryClient.setQueryData(whoamiQueryKey, identity);
+  // Unseeded, the whoami query runs and fails (no backend in unit tests),
+  // which is the unavailable state: neither signed in nor signed out.
+  if (identity !== "unavailable") queryClient.setQueryData(whoamiQueryKey, identity);
   const router = createRouter({
     routeTree,
     context: { queryClient },
@@ -387,19 +389,6 @@ describe("sign-out", () => {
     expect(within(nav()).queryByRole("group", { name: /Account menu/ })).toBeNull();
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toHaveFocus();
   });
-
-  it("shows the sign-in form on the library after signing out, even when logout fails", async () => {
-    stubBackend({
-      "POST /api/auth/logout": () => Response.json({ error: "boom" }, { status: 500 }),
-      "GET /api/auth/login-options": () => Response.json({ turnstile_site_key: null }),
-    });
-    const { router } = await openTab("/", readerA);
-    const user = userEvent.setup();
-    await user.click(within(nav()).getByText("Account", { selector: "summary *" }));
-    await user.click(within(nav()).getByRole("button", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
-    expect(router.state.location.href).toBe("/");
-  });
 });
 
 describe("expired session", () => {
@@ -435,6 +424,70 @@ describe("expired session", () => {
     expect(await screen.findByText("You don’t have access to this.")).toBeInTheDocument();
     expect(screen.queryByText("Your session ended.")).toBeNull();
     expect(within(nav()).getByRole("group", { name: /a@example\.com/ })).toBeInTheDocument();
+  });
+});
+
+describe("identity that cannot be determined", () => {
+  it("offers a retry on /login instead of the form, and never an editable step-up address", async () => {
+    const calls = stubBackend({ "GET /api/auth/login-options": () => Response.json({ turnstile_site_key: null }) });
+    for (const path of ["/login?next=%2Fsave", "/login?step_up=1&next=%2Faccount%2Fsecurity"]) {
+      const tab = await openTab(path, "unavailable");
+      expect(await screen.findByText("We couldn’t check whether you’re signed in.")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Email")).toBeNull();
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+      expect(tab.router.state.location.href).toBe(path);
+      tab.view.unmount();
+    }
+    expect(calls.some((call) => new URL(call.url).pathname === "/api/auth/challenge")).toBe(false);
+  });
+
+  it("shows neither account state in the navigation", async () => {
+    stubBackend({});
+    await openTab("/save", "unavailable");
+    await waitFor(() => expect(within(nav()).queryByRole("group", { name: /Account menu/ })).toBeNull());
+    expect(within(nav()).queryByRole("link", { name: "Sign in" })).toBeNull();
+    expect(within(nav()).queryByRole("group", { name: /Account menu/ })).toBeNull();
+  });
+});
+
+describe("a failed sign-out", () => {
+  it("keeps the reader signed in and says so, rather than showing a signed-out page", async () => {
+    stubBackend({
+      "GET /api/readings/rd_ONE": () => Response.json({ title: "Operator Notes" }),
+      "POST /api/auth/logout": () => Response.json({ error: "boom" }, { status: 500 }),
+      // The session outlived the failed logout.
+      "GET /api/whoami": () => Response.json(readerA),
+    });
+    const { router, queryClient } = await openTab("/readings/rd_ONE", readerA);
+    await screen.findByText("Operator Notes");
+    const user = userEvent.setup();
+    await user.click(within(nav()).getByText("Account", { selector: "summary *" }));
+    await user.click(within(nav()).getByRole("button", { name: "Sign out" }));
+    expect(await within(nav()).findByRole("alert")).toHaveTextContent("still signed in");
+    expect(router.state.location.href).toBe("/readings/rd_ONE");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(readerA);
+    expect(within(nav()).getByRole("group", { name: /a@example\.com/ })).toBeInTheDocument();
+  });
+
+  it("signs out when the failed logout left no session behind", async () => {
+    stubBackend({
+      "POST /api/auth/logout": () => Response.json({ error: "boom" }, { status: 500 }),
+      "GET /api/whoami": () => Response.json({ error: "unauthorized" }, { status: 401 }),
+      "GET /api/auth/login-options": () => Response.json({ turnstile_site_key: null }),
+    });
+    await openTab("/", readerA);
+    const user = userEvent.setup();
+    await user.click(within(nav()).getByText("Account", { selector: "summary *" }));
+    await user.click(within(nav()).getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+  });
+});
+
+describe("legacy SPA storage", () => {
+  it("removes the legacy bearer token at boot", async () => {
+    localStorage.setItem(LEGACY_BEARER_TOKEN_KEY, "bearer-from-the-old-spa");
+    await openTab("/", readerA);
+    expect(localStorage.getItem(LEGACY_BEARER_TOKEN_KEY)).toBeNull();
   });
 });
 

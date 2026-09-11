@@ -62,9 +62,13 @@ return path is per origin.
   place.
 - **Session state.** `src/auth/session.ts` builds the request's QueryClient.
   A 401 from any query or mutation shows "Your session ended" at that URL,
-  with sign-in back to it; a 403 is never a sign-out. Sign-in and sign-out drop
-  every account-scoped query. Search parameters stay plain strings
-  (`src/search.ts`).
+  with sign-in back to it; a 403 is never a sign-out, and an identity that
+  cannot be determined shows its own retryable state rather than the sign-in
+  form. Sign-in and sign-out drop every account-scoped query. A failed logout
+  revokes nothing, so `signOut` re-reads identity and keeps the reader signed
+  in when the session survived. The legacy SPA's `reading-lite.bearerToken`
+  entry is removed at boot (`src/auth/legacy-storage.ts`) until the old SPA is
+  retired. Search parameters stay plain strings (`src/search.ts`).
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

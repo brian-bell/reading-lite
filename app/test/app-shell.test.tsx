@@ -9,6 +9,7 @@ import {
 import { act, render, renderHook, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { SignOutResult } from "../src/auth/session";
 import { AppShell, type AccountState } from "../src/components/AppShell";
 import { useThemePreference } from "../src/components/use-theme-preference";
 import type { ThemePreference } from "../src/theme";
@@ -18,7 +19,7 @@ async function renderShell(
   theme: ThemePreference = "system",
   onThemeChange = vi.fn(),
   account: AccountState = { status: "unknown" },
-  onSignOut: () => Promise<void> = vi.fn(async () => undefined),
+  onSignOut: () => Promise<SignOutResult> = vi.fn(async (): Promise<SignOutResult> => "signed-out"),
 ) {
   const rootRoute = createRootRoute({
     component: () => (
@@ -113,15 +114,28 @@ describe("AppShell account menu", () => {
   });
 
   it("signs out once, holding the button while it runs", async () => {
-    let finish: () => void = () => undefined;
-    const onSignOut = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    let finish: (result: SignOutResult) => void = () => undefined;
+    const onSignOut = vi.fn(() => new Promise<SignOutResult>((resolve) => (finish = resolve)));
     await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" }, onSignOut);
     const user = userEvent.setup();
     await user.click(document.querySelector<HTMLElement>(".account-menu summary")!);
     await user.click(screen.getByRole("button", { name: "Sign out" }));
     expect(onSignOut).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Signing out…" })).toBeDisabled();
-    await act(async () => finish());
+    await act(async () => finish("signed-out"));
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // A failed logout leaves the session alive; saying "signed out" over a live
+  // session is the dangerous answer on a shared device (#369 review).
+  it("says the reader is still signed in when sign-out fails", async () => {
+    const onSignOut = vi.fn(async (): Promise<SignOutResult> => "still-signed-in");
+    await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" }, onSignOut);
+    const user = userEvent.setup();
+    await user.click(document.querySelector<HTMLElement>(".account-menu summary")!);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t sign out. You are still signed in.");
     expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
   });
 

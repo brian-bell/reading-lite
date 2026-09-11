@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter, useRouterState } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { dropLegacyBearerToken } from "../auth/legacy-storage";
 import { signOut, useSessionEndedAt } from "../auth/session";
 import { whoamiQueryOptions } from "../identity-query";
 import type { ThemePreference } from "../theme";
@@ -29,6 +30,7 @@ export function AppFrame({
   const { data: identity } = useQuery(whoamiQueryOptions());
   const sessionEndedAt = useSessionEndedAt();
   useFocusHeadingOnNavigation();
+  useEffect(dropLegacyBearerToken, []);
 
   const account: AccountState =
     identity === undefined
@@ -40,9 +42,12 @@ export function AppFrame({
   // Sign out in place: guarded pages then redirect to sign-in with a return
   // path, and the library shows the sign-in form.
   async function onSignOut() {
-    await signOut(queryClient);
-    await router.invalidate();
-    focusPageHeading();
+    const result = await signOut(queryClient);
+    if (result === "signed-out") {
+      await router.invalidate();
+      focusPageHeading();
+    }
+    return result;
   }
 
   return (

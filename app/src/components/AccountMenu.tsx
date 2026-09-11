@@ -1,6 +1,7 @@
 import { useLocation } from "@tanstack/react-router";
 import { useRef, useState, type KeyboardEvent } from "react";
 import { loginHref } from "../auth/return-path";
+import type { SignOutResult } from "../auth/session";
 import { Icon } from "./Icon";
 
 // Navigation account menu (design spec, Components: email, Account, Sign out),
@@ -16,15 +17,22 @@ export type AccountState =
 
 const SIGN_IN_PATHS = new Set(["/login", "/login/verify", "/auth/verify"]);
 
-export function AccountArea({ account, onSignOut }: { account: AccountState; onSignOut: () => Promise<void> }) {
+export function AccountArea({
+  account,
+  onSignOut,
+}: {
+  account: AccountState;
+  onSignOut: () => Promise<SignOutResult>;
+}) {
   if (account.status === "signed-in") return <AccountMenu email={account.email} onSignOut={onSignOut} />;
   if (account.status === "signed-out") return <SignInLink />;
   return null;
 }
 
-function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Promise<void> }) {
+function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Promise<SignOutResult> }) {
   const details = useRef<HTMLDetailsElement>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   function closeOnEscape(event: KeyboardEvent<HTMLDetailsElement>) {
     const menu = details.current;
@@ -35,8 +43,11 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
 
   async function signOut() {
     setSigningOut(true);
+    setFailed(false);
     try {
-      await onSignOut();
+      // Still signed in: the backend kept the session, so say so rather than
+      // show a signed-out page over a session a reload would restore.
+      setFailed((await onSignOut()) === "still-signed-in");
     } finally {
       setSigningOut(false);
     }
@@ -65,6 +76,11 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
             </button>
           </li>
         </ul>
+        {failed ? (
+          <p className="account-menu-error" role="alert">
+            Couldn’t sign out. You are still signed in.
+          </p>
+        ) : null}
       </div>
     </details>
   );
