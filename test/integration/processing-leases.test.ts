@@ -634,6 +634,77 @@ describe("processing leases (Workers pool)", () => {
     }
   }, 20_000);
 
+  it.each([
+    { name: "overdue reprocess", overdue: true, outage: false, terminal: false },
+    { name: "reprocess with terminal-write outage", overdue: true, outage: true, terminal: false },
+    { name: "recent retired reprocess", overdue: false, outage: false, terminal: false },
+    { name: "already terminal reading", overdue: true, outage: false, terminal: true },
+  ])("handles a resumed stale holder for $name", async ({ overdue, outage, terminal }) => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20, monthly_readings: 20, max_concurrent_work: 2,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedReading(tenant, {
+      id: "rd_STALE_REPROCESS", url: "https://lease.test/stale-reprocess",
+      attemptId: "at_stale_reprocess", status: "ready", omitActiveAttempt: true, source: PARKED_MARKDOWN,
+    });
+    const reader = testReadingStore(env, tenant);
+    const prior = (await reader.readManifest(job.keyPrefix))!;
+    job.preserveReadyManifest = prior;
+    job.trigger = "reprocess";
+    if (overdue) job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    await reader.writeManifest(job.keyPrefix, { ...prior, active_attempt: {
+      id: job.attemptId!, trigger: "reprocess", status: "running", stage: "queued",
+      started_at: job.attemptStartedAt!,
+    } });
+    const parked = parkAtFirstEmbed();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const svc = services(parked.fetchFn);
+    const dispatched = dispatchQueueMessage(msg,
+      () => processReading(job, env as unknown as Env, svc, tenant), { sendDelayed });
+    let restorePut = () => {};
+    try {
+      await parked.waitUntilStarted();
+      // The holder's injected clock is overdue relative to the guards. Retire
+      // it while its provider response is stalled, before the recovery writer
+      // has terminalized the preserved-ready manifest.
+      expect(await globalLease({ kind: "recover_leases", tenantId, attemptId: job.attemptId })).toMatchObject({ ok: true });
+      if (terminal) await reader.writeManifest(job.keyPrefix, prior);
+      if (outage) {
+        const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+        const spy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
+          if (key.endsWith("/manifest.json")) throw new Error("R2 outage");
+          return put(key, value, options);
+        });
+        restorePut = () => spy.mockRestore();
+      }
+      parked.release();
+      await dispatched;
+      expect(parked.started()).toBe(1);
+      expect(summaryCalls(parked.fetchFn)).toBe(0);
+      if (outage || !overdue) {
+        expect(sendDelayed).toHaveBeenCalledOnce();
+        expect((await reader.readManifest(job.keyPrefix))!.active_attempt?.id).toBe(job.attemptId);
+        restorePut();
+        await processReading(job, env as unknown as Env, svc, tenant);
+      } else {
+        expect(sendDelayed).not.toHaveBeenCalled();
+      }
+      const finished = (await reader.readManifest(job.keyPrefix))!;
+      expect(finished).toMatchObject({ status: "ready", title: prior.title, tldr: prior.tldr });
+      expect(finished.active_attempt).toBeUndefined();
+      if (!terminal) expect(finished.last_attempt).toMatchObject({ id: job.attemptId, status: "failed" });
+      expect(parked.started()).toBe(1);
+    } finally {
+      restorePut();
+      parked.release();
+      await dispatched.catch(() => {});
+    }
+  });
+
   it("paused expired lease does not block a later attempt", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,

@@ -393,12 +393,18 @@ export async function processReading(
       if (leases) await releaseProcessingLeases(env, leases, clockNow);
       leases = null;
       if (e instanceof StaleProcessingLeaseError) {
+        // A preserved ready manifest can still own an active reprocess. Use
+        // recovery's terminality and write-confirmation rules before acking.
+        // A stale fence alone does not prove retirement or holder death.
         try {
-          const manifest = await reader.readManifest(args.keyPrefix);
-          if (manifest?.status === "ready" || manifest?.status === "failed") return;
+          await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, false);
         } catch (err) {
+          await refreshReadingSlot(env, tenantId, opId, clockNow);
+          if (err instanceof DeferPaidWorkError) throw err;
           console.error(err);
+          throw new LiveHolderDeferError();
         }
+        return;
       }
       // LiveHolderDeferError carries an already_running holder whose death is
       // not proven; terminalizing it at the ceiling would clear active_attempt
