@@ -1,0 +1,1661 @@
+{
+  "generated_at": "2026-09-11T10:00:00.000Z",
+  "regenerate_with": "npm run fixtures:app",
+  "fixtures": [
+    {
+      "name": "pending",
+      "id": "rd_FXPENDNG01",
+      "status": "pending",
+      "state": "Pending: fresh submit with a running attempt, staged from the seed clock (refreshes only by re-seeding once the 15-minute TTL passes)"
+    },
+    {
+      "name": "fail-source-unreachable",
+      "id": "rd_FXERR00001",
+      "status": "failed",
+      "state": "Failed, source unreachable: BadStatusError at fetch_source"
+    },
+    {
+      "name": "fail-source-incomplete",
+      "id": "rd_FXERR00002",
+      "status": "failed",
+      "state": "Failed, source incomplete: SourceRejectedError at summarize"
+    },
+    {
+      "name": "fail-provider-limit",
+      "id": "rd_FXERR00003",
+      "status": "failed",
+      "state": "Failed, provider limit: RateLimitedError at summarize"
+    },
+    {
+      "name": "fail-provider-error",
+      "id": "rd_FXERR00004",
+      "status": "failed",
+      "state": "Failed, provider error: BadStatusError at embed_source"
+    },
+    {
+      "name": "fail-key-problem",
+      "id": "rd_FXERR00005",
+      "status": "failed",
+      "state": "Failed, key problem: provider 401 at summarize"
+    },
+    {
+      "name": "attention",
+      "id": "rd_FXATTENT01",
+      "status": "ready",
+      "state": "Ready baseline; refreshed connections (connections_computed_at present); tension pair with friction; removed and non-ready targets referenced"
+    },
+    {
+      "name": "sparse-archive",
+      "id": "rd_FXSPARSE01",
+      "status": "ready",
+      "state": "Sparse archive: similarity.count = 0, no connections; novelty says nothing close existed when processed"
+    },
+    {
+      "name": "fail-hosting-limit",
+      "id": "rd_FXERR00006",
+      "status": "failed",
+      "state": "Failed, hosting limit: SpendAdmissionError at summarize"
+    },
+    {
+      "name": "gardens",
+      "id": "rd_FXGARDEN01",
+      "status": "ready",
+      "state": "Ready baseline; refreshed connections; references a pending target and a failed target (non-ready relationship targets)"
+    },
+    {
+      "name": "fail-stopped",
+      "id": "rd_FXERR00007",
+      "status": "failed",
+      "state": "Failed, stopped: QueueRetriesExhaustedError (dead-lettered; attempt log holds only the queued started event)"
+    },
+    {
+      "name": "friction",
+      "id": "rd_FXFRICTN01",
+      "status": "ready",
+      "state": "Ready baseline; the other side of the attention tension pair"
+    },
+    {
+      "name": "fail-unknown",
+      "id": "rd_FXERR00008",
+      "status": "failed",
+      "state": "Failed, unknown category: unmapped error code and stage"
+    },
+    {
+      "name": "long-title",
+      "id": "rd_FXMAXNAME1",
+      "status": "ready",
+      "state": "Very long title (130 characters, over the summarizer's 120-char output cap; the manifest field has no cap) wrapping in library and detail"
+    },
+    {
+      "name": "imported-markdown",
+      "id": "rd_FXMDPAGE01",
+      "status": "ready",
+      "state": "Imported Markdown: source_type markdown, text/markdown raw capture; metadata line says Imported Markdown"
+    },
+    {
+      "name": "unavailable-source",
+      "id": "rd_FXRAWSRC01",
+      "status": "ready",
+      "state": "Source unavailable: content_status raw_only (no extracted.md); summary, novelty, and relationships still usable; raw capture viewable"
+    },
+    {
+      "name": "degraded-youtube",
+      "id": "rd_FXYTDEGRD1",
+      "status": "ready",
+      "state": "Degraded YouTube: enrichment_degradation present (tier transcript), ready on the oEmbed floor with description but no transcript"
+    },
+    {
+      "name": "old-manifest",
+      "id": "rd_FXPAST0001",
+      "status": "ready",
+      "state": "Old manifest: no similarity, no novelty_verdict, no connections_computed_at (omit the line, never show unclassified); legacy usage shape"
+    }
+  ],
+  "readings": {
+    "rd_FXPENDNG01": {
+      "id": "rd_FXPENDNG01",
+      "url": "https://fieldnotes.example/making-room-for-slow-work",
+      "url_hash": "4cdd448156af1bbf02d16e0ee2fdce4db4f90f0763b0a353dce205fdd1155aaa",
+      "source_type": "url",
+      "status": "pending",
+      "active_attempt": {
+        "id": "at_FXPENDNG01",
+        "trigger": "submit",
+        "status": "running",
+        "stage": "queued",
+        "started_at": "2026-09-11T10:00:00.000Z"
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "captured",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-11T10:00:00.000Z",
+      "updated_at": "2026-09-11T10:00:00.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00001": {
+      "id": "rd_FXERR00001",
+      "url": "https://registration-wall.example/members-only-report",
+      "url_hash": "4093a1627614dd59b53ad316e4650f4ea7dfd568236fa08f844d7dbe135de339",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "BadStatusError",
+        "message": "bad response status 403: https://registration-wall.example/members-only-report",
+        "stage": "fetch_source",
+        "failed_at": "2026-09-10T14:10:13.000Z",
+        "retryable": false
+      },
+      "last_attempt": {
+        "id": "at_FXERR00001",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "fetch_source",
+        "started_at": "2026-09-10T14:10:03.000Z",
+        "finished_at": "2026-09-10T14:10:13.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 403: https://registration-wall.example/members-only-report",
+          "stage": "fetch_source",
+          "failed_at": "2026-09-10T14:10:13.000Z",
+          "retryable": false
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-10T14:10:00.000Z",
+      "updated_at": "2026-09-10T14:10:13.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00002": {
+      "id": "rd_FXERR00002",
+      "url": "https://consent-walls.example/teaser-article",
+      "url_hash": "57216757847261c0b39f3146ac10c956f974b1d98479bb6e0792f01b295f0832",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "SourceRejectedError",
+        "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+        "stage": "summarize",
+        "failed_at": "2026-09-09T16:42:37.000Z",
+        "retryable": false
+      },
+      "last_attempt": {
+        "id": "at_FXERR00002",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-09T16:42:03.000Z",
+        "finished_at": "2026-09-09T16:42:37.000Z",
+        "error": {
+          "code": "SourceRejectedError",
+          "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T16:42:37.000Z",
+          "retryable": false
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-09T16:42:00.000Z",
+      "updated_at": "2026-09-09T16:42:37.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00003": {
+      "id": "rd_FXERR00003",
+      "url": "https://fieldnotes.example/rate-limited-essay",
+      "url_hash": "fa3ffe95b7819ae002fd756026d90f6e4f0cb1051ab604120edbc6123ead3b3d",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "RateLimitedError",
+        "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+        "stage": "summarize",
+        "failed_at": "2026-09-09T09:05:37.000Z",
+        "retryable": true
+      },
+      "last_attempt": {
+        "id": "at_FXERR00003",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-09T09:05:03.000Z",
+        "finished_at": "2026-09-09T09:05:37.000Z",
+        "error": {
+          "code": "RateLimitedError",
+          "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T09:05:37.000Z",
+          "retryable": true
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-09T09:05:00.000Z",
+      "updated_at": "2026-09-09T09:05:37.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00004": {
+      "id": "rd_FXERR00004",
+      "url": "https://commonplace.example/embedding-failure-essay",
+      "url_hash": "785a6d89f7d8ad2783026ab673a7ed73ccea486a23165068206833b67b9258ea",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "BadStatusError",
+        "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+        "stage": "embed_source",
+        "failed_at": "2026-09-08T22:18:21.000Z",
+        "retryable": true
+      },
+      "last_attempt": {
+        "id": "at_FXERR00004",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "embed_source",
+        "started_at": "2026-09-08T22:18:03.000Z",
+        "finished_at": "2026-09-08T22:18:21.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T22:18:21.000Z",
+          "retryable": true
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-08T22:18:00.000Z",
+      "updated_at": "2026-09-08T22:18:21.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00005": {
+      "id": "rd_FXERR00005",
+      "url": "https://adjacent.example/expired-key-essay",
+      "url_hash": "de0b0a0d5b646143e1b57cd3c66f95cad6b73814ea396ad4325ef84a64a18b32",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "BadStatusError",
+        "message": "bad response status 401: https://api.openai.com/v1/responses",
+        "stage": "summarize",
+        "failed_at": "2026-09-08T11:55:37.000Z",
+        "retryable": false
+      },
+      "last_attempt": {
+        "id": "at_FXERR00005",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-08T11:55:03.000Z",
+        "finished_at": "2026-09-08T11:55:37.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "stage": "summarize",
+          "failed_at": "2026-09-08T11:55:37.000Z",
+          "retryable": false
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-08T11:55:00.000Z",
+      "updated_at": "2026-09-08T11:55:37.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXATTENT01": {
+      "id": "rd_FXATTENT01",
+      "url": "https://fieldnotes.example/2026/a-quieter-internet",
+      "url_hash": "514bb3ee68dc3f3b65610aa21ddeeb0c6b19814a4561b9caeafba4fcdea6e9b0",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXATTENT01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-09-07T09:30:04.000Z",
+        "finished_at": "2026-09-07T09:30:47.000Z"
+      },
+      "title": "A quieter internet is a choice we can make",
+      "tldr": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.",
+      "tags": [
+        "attention",
+        "design"
+      ],
+      "keywords": [
+        "attention",
+        "deliberate reading",
+        "personal library",
+        "return visit",
+        "tools for thought"
+      ],
+      "people": [
+        "Mara Ellis"
+      ],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2,
+        "max": 0.61,
+        "mean": 0.58,
+        "computed_at": "2026-09-07T09:30:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXGARDEN01",
+          "reason": "Both treat revisiting as the work. Ellis adds a concrete test: does the tool help an old idea meet a new question?"
+        },
+        {
+          "id": "rd_FXVANSHD01",
+          "reason": "This earlier reading linked infinite feeds with unfinished tasks. The reading has since been removed; this explanation remains for context."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXGARDEN01",
+        "rd_FXFRICTN01",
+        "rd_FXMAXNAME1",
+        "rd_FXSPARSE01"
+      ],
+      "tensions": [
+        {
+          "id": "rd_FXFRICTN01",
+          "kind": "contradicts",
+          "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit.",
+          "computed_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "tensions_judged": [
+        {
+          "id": "rd_FXFRICTN01",
+          "judged_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "summary_markdown": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.\n\nSaving is only the beginning. A library earns its place when it helps you return to an idea at the right moment — an old idea meeting a new question, or two writers whose disagreement you can finally name.\n\nSmall, intentional interruptions can be useful: a connection to an older reading may matter more than another recommendation, as long as the reader stays in control of whether to follow it.\n\nThe essay closes with a design criterion: measure a reading tool by the quality of its endings. A session that ends because you understood something is a success, not a failure to re-engage.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 1680,
+      "extracted_bytes": 1461,
+      "content_sha256": "7477e0f22293666a5cd91542a214f92060035c72ddbcb3dce19a70f67a89653c",
+      "fetched_at": "2026-09-07T09:30:47.000Z",
+      "created_at": "2026-09-07T09:30:00.000Z",
+      "updated_at": "2026-09-07T09:30:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 8214,
+          "output_tokens": 642,
+          "reasoning_tokens": 318,
+          "cached_input_tokens": 6100,
+          "cache_write_tokens": 2114
+        },
+        "openai_embedding_tokens": 2349
+      },
+      "relationship_targets": {
+        "rd_FXGARDEN01": {
+          "url": "https://commonplace.example/libraries-are-gardens",
+          "status": "ready",
+          "title": "Libraries are gardens, not warehouses"
+        },
+        "rd_FXFRICTN01": {
+          "url": "https://adjacent.example/the-case-for-a-little-friction",
+          "status": "ready",
+          "title": "The case for a little friction"
+        }
+      }
+    },
+    "rd_FXSPARSE01": {
+      "id": "rd_FXSPARSE01",
+      "url": "https://small-hours.example/against-the-endless-queue",
+      "url_hash": "1586aed5d227553c0d801b8201a1b04509426ecd82ffd9fe2337467ea25f50d4",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXSPARSE01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-09-06T18:25:04.000Z",
+        "finished_at": "2026-09-06T18:25:47.000Z"
+      },
+      "title": "Against the endless queue",
+      "tldr": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.",
+      "tags": [
+        "attention"
+      ],
+      "keywords": [
+        "reading queue",
+        "unread articles",
+        "archives",
+        "obligation"
+      ],
+      "people": [
+        "Alex Rivera"
+      ],
+      "orgs": [],
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 0,
+        "computed_at": "2026-09-06T18:25:24.000Z"
+      },
+      "connections": [],
+      "connections_neighbourhood_ids": [],
+      "summary_markdown": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.\n\nAn unread item does not have to be an unfinished task; a saved article can be available without being a commitment.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 395,
+      "extracted_bytes": 226,
+      "content_sha256": "cc2a4ab502045fba482217f2e700fac16fd82be0006e3ebd3b48b78f6d0690a2",
+      "fetched_at": "2026-09-06T18:25:47.000Z",
+      "created_at": "2026-09-06T18:25:00.000Z",
+      "updated_at": "2026-09-06T18:25:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 4211,
+          "output_tokens": 497,
+          "reasoning_tokens": 205,
+          "cached_input_tokens": 0,
+          "cache_write_tokens": 4211
+        },
+        "openai_embedding_tokens": 1710
+      },
+      "relationship_targets": {}
+    },
+    "rd_FXERR00006": {
+      "id": "rd_FXERR00006",
+      "url": "https://margin.example/spend-capped-essay",
+      "url_hash": "42a38f8f0c60759ede374ffaa3468eaeb014a108fcc340d6ef58b12a2eec2238",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "SpendAdmissionError",
+        "message": "paid spend admission: monthly budget exhausted",
+        "stage": "summarize",
+        "failed_at": "2026-09-05T21:30:37.000Z",
+        "retryable": true
+      },
+      "last_attempt": {
+        "id": "at_FXERR00006",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-05T21:30:03.000Z",
+        "finished_at": "2026-09-05T21:30:37.000Z",
+        "error": {
+          "code": "SpendAdmissionError",
+          "message": "paid spend admission: monthly budget exhausted",
+          "stage": "summarize",
+          "failed_at": "2026-09-05T21:30:37.000Z",
+          "retryable": true
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-05T21:30:00.000Z",
+      "updated_at": "2026-09-05T21:30:37.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXGARDEN01": {
+      "id": "rd_FXGARDEN01",
+      "url": "https://commonplace.example/libraries-are-gardens",
+      "url_hash": "12dfc97ecb043b8d93dbe6bed7c0ac86045d517df4cff2252f5d27313ed28a91",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXGARDEN01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-09-04T10:00:04.000Z",
+        "finished_at": "2026-09-04T10:00:47.000Z"
+      },
+      "title": "Libraries are gardens, not warehouses",
+      "tldr": "An archive grows more useful through care, not accumulation. Revisiting and connecting a small set of readings can do more for understanding than collecting a much larger set.",
+      "tags": [
+        "knowledge",
+        "attention"
+      ],
+      "keywords": [
+        "digital gardens",
+        "archives",
+        "revisiting",
+        "tags",
+        "note-taking"
+      ],
+      "people": [
+        "Julian Park"
+      ],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2,
+        "max": 0.64,
+        "mean": 0.6,
+        "computed_at": "2026-09-04T10:00:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXATTENT01",
+          "reason": "Ellis turns the garden metaphor into a design principle: optimize for a useful return visit."
+        },
+        {
+          "id": "rd_FXPENDNG01",
+          "reason": "The pending essay applies the return-visit principle to slow work; it will appear here once processing finishes."
+        },
+        {
+          "id": "rd_FXERR00002",
+          "reason": "A related reading on curated queues failed to process; retry it to complete the connection."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXATTENT01",
+        "rd_FXFRICTN01",
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "An archive grows more useful through care, not accumulation. Revisiting and connecting a small set of readings can do more for understanding than collecting a much larger set.\n\nTags work as paths back into a question rather than a perfect classification system; an imperfect collection you visit teaches more than a perfect one you maintain.\n\nThe maintenance itself is thinking: letting older readings change meaning as your interests change is the work the garden metaphor names.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 815,
+      "extracted_bytes": 623,
+      "content_sha256": "4541c65ffbbdceaca8c4c5c65daf878ca4f27a106774045a7e4df52a33ab9d5a",
+      "fetched_at": "2026-09-04T10:00:47.000Z",
+      "created_at": "2026-09-04T10:00:00.000Z",
+      "updated_at": "2026-09-04T10:00:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 6908,
+          "output_tokens": 598,
+          "reasoning_tokens": 276,
+          "cached_input_tokens": 4800,
+          "cache_write_tokens": 2108
+        },
+        "openai_embedding_tokens": 1976
+      },
+      "relationship_targets": {
+        "rd_FXPENDNG01": {
+          "url": "https://fieldnotes.example/making-room-for-slow-work",
+          "status": "pending"
+        },
+        "rd_FXERR00002": {
+          "url": "https://consent-walls.example/teaser-article",
+          "status": "failed"
+        },
+        "rd_FXATTENT01": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "status": "ready",
+          "title": "A quieter internet is a choice we can make"
+        }
+      }
+    },
+    "rd_FXERR00007": {
+      "id": "rd_FXERR00007",
+      "url": "https://small-hours.example/queue-exhausted-essay",
+      "url_hash": "481223df6cf92c6157ee451bec4c96e3b1e81eac5c3c83e689105a576c9ed099",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "QueueRetriesExhaustedError",
+        "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+        "stage": "summarize",
+        "failed_at": "2026-09-04T07:27:03.000Z",
+        "retryable": true
+      },
+      "last_attempt": {
+        "id": "at_FXERR00007",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-04T07:12:03.000Z",
+        "finished_at": "2026-09-04T07:27:03.000Z",
+        "error": {
+          "code": "QueueRetriesExhaustedError",
+          "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+          "stage": "summarize",
+          "failed_at": "2026-09-04T07:27:03.000Z",
+          "retryable": true
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-04T07:12:00.000Z",
+      "updated_at": "2026-09-04T07:27:03.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXFRICTN01": {
+      "id": "rd_FXFRICTN01",
+      "url": "https://adjacent.example/the-case-for-a-little-friction",
+      "url_hash": "380b28f37fb6caf108dbd04618576ed2d6aee4a0c05954409dbf2d5d83d5b663",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXFRICTN01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-09-02T13:45:04.000Z",
+        "finished_at": "2026-09-02T13:45:47.000Z"
+      },
+      "title": "The case for a little friction",
+      "tldr": "Not every interruption is a distraction. A deliberate pause or well-placed question can help a reader notice assumptions that a seamless interface would let pass.",
+      "tags": [
+        "design"
+      ],
+      "keywords": [
+        "friction",
+        "interruption",
+        "reading interfaces",
+        "user control"
+      ],
+      "people": [
+        "Leah Chen"
+      ],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2,
+        "max": 0.57,
+        "mean": 0.55,
+        "computed_at": "2026-09-02T13:45:24.000Z"
+      },
+      "connections": [],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXATTENT01",
+        "rd_FXGARDEN01"
+      ],
+      "tensions": [
+        {
+          "id": "rd_FXATTENT01",
+          "kind": "contradicts",
+          "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit.",
+          "computed_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "tensions_judged": [
+        {
+          "id": "rd_FXATTENT01",
+          "judged_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "summary_markdown": "Not every interruption is a distraction. A deliberate pause or well-placed question can help a reader notice assumptions that a seamless interface would let pass.\n\nUseful interruption has a shape: it is relevant, optional, and easy to return from. Friction is useful when the reader understands its purpose.\n\nLeave the starting point visible and let the reader choose — that is the difference between a deepening tangent and a lost thread.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 729,
+      "extracted_bytes": 544,
+      "content_sha256": "544f8f3d8fd6935cc380108c09fc9d98e79c9879faf93794461aa6b6d333ded3",
+      "fetched_at": "2026-09-02T13:45:47.000Z",
+      "created_at": "2026-09-02T13:45:00.000Z",
+      "updated_at": "2026-09-02T13:45:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 5433,
+          "output_tokens": 553,
+          "reasoning_tokens": 241,
+          "cached_input_tokens": 3900,
+          "cache_write_tokens": 1533
+        },
+        "openai_embedding_tokens": 1892
+      },
+      "relationship_targets": {
+        "rd_FXATTENT01": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "status": "ready",
+          "title": "A quieter internet is a choice we can make"
+        }
+      }
+    },
+    "rd_FXERR00008": {
+      "id": "rd_FXERR00008",
+      "url": "https://working-notes.example/unexpected-failure-essay",
+      "url_hash": "377a1429d223c1daa5c704f13d67434296cea548855112dddb1b63ffc617a451",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "TypeError",
+        "message": "Cannot read properties of undefined (reading 'score')",
+        "stage": "query_similar",
+        "failed_at": "2026-08-30T19:47:23.000Z"
+      },
+      "last_attempt": {
+        "id": "at_FXERR00008",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "query_similar",
+        "started_at": "2026-08-30T19:47:03.000Z",
+        "finished_at": "2026-08-30T19:47:23.000Z",
+        "error": {
+          "code": "TypeError",
+          "message": "Cannot read properties of undefined (reading 'score')",
+          "stage": "query_similar",
+          "failed_at": "2026-08-30T19:47:23.000Z"
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-08-30T19:47:00.000Z",
+      "updated_at": "2026-08-30T19:47:23.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXMAXNAME1": {
+      "id": "rd_FXMAXNAME1",
+      "url": "https://working-notes.example/tools-for-thinking",
+      "url_hash": "e8afc49a81ba1d084bb659bbd8f583004456d04d608211e7efeca8c98465f14a",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXMAXNAME1",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-29T15:20:04.000Z",
+        "finished_at": "2026-08-29T15:20:47.000Z"
+      },
+      "title": "What we lose when every tool for thinking becomes a place to organize, optimize, and measure the work instead of actually doing it",
+      "tldr": "The systems around creative work can quietly become the work itself. A useful tool makes it easier to begin, and knows when to get out of the way.",
+      "tags": [
+        "knowledge",
+        "design"
+      ],
+      "keywords": [
+        "productivity",
+        "organization",
+        "creative work",
+        "maintenance",
+        "tools"
+      ],
+      "people": [],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 3,
+        "max": 0.72,
+        "mean": 0.66,
+        "computed_at": "2026-08-29T15:20:24.000Z"
+      },
+      "connections": [],
+      "connections_neighbourhood_ids": [
+        "rd_FXATTENT01",
+        "rd_FXGARDEN01",
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "The systems around creative work can quietly become the work itself. A useful tool makes it easier to begin, and knows when to get out of the way.\n\nMeasure whether a system helps you begin the actual task, and reconsider routines that create more maintenance than insight.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 611,
+      "extracted_bytes": 337,
+      "content_sha256": "24e3789cd903bad476e8a6da22e5491ecdc1e95ae8831ffee31f47e66a69c0ac",
+      "fetched_at": "2026-08-29T15:20:47.000Z",
+      "created_at": "2026-08-29T15:20:00.000Z",
+      "updated_at": "2026-08-29T15:20:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 5529,
+          "output_tokens": 561,
+          "reasoning_tokens": 258,
+          "cached_input_tokens": 4100,
+          "cache_write_tokens": 1429
+        },
+        "openai_embedding_tokens": 1786
+      },
+      "relationship_targets": {}
+    },
+    "rd_FXMDPAGE01": {
+      "id": "rd_FXMDPAGE01",
+      "url": "https://notes.example/slow-reading-week",
+      "url_hash": "b6ade2c1d3bcbc205f17b72c265ead29d133caa95fefe5bdc3a0d167becfef84",
+      "source_type": "markdown",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXMDPAGE01",
+        "trigger": "import",
+        "status": "succeeded",
+        "stage": "write_indexes",
+        "started_at": "2026-08-28T08:30:04.000Z",
+        "finished_at": "2026-08-28T08:30:39.000Z"
+      },
+      "title": "Slow reading week",
+      "tldr": "A one-week experiment in reading three long pieces instead of thirty short ones, kept as a single log with one standing question.",
+      "tags": [
+        "notes",
+        "reading"
+      ],
+      "keywords": [
+        "slow reading",
+        "reading log",
+        "single question",
+        "note-taking"
+      ],
+      "people": [],
+      "orgs": [],
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 1,
+        "max": 0.41,
+        "mean": 0.41,
+        "computed_at": "2026-08-28T08:30:16.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXATTENT01",
+          "reason": "The week's standing question came from Ellis's argument for deliberate reading."
+        }
+      ],
+      "connections_neighbourhood_ids": [
+        "rd_FXATTENT01",
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "A one-week experiment in reading three long pieces instead of thirty short ones, kept as a single log with one standing question.\n\nStarting was easier with the question already open; rereading replaced new tabs; and the Friday summary proved more useful than anything saved that week.",
+      "content_type": "text/markdown; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 498,
+      "extracted_bytes": 498,
+      "content_sha256": "23c4c832e5bf7739e9cb8cccbe8e63603fe8243110da4ab8c4812696bcf27283",
+      "fetched_at": "2026-08-28T08:30:39.000Z",
+      "created_at": "2026-08-28T08:30:00.000Z",
+      "updated_at": "2026-08-28T08:30:39.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 3987,
+          "output_tokens": 468,
+          "reasoning_tokens": 197,
+          "cached_input_tokens": 0,
+          "cache_write_tokens": 3987
+        },
+        "openai_embedding_tokens": 1698
+      },
+      "relationship_targets": {
+        "rd_FXATTENT01": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "status": "ready",
+          "title": "A quieter internet is a choice we can make"
+        }
+      }
+    },
+    "rd_FXRAWSRC01": {
+      "id": "rd_FXRAWSRC01",
+      "url": "https://margin.example/the-web-we-can-no-longer-revisit",
+      "url_hash": "2ee032b0371b8aa76cc0e74ef2f14d9fc7aa872c1c5319ccfcf9ca87098e253e",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXRAWSRC01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-25T11:05:04.000Z",
+        "finished_at": "2026-08-25T11:05:45.000Z"
+      },
+      "title": "The web we can no longer revisit",
+      "tldr": "As pages disappear or move behind access restrictions, saved summaries become a partial memory of the web. They are useful, but cannot replace the original evidence.",
+      "tags": [
+        "knowledge"
+      ],
+      "keywords": [
+        "link rot",
+        "paywalls",
+        "source durability",
+        "preservation"
+      ],
+      "people": [
+        "Nora Vale"
+      ],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1,
+        "max": 0.48,
+        "mean": 0.48,
+        "computed_at": "2026-08-25T11:05:22.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXGARDEN01",
+          "reason": "Maintaining a library also means acknowledging what has been lost."
+        }
+      ],
+      "connections_neighbourhood_ids": [
+        "rd_FXGARDEN01",
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "As pages disappear or move behind access restrictions, saved summaries become a partial memory of the web. They are useful, but cannot replace the original evidence.\n\nA saved summary and a captured source have different roles, and showing missing source content explicitly lets readers judge what is still available.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "raw_only",
+      "content_bytes": 378,
+      "content_sha256": "6f1b5ef57ce6255e769c1c477a5f3e4b943b032cfc4198f75af721833b1065b6",
+      "fetched_at": "2026-08-25T11:05:45.000Z",
+      "created_at": "2026-08-25T11:05:00.000Z",
+      "updated_at": "2026-08-25T11:05:45.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 4660,
+          "output_tokens": 502,
+          "reasoning_tokens": 219,
+          "cached_input_tokens": 3500,
+          "cache_write_tokens": 1160
+        },
+        "openai_embedding_tokens": 1744
+      },
+      "relationship_targets": {
+        "rd_FXGARDEN01": {
+          "url": "https://commonplace.example/libraries-are-gardens",
+          "status": "ready",
+          "title": "Libraries are gardens, not warehouses"
+        }
+      }
+    },
+    "rd_FXYTDEGRD1": {
+      "id": "rd_FXYTDEGRD1",
+      "url": "https://www.youtube.com/watch?v=FxFixture01",
+      "url_hash": "1755b1b0ec03efb57a3a8be2581f1998f72a6bbcd73d8747d519020f7982fb0a",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXYTDEGRD1",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-20T16:40:04.000Z",
+        "finished_at": "2026-08-20T16:40:47.000Z"
+      },
+      "title": "Building a quiet reading app — chapter 4",
+      "tldr": "Chapter 4 of a build log: why the reading queue is not a feed, and what it took to make the library feel like a place you can leave and come back to.",
+      "tags": [
+        "software",
+        "design"
+      ],
+      "keywords": [
+        "reading app",
+        "build log",
+        "reading queue",
+        "product design"
+      ],
+      "people": [],
+      "orgs": [
+        "Quiet Build Studio"
+      ],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1,
+        "max": 0.44,
+        "mean": 0.44,
+        "computed_at": "2026-08-20T16:40:24.000Z"
+      },
+      "connections": [],
+      "connections_neighbourhood_ids": [
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "Chapter 4 of a build log: why the reading queue is not a feed, and what it took to make the library feel like a place you can leave and come back to.\n\nThe video walks through the quiet-library idea, the queue-versus-feed distinction, and a demo of what broke along the way.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 531,
+      "extracted_bytes": 447,
+      "content_sha256": "d2d508ea06197a0abc308c9b8f2362f5addd54dee478adaf03a421d297a99d87",
+      "enrichment_degradation": {
+        "source": "youtube",
+        "tier": "transcript",
+        "code": "YoutubeEnrichmentParseError",
+        "message": "timedtext response was empty or unparseable"
+      },
+      "fetched_at": "2026-08-20T16:40:47.000Z",
+      "created_at": "2026-08-20T16:40:00.000Z",
+      "updated_at": "2026-08-20T16:40:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 5122,
+          "output_tokens": 521,
+          "reasoning_tokens": 230,
+          "cached_input_tokens": 3700,
+          "cache_write_tokens": 1422
+        },
+        "openai_embedding_tokens": 1803
+      },
+      "relationship_targets": {}
+    },
+    "rd_FXPAST0001": {
+      "id": "rd_FXPAST0001",
+      "url": "https://adjacent.example/before-the-archive",
+      "url_hash": "dee29ac79070d6358a16091e8e666a55b0b5338c1cc27b913f32d74c77185586",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXPAST0001",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-04-14T09:15:04.000Z",
+        "finished_at": "2026-04-14T09:15:47.000Z"
+      },
+      "title": "Before the archive",
+      "tldr": "An early note making the case for saving pages: an archive is a bet that a future question will want what a page said.",
+      "tags": [
+        "archives"
+      ],
+      "keywords": [
+        "archiving",
+        "saved pages",
+        "future questions"
+      ],
+      "people": [],
+      "orgs": [],
+      "connections": [],
+      "connections_neighbourhood_ids": [],
+      "summary_markdown": "An early note making the case for saving pages: an archive is a bet that a future question will want what a page said.\n\nKeep the original text beside whatever summary replaces it, so the record can still be checked.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 348,
+      "extracted_bytes": 186,
+      "content_sha256": "2460bfdbe910dd7f1edbb7027c774a78d3e581ace49d5293ceb4e2114ddc8444",
+      "fetched_at": "2026-04-14T09:15:47.000Z",
+      "created_at": "2026-04-14T09:15:00.000Z",
+      "updated_at": "2026-04-14T09:15:47.000Z",
+      "usage": {
+        "anthropic_input_tokens": 12840,
+        "anthropic_output_tokens": 733,
+        "openai_embedding_tokens": 1902
+      },
+      "relationship_targets": {}
+    }
+  },
+  "list_index": {
+    "version": 1,
+    "items": [
+      {
+        "id": "rd_FXPENDNG01",
+        "key_prefix": "readings/2026/09/11T100000Z-rd_FXPENDNG01",
+        "url": "https://fieldnotes.example/making-room-for-slow-work",
+        "status": "pending",
+        "created_at": "2026-09-11T10:00:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "active_attempt": {
+          "id": "at_FXPENDNG01",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T10:00:00.000Z"
+        }
+      },
+      {
+        "id": "rd_FXERR00001",
+        "key_prefix": "readings/2026/09/10T141000Z-rd_FXERR00001",
+        "url": "https://registration-wall.example/members-only-report",
+        "status": "failed",
+        "created_at": "2026-09-10T14:10:00.000Z",
+        "updated_at": "2026-09-10T14:10:13.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 403: https://registration-wall.example/members-only-report",
+          "stage": "fetch_source",
+          "failed_at": "2026-09-10T14:10:13.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T14:10:03.000Z",
+          "finished_at": "2026-09-10T14:10:13.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 403: https://registration-wall.example/members-only-report",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T14:10:13.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00002",
+        "key_prefix": "readings/2026/09/09T164200Z-rd_FXERR00002",
+        "url": "https://consent-walls.example/teaser-article",
+        "status": "failed",
+        "created_at": "2026-09-09T16:42:00.000Z",
+        "updated_at": "2026-09-09T16:42:37.000Z",
+        "error": {
+          "code": "SourceRejectedError",
+          "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T16:42:37.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00002",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-09T16:42:03.000Z",
+          "finished_at": "2026-09-09T16:42:37.000Z",
+          "error": {
+            "code": "SourceRejectedError",
+            "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+            "stage": "summarize",
+            "failed_at": "2026-09-09T16:42:37.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00003",
+        "key_prefix": "readings/2026/09/09T090500Z-rd_FXERR00003",
+        "url": "https://fieldnotes.example/rate-limited-essay",
+        "status": "failed",
+        "created_at": "2026-09-09T09:05:00.000Z",
+        "updated_at": "2026-09-09T09:05:37.000Z",
+        "error": {
+          "code": "RateLimitedError",
+          "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T09:05:37.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00003",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-09T09:05:03.000Z",
+          "finished_at": "2026-09-09T09:05:37.000Z",
+          "error": {
+            "code": "RateLimitedError",
+            "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+            "stage": "summarize",
+            "failed_at": "2026-09-09T09:05:37.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00004",
+        "key_prefix": "readings/2026/09/08T221800Z-rd_FXERR00004",
+        "url": "https://commonplace.example/embedding-failure-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T22:18:00.000Z",
+        "updated_at": "2026-09-08T22:18:21.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T22:18:21.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00004",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T22:18:03.000Z",
+          "finished_at": "2026-09-08T22:18:21.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T22:18:21.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00005",
+        "key_prefix": "readings/2026/09/08T115500Z-rd_FXERR00005",
+        "url": "https://adjacent.example/expired-key-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T11:55:00.000Z",
+        "updated_at": "2026-09-08T11:55:37.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "stage": "summarize",
+          "failed_at": "2026-09-08T11:55:37.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00005",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-08T11:55:03.000Z",
+          "finished_at": "2026-09-08T11:55:37.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 401: https://api.openai.com/v1/responses",
+            "stage": "summarize",
+            "failed_at": "2026-09-08T11:55:37.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXATTENT01",
+        "key_prefix": "readings/2026/09/07T093000Z-rd_FXATTENT01",
+        "url": "https://fieldnotes.example/2026/a-quieter-internet",
+        "status": "ready",
+        "created_at": "2026-09-07T09:30:00.000Z",
+        "updated_at": "2026-09-07T09:30:47.000Z",
+        "title": "A quieter internet is a choice we can make",
+        "tldr": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.",
+        "tags": [
+          "attention",
+          "design"
+        ],
+        "keywords": [
+          "attention",
+          "deliberate reading",
+          "personal library",
+          "return visit",
+          "tools for thought"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.61,
+          "mean": 0.58,
+          "computed_at": "2026-09-07T09:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXATTENT01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-07T09:30:04.000Z",
+          "finished_at": "2026-09-07T09:30:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXSPARSE01",
+        "key_prefix": "readings/2026/09/06T182500Z-rd_FXSPARSE01",
+        "url": "https://small-hours.example/against-the-endless-queue",
+        "status": "ready",
+        "created_at": "2026-09-06T18:25:00.000Z",
+        "updated_at": "2026-09-06T18:25:47.000Z",
+        "title": "Against the endless queue",
+        "tldr": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "reading queue",
+          "unread articles",
+          "archives",
+          "obligation"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 0,
+          "computed_at": "2026-09-06T18:25:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXSPARSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-06T18:25:04.000Z",
+          "finished_at": "2026-09-06T18:25:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXERR00006",
+        "key_prefix": "readings/2026/09/05T213000Z-rd_FXERR00006",
+        "url": "https://margin.example/spend-capped-essay",
+        "status": "failed",
+        "created_at": "2026-09-05T21:30:00.000Z",
+        "updated_at": "2026-09-05T21:30:37.000Z",
+        "error": {
+          "code": "SpendAdmissionError",
+          "message": "paid spend admission: monthly budget exhausted",
+          "stage": "summarize",
+          "failed_at": "2026-09-05T21:30:37.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00006",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-05T21:30:03.000Z",
+          "finished_at": "2026-09-05T21:30:37.000Z",
+          "error": {
+            "code": "SpendAdmissionError",
+            "message": "paid spend admission: monthly budget exhausted",
+            "stage": "summarize",
+            "failed_at": "2026-09-05T21:30:37.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXGARDEN01",
+        "key_prefix": "readings/2026/09/04T100000Z-rd_FXGARDEN01",
+        "url": "https://commonplace.example/libraries-are-gardens",
+        "status": "ready",
+        "created_at": "2026-09-04T10:00:00.000Z",
+        "updated_at": "2026-09-04T10:00:47.000Z",
+        "title": "Libraries are gardens, not warehouses",
+        "tldr": "An archive grows more useful through care, not accumulation. Revisiting and connecting a small set of readings can do more for understanding than collecting a much larger set.",
+        "tags": [
+          "knowledge",
+          "attention"
+        ],
+        "keywords": [
+          "digital gardens",
+          "archives",
+          "revisiting",
+          "tags",
+          "note-taking"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.64,
+          "mean": 0.6,
+          "computed_at": "2026-09-04T10:00:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXGARDEN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-04T10:00:04.000Z",
+          "finished_at": "2026-09-04T10:00:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXERR00007",
+        "key_prefix": "readings/2026/09/04T071200Z-rd_FXERR00007",
+        "url": "https://small-hours.example/queue-exhausted-essay",
+        "status": "failed",
+        "created_at": "2026-09-04T07:12:00.000Z",
+        "updated_at": "2026-09-04T07:27:03.000Z",
+        "error": {
+          "code": "QueueRetriesExhaustedError",
+          "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+          "stage": "summarize",
+          "failed_at": "2026-09-04T07:27:03.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00007",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-04T07:12:03.000Z",
+          "finished_at": "2026-09-04T07:27:03.000Z",
+          "error": {
+            "code": "QueueRetriesExhaustedError",
+            "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+            "stage": "summarize",
+            "failed_at": "2026-09-04T07:27:03.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXFRICTN01",
+        "key_prefix": "readings/2026/09/02T134500Z-rd_FXFRICTN01",
+        "url": "https://adjacent.example/the-case-for-a-little-friction",
+        "status": "ready",
+        "created_at": "2026-09-02T13:45:00.000Z",
+        "updated_at": "2026-09-02T13:45:47.000Z",
+        "title": "The case for a little friction",
+        "tldr": "Not every interruption is a distraction. A deliberate pause or well-placed question can help a reader notice assumptions that a seamless interface would let pass.",
+        "tags": [
+          "design"
+        ],
+        "keywords": [
+          "friction",
+          "interruption",
+          "reading interfaces",
+          "user control"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.57,
+          "mean": 0.55,
+          "computed_at": "2026-09-02T13:45:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXFRICTN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-02T13:45:04.000Z",
+          "finished_at": "2026-09-02T13:45:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXERR00008",
+        "key_prefix": "readings/2026/08/30T194700Z-rd_FXERR00008",
+        "url": "https://working-notes.example/unexpected-failure-essay",
+        "status": "failed",
+        "created_at": "2026-08-30T19:47:00.000Z",
+        "updated_at": "2026-08-30T19:47:23.000Z",
+        "error": {
+          "code": "TypeError",
+          "message": "Cannot read properties of undefined (reading 'score')",
+          "stage": "query_similar",
+          "failed_at": "2026-08-30T19:47:23.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXERR00008",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "query_similar",
+          "started_at": "2026-08-30T19:47:03.000Z",
+          "finished_at": "2026-08-30T19:47:23.000Z",
+          "error": {
+            "code": "TypeError",
+            "message": "Cannot read properties of undefined (reading 'score')",
+            "stage": "query_similar",
+            "failed_at": "2026-08-30T19:47:23.000Z"
+          }
+        }
+      },
+      {
+        "id": "rd_FXMAXNAME1",
+        "key_prefix": "readings/2026/08/29T152000Z-rd_FXMAXNAME1",
+        "url": "https://working-notes.example/tools-for-thinking",
+        "status": "ready",
+        "created_at": "2026-08-29T15:20:00.000Z",
+        "updated_at": "2026-08-29T15:20:47.000Z",
+        "title": "What we lose when every tool for thinking becomes a place to organize, optimize, and measure the work instead of actually doing it",
+        "tldr": "The systems around creative work can quietly become the work itself. A useful tool makes it easier to begin, and knows when to get out of the way.",
+        "tags": [
+          "knowledge",
+          "design"
+        ],
+        "keywords": [
+          "productivity",
+          "organization",
+          "creative work",
+          "maintenance",
+          "tools"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 3,
+          "max": 0.72,
+          "mean": 0.66,
+          "computed_at": "2026-08-29T15:20:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXMAXNAME1",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-29T15:20:04.000Z",
+          "finished_at": "2026-08-29T15:20:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXMDPAGE01",
+        "key_prefix": "readings/2026/08/28T083000Z-rd_FXMDPAGE01",
+        "url": "https://notes.example/slow-reading-week",
+        "status": "ready",
+        "created_at": "2026-08-28T08:30:00.000Z",
+        "updated_at": "2026-08-28T08:30:39.000Z",
+        "title": "Slow reading week",
+        "tldr": "A one-week experiment in reading three long pieces instead of thirty short ones, kept as a single log with one standing question.",
+        "tags": [
+          "notes",
+          "reading"
+        ],
+        "keywords": [
+          "slow reading",
+          "reading log",
+          "single question",
+          "note-taking"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 1,
+          "max": 0.41,
+          "mean": 0.41,
+          "computed_at": "2026-08-28T08:30:16.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXMDPAGE01",
+          "trigger": "import",
+          "status": "succeeded",
+          "stage": "write_indexes",
+          "started_at": "2026-08-28T08:30:04.000Z",
+          "finished_at": "2026-08-28T08:30:39.000Z"
+        }
+      },
+      {
+        "id": "rd_FXRAWSRC01",
+        "key_prefix": "readings/2026/08/25T110500Z-rd_FXRAWSRC01",
+        "url": "https://margin.example/the-web-we-can-no-longer-revisit",
+        "status": "ready",
+        "created_at": "2026-08-25T11:05:00.000Z",
+        "updated_at": "2026-08-25T11:05:45.000Z",
+        "title": "The web we can no longer revisit",
+        "tldr": "As pages disappear or move behind access restrictions, saved summaries become a partial memory of the web. They are useful, but cannot replace the original evidence.",
+        "tags": [
+          "knowledge"
+        ],
+        "keywords": [
+          "link rot",
+          "paywalls",
+          "source durability",
+          "preservation"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.48,
+          "mean": 0.48,
+          "computed_at": "2026-08-25T11:05:22.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXRAWSRC01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-25T11:05:04.000Z",
+          "finished_at": "2026-08-25T11:05:45.000Z"
+        }
+      },
+      {
+        "id": "rd_FXYTDEGRD1",
+        "key_prefix": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1",
+        "url": "https://www.youtube.com/watch?v=FxFixture01",
+        "status": "ready",
+        "created_at": "2026-08-20T16:40:00.000Z",
+        "updated_at": "2026-08-20T16:40:47.000Z",
+        "title": "Building a quiet reading app — chapter 4",
+        "tldr": "Chapter 4 of a build log: why the reading queue is not a feed, and what it took to make the library feel like a place you can leave and come back to.",
+        "tags": [
+          "software",
+          "design"
+        ],
+        "keywords": [
+          "reading app",
+          "build log",
+          "reading queue",
+          "product design"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.44,
+          "mean": 0.44,
+          "computed_at": "2026-08-20T16:40:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXYTDEGRD1",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-20T16:40:04.000Z",
+          "finished_at": "2026-08-20T16:40:47.000Z"
+        },
+        "enrichment_degradation": {
+          "source": "youtube",
+          "tier": "transcript",
+          "code": "YoutubeEnrichmentParseError",
+          "message": "timedtext response was empty or unparseable"
+        }
+      },
+      {
+        "id": "rd_FXPAST0001",
+        "key_prefix": "readings/2026/04/14T091500Z-rd_FXPAST0001",
+        "url": "https://adjacent.example/before-the-archive",
+        "status": "ready",
+        "created_at": "2026-04-14T09:15:00.000Z",
+        "updated_at": "2026-04-14T09:15:47.000Z",
+        "title": "Before the archive",
+        "tldr": "An early note making the case for saving pages: an archive is a bet that a future question will want what a page said.",
+        "tags": [
+          "archives"
+        ],
+        "keywords": [
+          "archiving",
+          "saved pages",
+          "future questions"
+        ],
+        "last_attempt": {
+          "id": "at_FXPAST0001",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-04-14T09:15:04.000Z",
+          "finished_at": "2026-04-14T09:15:47.000Z"
+        }
+      }
+    ]
+  },
+  "removed_target_id": "rd_FXVANSHD01"
+}

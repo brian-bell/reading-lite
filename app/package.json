@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@tanstack/react-query": "5.102.8",
@@ -25,7 +26,9 @@
     "rehype-sanitize": "6.0.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@cloudflare/vite-plugin": "1.54.7",
+    "@playwright/test": "1.61.1",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",
@@ -38,5 +41,8 @@
     "vite": "8.3.0",
     "vitest": "4.1.11",
     "wrangler": "4.131.0"
+  },
+  "overrides": {
+    "playwright-core": "1.61.1"
   }
 }

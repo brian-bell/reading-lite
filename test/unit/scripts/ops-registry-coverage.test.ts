@@ -111,7 +111,7 @@ describe("ops registry completeness", () => {
 
   it("exposes ops as the only operator entry point in package.json", async () => {
     const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
-    const DEV_SCRIPTS = new Set(["predev", "dev", "dev:setup", "seed:local", "types:generate", "types:check", "typecheck", "test", "test:quiet", "test:watch"]);
+    const DEV_SCRIPTS = new Set(["predev", "dev", "dev:setup", "seed:local", "fixtures:app", "types:generate", "types:check", "typecheck", "test", "test:quiet", "test:watch"]);
     const operatorScripts = Object.keys(pkg.scripts).filter((s) => !DEV_SCRIPTS.has(s));
     expect(operatorScripts).toEqual(["ops"]);
   });
@@ -127,7 +127,9 @@ describe("ops registry completeness", () => {
     // Development-infrastructure scripts, not operator workflows.
     // seed-local-fixtures.ts writes only to the local R2 store (--local is
     // hardcoded); it is the `npm run seed:local` dev workflow.
-    const allowed = new Set(["ops.ts", "dev-setup.ts", "seed-local-fixtures.ts", "require-dev-node.ts", "cloud-agent-install.ts", "test-quiet.mjs",
+    // emit-app-fixture-pack.ts only rewrites the committed fixture snapshot
+    // app/'s browser evidence serves; it is `npm run fixtures:app`.
+    const allowed = new Set(["ops.ts", "dev-setup.ts", "seed-local-fixtures.ts", "emit-app-fixture-pack.ts", "require-dev-node.ts", "cloud-agent-install.ts", "test-quiet.mjs",
       "control-plane-env.ts", "staging-env.ts"]);
     const strays = entries.filter((e) => /\.(ts|mjs|js)$/.test(e) && !allowed.has(e));
     expect(strays).toEqual([]);
