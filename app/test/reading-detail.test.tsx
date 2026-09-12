@@ -18,7 +18,7 @@ import { AppFrame } from "../src/components/AppFrame";
 import { PageHeading } from "../src/components/PageHeading";
 import { ReadingPage } from "../src/components/ReadingPage";
 import { whoamiQueryKey, type Identity } from "../src/identity";
-import { readingQueryKey, type Reading } from "../src/reading";
+import { readingQueryKey, type ProcessingStage, type Reading } from "../src/reading";
 import { readingQueryOptions } from "../src/reading-query";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
@@ -236,6 +236,60 @@ describe("pending and failed readings", () => {
     expect(heading()).toBe(failed.url);
     expect(screen.getByText("registration-wall.example")).toBeInTheDocument();
     expect(screen.getByLabelText("Processing status")).toBeInTheDocument();
+  });
+});
+
+// A reprocess of a ready reading keeps `status: "ready"` and adds a running
+// active_attempt (backend `reprocessPending`), so status alone cannot answer
+// "is something happening now?". The acceptance matrix puts this reading in the
+// Pending row — status card at the top, prior ready content below.
+describe("a ready reading being reprocessed", () => {
+  /** What reprocessPending writes over a ready prior: spread, running attempt, new updated_at. */
+  function reprocessing(reading: Reading, stage?: ProcessingStage): Reading {
+    return {
+      ...reading,
+      active_attempt: {
+        id: "at_FXREPROC01",
+        trigger: "reprocess",
+        status: "running",
+        ...(stage === undefined ? {} : { stage }),
+        started_at: "2026-09-12T08:00:00.000Z",
+      },
+      updated_at: "2026-09-12T08:00:00.000Z",
+    };
+  }
+
+  it("shows the processing card even though the manifest still says ready", async () => {
+    backendAnswers(200, reprocessing(readings[ATTENTION], "summarize"));
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getByLabelText("Processing status")).toBeInTheDocument();
+    expect(screen.getByText("Summarizing.")).toBeInTheDocument();
+  });
+
+  // The reader is looking at the previous summary while this runs, so "still
+  // being processed" would be a lie about what is on the page.
+  it("says the reading is being processed again, not processed for the first time", async () => {
+    backendAnswers(200, reprocessing(readings[ATTENTION]));
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getByText("This reading is being processed again.")).toBeInTheDocument();
+    expect(screen.queryByText("This reading is still being processed.")).not.toBeInTheDocument();
+  });
+
+  it("keeps the reading's own heading and metadata above the status", async () => {
+    backendAnswers(200, reprocessing(readings[ATTENTION]));
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(heading()).toBe(readings[ATTENTION].title);
+    expect(screen.getByText("fieldnotes.example")).toBeInTheDocument();
+  });
+
+  it("leaves a ready reading whose last attempt finished without a status card", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.queryByLabelText("Processing status")).not.toBeInTheDocument();
   });
 });
 
