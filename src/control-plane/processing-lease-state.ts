@@ -102,6 +102,7 @@ export async function acquireLease(
   storage: DurableObjectStorage,
   opts: { id: string; limit: number; nowMs: number },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   await sweepExpiredLeases(storage, opts.nowMs);
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
@@ -150,6 +151,7 @@ export async function renewLease(
   storage: DurableObjectStorage,
   opts: { id: string; fence: string; nowMs: number; preserveInFlight?: boolean },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
   const verdict = fenceMismatchOrIdleExpired(existing, opts);
@@ -170,6 +172,7 @@ export async function pauseLease(
   storage: DurableObjectStorage,
   opts: { id: string; fence: string; nowMs: number },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
   const verdict = fenceMismatchOrIdleExpired(existing, opts);
@@ -198,76 +201,56 @@ export async function releaseLease(
   return { ok: true, fence: opts.fence, alreadyRunning: false, expiresAt: existing.expiresAt };
 }
 
-// #256 dead-lease recovery. An inFlight row whose holder died is invisible to
-// the sweep (B1: sweeping inFlight would let a second paid start overlap the
-// fence), so recovery is explicit. peekLease reads the row without touching
-// capacity — acquire would create a fresh row this path never uses and would
-// contend with the live foreign rows that fill the cap in exactly the wedged
-// state being recovered. clearDeadLease removes the row only under
-// compare-and-set on the observed expiresAt — the operator's fence stand-in,
-// since fences never leave the guard. A row that moved (renewed by a live
-// holder's heartbeat, paused, released, re-acquired) refuses rather than
-// steals.
-
+// Recovery observations contain no dispatch credentials.
 export type LeasePeek =
   | { present: false }
-  | { present: true; fence: string; expiresAt: number; inFlight: boolean };
+  | { present: true; expiresAt: number; inFlight: boolean };
 
-export async function peekLease(
-  storage: DurableObjectStorage,
-  opts: { id: string },
-): Promise<LeasePeek> {
-  const lease = asLease(await storage.get(leaseStorageKey(opts.id)));
-  if (!lease) return { present: false };
-  return {
-    present: true,
-    fence: lease.fence,
-    expiresAt: lease.expiresAt,
-    inFlight: lease.inFlight,
-  };
+export async function peekLease(storage: DurableObjectStorage, opts: { id: string }): Promise<LeasePeek> {
+  const raw = await storage.get(leaseStorageKey(opts.id));
+  if (raw === undefined) return { present: false };
+  const lease = asLease(raw);
+  if (!lease) throw new Error("invalid stored lease");
+  return { present: true, expiresAt: lease.expiresAt, inFlight: lease.inFlight };
 }
 
 export type DeadLeaseClearDecision =
   | { ok: true; cleared: boolean }
   | { ok: false; reason: "changed" | "not_in_flight" | "not_overdue" };
 
-// Compare-and-set removal of one lease row. `expectedExpiresAt` is the
-// caller's observation of the row at decision time; a row that moved
-// (renewed by a live holder's heartbeat, paused, released, re-acquired)
-// refuses rather than steals. `requireOverdue` (the default) additionally
-// demands that the row's TTL lapsed — the heartbeat-based proof that the
-// holder is dead, which is the operator's and the defer-ceiling path's only
-// evidence. The Worker's terminal/purged recovery passes false: there the
-// proof is that the work is over or its target is gone, not that the holder
-// stopped, and refusing to touch a not-yet-expired row would strand a
-// holder that died seconds after committing.
-export async function clearDeadLease(
-  storage: DurableObjectStorage,
-  opts: { id: string; expectedExpiresAt: number | null; nowMs: number; requireOverdue?: boolean },
-): Promise<DeadLeaseClearDecision> {
-  const key = leaseStorageKey(opts.id);
-  const existing = asLease(await storage.get(key));
-  // Absent is success: the goal is "no orphaned row", and a row legitimately
-  // released or swept already satisfies it. Re-running a completed clear
-  // converges instead of erroring.
-  if (!existing) return { ok: true, cleared: false };
-  // The observed expiresAt is the compare-and-set fence. null means the caller
-  // observed absence, so a row that appeared since is a NEW holder's live
-  // permit; any other mismatch means a heartbeat, pause, or re-acquire moved
-  // the row and the observation is stale.
-  if (opts.expectedExpiresAt === null || existing.expiresAt !== opts.expectedExpiresAt) {
-    return { ok: false, reason: "changed" };
-  }
-  if (!existing.inFlight) {
-    // A paused row is 429-parked, not orphaned: its holder means to resume,
-    // and the ordinary expiry sweep owns its end.
-    return { ok: false, reason: "not_in_flight" };
-  }
-  if (opts.requireOverdue !== false && existing.expiresAt > opts.nowMs) {
-    // Not overdue: the holder may merely be between heartbeats. Only a row
-    // whose TTL lapsed without a renew is evidence the holder is gone.
-    return { ok: false, reason: "not_overdue" };
-  }
-  await storage.delete(key);
+export function checkLeaseRecovery(
+  row: LeasePeek,
+  expectedExpiresAt: number | null,
+  nowMs: number,
+  requireOverdue: boolean,
+): DeadLeaseClearDecision {
+  if (!row.present) return { ok: true, cleared: false };
+  if (row.expiresAt !== expectedExpiresAt) return { ok: false, reason: "changed" };
+  if (!row.inFlight) return { ok: false, reason: "not_in_flight" };
+  if (requireOverdue && row.expiresAt > nowMs) return { ok: false, reason: "not_overdue" };
   return { ok: true, cleared: true };
+}
+
+// Only recovered attempts get a marker. It consumes no capacity and contains
+// no credentials/content. Keep it until tenant teardown: a delayed delivery
+// must never reacquire this attempt, including after recovery dies before the
+// terminal manifest write. User retries mint a different attempt id.
+const retirementKey = (id: string) => `retired-lease:${id}`;
+
+async function isRetired(storage: DurableObjectStorage, id: string): Promise<boolean> {
+  return await storage.get(retirementKey(id)) !== undefined;
+}
+
+// Called under the tenant guard's lock. Persist retirement BEFORE deleting
+// capacity, so a crash or lost response remains safe and replayable.
+export async function retireLease(
+  storage: DurableObjectStorage,
+  opts: { id: string; expectedExpiresAt: number | null; nowMs: number; requireOverdue: boolean },
+): Promise<DeadLeaseClearDecision> {
+  const row = await peekLease(storage, opts);
+  const decision = checkLeaseRecovery(row, opts.expectedExpiresAt, opts.nowMs, opts.requireOverdue);
+  if (!decision.ok) return decision;
+  await storage.put(retirementKey(opts.id), true);
+  if (row.present) await storage.delete(leaseStorageKey(opts.id));
+  return decision;
 }

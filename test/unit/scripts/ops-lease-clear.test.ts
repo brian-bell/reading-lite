@@ -81,7 +81,7 @@ describe("ops system lease-clear", () => {
 
   it("execute re-observes and clears both sides with the fresh snapshot", async () => {
     const h = harness({
-      observations: [observation({ tenant: OVERDUE, global: OVERDUE }), observation({ tenant: OVERDUE, global: OVERDUE })],
+      observations: [observation({ tenant: OVERDUE, global: OVERDUE })],
       outcomes: [CLEARED],
     });
     const exit = await systemLeaseClearCommand.run(
@@ -128,7 +128,7 @@ describe("ops system lease-clear", () => {
     expect(h.err.join("\n")).toContain("paused");
   });
 
-  it("treats a changed verdict on the fresh observation as a live-holder race", async () => {
+  it("re-observes on execute instead of reusing a previous plan", async () => {
     const h = harness({
       observations: [
         observation({ tenant: OVERDUE, global: OVERDUE }),
@@ -136,6 +136,9 @@ describe("ops system lease-clear", () => {
         observation({ tenant: FRESH, global: OVERDUE }),
       ],
     });
+    expect(await systemLeaseClearCommand.run(
+      ["--env", "staging", "--tenant", TENANT, "--attempt", "at_race"], h.deps,
+    )).toBe(0);
     const exit = await systemLeaseClearCommand.run(
       ["--env", "staging", "--tenant", TENANT, "--attempt", "at_race", "--execute"],
       h.deps,
@@ -143,14 +146,13 @@ describe("ops system lease-clear", () => {
     expect(exit).toBe(1);
     expect(h.clearCalls).toHaveLength(0);
     expect(h.err.join("\n")).toContain("not overdue");
-    expect(h.err.join("\n")).toContain("Nothing was cleared");
   });
 
   it("surfaces a DO-side changed refusal without claiming success", async () => {
     const h = harness({
-      observations: [observation({ tenant: OVERDUE, global: OVERDUE }), observation({ tenant: OVERDUE, global: OVERDUE })],
+      observations: [observation({ tenant: OVERDUE, global: OVERDUE })],
       outcomes: [
-        { ok: false, tenant: { ok: false, reason: "changed" }, global: { ok: true, cleared: true } },
+        { ok: false, tenant: { ok: false, reason: "changed" }, global: { ok: false, reason: "peer_refused" } },
       ],
     });
     const exit = await systemLeaseClearCommand.run(
@@ -163,7 +165,7 @@ describe("ops system lease-clear", () => {
 
   it("converges on a re-run: already-absent sides are success", async () => {
     const h = harness({
-      observations: [observation({ tenant: OVERDUE, global: null }), observation({ tenant: OVERDUE, global: null })],
+      observations: [observation({ tenant: OVERDUE, global: null })],
       outcomes: [{ ok: true, tenant: { ok: true, cleared: false }, global: { ok: true, cleared: false } }],
     });
     const exit = await systemLeaseClearCommand.run(

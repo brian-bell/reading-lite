@@ -57,13 +57,10 @@ import {
   DeferPaidWorkError,
   pauseOrReleaseProcessingLeases,
   releaseProcessingLeases,
-  clearOrphanedProcessingLeases,
-  releaseHoldProvesDeadHolder,
   throwIfDeferred,
-  peekProcessingLeaseReleaseHold,
   type ProcessingLeaseHold,
-  type ProcessingLeaseReleaseHold,
 } from "./control-plane/processing-leases";
+import { recoverProcessingLeases } from "./control-plane/processing-lease-recovery";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
@@ -121,12 +118,9 @@ export async function processReading(
         alreadyConfirmed: purged === "tombstone",
       });
       await releaseReadingSlot(env, tenantId, opId);
-      // #256: a purged reading will never have a terminal manifest, so any
-      // inFlight lease rows for this attempt are a dead holder's leftovers
-      // with no other reclaim path. A live holder mid-paid-work here is also
-      // served: its next presentLease fails stale and stops the spend on a
-      // reading that no longer exists.
-      await releaseOrphanedLeasesIfPresent(env, tenantId, opId, "purged_reading", clock);
+      // A purged target cannot finish processing. Retire the attempt and
+      // recover leftover capacity, retrying any unconfirmed cleanup.
+      await recoverLeasesOrDefer(env, tenantId, opId, "purged_reading");
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
@@ -144,7 +138,7 @@ export async function processReading(
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
       await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
-      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId, clock);
+      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
       return;
     }
     validateProcessingCredentials({
@@ -181,24 +175,28 @@ export async function processReading(
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
       await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
-      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId, clock);
+      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
       return;
     }
 
-    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, clock()));
-    if (acquired.kind === "release_only") {
-      await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, acquired.hold, clock);
+    const result = await acquireProcessingLeases(env, tenantId, opId, clock());
+    // A retired attempt can be redelivered after recovery crashed before its
+    // terminal write. Finish recovery without ever acquiring a new work hold.
+    const retired = !result.ok && result.reason === "stale_fence";
+    const acquired = retired ? "already_running" : throwIfDeferred(result);
+    if (acquired === "already_running") {
+      await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, retired);
       return;
     }
-    leases = acquired.hold;
-    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired.hold, clock);
-    await presentLeaseBeforePaidDispatch(env, acquired.hold, clock);
+    leases = acquired;
+    stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
 
     const paidFetch = (stage: "embed_source" | "summarize" | "embed_summary") => createPaidFetch({
       tenantId, attemptId: opId, stage, fetch: services.fetch,
       // Spend admission uses wall time even when artifact timestamps are injected.
       rpc: spendRpcFor(env), now: Date.now,
-      beforeDispatch: () => presentLeaseBeforePaidDispatch(env, acquired.hold, clock),
+      beforeDispatch: () => presentLeaseBeforePaidDispatch(env, acquired, clock),
       onAuthorizedDispatch: async () => {
         if (stage !== "summarize") return;
         // Spend denial must not consume a reading slot. Commit only once the
@@ -269,7 +267,7 @@ export async function processReading(
           readingSlotConsumed = true;
           return { reading: cachedSummary.reading, usage: cachedSummary.usage };
         }
-        await presentLeaseBeforePaidDispatch(env, acquired.hold, clock);
+        await presentLeaseBeforePaidDispatch(env, acquired, clock);
         const result = await summarizeReading(
           {
             url: args.url,
@@ -301,7 +299,7 @@ export async function processReading(
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
-    await presentLeaseBeforePaidDispatch(env, acquired.hold, clock);
+    await presentLeaseBeforePaidDispatch(env, acquired, clock);
     const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: paidFetch("embed_summary"),
@@ -464,61 +462,33 @@ export async function processReading(
   }
 }
 
-// #256 orphaned inFlight lease recovery. A dead attempt's tenant+global rows
-// are never swept (B1: sweeping inFlight would let a second paid start overlap
-// the fence), so the deliveries that outlive it are the only automatic
-// reclamation — plus the operator's compare-and-set clear. All three paths
-// share one rule: the hold is release-only, and it fires only when the work is
-// provably over (terminal manifest, purged reading) or provably abandoned
-// (the 24h defer ceiling). Never on the say-so of a clock alone, and never
-// while the manifest is unreadable.
+// Recovery policy belongs to the reading lifecycle. Lease observations,
+// retirement, paired cleanup and partial failures belong to the recovery
+// authority. No unconfirmed cleanup may consume the last queue delivery.
+class LiveHolderDeferError extends DeferPaidWorkError {}
 
-// Shared tail: log the recovery (tenant, attempt, per-side age — no fences,
-// credentials, or reading content), then clear ATOMICALLY. The compare-and-set
-// rides the expiresAt each side was observed with, so a holder that renewed
-// between observation and clear refuses instead of losing its rows to a
-// check-then-act race.
-async function releaseOrphanedLeases(
+function manifestIsProductionTerminal(manifest: Manifest | null): boolean {
+  return manifest !== null && manifest.active_attempt === undefined &&
+    (manifest.status === "ready" || manifest.status === "failed");
+}
+
+async function recoverLeasesOrDefer(
   env: Env,
-  hold: ProcessingLeaseReleaseHold,
-  reason: "terminal_manifest" | "defer_expired" | "purged_reading",
-  nowMs: number,
+  tenantId: string,
+  attemptId: string,
+  reason: "terminal_manifest" | "purged_reading" | "defer_expired" | "retired_attempt",
 ): Promise<void> {
-  logOrphanedLeaseRecovery(hold, reason, nowMs);
-  // requireOverdue:false — the caller's proof is the work state (terminal
-  // manifest or purged reading), not the row's remaining TTL. The decision is
-  // deliberately ignored here: nothing downstream terminalizes on it, and a
-  // refused (renewed) row belongs to a holder that releases its own.
-  await clearOrphanedProcessingLeases(env, hold, undefined, { requireOverdue: false });
+  const outcome = await recoverProcessingLeases(env, tenantId, attemptId, {
+    requireOverdue: reason === "defer_expired" || reason === "retired_attempt",
+  });
+  if (outcome.kind !== "completed") throw new LiveHolderDeferError();
+  if (outcome.result.tenant.ok && outcome.result.global.ok &&
+      (outcome.result.tenant.cleared || outcome.result.global.cleared)) {
+    console.warn(JSON.stringify({ event: "processing_lease_orphan_released",
+      reason, tenant_id: tenantId, attempt_id: attemptId }));
+  }
 }
 
-function logOrphanedLeaseRecovery(
-  hold: ProcessingLeaseReleaseHold,
-  reason: "terminal_manifest" | "defer_expired" | "purged_reading",
-  nowMs: number,
-): void {
-  console.warn(
-    JSON.stringify({
-      event: "processing_lease_orphan_released",
-      reason,
-      tenant_id: hold.tenantId,
-      attempt_id: hold.attemptId,
-      tenant_lease_heartbeat_overdue_ms: Math.max(0, nowMs - hold.tenantExpiresAtMs),
-      global_row_present: !hold.globalUnknown && hold.globalFence !== null,
-      ...(hold.globalUnknown ? { global_row_unknown: true } : {}),
-      ...(hold.globalExpiresAtMs === null
-        ? {}
-        : { global_lease_heartbeat_overdue_ms: Math.max(0, nowMs - hold.globalExpiresAtMs) }),
-    }),
-  );
-}
-
-// The acquire branch (#256): this delivery lost the race for its own attempt —
-// the tenant row is inFlight, held by a delivery that is either still running
-// (defer, never steal, never re-dispatch paid work) or dead. A release fires
-// only when the work is provably over (production-terminal manifest) or the
-// holder is provably dead (defer ceiling AND a lapsed heartbeat); anything
-// else defers with the same delayed-send contract as lease contention.
 async function recoverOrphanedLeases(
   reader: ReadingStore,
   args: ProcessReadingArgs,
@@ -526,125 +496,46 @@ async function recoverOrphanedLeases(
   tenantId: string,
   services: Services,
   attempt: ProcessingAttempt,
-  hold: ProcessingLeaseReleaseHold,
   clock: () => number,
+  retired: boolean,
 ): Promise<void> {
-  let manifest: Manifest | null = null;
-  try {
-    manifest = await reader.readManifest(args.keyPrefix);
-  } catch (err) {
-    // Uncertain manifest state proves neither work-over nor holder-death, so
-    // defer WITHOUT terminalizing: a plain defer at the ceiling would mark
-    // failed under a holder that may still be live. The next delivery re-runs
-    // this decision once the read succeeds.
-    console.error(err);
-    throw new LiveHolderDeferError();
-  }
+  let manifest: Manifest | null;
+  try { manifest = await reader.readManifest(args.keyPrefix); }
+  catch { throw new LiveHolderDeferError(); }
   if (manifestIsProductionTerminal(manifest)) {
-    await releaseOrphanedLeases(env, hold, "terminal_manifest", clock());
+    await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
     return;
   }
-  if (deferLoopExceeded(args, clock())) {
-    // The ceiling measures the ATTEMPT's age since submit — parked, deferred,
-    // and requeued time included — so an old attempt can have acquired fresh
-    // rows and be live mid-paid-work when this duplicate arrives. Age alone
-    // does not prove the holder is gone; a lapsed heartbeat does. Only a
-    // provably-dead holder is terminalized here: terminalizing a live one
-    // would clear active_attempt under a provider request still in flight,
-    // and the next duplicate would then "recover" its live rows.
-    if (!releaseHoldProvesDeadHolder(hold, clock())) {
-      // The holder may be live. Defer WITHOUT terminalizing: a live holder
-      // ends on its own (releasing its rows, or leaving a terminal manifest
-      // the next duplicate releases), and a holder that died moments ago
-      // goes overdue within one TTL, after which the next delivery clears
-      // and terminalizes. Bounded, so the defer ceiling cannot spin forever.
-      throw new LiveHolderDeferError();
-    }
-    // Clear atomically BEFORE the failed manifest (a death between the two
-    // leaves the reading retryable, with the rows gone so the next delivery
-    // acquires fresh and resumes from the checkpoint). The DO re-verifies the
-    // observed expiresAt at delete time, so a holder that renewed after the
-    // observation — the stalled-then-resumed race — refuses; the decision
-    // gates the terminalization, so a refused clear defers like a fresh row.
-    // The reverse ordering would be worse: terminalizing first re-orphans the
-    // rows on a death between the two writes. The accepted residual of this
-    // ordering: a concurrent duplicate that re-acquires the now-free rows in
-    // this ms-wide window resumes the attempt (checkpoint-cached, no re-pay of
-    // finished stages) and its terminal commit loses to this failed manifest
-    // under the same ownership fences — last-writer-wins, bounded by the
-    // checkpoint, and the reading stays re-submittable.
-    const cleared = await clearOrphanedProcessingLeases(env, hold);
-    if (!cleared.ok) {
-      throw new LiveHolderDeferError();
-    }
-    logOrphanedLeaseRecovery(hold, "defer_expired", clock());
-    // This delivery never dispatched paid work, so its slot is uncommitted;
-    // release is idempotent for a slot the dead holder already consumed.
-    await releaseReadingSlot(env, tenantId, hold.attemptId);
-    await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
-    return;
-  }
-  throw new DeferPaidWorkError();
+  // Missing/foreign state is not permission to terminalize another attempt.
+  if (!manifest || !attemptOwnership(manifest, args).isActive ||
+      (!retired && !deferLoopExceeded(args, clock()))) throw new LiveHolderDeferError();
+  await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args),
+    retired ? "retired_attempt" : "defer_expired");
+  await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
+  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+  // markFailed is defensive elsewhere and can swallow an R2 write failure.
+  // Retirement must keep its recovery delivery until terminalization sticks.
+  try {
+    const current = await reader.readManifest(args.keyPrefix);
+    if (manifestIsProductionTerminal(current)) return;
+    if (current && attemptOwnership(current, args).hasConflict) return;
+    if (!current && await confirmedPurgeTombstone(reader, args.id)) return;
+  } catch { /* Unconfirmed terminalization must be retried. */ }
+  throw new LiveHolderDeferError();
 }
 
-// The already_running defer whose holder is not provably dead. Subclasses
-// DeferPaidWorkError so the queue handler defers it exactly like contention,
-// but tells processReading's own catch that the defer ceiling must NOT
-// terminalize: the rows belong to a delivery that may still be running, and
-// terminalizing it would manufacture exactly the terminal-manifest-under-a-
-// live-holder state the recovery paths must never feed on.
-class LiveHolderDeferError extends DeferPaidWorkError {}
-
-// The one definition of "the work is provably over": a production terminal
-// manifest. `readyManifest`/`failedManifest` clear `active_attempt`, so its
-// absence plus a terminal status is the finished shape. A ready/failed status
-// WITH an active_attempt is a reprocess in flight (`reprocessPending` keeps
-// the ready manifest and adds a running attempt) — its holder may be live
-// mid-paid-work, so it is NOT terminal for release purposes.
-function manifestIsProductionTerminal(manifest: Manifest | null): boolean {
-  return (
-    manifest !== null &&
-    manifest.active_attempt === undefined &&
-    (manifest.status === "ready" || manifest.status === "failed")
-  );
-}
-
-// The canWrite-false early returns (#256): a TERMINAL production manifest
-// (readyManifest clears active_attempt) never reaches acquire, so a leftover
-// inFlight row for this attempt is released here. A FOREIGN active_attempt
-// (conflict) must NOT release — that row's holder can be alive mid-paid-work,
-// and its rows are not this delivery's to clear. Terminality must be read
-// successfully; an unreadable manifest touches nothing.
 async function releaseOrphanedLeasesIfReadingTerminal(
   reader: ReadingStore,
   args: ProcessReadingArgs,
   env: Env,
   tenantId: string,
-  clock: () => number,
 ): Promise<void> {
-  let terminal = false;
-  try {
-    terminal = manifestIsProductionTerminal(await reader.readManifest(args.keyPrefix));
-  } catch (err) {
-    console.error(err);
-    return;
+  let manifest: Manifest | null;
+  try { manifest = await reader.readManifest(args.keyPrefix); }
+  catch { throw new LiveHolderDeferError(); }
+  if (manifestIsProductionTerminal(manifest)) {
+    await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
   }
-  if (!terminal) return;
-  await releaseOrphanedLeasesIfPresent(env, tenantId, resolveAttemptId(args), "terminal_manifest", clock);
-}
-
-// Peek-then-release for paths that never acquired: absent or non-inFlight
-// tenant rows are a no-op, so this is safe to call on every qualifying
-// early return.
-async function releaseOrphanedLeasesIfPresent(
-  env: Env,
-  tenantId: string,
-  opId: string,
-  reason: "terminal_manifest" | "purged_reading",
-  clock: () => number,
-): Promise<void> {
-  const hold = await peekProcessingLeaseReleaseHold(env, tenantId, opId);
-  if (hold) await releaseOrphanedLeases(env, hold, reason, clock());
 }
 
 

@@ -1,3 +1,4 @@
+import { LeaseRecoveryRequestSchema, recoverLeasePair, type LeaseRecoveryRequest } from "./processing-lease-recovery";
 import { inspectGlobal } from "./operator-inspection";
 import { readSpendStatus } from "./spend-status";
 import type { Env } from "../index";
@@ -6,23 +7,14 @@ import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
 import {
   acquireLease as acquireStoredLease,
-  clearDeadLease as clearStoredDeadLease,
   leaseStorageKey,
   pauseLease as pauseStoredLease,
-  peekLease as peekStoredLease,
   releaseLease as releaseStoredLease,
   renewLease as renewStoredLease,
   sweepExpiredLeases,
-  type DeadLeaseClearDecision,
   type LeaseDecision,
-  type LeasePeek,
 } from "./processing-lease-state";
-import {
-  parseDeadLeaseClearDecision,
-  parseLeasePeekDecision,
-  type LeasePeekDecision,
-  type ProcessingLeaseDecision,
-} from "./tenant-usage-guard";
+import type { ProcessingLeaseDecision } from "./tenant-usage-guard";
 import {
   markSpendDispatched,
   releaseSpend,
@@ -50,18 +42,6 @@ type FenceLeaseBody = {
   nowMs: number;
   preserveInFlight?: boolean;
 };
-// #256 dead-lease recovery, global side: keys are lease:<tenantId>:<attemptId>.
-// Same contract as the tenant guard's verbs — no fence crosses the boundary;
-// the observed expiresAt is the compare-and-set stand-in.
-type PeekLeaseBody = { kind: "peek_lease"; tenantId: string; attemptId: string };
-type ClearDeadLeaseBody = {
-  kind: "clear_dead_lease";
-  tenantId: string;
-  attemptId: string;
-  expectedExpiresAt: number | null;
-  // Absent (the operator entrypoint) means true; see the tenant guard.
-  requireOverdue?: boolean;
-};
 /**
  * Account teardown (issue 195 S4): drop every lease belonging to one tenant.
  *
@@ -76,14 +56,7 @@ type ClearDeadLeaseBody = {
  * for an account that no longer exists.
  */
 type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
-type GuardBody =
-  | { kind: "spend_status"; tenantId?: string; details?: boolean }
-  | AcquireLeaseBody
-  | FenceLeaseBody
-  | PeekLeaseBody
-  | ClearDeadLeaseBody
-  | PurgeTenantBody
-  | SpendBody;
+type GuardBody = LeaseRecoveryRequest | { kind: "spend_status"; tenantId?: string; details?: boolean } | AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -102,24 +75,6 @@ function jsonLease(decision: LeaseDecision): Response {
     });
   }
   return json({ ok: false, reason: decision.reason });
-}
-
-// Peek and dead-lease decisions deliberately omit the fence: the clear
-// decision feeds the operator entrypoint, which must never observe one.
-function jsonLeasePeek(peek: LeasePeek): unknown {
-  if (!peek.present) return { ok: true, present: false };
-  return {
-    ok: true,
-    present: true,
-    fence: peek.fence,
-    expires_at: peek.expiresAt,
-    in_flight: peek.inFlight,
-  };
-}
-
-function jsonDeadLeaseClear(decision: DeadLeaseClearDecision): unknown {
-  if (decision.ok) return { ok: true, cleared: decision.cleared };
-  return { ok: false, reason: decision.reason };
 }
 
 function positiveInt(value: unknown): number | null {
@@ -185,6 +140,10 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const kind = body.kind;
+  if (kind === "recover_leases") {
+    const parsed = LeaseRecoveryRequestSchema.safeParse(body);
+    return parsed.success ? parsed.data : null;
+  }
   const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
   const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
   const nowMs = Number(body.nowMs);
@@ -217,33 +176,6 @@ function parseGuardBody(value: unknown): GuardBody | null {
     const actualMicrodollars = Number(body.actualMicrodollars);
     if (!tenantId || !opId || !validSpendQuote(body.quote) || !Number.isSafeInteger(actualMicrodollars) || actualMicrodollars < 0) return null;
     return { kind, tenantId, opId, quote: body.quote, actualMicrodollars };
-  }
-  // Parsed before the shared field checks: peek and clear carry no clock (the
-  // guard's own Date.now() governs the overdue gate), while acquire and the
-  // fence verbs do.
-  if (kind === "peek_lease") {
-    if (!tenantId || !attemptId) return null;
-    return { kind, tenantId, attemptId };
-  }
-  if (kind === "clear_dead_lease") {
-    if (!tenantId || !attemptId) return null;
-    const expected = body.expectedExpiresAt;
-    if (
-      expected !== undefined &&
-      (typeof expected !== "number" || !Number.isFinite(expected) || expected < 0)
-    ) {
-      return null;
-    }
-    if (body.requireOverdue !== undefined && typeof body.requireOverdue !== "boolean") {
-      return null;
-    }
-    return {
-      kind,
-      tenantId,
-      attemptId,
-      expectedExpiresAt: typeof expected === "number" ? expected : null,
-      ...(body.requireOverdue === false ? { requireOverdue: false } : {}),
-    };
   }
   if (!tenantId || !attemptId || !Number.isFinite(nowMs) || nowMs < 0) return null;
   if (kind === "acquire_lease") return { kind, tenantId, attemptId, nowMs };
@@ -281,29 +213,13 @@ export class GlobalUsageGuard implements DurableObject {
     if (!parsed) return json({ error: "invalid_body" }, 400);
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
+      if (body.kind === "recover_leases") return json(await recoverLeasePair(this.state.storage, this.env, body));
       if (body.kind === "spend_status") {
         const now = Date.now();
         return json({ ...await readSpendStatus(this.state.storage, now, body.tenantId), ...(body.details ? { details: await inspectGlobal(this.state.storage, now) } : {}) });
       }
       if (body.kind === "acquire_lease") return this.acquireLease(body);
       if (body.kind === "purge_tenant") return this.purgeTenant(body);
-      if (body.kind === "peek_lease") {
-        const peek: LeasePeek = await peekStoredLease(this.state.storage, {
-          id: leaseId(body.tenantId, body.attemptId),
-        });
-        return json(jsonLeasePeek(peek));
-      }
-      if (body.kind === "clear_dead_lease") {
-        const decision: DeadLeaseClearDecision = await clearStoredDeadLease(this.state.storage, {
-          id: leaseId(body.tenantId, body.attemptId),
-          expectedExpiresAt: body.expectedExpiresAt,
-          // The guard's own clock governs the overdue gate — an operator with a
-          // skewed clock must not move the "holder may be live" boundary.
-          nowMs: Date.now(),
-          ...(body.requireOverdue === false ? { requireOverdue: false } : {}),
-        });
-        return json(jsonDeadLeaseClear(decision));
-      }
       if (body.kind === "reserve_spend") return this.reserveSpend(body);
       if (body.kind === "mark_spend_dispatched") return this.markSpendDispatched(body);
       if (body.kind === "release_spend") return this.releaseSpend(body);
@@ -450,15 +366,6 @@ export interface GlobalUsage {
   ): Promise<ProcessingLeaseDecision>;
   pauseLease(tenantId: string, attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
   releaseLease(tenantId: string, attemptId: string, fence: string, nowMs: number): Promise<void>;
-  // #256: read-only row view for release-only adoption; never creates a row.
-  peekLease(tenantId: string, attemptId: string): Promise<LeasePeekDecision>;
-  // #256: atomic compare-and-set clear, same contract as the tenant guard's.
-  clearDeadLease(
-    tenantId: string,
-    attemptId: string,
-    expectedExpiresAt: number,
-    opts?: { requireOverdue?: boolean },
-  ): Promise<DeadLeaseClearDecision>;
 }
 
 function denyUnavailable(): ProcessingLeaseDecision {
@@ -502,8 +409,6 @@ export function failClosedGlobalUsage(): GlobalUsage {
     renewLease: async () => denyUnavailable(),
     pauseLease: async () => denyUnavailable(),
     releaseLease: async () => undefined,
-    peekLease: async () => ({ ok: false, reason: "unavailable" }),
-    clearDeadLease: async () => ({ ok: false, reason: "changed" }),
   };
 }
 
@@ -594,38 +499,6 @@ export function globalUsageFor(env: Env): GlobalUsage {
       call({ kind: "pause_lease", tenantId, attemptId, fence, nowMs }),
     releaseLease: async (tenantId, attemptId, fence, nowMs) => {
       await call({ kind: "release_lease", tenantId, attemptId, fence, nowMs });
-    },
-    peekLease: async (tenantId, attemptId) => {
-      try {
-        const res = await stub.fetch("https://global-usage-guard/", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ kind: "peek_lease", tenantId, attemptId } satisfies PeekLeaseBody),
-        });
-        if (!res.ok) return { ok: false, reason: "unavailable" } as const;
-        return parseLeasePeekDecision(await res.json());
-      } catch {
-        return { ok: false, reason: "unavailable" } as const;
-      }
-    },
-    clearDeadLease: async (tenantId, attemptId, expectedExpiresAt, opts) => {
-      try {
-        const res = await stub.fetch("https://global-usage-guard/", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            kind: "clear_dead_lease",
-            tenantId,
-            attemptId,
-            expectedExpiresAt,
-            ...(opts?.requireOverdue === false ? { requireOverdue: false } : {}),
-          } satisfies ClearDeadLeaseBody),
-        });
-        if (!res.ok) return { ok: false, reason: "changed" };
-        return parseDeadLeaseClearDecision(await res.json());
-      } catch {
-        return { ok: false, reason: "changed" };
-      }
     },
   };
 }

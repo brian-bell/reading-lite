@@ -2495,41 +2495,38 @@ for setup, exact commands, version/retry semantics, and accounting limitations.
 
 ## Orphaned in-flight processing leases
 
-An attempt whose Worker died while its tenant + global leases were `inFlight`
-leaves both capacity slots occupied: the expiry sweep deliberately never
-removes `inFlight` rows (removing one would let a second paid start overlap
-the first holder's fence). Recovery is automatic at the points where the work
-is provably finished — a redelivery that finds a terminal (or purged)
-reading compare-and-set clears the leftover rows, and a redelivery past the
-24-hour defer ceiling clears them (before writing the
-`ProcessingDeferExpiredError` manifest) only when the holder's heartbeat has
-also lapsed; a holder whose rows are still fresh defers instead of
-terminalizing, because attempt age alone is not proof of death. All paths log
-`processing_lease_orphan_released` with the tenant, attempt, per-side lease
-state, and heartbeat-lapse age. A delivery that cannot prove the work over
-(pending manifest, unreadable manifest, or a foreign active attempt) defers
-and touches nothing.
+A Worker death can leave tenant and global `inFlight` slots occupied because
+the expiry sweep does not delete them. A terminal/purged redelivery recovers
+leftovers automatically. An incomplete attempt reaches recovery after the
+24-hour defer ceiling only when its lease heartbeats are overdue. Recovery
+retires the attempt before freeing its slots, so a delayed delivery cannot
+restart it in the window before the failed manifest is written. Unconfirmed
+cleanup requeues even when the reading is already terminal. Only confirmed
+cleanup logs `processing_lease_orphan_released` with tenant, attempt and reason.
 
-For an orphan with no redelivery left — or before the ceiling runs out — use
+For an orphan with no redelivery left, or before the ceiling runs out, use
 `npm run ops -- system lease-clear --env staging|production --tenant usr_… --attempt <attemptId> [--execute]`.
-Find the attempt id and the rows with
-`system status --env … --tenant usr_… --details` (lease records carry
-`attemptId`, `tenantId` on global rows, and `heartbeatOverdueMs`). The
-command is plan-first: the plan is the observation; `--execute` re-observes
-fresh and compare-and-set clears each side on the `expiresAt` it just saw,
-through the service-binding-only `OperatorLeaseClear` entrypoint (`POST`
-never rides the read-only `OperatorStatus`). Fences never cross the wire and
-are never printed; the observed `expiresAt` is the operator's fence stand-in.
-Refusals are honest: a row that is not yet overdue (its holder may just be
-between heartbeats) or not `inFlight` (paused rows belong to the expiry
-sweep) blocks the whole invocation with exit 1, and a row that renewed
-between observation and clear refuses with `changed`. Absent rows are
-success, so re-running after a clear converges. Partial clears (one side
-cleared, one refused or unavailable) are safe to re-run. The command
-requires an updated Worker with the `OperatorLeaseClear` entrypoint
-deployed; against an older Worker it fails closed with exit 1 rather than
-fabricating a zero state.
+Find the attempt and rows with `system status --env … --tenant usr_… --details`:
+lease records carry `attemptId`, `tenantId` on global rows, and
+`heartbeatOverdueMs`. The command plans by default; `--execute` re-observes and
+submits the expected expiries through the service-binding-only
+`OperatorLeaseClear` entrypoint. The read-only `OperatorStatus` never mutates.
+Observations and responses contain no dispatch fences or reading content.
 
+Both automatic and operator recovery use the global guard's `recover_leases`
+authority. It checks global state and conditionally retires the tenant under
+the global lock, then deletes global capacity. A renewed row refuses with
+`changed`, a fresh row with `not_overdue`, and a paused row with
+`not_in_flight`; the other side reports `peer_refused` and is not deleted.
+Unavailable responses return exit 1. Re-run after a partial failure: a retired
+tenant with a global leftover remains recoverable. Absent rows converge.
+
+Retirement persists a small attempt-ID marker until tenant teardown and
+prevents reacquisition of that attempt. The next queued delivery finishes its
+failed manifest; if no delivery remains, use the normal reading reprocess
+workflow to create a new attempt. This command does not resume paid work or
+cancel a provider request already sent. It requires the updated Worker;
+older deployments fail closed.
 
 ## Relationship refresh queue plumbing
 

@@ -115,6 +115,15 @@ describe("operator lease-clear entrypoint", () => {
         tenant: { ok: true, cleared: true },
         global: { ok: true, cleared: true },
       });
+      // Retiring the attempt closes the clear-before-terminal-write window:
+      // even a delayed delivery that already read pending cannot reacquire it.
+      const ns = (env as unknown as Env).TENANT_USAGE_GUARD!;
+      const replay = await (await ns.get(ns.idFromName(FOUNDER_TENANT_ID)).fetch("https://guard/", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "acquire_lease", tenantId: FOUNDER_TENANT_ID,
+          attemptId: "at_entry_orphan", nowMs: Date.now() }),
+      })).json();
+      expect(replay).toMatchObject({ ok: false, reason: "stale_fence" });
       // A re-run converges: both rows are gone, so the clear is an honest
       // no-op success (idempotence for repeated recovery).
       const rerun = await endpoint().fetch(
@@ -146,7 +155,7 @@ describe("operator lease-clear entrypoint", () => {
       );
       const body = (await response.json()) as { ok: boolean; tenant: { reason?: string }; global: { reason?: string } };
       expect(body.ok).toBe(false);
-      expect(body.tenant.reason).toBe("not_overdue");
+      expect(body.tenant.reason).toBe("peer_refused");
       expect(body.global.reason).toBe("not_overdue");
     } finally {
       await releaseBothSides("at_entry_live", { tenant: held.tenant.fence, global: held.global.fence });
@@ -182,6 +191,7 @@ describe("operator lease-clear entrypoint", () => {
       const body = (await response.json()) as { ok: boolean; tenant: { reason?: string } };
       expect(body.ok).toBe(false);
       expect(body.tenant.reason).toBe("changed");
+      expect((body as unknown as { global: { ok: boolean } }).global.ok).toBe(false);
     } finally {
       await releaseBothSides("at_entry_stale", { tenant: held.tenant.fence, global: held.global.fence });
     }
@@ -205,8 +215,8 @@ describe("operator lease-clear entrypoint", () => {
     expect((await endpoint().fetch(new Request("https://operator/nope", { method: "POST" }))).status).toBe(404);
   });
 
-  it("fails closed when the guards are unbound", async () => {
-    const response = await endpoint({ ...env, TENANT_USAGE_GUARD: undefined } as unknown as Env).fetch(
+  it("fails closed when the recovery authority is unbound", async () => {
+    const response = await endpoint({ ...env, GLOBAL_USAGE_GUARD: undefined } as unknown as Env).fetch(
       clearRequest({ tenantId: FOUNDER_TENANT_ID, attemptId: "at_x" }),
     );
     expect(response.status).toBe(503);

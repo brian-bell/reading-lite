@@ -17,8 +17,8 @@ import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 // lease rows. Plan-first like every durable op: the plan is the observation
 // (tenant row, global row, ages, verdicts); --execute re-observes FRESH and
 // compare-and-set clears each side on the expiresAt it just saw. A row that
-// renewed in between refuses ("changed") — a live holder can never be stolen
-// from. Not-overdue rows refuse outright; paused rows belong to the expiry
+// renewed in between refuses ("changed"). Not-overdue rows refuse outright;
+// paused rows belong to the expiry
 // sweep, not to this command.
 
 export interface LeaseClearDeps extends BaseDeps {
@@ -74,7 +74,8 @@ Refuses rows that are not overdue (a live holder may own them) or not in flight
 (paused rows belong to the expiry sweep). Absent rows are success — re-running
 converges. A row that renewed between observation and clear refuses with
 "changed"; observe again before retrying. Requires an updated Worker with the
-OperatorLeaseClear entrypoint.
+OperatorLeaseClear entrypoint. Recovery retires this attempt permanently; a
+reading retry must use a new attempt.
   --tenant <usr_…>  The tenant whose guard holds the lease (production: /api/whoami's tenant_id).
   --attempt <id>    The attempt id of the orphaned lease (from system status --details).
   --execute        Clear both sides; otherwise print the observed plan only.
@@ -155,29 +156,8 @@ OperatorLeaseClear entrypoint.
       return 0;
     }
 
-    // Execute re-observes: the CAS must ride the snapshot THIS invocation saw,
-    // not one printed by an earlier plan that has since gone stale.
-    let fresh: LeaseObservation;
-    try {
-      fresh = await deps.observe(env, tenant, attemptId);
-    } catch {
-      deps.io.stderr("Lease observation unavailable before execute; nothing was cleared.");
-      return 1;
-    }
-    const freshTenant = verdict(fresh.tenantRow, fresh.observedAtMs);
-    const freshGlobal = verdict(fresh.globalRow, fresh.observedAtMs);
-    const freshRefusals = [
-      ...(freshTenant.action === "refuse" ? [["tenant", freshTenant.reason] as const] : []),
-      ...(freshGlobal.action === "refuse" ? [["global", freshGlobal.reason] as const] : []),
-    ];
-    if (freshRefusals.length) {
-      for (const [side, reason] of freshRefusals) {
-        deps.io.stderr(refusalMessage(side, reason));
-      }
-      deps.io.stderr("Nothing was cleared; observe again before retrying.");
-      return 1;
-    }
-
+    // Use this invocation's observation; the authority rechecks it under
+    // its locks. An earlier plan's snapshot is never reused.
     let outcome: LeaseClearResponse;
     try {
       outcome = await deps.clear(
@@ -185,8 +165,8 @@ OperatorLeaseClear entrypoint.
         tenant,
         attemptId,
         {
-          tenant: freshTenant.action === "clear" ? freshTenant.expectedExpiresAt : null,
-          global: freshGlobal.action === "clear" ? freshGlobal.expectedExpiresAt : null,
+          tenant: tenantVerdict.action === "clear" ? tenantVerdict.expectedExpiresAt : null,
+          global: globalVerdict.action === "clear" ? globalVerdict.expectedExpiresAt : null,
         },
       );
     } catch {

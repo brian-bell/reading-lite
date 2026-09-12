@@ -1312,6 +1312,88 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     });
   });
 
+  it.each(["recovery_response", "terminal_write"])(
+    "finishes a retired attempt after an interrupted %s", async failure => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // Simulate the dead worker: both rows held, heartbeat lapsed, for THIS
+    // attempt.
+    const tenantHeld = await holdTenantLease(tenantId, "at_ceiling", DEAD_SINCE_MS());
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_ceiling",
+      nowMs: DEAD_SINCE_MS(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_CEILING",
+      url: "https://lease.test/ceiling",
+      attemptId: "at_ceiling",
+      source: PARKED_MARKDOWN,
+    });
+    job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const restore = interceptGlobalLeaseFetch(async (body, next) => {
+      const res = await next();
+      if (failure === "recovery_response" && body.kind === "recover_leases") {
+        await res.json(); // mutation completed, but this delivery cannot know it
+        return new Response(null, { status: 503 });
+      }
+      return res;
+    });
+    const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
+      if (failure === "terminal_write" && key.endsWith("/manifest.json")) throw new Error("R2 outage");
+      return put(key, value, options);
+    });
+    try {
+      await dispatchQueueMessage(msg,
+        () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
+    } finally { restore(); putSpy.mockRestore(); }
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(await testReadingStore(env, tenant).readManifest(job.keyPrefix)).toMatchObject({ status: "pending" });
+    expect(await holdTenantLease(tenantId, "at_ceiling")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(embedCalls(fetchFn)).toBe(0);
+    sendDelayed.mockClear();
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    // Terminalized, not deferred — and no paid dispatch on a release-only path.
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledTimes(2);
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "ProcessingDeferExpiredError" },
+    });
+    // ProcessingDeferExpiredError can no longer leave permanent capacity loss:
+    // the tenant slot is free for a new attempt even at cap 1, and the global
+    // row is gone (a re-acquire of the same attempt is fresh, not adopted).
+    const fresh = await holdTenantLease(tenantId, "at_ceiling_new");
+    expect(fresh).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_ceiling", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+    await tenantLease(tenantId, {
+      kind: "release_lease",
+      attemptId: "at_ceiling_new",
+      fence: fresh.fence,
+      nowMs: Date.now(),
+    });
+  });
+
   it("defers at the ceiling when the holder is not provably dead - age is not abandonment", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
@@ -1405,10 +1487,67 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "ready",
     });
-    expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({
-      ok: true,
-      already_running: false,
+    expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_term_new")).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_term", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+  });
+
+  it("retries terminal cleanup after a guard outage instead of acknowledging an orphan", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
     });
+    const tenant = tenantOf(tenantId);
+    // readyManifest clears active_attempt, so a real terminal redelivery never
+    // reaches acquire — the canWrite-false early return is its only path.
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_TERM",
+      url: "https://lease.test/terminal",
+      attemptId: "at_term",
+      status: "ready",
+      omitActiveAttempt: true,
+      source: PARKED_MARKDOWN,
+    });
+    const tenantHeld = await holdTenantLease(tenantId, "at_term");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_term",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const restore = interceptGlobalLeaseFetch(async (body, next) => {
+      if (body.kind === "clear_dead_lease" || body.kind === "recover_leases") {
+        return new Response(null, { status: 503 });
+      }
+      return next();
+    });
+    try {
+      await dispatchQueueMessage(msg,
+        () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
+    } finally { restore(); }
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    sendDelayed.mockClear();
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledTimes(2);
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_term_new")).toMatchObject({ ok: true, already_running: false });
     expect(
       await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_term", nowMs: Date.now() }),
     ).toMatchObject({ ok: true, already_running: false });
@@ -1495,9 +1634,8 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(sendDelayed).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    expect(
-      await holdTenantLease(tenantId, "at_tenant_only"),
-    ).toMatchObject({ ok: true, already_running: false });
+    expect(await holdTenantLease(tenantId, "at_tenant_only")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_tenant_only_new")).toMatchObject({ ok: true, already_running: false });
   });
 
   it("does not release rows behind a foreign active_attempt - that holder may be live", async () => {
@@ -1572,10 +1710,8 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     );
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(embedCalls(fetchFn)).toBe(0);
-    expect(await holdTenantLease(tenantId, "at_purged")).toMatchObject({
-      ok: true,
-      already_running: false,
-    });
+    expect(await holdTenantLease(tenantId, "at_purged")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_purged_new")).toMatchObject({ ok: true, already_running: false });
     expect(
       await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_purged", nowMs: Date.now() }),
     ).toMatchObject({ ok: true, already_running: false });

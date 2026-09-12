@@ -1,5 +1,4 @@
 import { fileURLToPath } from "node:url";
-import { z } from "zod";
 import type { SpendStatus } from "../../src/control-plane/spend-status";
 import type { PolicyEnvironment } from "./policy";
 
@@ -11,21 +10,9 @@ import type { PolicyEnvironment } from "./policy";
 // mismatch, which is what makes a live-holder race a refusal instead of a
 // theft.
 
-export const LeaseClearDecisionSchema = z.union([
-  z.object({ ok: z.literal(true), cleared: z.boolean() }),
-  z.object({
-    ok: z.literal(false),
-    reason: z.enum(["changed", "not_in_flight", "not_overdue"]),
-  }),
-]);
-export type LeaseClearDecision = z.infer<typeof LeaseClearDecisionSchema>;
-
-export const LeaseClearResponseSchema = z.object({
-  ok: z.boolean(),
-  tenant: LeaseClearDecisionSchema,
-  global: LeaseClearDecisionSchema,
-});
-export type LeaseClearResponse = z.infer<typeof LeaseClearResponseSchema>;
+export { LeaseClearDecisionSchema, LeaseClearResponseSchema } from "../../src/control-plane/processing-lease-recovery";
+import { LeaseClearResponseSchema, type LeaseClearResponse } from "../../src/control-plane/processing-lease-recovery";
+export type { LeaseClearResponse };
 
 export interface LeaseRowObservation {
   expiresAtMs: number;
