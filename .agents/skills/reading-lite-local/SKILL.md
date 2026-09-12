@@ -26,13 +26,14 @@ Work in the current reading-lite checkout. Read its `AGENTS.md` and `app/README.
    ```
 
    Record both session IDs for shutdown. If sandbox restrictions prevent listening or tsx IPC, use the environment's normal escalation mechanism; do not change application code to bypass it.
-6. Wait for readiness, then check all three paths. `http://127.0.0.1:8787/health` returns `ok`; `http://127.0.0.1:5174/api/auth/login-options` checks the Vite proxy that browser calls use; and an anonymous `http://127.0.0.1:5174/` checks the `BACKEND` service binding that server renders use, which the proxy does not cover:
+6. Wait for readiness, then check all three paths. `http://127.0.0.1:8787/health` returns `ok`; `http://127.0.0.1:5174/api/auth/login-options` checks the Vite proxy that browser calls use, and needs an `Origin` header or it 403s with `forbidden origin` — that 403 means only "no Origin sent," not a failure; and an anonymous `http://127.0.0.1:5174/` checks the `BACKEND` service binding that server renders use, which the proxy does not cover:
 
    ```sh
-   curl -s http://127.0.0.1:5174/ | grep -q account-sign-in && echo binding-ok
+   curl -s -H "Origin: http://127.0.0.1:5174" http://127.0.0.1:5174/api/auth/login-options
+   curl -s http://127.0.0.1:5174/ | grep -a -q account-sign-in && echo binding-ok
    ```
 
-   A server render that cannot reach `BACKEND` still returns 200 with the shell, but treats identity as unknown and omits both the sign-in link and the account menu, so a 200 alone is not readiness. A missing marker means the backend is not in the Wrangler dev registry: confirm it is running from this checkout as `reading-lite-dev`, then restart the frontend after it. Report the frontend link and leave both processes running. Do not claim readiness from a startup banner alone.
+   Use `grep -a`: the page embeds a serialized loader payload with null bytes, which makes plain `grep` treat the response as binary and silently report no match even when the marker is present — a bare `grep -q` false negative, not a binding failure. A server render that cannot reach `BACKEND` still returns 200 with the shell, but treats identity as unknown and omits both the sign-in link and the account menu, so a 200 alone is not readiness. A missing marker (confirmed with `grep -a`) means the backend is not in the Wrangler dev registry: confirm it is running from this checkout as `reading-lite-dev`, then restart the frontend after it — starting the frontend immediately after the backend, before the backend has registered, causes exactly this. Report the frontend link and leave both processes running. Do not claim readiness from a startup banner alone.
 
 ## Sign in and seed
 
