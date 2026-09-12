@@ -45,6 +45,9 @@ plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
 tests, SPA tests/build, the `app/` checks and its browser-evidence job on
 Node 22, and the ops compatibility check on Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
 
+Use [reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) to run the
+`app/` frontend and the backend together locally.
+
 Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
 file. Generation excludes bindings; keep the application `Env` in `src/index.ts`.

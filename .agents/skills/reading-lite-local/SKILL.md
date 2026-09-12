@@ -5,7 +5,7 @@ description: Start, stop, or troubleshoot reading-lite's local app/ frontend and
 
 # reading-lite local development
 
-Use the current reading-lite checkout; the usual location is `/Users/brian/dev/reading-lite`. Read its `AGENTS.md` and `app/README.md` for current commands and constraints. The frontend is `app/` on **127.0.0.1:5174**; the backend is the repository root on **8787**. Keep the same checkout for both so the Cloudflare service binding and local data agree.
+Work in the current reading-lite checkout. Read its `AGENTS.md` and `app/README.md` for current commands and constraints. The frontend is `app/` on **127.0.0.1:5174**; the backend is the repository root on **8787**. Keep the same checkout for both so the Cloudflare service binding and local data agree.
 
 ## Start
 
@@ -26,7 +26,13 @@ Use the current reading-lite checkout; the usual location is `/Users/brian/dev/r
    ```
 
    Record both session IDs for shutdown. If sandbox restrictions prevent listening or tsx IPC, use the environment's normal escalation mechanism; do not change application code to bypass it.
-6. Wait for readiness, then check HTTP responses from `http://127.0.0.1:5174/` and `http://127.0.0.1:8787/health`. Verify `/api/auth/login-options` through port 5174 if that route exists in the current checkout, or use another documented public API route to check the proxy. Report the frontend link and leave both processes running. Do not claim readiness from a startup banner alone.
+6. Wait for readiness, then check all three paths. `http://127.0.0.1:8787/health` returns `ok`; `http://127.0.0.1:5174/api/auth/login-options` checks the Vite proxy that browser calls use; and an anonymous `http://127.0.0.1:5174/` checks the `BACKEND` service binding that server renders use, which the proxy does not cover:
+
+   ```sh
+   curl -s http://127.0.0.1:5174/ | grep -q account-sign-in && echo binding-ok
+   ```
+
+   A server render that cannot reach `BACKEND` still returns 200 with the shell, but treats identity as unknown and omits both the sign-in link and the account menu, so a 200 alone is not readiness. A missing marker means the backend is not in the Wrangler dev registry: confirm it is running from this checkout as `reading-lite-dev`, then restart the frontend after it. Report the frontend link and leave both processes running. Do not claim readiness from a startup banner alone.
 
 ## Sign in and seed
 
