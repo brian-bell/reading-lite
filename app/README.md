@@ -76,6 +76,20 @@ return path is per origin.
   `reading-lite.bearerToken` entry is removed at boot
   (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
   parameters stay plain strings (`src/search.ts`).
+- **Reading detail.** `/readings/:id` reads the reading during the server
+  render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
+  identity), so it is dehydrated into the page and the browser does not ask
+  again. `src/reading.ts` maps the response for both paths: the statuses with a
+  page of their own — 404, 403, and the 412 expected-tenant mismatch — are
+  values, so they travel in the dehydrated cache, while 401 and anything
+  unexpected throw, the first into the expired-session page and the second into
+  a retryable server-error state. The read is pinned with `x-expected-tenant` to
+  the account the page was rendered for, so another tab signing this browser in
+  as someone else is caught rather than silently rendering their reading.
+  `src/reading-failure.ts` maps a failed manifest's `error.code` and stage to
+  the acceptance matrix's categories, pinned against the fixture pack by
+  `test/reading-failure.test.ts`. Summary content, relationships, source, and
+  details are #370's next slice and #371–#373.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

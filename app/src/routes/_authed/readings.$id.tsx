@@ -1,17 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PageHeading } from "../../components/PageHeading";
+import { ReadingPage } from "../../components/ReadingPage";
+import { whoamiQueryKey, type Identity } from "../../identity";
+import { readingQueryOptions } from "../../reading-query";
 
-// Placeholder until server-rendered reading detail lands (#370). The route
-// exists now so signed-out direct links return here after sign-in.
+// Server-rendered reading detail (#370). The loader reads the reading during
+// the server render, so it is dehydrated into the page and the browser renders
+// it without asking again.
+
 export const Route = createFileRoute("/_authed/readings/$id")({
+  // Identity is already loaded: the _authed guard read it before this ran.
+  // Taking it from the cache keeps the tenant pin free of an extra round trip.
+  // prefetchQuery never throws, so a 404 or an unavailable backend renders its
+  // state in the page instead of failing the route.
+  loader: ({ context, params }) => {
+    const identity = context.queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+    return context.queryClient.prefetchQuery(readingQueryOptions(context.queryClient, params.id, identity));
+  },
   head: () => ({ meta: [{ title: "Reading · Reading Lite" }] }),
-  component: ReadingPage,
+  component: ReadingRoute,
 });
 
-function ReadingPage() {
-  return (
-    <div className="page">
-      <PageHeading>Reading</PageHeading>
-    </div>
-  );
+function ReadingRoute() {
+  const { id } = Route.useParams();
+  return <ReadingPage id={id} />;
 }

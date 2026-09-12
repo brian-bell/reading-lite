@@ -35,6 +35,14 @@ const SESSIONS = {
   },
 };
 
+const READING = {
+  id: "rd_0123456789",
+  url: "https://fieldnotes.example/2026/a-quieter-internet",
+  status: "ready",
+  title: "A quieter internet is a choice we can make",
+  created_at: "2026-09-07T09:30:00.000Z",
+};
+
 function sessionOf(cookie) {
   const match = /(?:^|;\s*)__Host-session=([^;]+)/.exec(cookie ?? "");
   return match ? SESSIONS[match[1]] : undefined;
@@ -50,8 +58,16 @@ export class FrontendReads extends WorkerEntrypoint {
     return { status: 200, body: session.identity };
   }
 
-  async reading() {
-    return { status: 404, body: { error: "not found" } };
+  // One ready reading, so a server render has something real to produce; any
+  // other id is a reading this tenant does not have. The pin is echoed back in
+  // the identity check above, not here: an expected-tenant mismatch is the
+  // backend's own middleware in production.
+  async reading({ cookie, host, id }) {
+    if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
+    if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
+    if (!sessionOf(cookie)) return { status: 401, body: { error: "unauthorized" } };
+    if (id !== READING.id) return { status: 404, body: { error: "not found" } };
+    return { status: 200, body: READING };
   }
 }
 

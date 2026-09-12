@@ -40,6 +40,17 @@ function heading(text: string): string {
   return `<h1 class="page-title" tabindex="-1">${text}</h1>`;
 }
 
+/**
+ * The query keys the server render dehydrated into the page. Data that travels
+ * here is data the browser does not ask for again.
+ */
+function dehydratedQueryKeys(html: string): string[] {
+  const match = /queryClientState:"((?:[^"\\]|\\.)*)"/.exec(html);
+  if (!match) return [];
+  const state = JSON.parse(JSON.parse(`"${match[1]}"`)) as { queries?: { queryHash: string }[] };
+  return (state.queries ?? []).map((query) => query.queryHash);
+}
+
 function checkedTheme(html: string): string | undefined {
   const inputs = html.match(/<input type="radio" name="theme"[^>]*>/g) ?? [];
   const checked = inputs.filter((input) => /\schecked(="")?[\s/>]/.test(input));
@@ -219,16 +230,44 @@ describe("sign-in routes", () => {
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
   });
 
-  it("renders a reading page for a session", async () => {
+  // The reading is read during the server render, through the binding, and is
+  // in the HTML before any script runs.
+  it("server-renders a reading for a session", async () => {
     const response = await request("/readings/rd_0123456789", { headers: { Cookie: A.cookie } });
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain(heading("Reading"));
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("A quieter internet is a choice we can make"));
+    expect(html).toContain("fieldnotes.example");
+    expect(html).toContain("Saved 7 September 2026");
+    // It travels with the page, so the browser does not ask for it again.
+    expect(dehydratedQueryKeys(html)).toContain('["reading","rd_0123456789"]');
   });
 
+  it("server-renders the not-found state for a reading the tenant does not have", async () => {
+    const response = await request("/readings/rd_9999999999", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    // React escapes the apostrophe on the way into the document.
+    expect(await response.text()).toContain(heading("This reading isn&#x27;t in your library."));
+  });
+
+  /**
+   * Unavailable is not signed out: the reader stays on the reading's URL rather
+   * than being sent to sign-in.
+   *
+   * A read that throws is the one case the server render does not settle. React
+   * Query dehydrates successful queries only, so the failure does not travel in
+   * the page, and the browser asks again on its own — which is the right
+   * outcome for a backend that was briefly unreachable. What must not happen is
+   * a redirect, or the sign-in form appearing over a live session.
+   */
   it("does not treat an unavailable backend as signed out", async () => {
     const response = await request("/readings/rd_0123456789", { headers: { Cookie: "__Host-session=backend-down" } });
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain(heading("Reading"));
+    const html = await response.text();
+    expect(html).not.toContain(heading("Sign in"));
+    expect(html).toContain('aria-busy="true"');
+    expect(dehydratedQueryKeys(html)).not.toContain('["reading","rd_0123456789"]');
   });
 });
 

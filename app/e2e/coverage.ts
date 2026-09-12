@@ -43,4 +43,52 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Save reading" },
   { name: "save-signed-in", path: "/save", state: "signed-in", heading: "Save reading" },
   { name: "login", path: "/login", state: "signed-out", heading: "Sign in" },
+
+  // Reading detail (#370). Each heading is the page's own <h1>: the title for a
+  // reading that has one, the URL for a failed manifest (which never got one),
+  // and the state's sentence where there is no reading to show.
+  {
+    name: "reading-ready",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+  },
+  {
+    name: "reading-long-title",
+    path: "/readings/rd_FXMAXNAME1",
+    state: "signed-in",
+    heading:
+      "What we lose when every tool for thinking becomes a place to organize, optimize, and measure the work instead of actually doing it",
+    fixture: "long-title",
+  },
+  {
+    name: "reading-imported-markdown",
+    path: "/readings/rd_FXMDPAGE01",
+    state: "signed-in",
+    heading: "Slow reading week",
+    fixture: "imported-markdown",
+  },
+  {
+    name: "reading-pending",
+    path: "/readings/rd_FXPENDNG01",
+    state: "signed-in",
+    heading: "https://fieldnotes.example/making-room-for-slow-work",
+    fixture: "pending",
+  },
+  {
+    name: "reading-failed",
+    path: "/readings/rd_FXERR00001",
+    state: "signed-in",
+    heading: "https://registration-wall.example/members-only-report",
+    fixture: "fail-source-unreachable",
+  },
+  // The pack's removed target: referenced by `attention` but never written, so
+  // the route 404s (docs/design/connected/fixture-pack.md).
+  {
+    name: "reading-not-found",
+    path: "/readings/rd_FXVANSHD01",
+    state: "signed-in",
+    heading: "This reading isn't in your library.",
+  },
 ];
