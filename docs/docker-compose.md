@@ -30,9 +30,30 @@ The `BACKEND` service binding (`app/wrangler.jsonc`) resolves through
 Wrangler's local dev registry, which records plain `127.0.0.1:<port>`
 addresses — not container hostnames. `docker-compose.yml` gives `app`
 `network_mode: "service:backend"` so both containers share one network stack,
-and mounts a shared volume for `WRANGLER_REGISTRY_PATH` so both sides read the
-same registry entries. Do not change `app`'s `network_mode` or split the
-registry volume without re-verifying the binding still resolves.
+and mounts a shared volume so both sides read the same registry entries. Do
+not change `app`'s `network_mode` or split the registry volume without
+re-verifying the binding still resolves.
+
+The two dev servers read that shared registry through two different env vars
+for the same setting: the backend's plain `wrangler dev` writes its entry
+under `WRANGLER_REGISTRY_PATH`, but `app`'s `@cloudflare/vite-plugin` resolves
+it through the `miniflare` package's own default, governed by
+`MINIFLARE_REGISTRY_PATH`. Both are set to the same path in `app`'s
+environment; dropping either one makes the binding resolve to "not found."
+
+## The BACKEND binding needs ~1–2 minutes to warm up
+
+After a cold `docker compose up`, the anonymous `/` readiness check (see the
+skill) can keep failing — `account-sign-in` missing, identity treated as
+unknown — for roughly 70–120 seconds even though both `/health` and the Vite
+proxy already work. This traces to Miniflare's dev-registry client
+(`WORKER_HEARTBEAT_MS` / `WORKER_STALE_MS` in `miniflare/dist/src/index.js`),
+not to anything this compose file controls: the first attempts to reach the
+backend's debug-port RPC channel fail with "Network connection lost" until
+enough heartbeats have passed. Restarting `app` does not shorten this — only
+elapsed wall-clock time since the backend started does. Wait it out (poll the
+skill's binding check) rather than restarting anything; a warm, already-running
+backend does not have this delay when only `app` restarts.
 
 ## Seeding and sign-in
 
