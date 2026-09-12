@@ -48,6 +48,13 @@ export default defineConfig<EvidenceOptions>({
   projects: [
     ...matrixProjects,
     {
+      // The checks' own regression test: it breaks the shell's CSS on purpose,
+      // so it stays out of the evidence matrix.
+      name: "checks",
+      testMatch: /focus-check\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       name: "shell-extras",
       testMatch: /shell-extras\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },

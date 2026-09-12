@@ -101,7 +101,13 @@ axe (WCAG 2.2 AA), the keyboard pass (skip link first and landing on main,
 focus order, a visible focus indicator on every tab stop, no focus trap), and a
 layout check that no positioned panel escapes the viewport fail the run.
 Reduced motion and zoom — 200% of the desktop window, and the 320 px reflow
-floor — run for the shell. Screenshots go to `e2e/screenshots/` and are
+floor — run for the shell.
+
+The focus indicator is measured on the element the reader sees, as a rendering
+that changes when focus arrives: the theme options focus a transparent radio
+whose ring belongs to the label, so reading the focused element's own outline
+would keep passing after that rule broke. `e2e/specs/focus-check.spec.ts` (the
+`checks` project) suppresses the rule and fails if the check does not. Screenshots go to `e2e/screenshots/` and are
 uploaded by CI for review; they are not pixel-diff baselines, because the
 design spec uses system fonts and wrapping differs by machine.
 
