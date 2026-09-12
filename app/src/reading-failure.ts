@@ -44,7 +44,11 @@ const HEADLINES: Record<Exclude<FailureCategory, "unknown">, string> = {
   stopped: "Processing stopped before finishing.",
 };
 
-/** Fetching the source, whatever the class: the reader's recovery is the same. */
+/**
+ * Failed while fetching the source, and the class said nothing more specific:
+ * the reader's recovery is the same whatever it was. Checked after the explicit
+ * code mappings, which are raised at this stage too.
+ */
 const SOURCE_UNREACHABLE_STAGES: ReadonlySet<string> = new Set<ProcessingStage>([
   "fetch_source",
 ]);
@@ -105,13 +109,19 @@ export function categorize(error: ReadingError): Failure {
 
 function categoryOf(error: ReadingError): FailureCategory {
   const { code, stage } = error;
-  // A class name can mean two different things at two stages: BadStatusError is
-  // the site refusing us at fetch_source and the provider refusing us at
-  // summarize. Stage decides first.
-  if (stage !== undefined && SOURCE_UNREACHABLE_STAGES.has(stage)) return "source-unreachable";
+  // A code this module recognises decides before the stage does. The Reddit and
+  // X classes are all raised inside the backend's fetch_source stage, and an
+  // expired attempt keeps whatever stage it had reached (`expiredActiveAttempt`
+  // preserves it), so the fetch-stage fallback below would otherwise swallow
+  // them and report the wrong recovery.
   if (SOURCE_INCOMPLETE_CODES.has(code)) return "source-incomplete";
   if (STOPPED_CODES.has(code)) return "stopped";
   if (HOSTING_LIMIT_CODES.has(code)) return "hosting-limit";
+  // Stage separates the classes that mean two different things at two stages:
+  // BadStatusError is the site refusing us at fetch_source and the provider
+  // refusing us at summarize. It is in none of the sets above, so it still
+  // reaches this.
+  if (stage !== undefined && SOURCE_UNREACHABLE_STAGES.has(stage)) return "source-unreachable";
   if (stage !== undefined && PROVIDER_STAGES.has(stage) && PROVIDER_CODES.has(code)) {
     const status = providerStatusOf(error.message);
     if (code === "RateLimitedError" || status === 429) return "provider-limit";

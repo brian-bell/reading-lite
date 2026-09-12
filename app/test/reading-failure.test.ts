@@ -74,11 +74,45 @@ describe("failure categories", () => {
   });
 
   // stale_pending and stale_active_attempt are markers the backend writes
-  // itself, not class names, and they carry no stage.
-  it("recognises the staleness markers without a stage", () => {
+  // itself, not class names. stale_pending carries no stage; the backend's
+  // expiredActiveAttempt keeps whatever stage the attempt had reached, so
+  // stale_active_attempt arrives with one and must still read as stopped.
+  it("recognises the staleness markers with or without a stage", () => {
     for (const code of ["stale_pending", "stale_active_attempt"]) {
       expect(categorize({ code, message: "pending > 900s" }).category).toBe("stopped");
     }
+    const expiredWhileFetching: ReadingError = {
+      code: "stale_active_attempt",
+      message: "active attempt > 900s",
+      stage: "fetch_source",
+    };
+    expect(categorize(expiredWhileFetching).category).toBe("stopped");
+  });
+
+  // These are all raised inside the backend's fetch_source stage, so the
+  // generic "failed while fetching" fallback would swallow every one of them.
+  // The class says more than the stage does: the page was reached, and what
+  // came back cannot be summarized.
+  it("keeps the source-incomplete classes ahead of the fetch-stage fallback", () => {
+    const codes = [
+      "RedditManualImportError",
+      "XApiConfigError",
+      "XThreadIncompleteError",
+      "XThreadOutsideRecentWindowError",
+    ];
+    for (const code of codes) {
+      const error: ReadingError = { code, message: "needs a manual import", stage: "fetch_source" };
+      expect(categorize(error).category, code).toBe("source-incomplete");
+    }
+  });
+
+  it("still reads an exhausted queue at fetch_source as stopped", () => {
+    const error: ReadingError = {
+      code: "QueueRetriesExhaustedError",
+      message: "queue delivery retries exhausted",
+      stage: "fetch_source",
+    };
+    expect(categorize(error).category).toBe("stopped");
   });
 
   it("falls back to unknown for a class it has never seen", () => {
