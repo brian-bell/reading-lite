@@ -136,6 +136,19 @@ describe("signOut", () => {
   // Another tab replaced the session cookie, so this tab's CSRF token belongs to
   // a session the backend no longer has: logout is refused and the recovery read
   // answers as the other reader (#384 review).
+  it("reports an account change rather than a failed sign-out when the reader differs", async () => {
+    const other = { ...identity, email: "b@example.com", tenant_id: "usr_b", user_id: "usr_b", csrf_token: "csrf-b" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        new URL(request.url).pathname === "/api/auth/logout"
+          ? Response.json({ error: "forbidden" }, { status: 403 })
+          : Response.json(other),
+      ),
+    );
+    await expect(signOut(signedIn())).resolves.toBe("account-changed");
+  });
+
   it("drops the previous account's data when logout finds a different reader", async () => {
     const other = { ...identity, email: "b@example.com", tenant_id: "usr_b", user_id: "usr_b", csrf_token: "csrf-b" };
     vi.stubGlobal(
@@ -147,7 +160,7 @@ describe("signOut", () => {
       ),
     );
     const queryClient = signedIn();
-    await expect(signOut(queryClient)).resolves.toBe("still-signed-in");
+    await expect(signOut(queryClient)).resolves.toBe("account-changed");
     expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(other);
     expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
     expect(queryClient.getQueryData(loginOptionsQueryKey)).toEqual({ turnstile_site_key: null });

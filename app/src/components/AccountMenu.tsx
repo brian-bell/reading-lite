@@ -31,8 +31,9 @@ export function AccountArea({
 
 function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Promise<SignOutResult> }) {
   const details = useRef<HTMLDetailsElement>(null);
+  const here = useLocation({ select: (location) => location.href });
   const [signingOut, setSigningOut] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [outcome, setOutcome] = useState<SignOutResult | null>(null);
 
   function closeOnEscape(event: KeyboardEvent<HTMLDetailsElement>) {
     const menu = details.current;
@@ -43,11 +44,13 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
 
   async function signOut() {
     setSigningOut(true);
-    setFailed(false);
+    setOutcome(null);
     try {
       // Still signed in: the backend kept the session, so say so rather than
-      // show a signed-out page over a session a reload would restore.
-      setFailed((await onSignOut()) === "still-signed-in");
+      // show a signed-out page over a session a reload would restore. Account
+      // changed: another tab replaced the session, so nothing was revoked and
+      // this tab is someone else now — name that instead of a failure.
+      setOutcome(await onSignOut());
     } finally {
       setSigningOut(false);
     }
@@ -76,10 +79,17 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
             </button>
           </li>
         </ul>
-        {failed ? (
+        {outcome === "still-signed-in" ? (
           <p className="account-menu-error" role="alert">
             Couldn’t sign out. You are still signed in.
           </p>
+        ) : null}
+        {outcome === "account-changed" ? (
+          <div className="account-menu-error" role="alert">
+            <p>Another tab signed in as a different account, so you weren’t signed out.</p>
+            {/* A full load, so the page starts over as the account above. */}
+            <a href={here}>Reload</a>
+          </div>
         ) : null}
       </div>
     </details>

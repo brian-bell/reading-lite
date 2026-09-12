@@ -63,7 +63,7 @@ function forgetAccount(queryClient: QueryClient): void {
   queryClient.setQueryData(sessionEndedQueryKey, null);
 }
 
-export type SignOutResult = "signed-out" | "still-signed-in";
+export type SignOutResult = "signed-out" | "still-signed-in" | "account-changed";
 
 /**
  * Signs out and drops the account's cached data.
@@ -77,7 +77,9 @@ export type SignOutResult = "signed-out" | "still-signed-in";
  * replaces the shared session cookie, this tab's CSRF token no longer matches
  * the session behind it, and logout is refused. The cached data belongs to the
  * account that is gone, so drop it before showing the new identity, as
- * `completeSignIn` does (#384 review).
+ * `completeSignIn` does. That is `"account-changed"` rather than a failed
+ * sign-out: nothing was revoked, and the tab is no longer the account the
+ * reader acted on (acceptance matrix, Account changed) (#384 review).
  */
 export async function signOut(queryClient: QueryClient): Promise<SignOutResult> {
   const previous = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
@@ -88,10 +90,12 @@ export async function signOut(queryClient: QueryClient): Promise<SignOutResult> 
     const identity = await fetchIdentity().catch(() => undefined);
     // Signed in, or unknown: either way this session is not ours to discard.
     if (identity !== null) {
-      if (identity) {
-        if (identity.user_id !== previous?.user_id) forgetAccount(queryClient);
+      if (identity && identity.user_id !== previous?.user_id) {
+        forgetAccount(queryClient);
         queryClient.setQueryData(whoamiQueryKey, identity);
+        return "account-changed";
       }
+      if (identity) queryClient.setQueryData(whoamiQueryKey, identity);
       return "still-signed-in";
     }
   }

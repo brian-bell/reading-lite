@@ -67,7 +67,9 @@ return path is per origin.
   form. Sign-in and sign-out drop every account-scoped query. A failed logout
   revokes nothing, so `signOut` re-reads identity and keeps the reader signed
   in when the session survived; when that read answers as a different reader,
-  the previous account's queries are dropped before the new identity is shown.
+  the previous account's queries are dropped and the menu reports an account
+  change with a reload, not a failed sign-out (acceptance matrix, Account
+  changed).
   Single-use sign-in material stays in component state, never in module state,
   because these modules are loaded during server renders too. The legacy SPA's
   `reading-lite.bearerToken` entry is removed at boot

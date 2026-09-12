@@ -423,6 +423,34 @@ describe("sign-out", () => {
   });
 });
 
+describe("an account changed in another tab", () => {
+  // The cookie now belongs to B, so A's cached CSRF token is refused and the
+  // recovery read answers as B. The reader was not signed out, and this tab is
+  // no longer the account they acted on (acceptance matrix, Account changed).
+  it("says the account changed and offers a reload, not a failed sign-out", async () => {
+    stubBackend({
+      "GET /api/readings/rd_ONE": () => Response.json({ title: "Operator Notes" }),
+      "POST /api/auth/logout": () => Response.json({ error: "forbidden" }, { status: 403 }),
+      "GET /api/whoami": () => Response.json(readerB),
+    });
+    const { router, queryClient } = await openTab("/readings/rd_ONE", readerA);
+    await screen.findByText("Operator Notes");
+    const user = userEvent.setup();
+    await user.click(within(nav()).getByText("Account", { selector: "summary *" }));
+    await user.click(within(nav()).getByRole("button", { name: "Sign out" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/different account/i);
+    expect(alert).not.toHaveTextContent(/still signed in/i);
+    // The menu names who this tab is now, and a reload starts clean at this URL.
+    expect(await within(nav()).findByRole("group", { name: /b@example\.com/ })).toBeInTheDocument();
+    expect(within(nav()).getByRole("link", { name: "Reload" })).toHaveAttribute("href", "/readings/rd_ONE");
+    // Still signed in, so no redirect to sign-in, and A's data is gone.
+    expect(router.state.location.pathname).toBe("/readings/rd_ONE");
+    expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
+  });
+});
+
 describe("expired session", () => {
   it("shows “Your session ended” in place on a 401, with sign-in back to the same URL", async () => {
     stubBackend({ "GET /api/readings/rd_ONE": () => Response.json({ error: "unauthorized" }, { status: 401 }) });

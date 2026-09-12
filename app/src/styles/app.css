@@ -298,6 +298,11 @@ textarea {
   color: var(--danger);
 }
 
+/* The account-changed state pairs a sentence with its Reload link. */
+.account-menu-error p {
+  margin: 0 0 var(--space-2);
+}
+
 .shell-main {
   min-width: 0;
 }
