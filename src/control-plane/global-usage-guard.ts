@@ -1,3 +1,4 @@
+import { LeaseRecoveryRequestSchema, recoverLeasePair, type LeaseRecoveryRequest } from "./processing-lease-recovery";
 import { inspectGlobal } from "./operator-inspection";
 import { readSpendStatus } from "./spend-status";
 import type { Env } from "../index";
@@ -55,7 +56,7 @@ type FenceLeaseBody = {
  * for an account that no longer exists.
  */
 type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
-type GuardBody = { kind: "spend_status"; tenantId?: string; details?: boolean } | AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
+type GuardBody = LeaseRecoveryRequest | { kind: "spend_status"; tenantId?: string; details?: boolean } | AcquireLeaseBody | FenceLeaseBody | PurgeTenantBody | SpendBody;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -139,6 +140,10 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const kind = body.kind;
+  if (kind === "recover_leases") {
+    const parsed = LeaseRecoveryRequestSchema.safeParse(body);
+    return parsed.success ? parsed.data : null;
+  }
   const tenantId = typeof body.tenantId === "string" ? body.tenantId : "";
   const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
   const nowMs = Number(body.nowMs);
@@ -208,6 +213,7 @@ export class GlobalUsageGuard implements DurableObject {
     if (!parsed) return json({ error: "invalid_body" }, 400);
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
+      if (body.kind === "recover_leases") return json(await recoverLeasePair(this.state.storage, this.env, body));
       if (body.kind === "spend_status") {
         const now = Date.now();
         return json({ ...await readSpendStatus(this.state.storage, now, body.tenantId), ...(body.details ? { details: await inspectGlobal(this.state.storage, now) } : {}) });

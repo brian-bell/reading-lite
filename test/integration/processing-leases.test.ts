@@ -7,6 +7,7 @@ import {
   GLOBAL_USAGE_GUARD_NAME,
   PROCESSING_DEFER_DELAY_SECONDS,
   PROCESSING_DEFER_MAX_AGE_MS,
+  PROCESSING_LEASE_TTL_MS,
 } from "../../src/control-plane/constants";
 import { processReading, type ProcessReadingArgs, type ProcessReadingSource } from "../../src/process-reading";
 import { RateLimitedError } from "../../src/modules/http-retry";
@@ -232,6 +233,10 @@ async function seedReading(
     attemptId: string;
     status?: Manifest["status"];
     source?: ProcessReadingSource;
+    // Terminal manifests in production (readyManifest/failedManifest) clear
+    // active_attempt; seeding that shape exercises the canWrite-false path a
+    // real redelivery takes.
+    omitActiveAttempt?: boolean;
   },
 ): Promise<ProcessReadingArgs> {
   const createdAt = "2026-09-03T00:00:00.000Z";
@@ -245,14 +250,18 @@ async function seedReading(
     url_hash: urlHash,
     source_type: "url",
     status,
-    active_attempt: {
-      id: opts.attemptId,
-      trigger: "submit",
-      status: status === "pending" ? "running" : status === "ready" ? "succeeded" : "failed",
-      stage: status === "pending" ? "queued" : "write_indexes",
-      started_at: createdAt,
-      ...(status === "pending" ? {} : { finished_at: createdAt }),
-    },
+    ...(opts.omitActiveAttempt === true
+      ? {}
+      : {
+          active_attempt: {
+            id: opts.attemptId,
+            trigger: "submit",
+            status: status === "pending" ? "running" : status === "ready" ? "succeeded" : "failed",
+            stage: status === "pending" ? "queued" : "write_indexes",
+            started_at: createdAt,
+            ...(status === "pending" ? {} : { finished_at: createdAt }),
+          },
+        }),
     ...(status === "failed"
       ? { error: { code: "TestError", message: "seeded failure", retryable: true } }
       : {}),
@@ -427,20 +436,31 @@ describe("processing leases (Workers pool)", () => {
     }
   }, 20_000);
 
-  it("already_running on a ready reading acks as done without requeue", async () => {
+  it("already_running on a reprocess-preserved ready manifest defers without releasing the live holder", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
       max_concurrent_work: 1,
     });
     const tenant = tenantOf(tenantId);
+    // reprocessPending keeps status "ready" while adding a running
+    // active_attempt: a live reprocess holder owns the rows, and a duplicate
+    // delivery must not mistake the ready status for finished work (#256).
     const job = await seedReading(tenant, {
       id: "rd_LEASE_DONE",
       url: "https://lease.test/done",
       attemptId: "at_done",
       status: "ready",
     });
-    expect(await holdTenantLease(tenantId, "at_done")).toMatchObject({ ok: true });
+    const tenantHeld = await holdTenantLease(tenantId, "at_done");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_done",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
     const fetchFn = makeFetch();
     const sendDelayed = vi.fn(async () => {});
     const msg = fakeMessage({ version: 1, job });
@@ -449,16 +469,24 @@ describe("processing leases (Workers pool)", () => {
       () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
       { sendDelayed },
     );
-    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(sendDelayed).toHaveBeenCalledOnce();
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "ready",
     });
+    // The live reprocess holder keeps both rows.
+    expect(await holdTenantLease(tenantId, "at_done")).toMatchObject({
+      ok: true,
+      already_running: true,
+    });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_done", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: true });
   });
 
-  it("already_running on a failed reading acks as done without requeue", async () => {
+  it("already_running on a failed manifest with a live active attempt defers without releasing", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -472,6 +500,13 @@ describe("processing leases (Workers pool)", () => {
       status: "failed",
     });
     expect(await holdTenantLease(tenantId, "at_faildone")).toMatchObject({ ok: true });
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_faildone",
+      nowMs: Date.now(),
+    });
+    expect(globalHeld).toMatchObject({ ok: true });
     const fetchFn = makeFetch();
     const sendDelayed = vi.fn(async () => {});
     const msg = fakeMessage({ version: 1, job });
@@ -480,13 +515,18 @@ describe("processing leases (Workers pool)", () => {
       () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
       { sendDelayed },
     );
-    expect(sendDelayed).not.toHaveBeenCalled();
+    // Status "failed" alone is not the finished shape while an active
+    // attempt exists; the live holder keeps its rows.
+    expect(sendDelayed).toHaveBeenCalledOnce();
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "failed",
     });
+    expect(
+      await holdTenantLease(tenantId, "at_faildone"),
+    ).toMatchObject({ ok: true, already_running: true });
   });
 
   it("incomplete already_running defers instead of success-ack or markFailed", async () => {
@@ -593,6 +633,77 @@ describe("processing leases (Workers pool)", () => {
       await dispatched.catch(() => {});
     }
   }, 20_000);
+
+  it.each([
+    { name: "overdue reprocess", overdue: true, outage: false, terminal: false },
+    { name: "reprocess with terminal-write outage", overdue: true, outage: true, terminal: false },
+    { name: "recent retired reprocess", overdue: false, outage: false, terminal: false },
+    { name: "already terminal reading", overdue: true, outage: false, terminal: true },
+  ])("handles a resumed stale holder for $name", async ({ overdue, outage, terminal }) => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20, monthly_readings: 20, max_concurrent_work: 2,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedReading(tenant, {
+      id: "rd_STALE_REPROCESS", url: "https://lease.test/stale-reprocess",
+      attemptId: "at_stale_reprocess", status: "ready", omitActiveAttempt: true, source: PARKED_MARKDOWN,
+    });
+    const reader = testReadingStore(env, tenant);
+    const prior = (await reader.readManifest(job.keyPrefix))!;
+    job.preserveReadyManifest = prior;
+    job.trigger = "reprocess";
+    if (overdue) job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    await reader.writeManifest(job.keyPrefix, { ...prior, active_attempt: {
+      id: job.attemptId!, trigger: "reprocess", status: "running", stage: "queued",
+      started_at: job.attemptStartedAt!,
+    } });
+    const parked = parkAtFirstEmbed();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const svc = services(parked.fetchFn);
+    const dispatched = dispatchQueueMessage(msg,
+      () => processReading(job, env as unknown as Env, svc, tenant), { sendDelayed });
+    let restorePut = () => {};
+    try {
+      await parked.waitUntilStarted();
+      // The holder's injected clock is overdue relative to the guards. Retire
+      // it while its provider response is stalled, before the recovery writer
+      // has terminalized the preserved-ready manifest.
+      expect(await globalLease({ kind: "recover_leases", tenantId, attemptId: job.attemptId })).toMatchObject({ ok: true });
+      if (terminal) await reader.writeManifest(job.keyPrefix, prior);
+      if (outage) {
+        const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+        const spy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
+          if (key.endsWith("/manifest.json")) throw new Error("R2 outage");
+          return put(key, value, options);
+        });
+        restorePut = () => spy.mockRestore();
+      }
+      parked.release();
+      await dispatched;
+      expect(parked.started()).toBe(1);
+      expect(summaryCalls(parked.fetchFn)).toBe(0);
+      if (outage || !overdue) {
+        expect(sendDelayed).toHaveBeenCalledOnce();
+        expect((await reader.readManifest(job.keyPrefix))!.active_attempt?.id).toBe(job.attemptId);
+        restorePut();
+        await processReading(job, env as unknown as Env, svc, tenant);
+      } else {
+        expect(sendDelayed).not.toHaveBeenCalled();
+      }
+      const finished = (await reader.readManifest(job.keyPrefix))!;
+      expect(finished).toMatchObject({ status: "ready", title: prior.title, tldr: prior.tldr });
+      expect(finished.active_attempt).toBeUndefined();
+      if (!terminal) expect(finished.last_attempt).toMatchObject({ id: job.attemptId, status: "failed" });
+      expect(parked.started()).toBe(1);
+    } finally {
+      restorePut();
+      parked.release();
+      await dispatched.catch(() => {});
+    }
+  });
 
   it("paused expired lease does not block a later attempt", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
@@ -1203,5 +1314,477 @@ describe("processing leases (Workers pool)", () => {
       status: "pending",
       active_attempt: { id: "at_under" },
     });
+  });
+});
+
+describe("orphaned in-flight lease recovery (#256)", () => {
+  // An inFlight row is only provably dead once its heartbeat lapsed. The
+  // overdue gate compares against the delivery's injected clock, so seed
+  // overdue rows with a nowMs two TTLs behind that same frozen clock.
+  const DEAD_SINCE_MS = () =>
+    Date.parse("2026-09-03T00:00:01.000Z") - 2 * PROCESSING_LEASE_TTL_MS;
+
+  it("releases both overdue orphaned rows when the defer ceiling terminalizes the reading", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // Simulate the dead worker: both rows held, heartbeat lapsed, for THIS
+    // attempt.
+    const tenantHeld = await holdTenantLease(tenantId, "at_ceiling", DEAD_SINCE_MS());
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_ceiling",
+      nowMs: DEAD_SINCE_MS(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_CEILING",
+      url: "https://lease.test/ceiling",
+      attemptId: "at_ceiling",
+      source: PARKED_MARKDOWN,
+    });
+    job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    // Terminalized, not deferred — and no paid dispatch on a release-only path.
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "ProcessingDeferExpiredError" },
+    });
+    // ProcessingDeferExpiredError can no longer leave permanent capacity loss:
+    // the tenant slot is free for a new attempt even at cap 1, and the global
+    // row is gone (a re-acquire of the same attempt is fresh, not adopted).
+    const fresh = await holdTenantLease(tenantId, "at_ceiling_new");
+    expect(fresh).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_ceiling", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+    await tenantLease(tenantId, {
+      kind: "release_lease",
+      attemptId: "at_ceiling_new",
+      fence: fresh.fence,
+      nowMs: Date.now(),
+    });
+  });
+
+  it.each(["recovery_response", "terminal_write"])(
+    "finishes a retired attempt after an interrupted %s", async failure => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // Simulate the dead worker: both rows held, heartbeat lapsed, for THIS
+    // attempt.
+    const tenantHeld = await holdTenantLease(tenantId, "at_ceiling", DEAD_SINCE_MS());
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_ceiling",
+      nowMs: DEAD_SINCE_MS(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_CEILING",
+      url: "https://lease.test/ceiling",
+      attemptId: "at_ceiling",
+      source: PARKED_MARKDOWN,
+    });
+    job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const restore = interceptGlobalLeaseFetch(async (body, next) => {
+      const res = await next();
+      if (failure === "recovery_response" && body.kind === "recover_leases") {
+        await res.json(); // mutation completed, but this delivery cannot know it
+        return new Response(null, { status: 503 });
+      }
+      return res;
+    });
+    const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
+    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
+      if (failure === "terminal_write" && key.endsWith("/manifest.json")) throw new Error("R2 outage");
+      return put(key, value, options);
+    });
+    try {
+      await dispatchQueueMessage(msg,
+        () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
+    } finally { restore(); putSpy.mockRestore(); }
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(await testReadingStore(env, tenant).readManifest(job.keyPrefix)).toMatchObject({ status: "pending" });
+    expect(await holdTenantLease(tenantId, "at_ceiling")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(embedCalls(fetchFn)).toBe(0);
+    sendDelayed.mockClear();
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    // Terminalized, not deferred — and no paid dispatch on a release-only path.
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledTimes(2);
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "ProcessingDeferExpiredError" },
+    });
+    // ProcessingDeferExpiredError can no longer leave permanent capacity loss:
+    // the tenant slot is free for a new attempt even at cap 1, and the global
+    // row is gone (a re-acquire of the same attempt is fresh, not adopted).
+    const fresh = await holdTenantLease(tenantId, "at_ceiling_new");
+    expect(fresh).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_ceiling", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+    await tenantLease(tenantId, {
+      kind: "release_lease",
+      attemptId: "at_ceiling_new",
+      fence: fresh.fence,
+      nowMs: Date.now(),
+    });
+  });
+
+  it("defers at the ceiling when the holder is not provably dead - age is not abandonment", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // The attempt is older than the ceiling, but its rows were just acquired
+    // and are still inside their TTL: the holder may be live mid-paid-work.
+    // Terminalizing it would clear active_attempt under an in-flight provider
+    // request, so the duplicate defers and touches nothing (#256).
+    const tenantHeld = await holdTenantLease(tenantId, "at_ceiling_live");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_ceiling_live",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_CEILING_LIVE",
+      url: "https://lease.test/ceiling-live",
+      attemptId: "at_ceiling_live",
+      source: PARKED_MARKDOWN,
+    });
+    job.attemptStartedAt = new Date(
+      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
+    ).toISOString();
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "pending",
+      active_attempt: { id: "at_ceiling_live" },
+    });
+    expect(await holdTenantLease(tenantId, "at_ceiling_live")).toMatchObject({
+      ok: true,
+      already_running: true,
+    });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_ceiling_live", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: true });
+  });
+
+  it("releases the orphan on the production-shape terminal early return (canWrite false)", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // readyManifest clears active_attempt, so a real terminal redelivery never
+    // reaches acquire — the canWrite-false early return is its only path.
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_TERM",
+      url: "https://lease.test/terminal",
+      attemptId: "at_term",
+      status: "ready",
+      omitActiveAttempt: true,
+      source: PARKED_MARKDOWN,
+    });
+    const tenantHeld = await holdTenantLease(tenantId, "at_term");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_term",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_term_new")).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_term", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+  });
+
+  it("retries terminal cleanup after a guard outage instead of acknowledging an orphan", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // readyManifest clears active_attempt, so a real terminal redelivery never
+    // reaches acquire — the canWrite-false early return is its only path.
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_TERM",
+      url: "https://lease.test/terminal",
+      attemptId: "at_term",
+      status: "ready",
+      omitActiveAttempt: true,
+      source: PARKED_MARKDOWN,
+    });
+    const tenantHeld = await holdTenantLease(tenantId, "at_term");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_term",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    const restore = interceptGlobalLeaseFetch(async (body, next) => {
+      if (body.kind === "clear_dead_lease" || body.kind === "recover_leases") {
+        return new Response(null, { status: 503 });
+      }
+      return next();
+    });
+    try {
+      await dispatchQueueMessage(msg,
+        () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
+    } finally { restore(); }
+    expect(sendDelayed).toHaveBeenCalledOnce();
+    sendDelayed.mockClear();
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledTimes(2);
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_term_new")).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_term", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+  });
+
+  it("does not release a live holder's rows when a duplicate defers under the ceiling", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 2,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_LIVE",
+      url: "https://lease.test/live-holder",
+      attemptId: "at_live_holder",
+      source: PARKED_MARKDOWN,
+    });
+    const parked = parkAtFirstEmbed();
+    const svc = services(parked.fetchFn);
+    const first = processReading(job, env as unknown as Env, svc, tenant);
+    try {
+      await parked.waitUntilStarted();
+      // A duplicate delivery of the same live attempt defers, releases
+      // nothing, and starts no second paid dispatch.
+      const sendDelayed = vi.fn(async () => {});
+      const msg = fakeMessage({ version: 1, job });
+      await dispatchQueueMessage(
+        msg,
+        () => processReading(job, env as unknown as Env, svc, tenant),
+        { sendDelayed },
+      );
+      expect(sendDelayed).toHaveBeenCalledOnce();
+      expect(msg.ack).toHaveBeenCalledOnce();
+      expect(parked.started()).toBe(1);
+      expect(
+        await holdTenantLease(tenantId, "at_live_holder"),
+      ).toMatchObject({ ok: true, already_running: true });
+      expect(
+        await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_live_holder", nowMs: Date.now() }),
+      ).toMatchObject({ ok: true, already_running: true });
+    } finally {
+      parked.release();
+      await first.catch(() => {});
+    }
+    // The holder completes and releases on its own; no theft occurred.
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(parked.started()).toBe(2);
+    expect(
+      await holdTenantLease(tenantId, "at_live_holder"),
+    ).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_live_holder", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
+  }, 20_000);
+
+  it("releases a tenant-only orphan without touching a global row that never existed", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedReading(tenant, {
+      id: "rd_LEASE_TENANTONLY",
+      url: "https://lease.test/tenant-only",
+      attemptId: "at_tenant_only",
+      status: "ready",
+      omitActiveAttempt: true,
+      source: PARKED_MARKDOWN,
+    });
+    const tenantHeld = await holdTenantLease(tenantId, "at_tenant_only");
+    expect(tenantHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(embedCalls(fetchFn)).toBe(0);
+    expect(await holdTenantLease(tenantId, "at_tenant_only")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_tenant_only_new")).toMatchObject({ ok: true, already_running: false });
+  });
+
+  it("does not release rows behind a foreign active_attempt - that holder may be live", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_CONFLICT",
+      url: "https://lease.test/conflict",
+      attemptId: "at_conflict_mine",
+      source: PARKED_MARKDOWN,
+    });
+    const reader = testReadingStore(env, tenant);
+    const stored = await reader.readManifest(job.keyPrefix);
+    await reader.writeManifest(job.keyPrefix, {
+      ...stored!,
+      active_attempt: { ...stored!.active_attempt!, id: "at_conflict_foreign" },
+    });
+    const tenantHeld = await holdTenantLease(tenantId, "at_conflict_mine");
+    expect(tenantHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(embedCalls(fetchFn)).toBe(0);
+    // The conflict path must leave the rows alone: a live holder of this
+    // attempt could still be mid-paid-work behind the takeover.
+    expect(
+      await holdTenantLease(tenantId, "at_conflict_mine"),
+    ).toMatchObject({ ok: true, already_running: true });
+  });
+
+  it("releases the orphan when the reading was purged - no terminal manifest will ever exist", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20,
+      monthly_readings: 20,
+      max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant, {
+      id: "rd_LEASE_PURGED",
+      url: "https://lease.test/purged",
+      attemptId: "at_purged",
+      source: PARKED_MARKDOWN,
+    });
+    const reader = testReadingStore(env, tenant);
+    await reader.writePurgeTombstone(job.id);
+    const tenantHeld = await holdTenantLease(tenantId, "at_purged");
+    const globalHeld = await globalLease({
+      kind: "acquire_lease",
+      tenantId,
+      attemptId: "at_purged",
+      nowMs: Date.now(),
+    });
+    expect(tenantHeld).toMatchObject({ ok: true });
+    expect(globalHeld).toMatchObject({ ok: true });
+    const fetchFn = makeFetch();
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    await dispatchQueueMessage(
+      msg,
+      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
+      { sendDelayed },
+    );
+    expect(msg.ack).toHaveBeenCalledOnce();
+    expect(embedCalls(fetchFn)).toBe(0);
+    expect(await holdTenantLease(tenantId, "at_purged")).toMatchObject({ ok: false, reason: "stale_fence" });
+    expect(await holdTenantLease(tenantId, "at_purged_new")).toMatchObject({ ok: true, already_running: false });
+    expect(
+      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_purged", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true, already_running: false });
   });
 });

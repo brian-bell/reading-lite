@@ -60,6 +60,7 @@ import {
   throwIfDeferred,
   type ProcessingLeaseHold,
 } from "./control-plane/processing-leases";
+import { recoverProcessingLeases } from "./control-plane/processing-lease-recovery";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
@@ -97,6 +98,7 @@ export async function processReading(
   const retry = retryDepsFromEnv(env);
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
+  const clock = () => nowMs(services);
   let readingSlotConsumed = false;
   let leases: ProcessingLeaseHold | null = null;
   let stopHeartbeat: (() => Promise<void>) | null = null;
@@ -116,6 +118,9 @@ export async function processReading(
         alreadyConfirmed: purged === "tombstone",
       });
       await releaseReadingSlot(env, tenantId, opId);
+      // A purged target cannot finish processing. Retire the attempt and
+      // recover leftover capacity, retrying any unconfirmed cleanup.
+      await recoverLeasesOrDefer(env, tenantId, opId, "purged_reading");
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
@@ -133,6 +138,7 @@ export async function processReading(
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
       await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
+      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
       return;
     }
     validateProcessingCredentials({
@@ -169,13 +175,17 @@ export async function processReading(
     if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
       await maybeSweepConfirmedTombstone(reader, args);
       await releaseReadingSlot(env, tenantId, opId);
+      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
       return;
     }
 
-    const clock = () => nowMs(services);
-    const acquired = throwIfDeferred(await acquireProcessingLeases(env, tenantId, opId, clock()));
+    const result = await acquireProcessingLeases(env, tenantId, opId, clock());
+    // A retired attempt can be redelivered after recovery crashed before its
+    // terminal write. Finish recovery without ever acquiring a new work hold.
+    const retired = !result.ok && result.reason === "stale_fence";
+    const acquired = retired ? "already_running" : throwIfDeferred(result);
     if (acquired === "already_running") {
-      await ackOrDeferIfProcessingIncomplete(reader, args);
+      await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, retired);
       return;
     }
     leases = acquired;
@@ -383,14 +393,23 @@ export async function processReading(
       if (leases) await releaseProcessingLeases(env, leases, clockNow);
       leases = null;
       if (e instanceof StaleProcessingLeaseError) {
+        // A preserved ready manifest can still own an active reprocess. Use
+        // recovery's terminality and write-confirmation rules before acking.
+        // A stale fence alone does not prove retirement or holder death.
         try {
-          const manifest = await reader.readManifest(args.keyPrefix);
-          if (manifest?.status === "ready" || manifest?.status === "failed") return;
+          await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, false);
         } catch (err) {
+          await refreshReadingSlot(env, tenantId, opId, clockNow);
+          if (err instanceof DeferPaidWorkError) throw err;
           console.error(err);
+          throw new LiveHolderDeferError();
         }
+        return;
       }
-      if (deferLoopExceeded(args, clockNow)) {
+      // LiveHolderDeferError carries an already_running holder whose death is
+      // not proven; terminalizing it at the ceiling would clear active_attempt
+      // under a provider request still in flight (#256). Defer instead.
+      if (deferLoopExceeded(args, clockNow) && !(e instanceof LiveHolderDeferError)) {
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
@@ -449,20 +468,80 @@ export async function processReading(
   }
 }
 
-// Duplicate or stale-fence deliveries must not ack-as-success unless this
-// reading already has a terminal ready/failed manifest. Incomplete work is
-// deferred with the same delayed-send contract as lease contention.
-async function ackOrDeferIfProcessingIncomplete(
+// Recovery policy belongs to the reading lifecycle. Lease observations,
+// retirement, paired cleanup and partial failures belong to the recovery
+// authority. No unconfirmed cleanup may consume the last queue delivery.
+class LiveHolderDeferError extends DeferPaidWorkError {}
+
+function manifestIsProductionTerminal(manifest: Manifest | null): boolean {
+  return manifest !== null && manifest.active_attempt === undefined &&
+    (manifest.status === "ready" || manifest.status === "failed");
+}
+
+async function recoverLeasesOrDefer(
+  env: Env,
+  tenantId: string,
+  attemptId: string,
+  reason: "terminal_manifest" | "purged_reading" | "defer_expired" | "retired_attempt",
+): Promise<void> {
+  const outcome = await recoverProcessingLeases(env, tenantId, attemptId, {
+    requireOverdue: reason === "defer_expired" || reason === "retired_attempt",
+  });
+  if (outcome.kind !== "completed") throw new LiveHolderDeferError();
+  if (outcome.result.tenant.ok && outcome.result.global.ok &&
+      (outcome.result.tenant.cleared || outcome.result.global.cleared)) {
+    console.warn(JSON.stringify({ event: "processing_lease_orphan_released",
+      reason, tenant_id: tenantId, attempt_id: attemptId }));
+  }
+}
+
+async function recoverOrphanedLeases(
   reader: ReadingStore,
   args: ProcessReadingArgs,
+  env: Env,
+  tenantId: string,
+  services: Services,
+  attempt: ProcessingAttempt,
+  clock: () => number,
+  retired: boolean,
 ): Promise<void> {
-  try {
-    const manifest = await reader.readManifest(args.keyPrefix);
-    if (manifest?.status === "ready" || manifest?.status === "failed") return;
-  } catch (err) {
-    console.error(err);
+  let manifest: Manifest | null;
+  try { manifest = await reader.readManifest(args.keyPrefix); }
+  catch { throw new LiveHolderDeferError(); }
+  if (manifestIsProductionTerminal(manifest)) {
+    await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
+    return;
   }
-  throw new DeferPaidWorkError();
+  // Missing/foreign state is not permission to terminalize another attempt.
+  if (!manifest || !attemptOwnership(manifest, args).isActive ||
+      (!retired && !deferLoopExceeded(args, clock()))) throw new LiveHolderDeferError();
+  await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args),
+    retired ? "retired_attempt" : "defer_expired");
+  await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
+  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+  // markFailed is defensive elsewhere and can swallow an R2 write failure.
+  // Retirement must keep its recovery delivery until terminalization sticks.
+  try {
+    const current = await reader.readManifest(args.keyPrefix);
+    if (manifestIsProductionTerminal(current)) return;
+    if (current && attemptOwnership(current, args).hasConflict) return;
+    if (!current && await confirmedPurgeTombstone(reader, args.id)) return;
+  } catch { /* Unconfirmed terminalization must be retried. */ }
+  throw new LiveHolderDeferError();
+}
+
+async function releaseOrphanedLeasesIfReadingTerminal(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+  env: Env,
+  tenantId: string,
+): Promise<void> {
+  let manifest: Manifest | null;
+  try { manifest = await reader.readManifest(args.keyPrefix); }
+  catch { throw new LiveHolderDeferError(); }
+  if (manifestIsProductionTerminal(manifest)) {
+    await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
+  }
 }
 
 

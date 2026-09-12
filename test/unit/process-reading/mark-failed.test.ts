@@ -1,3 +1,4 @@
+import { env as testEnv } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
@@ -17,6 +18,7 @@ function args() {
 function envWith(bucket: R2Bucket): Env {
   return {
     READINGS_BUCKET: bucket,
+    GLOBAL_USAGE_GUARD: testEnv.GLOBAL_USAGE_GUARD,
     READINGS_INDEX: {
       upsert: vi.fn(),
       query: vi.fn(),

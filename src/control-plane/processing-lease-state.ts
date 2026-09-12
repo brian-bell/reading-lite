@@ -102,6 +102,7 @@ export async function acquireLease(
   storage: DurableObjectStorage,
   opts: { id: string; limit: number; nowMs: number },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   await sweepExpiredLeases(storage, opts.nowMs);
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
@@ -150,6 +151,7 @@ export async function renewLease(
   storage: DurableObjectStorage,
   opts: { id: string; fence: string; nowMs: number; preserveInFlight?: boolean },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
   const verdict = fenceMismatchOrIdleExpired(existing, opts);
@@ -170,6 +172,7 @@ export async function pauseLease(
   storage: DurableObjectStorage,
   opts: { id: string; fence: string; nowMs: number },
 ): Promise<LeaseDecision> {
+  if (await isRetired(storage, opts.id)) return { ok: false, reason: "stale_fence" };
   const key = leaseStorageKey(opts.id);
   const existing = asLease(await storage.get(key));
   const verdict = fenceMismatchOrIdleExpired(existing, opts);
@@ -196,4 +199,58 @@ export async function releaseLease(
   if (existing.fence !== opts.fence) return { ok: false, reason: "stale_fence" };
   await storage.delete(key);
   return { ok: true, fence: opts.fence, alreadyRunning: false, expiresAt: existing.expiresAt };
+}
+
+// Recovery observations contain no dispatch credentials.
+export type LeasePeek =
+  | { present: false }
+  | { present: true; expiresAt: number; inFlight: boolean };
+
+export async function peekLease(storage: DurableObjectStorage, opts: { id: string }): Promise<LeasePeek> {
+  const raw = await storage.get(leaseStorageKey(opts.id));
+  if (raw === undefined) return { present: false };
+  const lease = asLease(raw);
+  if (!lease) throw new Error("invalid stored lease");
+  return { present: true, expiresAt: lease.expiresAt, inFlight: lease.inFlight };
+}
+
+export type DeadLeaseClearDecision =
+  | { ok: true; cleared: boolean }
+  | { ok: false; reason: "changed" | "not_in_flight" | "not_overdue" };
+
+export function checkLeaseRecovery(
+  row: LeasePeek,
+  expectedExpiresAt: number | null,
+  nowMs: number,
+  requireOverdue: boolean,
+): DeadLeaseClearDecision {
+  if (!row.present) return { ok: true, cleared: false };
+  if (row.expiresAt !== expectedExpiresAt) return { ok: false, reason: "changed" };
+  if (!row.inFlight) return { ok: false, reason: "not_in_flight" };
+  if (requireOverdue && row.expiresAt > nowMs) return { ok: false, reason: "not_overdue" };
+  return { ok: true, cleared: true };
+}
+
+// Only recovered attempts get a marker. It consumes no capacity and contains
+// no credentials/content. Keep it until tenant teardown: a delayed delivery
+// must never reacquire this attempt, including after recovery dies before the
+// terminal manifest write. User retries mint a different attempt id.
+const retirementKey = (id: string) => `retired-lease:${id}`;
+
+async function isRetired(storage: DurableObjectStorage, id: string): Promise<boolean> {
+  return await storage.get(retirementKey(id)) !== undefined;
+}
+
+// Called under the tenant guard's lock. Persist retirement BEFORE deleting
+// capacity, so a crash or lost response remains safe and replayable.
+export async function retireLease(
+  storage: DurableObjectStorage,
+  opts: { id: string; expectedExpiresAt: number | null; nowMs: number; requireOverdue: boolean },
+): Promise<DeadLeaseClearDecision> {
+  const row = await peekLease(storage, opts);
+  const decision = checkLeaseRecovery(row, opts.expectedExpiresAt, opts.nowMs, opts.requireOverdue);
+  if (!decision.ok) return decision;
+  await storage.put(retirementKey(opts.id), true);
+  if (row.present) await storage.delete(leaseStorageKey(opts.id));
+  return decision;
 }

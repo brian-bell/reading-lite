@@ -1,3 +1,4 @@
+import { TenantRecoveryRequestSchema, tenantLeaseRecovery, type TenantRecoveryRequest } from "./processing-lease-recovery";
 import { inspectTenant } from "./operator-inspection";
 import type { Env } from "../index";
 import { bumpWindow } from "./auth-rate-guard";
@@ -81,6 +82,7 @@ type FenceLeaseBody = {
  */
 type PurgeTenantBody = { kind: "purge_tenant"; tenantId: string };
 type GuardBody =
+  | TenantRecoveryRequest
   | { kind: "tenant_status"; tenantId: string }
   | PurgeTenantBody
   | AdmitRequestBody
@@ -194,6 +196,10 @@ function parseGuardBody(value: unknown): GuardBody | null {
   if (!value || typeof value !== "object") return null;
   const body = value as Record<string, unknown>;
   const kind = body.kind;
+  if (kind === "peek_lease" || kind === "retire_lease") {
+    const parsed = TenantRecoveryRequestSchema.safeParse(body);
+    return parsed.success ? parsed.data : null;
+  }
   if (kind === "tenant_status") {
     const tenantId = parseTenantId(typeof body.tenantId === "string" ? body.tenantId : "");
     return tenantId ? { kind, tenantId } : null;
@@ -285,6 +291,7 @@ export class TenantUsageGuard implements DurableObject {
     if (!parsed) return json({ error: "invalid_body" }, 400);
     const body = parsed;
     return this.state.blockConcurrencyWhile(async () => {
+      if (body.kind === "peek_lease" || body.kind === "retire_lease") return json(await tenantLeaseRecovery(this.state.storage, body));
       if (body.kind === "tenant_status") {
         const limits = await this.env.CONTROL_PLANE.prepare("SELECT policy_version, submissions_per_hour, monthly_readings, max_concurrent_work FROM tenant_limits WHERE tenant_id = ?").bind(body.tenantId).first();
         return json(await inspectTenant(this.state.storage, Date.now(), limits));

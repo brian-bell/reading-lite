@@ -1,0 +1,18 @@
+# Used only by getPlatformProxy: no local data bindings or deploy entrypoint.
+# A separate config from wrangler-status.toml so the read-only status path
+# (remoteSpendStatus) can never reach this write binding — the two proxy
+# sessions each see exactly the entrypoint their command needs.
+name = "reading-lite-operator-lease-clear-client"
+compatibility_date = "2025-01-24"
+
+[[env.staging.services]]
+binding = "LEASE_CLEAR"
+service = "reading-lite-staging"
+entrypoint = "OperatorLeaseClear"
+remote = true
+
+[[env.production.services]]
+binding = "LEASE_CLEAR"
+service = "reading-lite"
+entrypoint = "OperatorLeaseClear"
+remote = true

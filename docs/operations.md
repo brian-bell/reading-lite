@@ -2493,6 +2493,40 @@ and production also requires `--confirm-production`. See
 [the paid-work operator runbook](paid-provider-spend.md#operator-policy-and-accounting)
 for setup, exact commands, version/retry semantics, and accounting limitations.
 
+## Orphaned in-flight processing leases
+
+A Worker death can leave tenant and global `inFlight` slots occupied because
+the expiry sweep does not delete them. A terminal/purged redelivery recovers
+leftovers automatically. An incomplete attempt reaches recovery after the
+24-hour defer ceiling only when its lease heartbeats are overdue. Recovery
+retires the attempt before freeing its slots, so a delayed delivery cannot
+restart it in the window before the failed manifest is written. Unconfirmed
+cleanup requeues even when the reading is already terminal. Only confirmed
+cleanup logs `processing_lease_orphan_released` with tenant, attempt and reason.
+
+For an orphan with no redelivery left, or before the ceiling runs out, use
+`npm run ops -- system lease-clear --env staging|production --tenant usr_… --attempt <attemptId> [--execute]`.
+Find the attempt and rows with `system status --env … --tenant usr_… --details`:
+lease records carry `attemptId`, `tenantId` on global rows, and
+`heartbeatOverdueMs`. The command plans by default; `--execute` re-observes and
+submits the expected expiries through the service-binding-only
+`OperatorLeaseClear` entrypoint. The read-only `OperatorStatus` never mutates.
+Observations and responses contain no dispatch fences or reading content.
+
+Both automatic and operator recovery use the global guard's `recover_leases`
+authority. It checks global state and conditionally retires the tenant under
+the global lock, then deletes global capacity. A renewed row refuses with
+`changed`, a fresh row with `not_overdue`, and a paused row with
+`not_in_flight`; the other side reports `peer_refused` and is not deleted.
+Unavailable responses return exit 1. Re-run after a partial failure: a retired
+tenant with a global leftover remains recoverable. Absent rows converge.
+
+Retirement persists a small attempt-ID marker until tenant teardown and
+prevents reacquisition of that attempt. The next queued delivery finishes its
+failed manifest; if no delivery remains, use the normal reading reprocess
+workflow to create a new attempt. This command does not resume paid work or
+cancel a provider request already sent. It requires the updated Worker;
+older deployments fail closed.
 
 ## Relationship refresh queue plumbing
 

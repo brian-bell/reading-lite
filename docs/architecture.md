@@ -43,6 +43,51 @@ adapter's retry loop, including retries. A queue delay alone does not make a
 request eligible for provider Batch API pricing. Only the separate operator
 batch pipeline submits provider batches.
 
+### Orphaned in-flight leases
+
+The expiry sweep never removes an `inFlight` row: expiry alone must not let
+another delivery resume paid work. Recovery is separate from normal lease
+acquisition, in `src/control-plane/processing-lease-recovery.ts`. Queue
+processing and the operator entrypoint both call the global guard's
+`recover_leases` operation. Observations contain expiry and in-flight state,
+never the holder's dispatch fence.
+
+The global guard holds its lock while checking its row, observing the tenant
+row, and asking the tenant guard to conditionally retire it. The tenant guard
+checks the observed expiry under its own lock. A refusal on either side
+prevents deletion of the other side; global heartbeats cannot interleave with
+this decision. No tenant handler calls the global guard, so lock acquisition
+has no cycle. An unavailable or malformed observation is never absence.
+
+Retirement writes `retired-lease:<attemptId>` before deleting tenant capacity,
+then the global guard deletes its row. This small credential-free marker blocks
+acquire, renew, and pause for the retired attempt, even if recovery crashes
+before `processReading` writes the terminal manifest. Retried recovery inspects
+both sides independently, including a global-only leftover. Markers occupy no
+capacity, survive expiry sweeps, and are removed by tenant teardown. A user
+retry receives a new attempt ID. Normal successful attempts need no marker.
+
+Reading policy decides when to request recovery:
+
+- A terminal manifest without `active_attempt`, or a purged target, permits
+  cleanup without waiting for expiry. A ready/failed reprocess with an active
+  attempt is not terminal. Purge cannot cancel a provider request already sent;
+  retiring its lease prevents subsequent dispatches at the next fence check.
+- An incomplete attempt must reach the 24-hour defer ceiling and have overdue
+  in-flight rows on both sides (or confirmed absence). The guards use their
+  own clocks. A heartbeat after observation makes the tenant CAS refuse; a
+  fresh global row refuses before the tenant is touched. Recovery never grants
+  another delivery permission to resume the retired attempt.
+- A previously retired attempt finishes cleanup and terminalization on its
+  next delivery, without acquiring a work hold.
+
+Any unconfirmed cleanup defers, including terminal/purged deliveries and
+attempts past the age ceiling. Only confirmed cleanup logs
+`processing_lease_orphan_released`. Operator diagnostics expose tenant,
+attempt, expiry and heartbeat-overdue age. The plan-first operator command
+uses the same authority with explicit observed expiries and always requires
+overdue rows; see [operations](operations.md#orphaned-in-flight-processing-leases).
+
 ### Publication and failure ordering
 
 `src/attempt-ownership.ts` supplies the shared ownership verdict.
