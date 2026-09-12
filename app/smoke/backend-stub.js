@@ -41,6 +41,14 @@ const READING = {
   status: "ready",
   title: "A quieter internet is a choice we can make",
   created_at: "2026-09-07T09:30:00.000Z",
+  // Enough of a ready manifest to prove the whole Summary view is server
+  // rendered: the lead, the summary below it, the tags, and the novelty panel.
+  tldr: "A personal library can turn the internet into a place for deliberate reading.",
+  summary_markdown:
+    "A personal library can turn the internet into a place for deliberate reading.\n\nSaving is only the beginning.",
+  tags: ["attention", "design"],
+  novelty_verdict: "familiar",
+  similarity: { count: 2, max: 0.61, mean: 0.58 },
 };
 
 function sessionOf(cookie) {

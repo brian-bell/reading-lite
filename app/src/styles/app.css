@@ -521,6 +521,198 @@ textarea {
   min-height: 2rem;
 }
 
+/* Tags open the library filtered by that tag. Small, quiet, and each one its
+   own target: 12 px text with 6/10 padding clears the 24 px minimum. */
+.reading-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-5);
+  padding: 0;
+  list-style: none;
+}
+
+.tag {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+/* An instant shift, like every other control here: the app has no motion, so
+   nothing has to be unwound under prefers-reduced-motion. */
+.tag:hover {
+  color: var(--accent);
+}
+
+/* Readable width for the lead, the summary, and (in #372) the source. */
+.reading-summary {
+  max-width: 68ch;
+}
+
+/* Degraded YouTube and the like: a qualification on what follows, not a
+   failure, so it is muted and sits above the lead rather than beside it. */
+.reading-notice {
+  margin: 0 0 var(--space-5);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* The tldr, as the serif lead. */
+.reading-lead {
+  margin: 0 0 var(--space-5);
+  font-family: var(--font-reading);
+  font-size: 21px;
+  line-height: 1.7;
+}
+
+/* Rendered summary_markdown. No captured size: it is reading matter below the
+   lead and above the source's 20 px, so it takes 19 px. Long unbroken text
+   wraps rather than widening the page. */
+.reading-prose {
+  font-family: var(--font-reading);
+  font-size: 19px;
+  line-height: 1.8;
+  overflow-wrap: anywhere;
+}
+
+.reading-prose > :first-child {
+  margin-top: 0;
+}
+
+.reading-prose > :last-child {
+  margin-bottom: 0;
+}
+
+.reading-prose p,
+.reading-prose ul,
+.reading-prose ol,
+.reading-prose blockquote {
+  margin: 0 0 var(--space-5);
+}
+
+.reading-prose li {
+  margin-bottom: var(--space-2);
+}
+
+/* A summary heading sits one level below the reading title. */
+.reading-prose h1,
+.reading-prose h2,
+.reading-prose h3,
+.reading-prose h4,
+.reading-prose h5,
+.reading-prose h6 {
+  margin: var(--space-6) 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.reading-prose blockquote {
+  padding-left: var(--space-4);
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+/* An image a summary asked for, never fetched: the alt text stands in for it. */
+.reading-prose-image {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.reading-prose code {
+  font-size: 0.85em;
+}
+
+/* Code and tables scroll in their own container rather than widening the page. */
+.reading-prose pre,
+.reading-prose table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.reading-prose pre {
+  padding: var(--space-3) var(--space-4);
+  border-radius: 6px;
+  background: var(--soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.reading-prose table {
+  border-collapse: collapse;
+  font-family: var(--font-ui);
+  font-size: 15px;
+}
+
+.reading-prose th,
+.reading-prose td {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+/* Novelty: accent surface with a 2 px accent rule and the page grain, so the
+   panel reads as a note about the reading rather than part of it. */
+.novelty {
+  margin: var(--space-6) 0 0;
+  padding: var(--space-5) 22px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 8px 8px 0;
+  background-color: var(--accent-soft);
+  background-image: var(--grain);
+  background-size: 240px 240px;
+}
+
+.novelty h2 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.3;
+}
+
+/* The verdict labels the sentence under it; the sentence carries the meaning. */
+.novelty-verdict {
+  margin: 0 0 var(--space-1);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.novelty-sentence {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+@media (max-width: 650px) {
+  .reading-lead {
+    font-size: 20px;
+  }
+
+  .reading-prose {
+    font-size: 18px;
+  }
+
+  .novelty {
+    padding: 22px;
+  }
+}
+
 /* ---- Compact bar at container width ≤650 px --------------------------- */
 
 @container shell (max-width: 650px) {

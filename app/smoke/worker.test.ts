@@ -244,6 +244,30 @@ describe("sign-in routes", () => {
     expect(dehydratedQueryKeys(html)).toContain('["reading","rd_0123456789"]');
   });
 
+  // The Summary view itself, in the HTML: the lead, the summary below it, the
+  // tags, and the novelty panel, all before any script runs (#370 AC 1).
+  it("server-renders the Summary view, not just the reading's frame", async () => {
+    const response = await request("/readings/rd_0123456789", { headers: { Cookie: A.cookie } });
+    const html = await response.text();
+
+    expect(html).toContain("A personal library can turn the internet into a place for deliberate reading.");
+    expect(html).toContain("Saving is only the beginning.");
+    expect(html).toContain('href="/?tag=attention"');
+    expect(html).toContain("What this adds");
+    expect(html).toContain("Overlaps with readings already in your library.");
+  });
+
+  // The summarizer opens summary_markdown with the tldr, so the lead would
+  // otherwise be printed twice on almost every reading. Counted in the markup
+  // only: the dehydrated cache carries both fields, which is correct.
+  it("prints the lead once in the server-rendered markup", async () => {
+    const response = await request("/readings/rd_0123456789", { headers: { Cookie: A.cookie } });
+    const markup = (await response.text()).replace(/<script[\s\S]*?<\/script>/g, "");
+
+    const lead = "A personal library can turn the internet into a place for deliberate reading.";
+    expect(markup.split(lead).length - 1).toBe(1);
+  });
+
   it("server-renders the not-found state for a reading the tenant does not have", async () => {
     const response = await request("/readings/rd_9999999999", { headers: { Cookie: A.cookie } });
     expect(response.status).toBe(200);

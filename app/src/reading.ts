@@ -59,10 +59,18 @@ export interface SimilaritySnapshot {
   computed_at?: string;
 }
 
+/**
+ * EnrichmentDegradationSchema. Written when YouTube watch-page or transcript
+ * enrichment missed and the reading became ready on the oEmbed floor. `tier`
+ * is a closed enum in the backend ("watch_page" | "transcript"), kept open
+ * here so a tier this app has no sentence for stays quiet rather than
+ * narrowing wrongly (see `degradationNotice`).
+ */
 export interface EnrichmentDegradation {
   source?: string;
   tier?: string;
-  reason?: string;
+  code?: string;
+  message?: string;
 }
 
 export interface Reading {
