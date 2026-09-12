@@ -1,0 +1,4 @@
+interface:
+  display_name: "Reading Lite Local"
+  short_description: "Run and stop the local frontend and backend"
+  default_prompt: "Use $reading-lite-local to start the local app and backend."
