@@ -1,5 +1,5 @@
 import { MutationCache, QueryCache, QueryClient, useQuery } from "@tanstack/react-query";
-import { logoutSession } from "../api/auth";
+import { loginOptionsQueryKey, logoutSession } from "../api/auth";
 import { fetchIdentity } from "../api/client";
 import { isUnauthorized } from "../api/errors";
 import { whoamiQueryKey, type Identity } from "../identity";
@@ -15,7 +15,11 @@ import { whoamiQueryKey, type Identity } from "../identity";
 export const sessionEndedQueryKey = ["session-ended"] as const;
 
 /** Queries that hold nothing belonging to an account survive a change of identity. */
-const ACCOUNT_FREE_QUERIES = new Set<unknown>([whoamiQueryKey[0], sessionEndedQueryKey[0], "login-options"]);
+const ACCOUNT_FREE_QUERIES = new Set<unknown>([
+  whoamiQueryKey[0],
+  sessionEndedQueryKey[0],
+  loginOptionsQueryKey[0],
+]);
 
 /**
  * The href of the page on screen: the resolved location, not a navigation
@@ -68,8 +72,15 @@ export type SignOutResult = "signed-out" | "still-signed-in";
  * still signed in and a reload would prove it. Rather than show a signed-out
  * page over a live session, ask the backend who we are: only a session it no
  * longer accepts is forgotten here. (401 from logout is already signed out.)
+ *
+ * That recovery read can also answer as a different reader: another tab
+ * replaces the shared session cookie, this tab's CSRF token no longer matches
+ * the session behind it, and logout is refused. The cached data belongs to the
+ * account that is gone, so drop it before showing the new identity, as
+ * `completeSignIn` does (#384 review).
  */
 export async function signOut(queryClient: QueryClient): Promise<SignOutResult> {
+  const previous = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
   try {
     // Before dropping whoami: logout sends its CSRF token.
     await logoutSession(queryClient);
@@ -77,7 +88,10 @@ export async function signOut(queryClient: QueryClient): Promise<SignOutResult> 
     const identity = await fetchIdentity().catch(() => undefined);
     // Signed in, or unknown: either way this session is not ours to discard.
     if (identity !== null) {
-      if (identity) queryClient.setQueryData(whoamiQueryKey, identity);
+      if (identity) {
+        if (identity.user_id !== previous?.user_id) forgetAccount(queryClient);
+        queryClient.setQueryData(whoamiQueryKey, identity);
+      }
       return "still-signed-in";
     }
   }

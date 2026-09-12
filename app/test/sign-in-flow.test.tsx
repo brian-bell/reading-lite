@@ -7,6 +7,7 @@ import {
   createRootRouteWithContext,
   createRoute,
   createRouter,
+  useLocation,
 } from "@tanstack/react-router";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -14,7 +15,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER, apiFetch } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { redirectSignedInFromLogin, requireSignedIn, validateLoginSearch } from "../src/auth/guards";
-import { clearMagicLinkCredential } from "../src/auth/magic-link-credential";
 import { LEGACY_BEARER_TOKEN_KEY } from "../src/auth/legacy-storage";
 import { LOGIN_NEXT_STORAGE_KEY } from "../src/auth/return-path";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
@@ -88,7 +88,8 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
 });
 function LibraryProbe() {
   const { data: identity } = useQuery({ queryKey: whoamiQueryKey, enabled: false });
-  if (identity === null) return <SignInPage />;
+  const href = useLocation({ select: (location) => location.href });
+  if (identity === null) return <SignInPage next={href} />;
   return (
     <div className="page">
       <PageHeading>Library</PageHeading>
@@ -172,7 +173,6 @@ const CREDENTIAL = "ml_550e8400-e29b-41d4-a716-446655440000.deadbeef";
 afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
-  clearMagicLinkCredential();
   delete window.turnstile;
   resetTurnstileLoaderForTests();
 });
@@ -191,6 +191,19 @@ describe("direct links while signed out", () => {
     const { router } = await openTab("/", null);
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
     expect(router.state.location.href).toBe("/");
+  });
+
+  it("remembers the library's filters as the return path when a link is requested", async () => {
+    stubBackend({
+      "GET /api/auth/login-options": () => Response.json({ turnstile_site_key: null }),
+      "POST /api/auth/challenge": () => Response.json({ ok: true }),
+    });
+    localStorage.setItem(LOGIN_NEXT_STORAGE_KEY, "/readings/rd_OLD");
+    await openTab("/?q=rust&tag=lang", null);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("Email"), "a@example.com");
+    await user.click(await screen.findByRole("button", { name: "Email me a link" }));
+    await waitFor(() => expect(localStorage.getItem(LOGIN_NEXT_STORAGE_KEY)).toBe("/?q=rust&tag=lang"));
   });
 });
 
@@ -286,6 +299,25 @@ describe("the sign-in loop", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Continue" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("link expired");
     expect(router.state.location.pathname).toBe("/auth/verify");
+  });
+
+  // Redeeming an email change is the one redemption the backend gates on CSRF
+  // (auth-handlers, EMAIL_CHANGE_PURPOSE), and apiFetch reads that token from
+  // the cached identity. A cold cache must therefore be filled, not bypassed
+  // with a bare fetch (#384 review).
+  it("sends the CSRF token when an email change is redeemed on a cold cache", async () => {
+    const calls = stubBackend({
+      "GET /api/whoami": () => Response.json(readerA),
+      "POST /api/auth/redeem": () => Response.json({ ok: true }),
+    });
+    await openTab(`/auth/verify?purpose=email_change#${CREDENTIAL}`, "unavailable");
+    await userEvent.setup().click(await screen.findByRole("button", { name: "Continue" }));
+    const redeem = await waitFor(() => {
+      const call = calls.find((request) => new URL(request.url).pathname === "/api/auth/redeem");
+      expect(call).toBeDefined();
+      return call!;
+    });
+    expect(redeem.headers.get(CSRF_HEADER)).toBe("csrf-a");
   });
 
   it("asks for the signed-in browser before confirming an email change", async () => {

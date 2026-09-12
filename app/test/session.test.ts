@@ -1,6 +1,7 @@
 import { QueryClient } from "@tanstack/react-query";
 import { isRedirect } from "@tanstack/react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { loginOptionsQueryKey } from "../src/api/auth";
 import { CSRF_HEADER } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { LOGIN_NEXT_STORAGE_KEY, rememberReturnPath } from "../src/auth/return-path";
@@ -71,7 +72,7 @@ describe("signOut", () => {
     const queryClient = createQueryClient(() => "/");
     queryClient.setQueryData(whoamiQueryKey, identity);
     queryClient.setQueryData(["reading", "rd_ONE"], { id: "rd_ONE" });
-    queryClient.setQueryData(["login-options"], { turnstile_site_key: null });
+    queryClient.setQueryData(loginOptionsQueryKey, { turnstile_site_key: null });
     return queryClient;
   }
 
@@ -89,7 +90,7 @@ describe("signOut", () => {
     expect(calls[0]!.headers.get(CSRF_HEADER)).toBe("csrf-a");
     expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
     expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
-    expect(queryClient.getQueryData(["login-options"])).toEqual({ turnstile_site_key: null });
+    expect(queryClient.getQueryData(loginOptionsQueryKey)).toEqual({ turnstile_site_key: null });
   });
 
   it("forgets the account when logout reports the session was already gone", async () => {
@@ -130,6 +131,26 @@ describe("signOut", () => {
     const queryClient = signedIn();
     await expect(signOut(queryClient)).resolves.toBe("still-signed-in");
     expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(identity);
+  });
+
+  // Another tab replaced the session cookie, so this tab's CSRF token belongs to
+  // a session the backend no longer has: logout is refused and the recovery read
+  // answers as the other reader (#384 review).
+  it("drops the previous account's data when logout finds a different reader", async () => {
+    const other = { ...identity, email: "b@example.com", tenant_id: "usr_b", user_id: "usr_b", csrf_token: "csrf-b" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        new URL(request.url).pathname === "/api/auth/logout"
+          ? Response.json({ error: "forbidden" }, { status: 403 })
+          : Response.json(other),
+      ),
+    );
+    const queryClient = signedIn();
+    await expect(signOut(queryClient)).resolves.toBe("still-signed-in");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(other);
+    expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
+    expect(queryClient.getQueryData(loginOptionsQueryKey)).toEqual({ turnstile_site_key: null });
   });
 
   it("signs out when a failed logout left no session behind", async () => {

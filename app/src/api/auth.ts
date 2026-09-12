@@ -9,6 +9,13 @@ export interface LoginOptions {
   turnstile_site_key: string | null;
 }
 
+/**
+ * Sign-in options belong to no account, so `forgetAccount` keeps them across a
+ * change of identity. Exported so the query and that exemption cannot drift
+ * apart (#384 review).
+ */
+export const loginOptionsQueryKey = ["login-options"] as const;
+
 const LOGIN_OPTIONS_FAILED = "failed to load sign-in options";
 
 function jsonPost(body: unknown): RequestInit {

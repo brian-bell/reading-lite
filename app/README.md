@@ -66,9 +66,13 @@ return path is per origin.
   cannot be determined shows its own retryable state rather than the sign-in
   form. Sign-in and sign-out drop every account-scoped query. A failed logout
   revokes nothing, so `signOut` re-reads identity and keeps the reader signed
-  in when the session survived. The legacy SPA's `reading-lite.bearerToken`
-  entry is removed at boot (`src/auth/legacy-storage.ts`) until the old SPA is
-  retired. Search parameters stay plain strings (`src/search.ts`).
+  in when the session survived; when that read answers as a different reader,
+  the previous account's queries are dropped before the new identity is shown.
+  Single-use sign-in material stays in component state, never in module state,
+  because these modules are loaded during server renders too. The legacy SPA's
+  `reading-lite.bearerToken` entry is removed at boot
+  (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
+  parameters stay plain strings (`src/search.ts`).
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

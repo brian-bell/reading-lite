@@ -4,9 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { redeemLoginLink } from "../api/auth";
 import { fetchIdentity } from "../api/client";
 import { ApiError } from "../api/errors";
-import { captureMagicLinkCredential, clearMagicLinkCredential } from "../auth/magic-link-credential";
 import { consumeReturnPath } from "../auth/return-path";
 import { completeSignIn } from "../auth/session";
+import { whoamiQueryKey } from "../identity";
 import { PageHeading } from "./PageHeading";
 
 // Magic-link redemption on /auth/verify (the emailed link) and /login/verify
@@ -40,11 +40,19 @@ export function VerifyPage({ next, purpose }: { next?: string; purpose?: string 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const redemptionId = useRef<string | null>(null);
+  // The credential lives here and not in module state: this module is loaded
+  // during server renders too, where a module-level value is shared by every
+  // request, and single-use sign-in material must never outlive one (#384
+  // review). A ref survives the cleanup and re-run of a StrictMode remount,
+  // which is the reason the captured value outlives the URL at all.
+  const held = useRef("");
   const emailChange = purpose === EMAIL_CHANGE_PURPOSE;
 
   useEffect(() => {
     const { pathname, search, hash, state } = router.history.location;
-    setCredential(captureMagicLinkCredential(hash));
+    const fromUrl = hash.replace(/^#/, "").trim();
+    if (fromUrl !== "") held.current = fromUrl;
+    setCredential(held.current);
     if (hash === "") return;
     // Through the router's history, so its location (and every link built from
     // it) drops the secret too.
@@ -56,13 +64,21 @@ export function VerifyPage({ next, purpose }: { next?: string; purpose?: string 
     setBusy(true);
     setError(null);
     try {
-      if (emailChange && !(await fetchIdentity())) {
-        setError(EMAIL_CHANGE_HINT);
-        return;
+      if (emailChange) {
+        // An email change is the one redemption the backend gates on CSRF, and
+        // apiFetch takes that token from the cached identity. Cache what this
+        // read returns rather than reading past the cache, or a cold or errored
+        // whoami sends no token and the backend answers 403 (#384 review).
+        const identity = await fetchIdentity();
+        queryClient.setQueryData(whoamiQueryKey, identity);
+        if (!identity) {
+          setError(EMAIL_CHANGE_HINT);
+          return;
+        }
       }
       redemptionId.current ??= `clm_${crypto.randomUUID()}`;
       await redeemLoginLink(queryClient, credential, redemptionId.current);
-      clearMagicLinkCredential();
+      held.current = "";
       if (!(await completeSignIn(queryClient))) throw new Error("failed to complete sign-in");
       await navigate({ href: consumeReturnPath(next), replace: true });
     } catch (e) {
