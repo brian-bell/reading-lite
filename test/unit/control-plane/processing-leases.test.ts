@@ -9,6 +9,7 @@ import {
   pauseProcessingLeases,
   pauseOrReleaseProcessingLeases,
   peekProcessingLeaseReleaseHold,
+  releaseHoldProvesDeadHolder,
   releaseProcessingLeases,
   renewProcessingLeases,
   throwIfDeferred,
@@ -474,6 +475,7 @@ describe("tenant-first lease saga", () => {
         attemptId: "at_1",
         tenantFence: "tf",
         tenantExpiresAtMs: NOW - 1,
+        globalUnknown: false,
         globalFence: "gf_orphan",
         globalExpiresAtMs: NOW - 1,
       },
@@ -488,12 +490,85 @@ describe("tenant-first lease saga", () => {
       TENANT,
       "at_1",
       NOW,
-      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released),
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released, {
+        peekLease: async () => ({ ok: true, present: false }),
+      }),
     );
     expect(result).toMatchObject({
       ok: true,
       alreadyRunning: true,
-      releaseHold: { tenantFence: "tf", globalFence: null, globalExpiresAtMs: null },
+      releaseHold: { tenantFence: "tf", globalUnknown: false, globalFence: null, globalExpiresAtMs: null },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("already_running with an unavailable global peek carries unknown-global, not acquire-unavailable", async () => {
+    const released: string[] = [];
+    const result = await acquireProcessingLeases(
+      {} as Env,
+      TENANT,
+      "at_1",
+      NOW,
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released),
+    );
+    expect(result).toEqual({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: {
+        tenantId: TENANT,
+        attemptId: "at_1",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 1,
+        globalUnknown: true,
+        globalFence: null,
+        globalExpiresAtMs: null,
+      },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("already_running with a thrown global peek carries unknown-global", async () => {
+    const released: string[] = [];
+    const result = await acquireProcessingLeases(
+      {} as Env,
+      TENANT,
+      "at_1",
+      NOW,
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released, {
+        peekLease: async () => {
+          throw new Error("do timeout");
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: { globalUnknown: true, globalFence: null, globalExpiresAtMs: null },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("already_running with a paused global row yields a tenant-only release hold", async () => {
+    const released: string[] = [];
+    const result = await acquireProcessingLeases(
+      {} as Env,
+      TENANT,
+      "at_1",
+      NOW,
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released, {
+        peekLease: async () => ({
+          ok: true,
+          present: true,
+          fence: "gf_paused",
+          expiresAtMs: NOW + 1,
+          inFlight: false,
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: { globalUnknown: false, globalFence: null, globalExpiresAtMs: null },
     });
     expect(released).toEqual([]);
   });
@@ -514,6 +589,7 @@ describe("tenant-first lease saga", () => {
         attemptId: "at_1",
         tenantFence: "t",
         tenantExpiresAtMs: NOW,
+        globalUnknown: false,
         globalFence: null,
         globalExpiresAtMs: null,
       },
@@ -1116,6 +1192,7 @@ describe("dead-lease recovery verbs (#256)", () => {
         attemptId: "at_rel",
         tenantFence: "tf",
         tenantExpiresAtMs: NOW,
+        globalUnknown: false,
         globalFence: null,
         globalExpiresAtMs: null,
       },
@@ -1142,29 +1219,138 @@ describe("dead-lease recovery verbs (#256)", () => {
       peekLease: async () => ({ ok: false, reason: "unavailable" }),
       clearDeadLease: async (_tenantId, attemptId, expectedExpiresAt) => {
         calls.push({ side: "global", attemptId, expected: expectedExpiresAt });
-        // The holder renewed between observation and clear: the DO refuses.
-        return { ok: false, reason: "changed" };
+        return { ok: true, cleared: true };
       },
     };
-    await clearOrphanedProcessingLeases(
+    const decision = await clearOrphanedProcessingLeases(
       {} as Env,
       {
         tenantId: TENANT,
         attemptId: "at_overdue",
         tenantFence: "tf",
         tenantExpiresAtMs: NOW - 60_000,
+        globalUnknown: false,
         globalFence: "gf",
         globalExpiresAtMs: NOW - 60_000,
       },
       { tenant, global },
     );
-    // Both sides were attempted with the OBSERVED expiry — the CAS fence that
-    // makes a live holder's renewal a refusal. A refused global side neither
-    // throws nor hides the tenant decision, which is the one callers gate on.
+    expect(decision).toEqual({ ok: true, cleared: true });
     expect(calls).toEqual([
       { side: "global", attemptId: "at_overdue", expected: NOW - 60_000 },
       { side: "tenant", attemptId: "at_overdue", expected: NOW - 60_000 },
     ]);
+  });
+
+  it("clearOrphanedProcessingLeases does not tenant-clear when the global clear refuses", async () => {
+    const calls: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async () => {
+        calls.push("tenant");
+        return { ok: true, cleared: true };
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => {
+        calls.push("global");
+        return { ok: false, reason: "changed" };
+      },
+    };
+    const decision = await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_overdue",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 60_000,
+        globalUnknown: false,
+        globalFence: "gf",
+        globalExpiresAtMs: NOW - 60_000,
+      },
+      { tenant, global },
+    );
+    expect(decision).toEqual({ ok: false, reason: "changed" });
+    expect(calls).toEqual(["global"]);
+  });
+
+  it("clearOrphanedProcessingLeases does not tenant-clear when the global clear errors", async () => {
+    const calls: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async () => {
+        calls.push("tenant");
+        return { ok: true, cleared: true };
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => {
+        calls.push("global");
+        throw new Error("do timeout");
+      },
+    };
+    const decision = await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_overdue",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 60_000,
+        globalUnknown: false,
+        globalFence: "gf",
+        globalExpiresAtMs: NOW - 60_000,
+      },
+      { tenant, global },
+    );
+    expect(decision).toEqual({ ok: false, reason: "changed" });
+    expect(calls).toEqual(["global"]);
+  });
+
+  it("clearOrphanedProcessingLeases leaves both rows when the global observation is unknown", async () => {
+    const calls: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async () => {
+        calls.push("tenant");
+        return { ok: true, cleared: true };
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => {
+        calls.push("global");
+        return { ok: true, cleared: true };
+      },
+    };
+    const decision = await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_unknown",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 60_000,
+        globalUnknown: true,
+        globalFence: null,
+        globalExpiresAtMs: null,
+      },
+      { tenant, global },
+    );
+    expect(decision).toEqual({ ok: false, reason: "changed" });
+    expect(calls).toEqual([]);
   });
 
   it("clearOrphanedProcessingLeases surfaces a refused tenant clear instead of swallowing it", async () => {
@@ -1187,6 +1373,7 @@ describe("dead-lease recovery verbs (#256)", () => {
         attemptId: "at_moved",
         tenantFence: "tf",
         tenantExpiresAtMs: NOW - 60_000,
+        globalUnknown: false,
         globalFence: "gf",
         globalExpiresAtMs: NOW - 60_000,
       },
@@ -1224,6 +1411,7 @@ describe("dead-lease recovery verbs (#256)", () => {
         attemptId: "at_rel",
         tenantFence: "tf",
         tenantExpiresAtMs: NOW,
+        globalUnknown: false,
         globalFence: null,
         globalExpiresAtMs: null,
       },
@@ -1280,6 +1468,7 @@ describe("dead-lease recovery verbs (#256)", () => {
       attemptId: "at_orphan",
       tenantFence: "tf",
       tenantExpiresAtMs: NOW - 5_000,
+      globalUnknown: false,
       globalFence: "gf",
       globalExpiresAtMs: NOW,
     });
@@ -1297,5 +1486,113 @@ describe("dead-lease recovery verbs (#256)", () => {
       ),
     ).toBeNull();
     expect(globalPeeks).toHaveLength(1);
+  });
+
+  it("peekProcessingLeaseReleaseHold carries unknown-global when the global peek is unavailable", async () => {
+    const hold = await peekProcessingLeaseReleaseHold({} as Env, TENANT, "at_unknown", {
+      tenant: {
+        ...failClosedUsage(),
+        peekLease: async () => ({
+          ok: true,
+          present: true,
+          fence: "tf",
+          expiresAtMs: NOW - 5_000,
+          inFlight: true,
+        }),
+      },
+      global: {
+        acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+        renewLease: async () => ({ ok: false, reason: "unavailable" }),
+        pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+        releaseLease: async () => undefined,
+        clearDeadLease: async () => ({ ok: false, reason: "changed" }),
+        peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      },
+    });
+    expect(hold).toMatchObject({
+      tenantFence: "tf",
+      globalUnknown: true,
+      globalFence: null,
+      globalExpiresAtMs: null,
+    });
+  });
+
+  it("releaseHoldProvesDeadHolder is false when the global observation is unknown", () => {
+    expect(
+      releaseHoldProvesDeadHolder(
+        {
+          tenantId: TENANT,
+          attemptId: "at_1",
+          tenantFence: "tf",
+          tenantExpiresAtMs: NOW - 1,
+          globalUnknown: true,
+          globalFence: null,
+          globalExpiresAtMs: null,
+        },
+        NOW,
+      ),
+    ).toBe(false);
+  });
+
+  it("releaseHoldProvesDeadHolder treats confirmed-absent global as tenant-only", () => {
+    expect(
+      releaseHoldProvesDeadHolder(
+        {
+          tenantId: TENANT,
+          attemptId: "at_1",
+          tenantFence: "tf",
+          tenantExpiresAtMs: NOW - 1,
+          globalUnknown: false,
+          globalFence: null,
+          globalExpiresAtMs: null,
+        },
+        NOW,
+      ),
+    ).toBe(true);
+  });
+
+  it("releaseHoldProvesDeadHolder is false while either observed side is still inside TTL", () => {
+    expect(
+      releaseHoldProvesDeadHolder(
+        {
+          tenantId: TENANT,
+          attemptId: "at_1",
+          tenantFence: "tf",
+          tenantExpiresAtMs: NOW + 1,
+          globalUnknown: false,
+          globalFence: "gf",
+          globalExpiresAtMs: NOW - 1,
+        },
+        NOW,
+      ),
+    ).toBe(false);
+    expect(
+      releaseHoldProvesDeadHolder(
+        {
+          tenantId: TENANT,
+          attemptId: "at_1",
+          tenantFence: "tf",
+          tenantExpiresAtMs: NOW - 1,
+          globalUnknown: false,
+          globalFence: "gf",
+          globalExpiresAtMs: NOW + 1,
+        },
+        NOW,
+      ),
+    ).toBe(false);
+    expect(
+      releaseHoldProvesDeadHolder(
+        {
+          tenantId: TENANT,
+          attemptId: "at_1",
+          tenantFence: "tf",
+          tenantExpiresAtMs: NOW - 1,
+          globalUnknown: false,
+          globalFence: "gf",
+          globalExpiresAtMs: NOW - 1,
+        },
+        NOW,
+      ),
+    ).toBe(true);
   });
 });

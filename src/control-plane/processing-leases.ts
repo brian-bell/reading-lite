@@ -49,15 +49,22 @@ export type ProcessingLeaseHold = {
 
 // A hold adopted from an attempt whose tenant row is already inFlight. It
 // authorizes RELEASE ONLY: never a heartbeat, a renew, or a paid dispatch.
-// globalFence is null when no global row exists for the attempt (the tenant
-// orphan stands alone — releasing a nonexistent global row would require
-// creating one first, which is capacity this path must not take). The expiresAt
-// stamps ride along for overdue diagnostics; fences never leave the worker.
+// The global observation is one of three states:
+//   - present: an inFlight global row (fence + expiresAt)
+//   - confirmed absent / paused: globalUnknown false, fences null — tenant-only
+//   - unknown: peek threw or returned unavailable. This is NOT absence. Death
+//     cannot be proved from the tenant row alone (a live holder may have
+//     renewed only its global side), and the already-running path must stay
+//     on LiveHolderDeferError rather than mapping onto acquire-unavailable
+//     (the ceiling catch would markFailed).
+// The expiresAt stamps ride along for overdue diagnostics; fences never leave
+// the worker.
 export type ProcessingLeaseReleaseHold = {
   tenantId: string;
   attemptId: string;
   tenantFence: string;
   tenantExpiresAtMs: number;
+  globalUnknown: boolean;
   globalFence: string | null;
   globalExpiresAtMs: number | null;
 };
@@ -157,26 +164,35 @@ async function compensateTenant(
   }
 }
 
-// The global half of a release-only hold: the fence of the attempt's existing
-// inFlight global row, or nothing. Absent, paused, and uncertain peeks all
-// yield nothing — releasing a global row this path cannot see is the operator
-// command's job, and a paused row belongs to the expiry sweep, not to orphan
-// recovery.
+type GlobalLeaseObservation =
+  | { globalUnknown: true; globalFence: null; globalExpiresAtMs: null }
+  | { globalUnknown: false; globalFence: string; globalExpiresAtMs: number }
+  | { globalUnknown: false; globalFence: null; globalExpiresAtMs: null };
+
+// The global half of a release-only hold. Confirmed absence and a paused
+// (!inFlight) row stay tenant-only. An unavailable peek — thrown or
+// `{ ok: false }` — is an explicit unknown: prove-dead is false and
+// clearOrphaned must not tenant-clear. Do not collapse that onto acquire
+// `{ ok: false, reason: "unavailable" }`; throwIfDeferred would turn it
+// into DeferPaidWorkError and the ceiling catch would markFailed.
 async function peekGlobalInFlight(
   deps: ProcessingLeaseDeps,
   tenantId: string,
   attemptId: string,
-): Promise<{ globalFence: string; globalExpiresAtMs: number } | { globalFence: null; globalExpiresAtMs: null }> {
+): Promise<GlobalLeaseObservation> {
   let peek: LeasePeekDecision;
   try {
     peek = await deps.global.peekLease(tenantId, attemptId);
   } catch {
-    return { globalFence: null, globalExpiresAtMs: null };
+    return { globalUnknown: true, globalFence: null, globalExpiresAtMs: null };
   }
-  if (!peek.ok || !peek.present || !peek.inFlight) {
-    return { globalFence: null, globalExpiresAtMs: null };
+  if (!peek.ok) {
+    return { globalUnknown: true, globalFence: null, globalExpiresAtMs: null };
   }
-  return { globalFence: peek.fence, globalExpiresAtMs: peek.expiresAtMs };
+  if (!peek.present || !peek.inFlight) {
+    return { globalUnknown: false, globalFence: null, globalExpiresAtMs: null };
+  }
+  return { globalUnknown: false, globalFence: peek.fence, globalExpiresAtMs: peek.expiresAtMs };
 }
 
 // Peek-only release hold for paths that never acquired: the reading is
@@ -329,21 +345,35 @@ export async function releaseProcessingLeases(
 // their proof is the work state, and refusing to touch a not-yet-expired row
 // would strand a holder that died seconds after committing.
 //
-// Returns the TENANT-side decision: that row is the alreadyRunning authority
-// for the attempt, so it is the outcome callers gate terminalization on. The
-// global side stays best-effort — a refused or errored global clear leaves
-// that row to a later duplicate or the operator clear, and must not block
-// progress the tenant side already proved.
+// Global-first: do not tenant-clear until the observed global row is cleared
+// or confirmed absent. A leftover tenant row is what peekProcessingLeaseReleaseHold
+// needs to see the global side again; tenant-clearing first after a global
+// error or `changed` (live holder renewed) is permanent global-capacity loss
+// and can terminalize under an in-flight provider request. An unknown-global
+// hold refuses without touching either row. Callers gate markFailed on this
+// decision — a refusal becomes LiveHolderDeferError and both rows remain.
 export async function clearOrphanedProcessingLeases(
   env: Env,
   hold: ProcessingLeaseReleaseHold,
   deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
   opts: { requireOverdue?: boolean } = {},
 ): Promise<DeadLeaseClearDecision> {
+  if (hold.globalUnknown) {
+    return { ok: false, reason: "changed" };
+  }
   if (hold.globalFence !== null && hold.globalExpiresAtMs !== null) {
-    await deps.global
-      .clearDeadLease(hold.tenantId, hold.attemptId, hold.globalExpiresAtMs, opts)
-      .catch(() => undefined);
+    let globalDecision: DeadLeaseClearDecision;
+    try {
+      globalDecision = await deps.global.clearDeadLease(
+        hold.tenantId,
+        hold.attemptId,
+        hold.globalExpiresAtMs,
+        opts,
+      );
+    } catch {
+      return { ok: false, reason: "changed" };
+    }
+    if (!globalDecision.ok) return globalDecision;
   }
   try {
     return await deps.tenant.clearDeadLease(hold.attemptId, hold.tenantExpiresAtMs, opts);
@@ -352,6 +382,20 @@ export async function clearOrphanedProcessingLeases(
     // treat the holder as possibly live.
     return { ok: false, reason: "changed" };
   }
+}
+
+// A release-only hold proves its holder dead only through the heartbeat: an
+// inFlight row whose TTL lapsed without a renew is the same evidence the
+// operator clear requires. Unknown global is not "no evidence" — a live
+// holder can have an overdue tenant row and a fresh global row that this
+// delivery failed to observe. A confirmed-absent or paused global may stay
+// tenant-only. A row still inside its TTL may belong to a live holder
+// between heartbeats, so it must not be released on age-of-attempt alone.
+export function releaseHoldProvesDeadHolder(hold: ProcessingLeaseReleaseHold, nowMs: number): boolean {
+  if (hold.globalUnknown) return false;
+  if (nowMs < hold.tenantExpiresAtMs) return false;
+  if (hold.globalExpiresAtMs !== null && nowMs < hold.globalExpiresAtMs) return false;
+  return true;
 }
 
 export type AcquiredProcessingLeases =

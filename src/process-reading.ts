@@ -58,6 +58,7 @@ import {
   pauseOrReleaseProcessingLeases,
   releaseProcessingLeases,
   clearOrphanedProcessingLeases,
+  releaseHoldProvesDeadHolder,
   throwIfDeferred,
   peekProcessingLeaseReleaseHold,
   type ProcessingLeaseHold,
@@ -503,7 +504,8 @@ function logOrphanedLeaseRecovery(
       tenant_id: hold.tenantId,
       attempt_id: hold.attemptId,
       tenant_lease_heartbeat_overdue_ms: Math.max(0, nowMs - hold.tenantExpiresAtMs),
-      global_row_present: hold.globalFence !== null,
+      global_row_present: !hold.globalUnknown && hold.globalFence !== null,
+      ...(hold.globalUnknown ? { global_row_unknown: true } : {}),
       ...(hold.globalExpiresAtMs === null
         ? {}
         : { global_lease_heartbeat_overdue_ms: Math.max(0, nowMs - hold.globalExpiresAtMs) }),
@@ -605,17 +607,6 @@ function manifestIsProductionTerminal(manifest: Manifest | null): boolean {
     manifest.active_attempt === undefined &&
     (manifest.status === "ready" || manifest.status === "failed")
   );
-}
-
-// A release-only hold proves its holder dead only through the heartbeat: an
-// inFlight row whose TTL lapsed without a renew is the same evidence the
-// operator clear requires. A row still inside its TTL may belong to a live
-// holder between heartbeats (or a stalled one — the accepted residual), so
-// it must not be released on age-of-attempt evidence alone.
-function releaseHoldProvesDeadHolder(hold: ProcessingLeaseReleaseHold, nowMs: number): boolean {
-  if (nowMs < hold.tenantExpiresAtMs) return false;
-  if (hold.globalExpiresAtMs !== null && nowMs < hold.globalExpiresAtMs) return false;
-  return true;
 }
 
 // The canWrite-false early returns (#256): a TERMINAL production manifest

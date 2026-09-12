@@ -71,7 +71,15 @@ instead of losing its rows. The release fires on exactly two kinds of proof:
   terminalizing: terminalizing a live one would clear `active_attempt` under
   an in-flight provider request, and the next duplicate would then "recover"
   its live rows. The deferral is bounded — a live holder ends on its own, and
-  a recently-dead one goes overdue within one TTL.
+  a recently-dead one goes overdue within one TTL. An unavailable global peek
+  is not confirmed absence: the hold carries an explicit unknown-global state
+  so death cannot be proved from the tenant row alone, and the already-running
+  path stays on `LiveHolderDeferError` rather than mapping onto acquire
+  unavailable (which the ceiling catch would `markFailed`). Confirmed absence
+  and a paused global row may stay tenant-only. Clear is global-first: do not
+  tenant-clear or terminalize until the observed global row is cleared or
+  confirmed absent. A global clear that errors or refuses (`changed`) leaves
+  both rows for the next delivery.
 
 An orphan with no redelivery left is recovered by the fenced operator verb
 (`clear_dead_lease` on both guards: compare-and-set on the observed
