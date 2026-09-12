@@ -9,6 +9,7 @@ import {
 import { act, render, renderHook, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { SignOutResult } from "../src/auth/session";
 import { AppShell, type AccountState } from "../src/components/AppShell";
 import { useThemePreference } from "../src/components/use-theme-preference";
 import type { ThemePreference } from "../src/theme";
@@ -18,10 +19,11 @@ async function renderShell(
   theme: ThemePreference = "system",
   onThemeChange = vi.fn(),
   account: AccountState = { status: "unknown" },
+  onSignOut: () => Promise<SignOutResult> = vi.fn(async (): Promise<SignOutResult> => "signed-out"),
 ) {
   const rootRoute = createRootRoute({
     component: () => (
-      <AppShell theme={theme} onThemeChange={onThemeChange} account={account}>
+      <AppShell theme={theme} onThemeChange={onThemeChange} account={account} onSignOut={onSignOut}>
         <Outlet />
       </AppShell>
     ),
@@ -29,6 +31,8 @@ async function renderShell(
   const routes = [
     createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <h1>Library</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/save", component: () => <h1>Save reading</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => <h1>Sign in</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/auth/verify", component: () => <h1>Complete sign-in</h1> }),
   ];
   const router = createRouter({
     routeTree: rootRoute.addChildren(routes),
@@ -83,15 +87,14 @@ describe("AppShell", () => {
 });
 
 describe("AppShell account menu", () => {
-  it("shows the signed-in email, Account, and a Sign out placeholder inside the navigation", async () => {
+  it("shows the signed-in email, Account, and Sign out inside the navigation", async () => {
     await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" });
     const nav = screen.getByRole("navigation", { name: "Main" });
     const menu = within(nav).getByRole("group", { name: "Account menu, signed in as a@example.com" });
     const toggle = within(menu).getByText("Account", { selector: "summary *" });
     expect(within(menu).getByText("a@example.com")).toBeInTheDocument();
     expect(within(menu).getByRole("link", { name: "Account" })).toHaveAttribute("href", "/account/security");
-    // Sign-out lands with #369.
-    expect(within(menu).getByRole("button", { name: "Sign out" })).toBeDisabled();
+    expect(within(menu).getByRole("button", { name: "Sign out" })).toBeEnabled();
     expect(within(nav).queryByRole("link", { name: "Sign in" })).toBeNull();
 
     const details = menu.closest("details")!;
@@ -108,6 +111,37 @@ describe("AppShell account menu", () => {
     await user.keyboard("{Escape}");
     expect(summary.closest("details")!.open).toBe(false);
     expect(summary).toHaveFocus();
+  });
+
+  it("signs out once, holding the button while it runs", async () => {
+    let finish: (result: SignOutResult) => void = () => undefined;
+    const onSignOut = vi.fn(() => new Promise<SignOutResult>((resolve) => (finish = resolve)));
+    await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" }, onSignOut);
+    const user = userEvent.setup();
+    await user.click(document.querySelector<HTMLElement>(".account-menu summary")!);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(onSignOut).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Signing out…" })).toBeDisabled();
+    await act(async () => finish("signed-out"));
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  // A failed logout leaves the session alive; saying "signed out" over a live
+  // session is the dangerous answer on a shared device (#369 review).
+  it("says the reader is still signed in when sign-out fails", async () => {
+    const onSignOut = vi.fn(async (): Promise<SignOutResult> => "still-signed-in");
+    await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" }, onSignOut);
+    const user = userEvent.setup();
+    await user.click(document.querySelector<HTMLElement>(".account-menu summary")!);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t sign out. You are still signed in.");
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  });
+
+  it.each(["/login", "/auth/verify"])("shows no sign-in link on %s itself", async (path) => {
+    await renderShell(path, "system", vi.fn(), { status: "signed-out" });
+    expect(within(screen.getByRole("navigation", { name: "Main" })).queryByRole("link", { name: "Sign in" })).toBeNull();
   });
 
   it("shows a sign-in link that returns to the current URL when signed out", async () => {

@@ -11,7 +11,13 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SplatRouteImport } from './routes/$'
+import { Route as AuthedRouteImport } from './routes/_authed'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as SaveRouteImport } from './routes/save'
+import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
+import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
+import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
+import { Route as AuthedReadingsIdRouteImport } from './routes/_authed/readings.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -23,40 +29,115 @@ const SplatRoute = SplatRouteImport.update({
   path: '/$',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedRoute = AuthedRouteImport.update({
+  id: '/_authed',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SaveRoute = SaveRouteImport.update({
   id: '/save',
   path: '/save',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthVerifyRoute = AuthVerifyRouteImport.update({
+  id: '/auth/verify',
+  path: '/auth/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginVerifyRoute = LoginVerifyRouteImport.update({
+  id: '/login_/verify',
+  path: '/login/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthedAccountSecurityRoute = AuthedAccountSecurityRouteImport.update({
+  id: '/account/security',
+  path: '/account/security',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedReadingsIdRoute = AuthedReadingsIdRouteImport.update({
+  id: '/readings/$id',
+  path: '/readings/$id',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/login': typeof LoginRoute
   '/save': typeof SaveRoute
+  '/auth/verify': typeof AuthVerifyRoute
+  '/login/verify': typeof LoginVerifyRoute
+  '/account/security': typeof AuthedAccountSecurityRoute
+  '/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/login': typeof LoginRoute
   '/save': typeof SaveRoute
+  '/auth/verify': typeof AuthVerifyRoute
+  '/login/verify': typeof LoginVerifyRoute
+  '/account/security': typeof AuthedAccountSecurityRoute
+  '/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/_authed': typeof AuthedRouteWithChildren
+  '/login': typeof LoginRoute
   '/save': typeof SaveRoute
+  '/auth/verify': typeof AuthVerifyRoute
+  '/login_/verify': typeof LoginVerifyRoute
+  '/_authed/account/security': typeof AuthedAccountSecurityRoute
+  '/_authed/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/$' | '/save'
+  fullPaths:
+    | '/'
+    | '/$'
+    | '/login'
+    | '/save'
+    | '/auth/verify'
+    | '/login/verify'
+    | '/account/security'
+    | '/readings/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/$' | '/save'
-  id: '__root__' | '/' | '/$' | '/save'
+  to:
+    | '/'
+    | '/$'
+    | '/login'
+    | '/save'
+    | '/auth/verify'
+    | '/login/verify'
+    | '/account/security'
+    | '/readings/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/$'
+    | '/_authed'
+    | '/login'
+    | '/save'
+    | '/auth/verify'
+    | '/login_/verify'
+    | '/_authed/account/security'
+    | '/_authed/readings/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SplatRoute: typeof SplatRoute
+  AuthedRoute: typeof AuthedRouteWithChildren
+  LoginRoute: typeof LoginRoute
   SaveRoute: typeof SaveRoute
+  AuthVerifyRoute: typeof AuthVerifyRoute
+  LoginVerifyRoute: typeof LoginVerifyRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -75,6 +156,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SplatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authed': {
+      id: '/_authed'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AuthedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/save': {
       id: '/save'
       path: '/save'
@@ -82,13 +177,58 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SaveRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/verify': {
+      id: '/auth/verify'
+      path: '/auth/verify'
+      fullPath: '/auth/verify'
+      preLoaderRoute: typeof AuthVerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login_/verify': {
+      id: '/login_/verify'
+      path: '/login/verify'
+      fullPath: '/login/verify'
+      preLoaderRoute: typeof LoginVerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_authed/account/security': {
+      id: '/_authed/account/security'
+      path: '/account/security'
+      fullPath: '/account/security'
+      preLoaderRoute: typeof AuthedAccountSecurityRouteImport
+      parentRoute: typeof AuthedRoute
+    }
+    '/_authed/readings/$id': {
+      id: '/_authed/readings/$id'
+      path: '/readings/$id'
+      fullPath: '/readings/$id'
+      preLoaderRoute: typeof AuthedReadingsIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
+
+interface AuthedRouteChildren {
+  AuthedAccountSecurityRoute: typeof AuthedAccountSecurityRoute
+  AuthedReadingsIdRoute: typeof AuthedReadingsIdRoute
+}
+
+const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedAccountSecurityRoute: AuthedAccountSecurityRoute,
+  AuthedReadingsIdRoute: AuthedReadingsIdRoute,
+}
+
+const AuthedRouteWithChildren =
+  AuthedRoute._addFileChildren(AuthedRouteChildren)
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
+  AuthedRoute: AuthedRouteWithChildren,
+  LoginRoute: LoginRoute,
   SaveRoute: SaveRoute,
+  AuthVerifyRoute: AuthVerifyRoute,
+  LoginVerifyRoute: LoginVerifyRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

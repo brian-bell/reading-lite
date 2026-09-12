@@ -36,6 +36,10 @@ function request(path: string, init: { method?: string; headers?: Record<string,
   return server.fetch(new URL(path, origin), { redirect: "manual", ...init });
 }
 
+function heading(text: string): string {
+  return `<h1 class="page-title" tabindex="-1">${text}</h1>`;
+}
+
 function checkedTheme(html: string): string | undefined {
   const inputs = html.match(/<input type="radio" name="theme"[^>]*>/g) ?? [];
   const checked = inputs.filter((input) => /\schecked(="")?[\s/>]/.test(input));
@@ -53,7 +57,8 @@ describe("rendered pages", () => {
     expect(html).toMatch(/<html lang="en">/);
     expect(html).toContain('<nav aria-label="Main">');
     expect(html).toContain("Skip to content");
-    expect(html).toMatch(/<h1 class="page-title">Library<\/h1>/);
+    // Signed out, the library renders the sign-in form in place.
+    expect(html).toContain(heading("Sign in"));
     // The skip link precedes every other focusable element.
     expect(html.match(/<(?:a|button|input|select|textarea)\b[^>]*>/)?.[0]).toBe(
       '<a class="skip-link" href="#main">',
@@ -76,7 +81,7 @@ describe("rendered pages", () => {
     const response = await request("/save");
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(await response.text()).toMatch(/<h1 class="page-title">Save reading<\/h1>/);
+    expect(await response.text()).toContain(heading("Save reading"));
   });
 
   it("redirects any other path to the library", async () => {
@@ -103,6 +108,7 @@ describe("signed-in identity", () => {
     // Dehydrated whoami, CSRF token included, for this response only.
     expect(html).toContain(A.csrf);
     expect(html).not.toContain("Sign in");
+    expect(html).toContain(heading("Library"));
   });
 
   it("renders a sign-in link back to the current URL without a session", async () => {
@@ -143,6 +149,86 @@ describe("signed-in identity", () => {
       expect(html).not.toContain(other.email);
       expect(html).not.toContain(other.csrf);
     }
+  });
+});
+
+describe("sign-in routes", () => {
+  const A = { cookie: "__Host-session=session-a", email: "reader-a@example.com" };
+
+  function location(response: { headers: { get(name: string): string | null } }): string {
+    const url = new URL(response.headers.get("Location") ?? "", origin);
+    return `${url.pathname}${url.search}`;
+  }
+
+  it("renders the sign-in form on /login, with submit held until the browser loads options", async () => {
+    const response = await request("/login?next=%2Freadings%2Frd_0123456789");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("Sign in"));
+    expect(html).toMatch(/<input[^>]*type="email"[^>]*autoComplete="email"|<input[^>]*autocomplete="email"[^>]*type="email"/i);
+    expect(html).toMatch(/<button type="submit" class="button button-primary" disabled="">Email me a link<\/button>/);
+    // No sign-in link to the page itself.
+    expect(html).not.toContain("account-sign-in");
+  });
+
+  it("sends a signed-in reader from /login straight to a safe next", async () => {
+    const response = await request("/login?next=%2Freadings%2Frd_0123456789%3Fview%3Dsource%26x%3D1", {
+      headers: { Cookie: A.cookie },
+    });
+    expect([302, 307]).toContain(response.status);
+    expect(location(response)).toBe("/readings/rd_0123456789?view=source");
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  it.each(["https://evil.example/", "//evil.example", "/login"])(
+    "sends a signed-in reader home for next=%s",
+    async (next) => {
+      const response = await request(`/login?next=${encodeURIComponent(next)}`, { headers: { Cookie: A.cookie } });
+      expect([302, 307]).toContain(response.status);
+      expect(location(response)).toBe("/");
+    },
+  );
+
+  it("keeps a signed-in reader on /login for step-up, with the email locked", async () => {
+    const response = await request("/login?step_up=1&next=%2Faccount%2Fsecurity", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(heading("Sign in"));
+    expect(html).toMatch(new RegExp(`<input[^>]*value="${A.email}"[^>]*readOnly|<input[^>]*readOnly[^>]*value="${A.email}"`, "i"));
+  });
+
+  it.each(["/auth/verify", "/login/verify"])("renders %s with Continue held until the browser reads the link", async (path) => {
+    const response = await request(`${path}?next=%2Fsave`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("Complete sign-in"));
+    expect(html).toMatch(/<button type="button" class="button button-primary" disabled="">Continue<\/button>/);
+    expect(html).not.toContain("account-sign-in");
+  });
+
+  it.each([
+    ["/readings/rd_0123456789", "/login?next=%2Freadings%2Frd_0123456789"],
+    ["/readings/rd_0123456789?view=source", "/login?next=%2Freadings%2Frd_0123456789%3Fview%3Dsource"],
+    ["/account/security", "/login?next=%2Faccount%2Fsecurity"],
+  ])("redirects a signed-out %s to sign-in with its return path", async (path, expected) => {
+    const response = await request(path);
+    expect([302, 307]).toContain(response.status);
+    expect(location(response)).toBe(expected);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  it("renders a reading page for a session", async () => {
+    const response = await request("/readings/rd_0123456789", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(heading("Reading"));
+  });
+
+  it("does not treat an unavailable backend as signed out", async () => {
+    const response = await request("/readings/rd_0123456789", { headers: { Cookie: "__Host-session=backend-down" } });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(heading("Reading"));
   });
 });
 

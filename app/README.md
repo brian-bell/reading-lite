@@ -21,6 +21,13 @@ Build a deployable environment with `CLOUDFLARE_ENV=staging` or
 `CLOUDFLARE_ENV=production`. Deploys need separate authorization and are not
 wired into any workflow yet.
 
+To sign in locally, request a link at `http://127.0.0.1:5174/login` and open
+`verify_url` from `/api/dev/mailbox?email=…` on the backend. The backend builds
+that link from `WEB_BASE_URL`, which points at the old SPA on :5173, so start
+the backend with `npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174` or
+change the link's port. The session cookie ignores the port, but the stored
+return path is per origin.
+
 ## Rules this package enforces
 
 - **Backend paths.** `/api`, `/api/*`, `/health`, and `/mcp*` return 404 from
@@ -43,6 +50,31 @@ wired into any workflow yet.
   token from the caller's QueryClient, never from module state. Local
   `npm run dev` reaches the backend's `npm run dev` for both paths; the smoke
   tests bind a stub entrypoint (`smoke/backend-stub.js`).
+- **Sign-in.** `/login` requests a magic link (Turnstile when login-options
+  returns a site key; `?step_up=1` locks the signed-in email). `/auth/verify`,
+  the mailed path, and its `/login/verify` alias redeem the fragment credential
+  only on Continue. Return paths go through `src/auth/return-path.ts`: an
+  allowlist of `/` (`q`, `tag`, `offset`), `/readings/:id` (`view`), `/save`,
+  and `/account/security`, with other parameters dropped. The path is stored in
+  localStorage when a link is requested, for the tab that opens the link, and
+  cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
+  signed-out reader to `/login?next=<URL>`; signed out, `/` shows the form in
+  place.
+- **Session state.** `src/auth/session.ts` builds the request's QueryClient.
+  A 401 from any query or mutation shows "Your session ended" at that URL,
+  with sign-in back to it; a 403 is never a sign-out, and an identity that
+  cannot be determined shows its own retryable state rather than the sign-in
+  form. Sign-in and sign-out drop every account-scoped query. A failed logout
+  revokes nothing, so `signOut` re-reads identity and keeps the reader signed
+  in when the session survived; when that read answers as a different reader,
+  the previous account's queries are dropped and the menu reports an account
+  change with a reload, not a failed sign-out (acceptance matrix, Account
+  changed).
+  Single-use sign-in material stays in component state, never in module state,
+  because these modules are loaded during server renders too. The legacy SPA's
+  `reading-lite.bearerToken` entry is removed at boot
+  (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
+  parameters stay plain strings (`src/search.ts`).
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

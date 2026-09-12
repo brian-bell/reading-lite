@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { HeadContent, Scripts, createRootRouteWithContext } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import { AppShell, type AccountState } from "../components/AppShell";
+import { AppFrame } from "../components/AppFrame";
 import { useThemePreference } from "../components/use-theme-preference";
 import { whoamiQueryOptions } from "../identity-query";
 import type { RouterContext } from "../router";
@@ -29,22 +28,15 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 function RootDocument({ children }: { children: ReactNode }) {
   const { theme: initialTheme } = Route.useRouteContext();
   const [theme, setTheme] = useThemePreference(initialTheme);
-  const { data: identity } = useQuery(whoamiQueryOptions());
-  const account: AccountState =
-    identity === undefined
-      ? { status: "unknown" }
-      : identity === null
-        ? { status: "signed-out" }
-        : { status: "signed-in", email: identity.email };
   return (
     <html lang="en" data-theme={themeAttribute(theme)}>
       <head>
         <HeadContent />
       </head>
       <body>
-        <AppShell theme={theme} onThemeChange={setTheme} account={account}>
+        <AppFrame theme={theme} onThemeChange={setTheme}>
           {children}
-        </AppShell>
+        </AppFrame>
         <Scripts />
       </body>
     </html>
