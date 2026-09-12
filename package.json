@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:quiet": "node scripts/test-quiet.mjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "fixtures:app": "tsx scripts/emit-app-fixture-pack.ts"
   },
   "dependencies": {
     "@hono/mcp": "^0.3.2",

@@ -10,11 +10,16 @@ npm run seed:local
 ```
 
 Phase 3 and Phase 4 slices cite these fixture **names** when a state is
-needed for a test, screenshot, or browser-evidence run
-([#374](https://github.com/brian-bell/reading-lite/issues/374) serves `app/`
-against this pack). The names and ids are stable: they live in
-`test/fixtures/local-seed.ts`, and `test/unit/fixtures/local-seed.test.ts`
-pins every state below.
+needed for a test, screenshot, or browser-evidence run. `app/`'s browser
+evidence ([#374](https://github.com/brian-bell/reading-lite/issues/374)) serves
+the pack without R2: `npm run fixtures:app` projects it into
+`app/e2e/fixtures/fixture-pack.json` — the same bodies
+`GET /api/readings/:id` returns, at a fixed clock — and
+`test/unit/fixtures/app-fixture-pack.test.ts` fails while that file is stale, so
+a new state is one edit here plus a regenerate.
+
+The names and ids are stable: they live in `test/fixtures/local-seed.ts`, and
+`test/unit/fixtures/local-seed.test.ts` pins every state below.
 
 The pack contains authored fiction from the
 [Connected prototype](design-spec.md#data-mapping): `.example` hosts, a
