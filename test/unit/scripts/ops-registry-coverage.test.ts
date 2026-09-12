@@ -20,7 +20,7 @@ import { UsageError } from "../../../scripts/ops-lib/contract";
 
 // group -> commands. The complete supported operator surface.
 const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
-  system: ["policy", "status"],
+  system: ["policy", "status", "lease-clear"],
   corpus: [
     "audit",
     "recover",

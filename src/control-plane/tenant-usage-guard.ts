@@ -7,12 +7,16 @@ import { logUnboundGuardPurge } from "./global-usage-guard";
 import { parseTenantId } from "./ids";
 import {
   acquireLease as acquireStoredLease,
+  clearDeadLease as clearStoredDeadLease,
   isLeaseKey,
   pauseLease as pauseStoredLease,
+  peekLease as peekStoredLease,
   releaseLease as releaseStoredLease,
   renewLease as renewStoredLease,
   sweepExpiredLeases,
+  type DeadLeaseClearDecision,
   type LeaseDecision,
+  type LeasePeek,
 } from "./processing-lease-state";
 
 // TenantUsageGuard serializes one tenant's ingress request-rate token bucket,
@@ -66,6 +70,20 @@ type FenceLeaseBody = {
   nowMs: number;
   preserveInFlight?: boolean;
 };
+// #256 dead-lease recovery. peek reads a row without creating one; clear
+// removes an overdue inFlight row under compare-and-set on the observed
+// expiresAt. Neither accepts a fence: the holder's fence must not cross this
+// boundary, and the observed expiry is the operator's stand-in for it.
+type PeekLeaseBody = { kind: "peek_lease"; attemptId: string };
+type ClearDeadLeaseBody = {
+  kind: "clear_dead_lease";
+  attemptId: string;
+  expectedExpiresAt: number | null;
+  // Absent (the operator entrypoint) means true: the heartbeat lapse is the
+  // operator's only death evidence. The Worker's terminal/purged recovery
+  // passes false — its proof is the work state, not the holder's pulse.
+  requireOverdue?: boolean;
+};
 /**
  * Account teardown (issue 195 S4): empty this tenant's guard entirely.
  *
@@ -89,7 +107,9 @@ type GuardBody =
   | ReleaseReadingBody
   | CommitReadingBody
   | AcquireLeaseBody
-  | FenceLeaseBody;
+  | FenceLeaseBody
+  | PeekLeaseBody
+  | ClearDeadLeaseBody;
 
 export type UsageDenyReason =
   | "request_rate"
@@ -103,6 +123,15 @@ export type LeaseDenyReason = "contention" | "stale_fence" | "missing_limits" | 
 export type ProcessingLeaseDecision =
   | { ok: true; fence: string; alreadyRunning: boolean; expiresAtMs: number }
   | { ok: false; reason: LeaseDenyReason };
+
+// #256: read-only view of one lease row. ok:false is the fail-closed
+// "unavailable" answer; present:false is a confirmed absence.
+export type LeasePeekDecision =
+  | { ok: false; reason: "unavailable" }
+  | { ok: true; present: false }
+  | { ok: true; present: true; fence: string; expiresAtMs: number; inFlight: boolean };
+
+export type DeadLeaseClearOutcome = DeadLeaseClearDecision;
 
 export type UsageDecision =
   | { ok: true }
@@ -123,6 +152,17 @@ export interface TenantUsage {
   ): Promise<ProcessingLeaseDecision>;
   pauseLease(attemptId: string, fence: string, nowMs: number): Promise<ProcessingLeaseDecision>;
   releaseLease(attemptId: string, fence: string, nowMs: number): Promise<void>;
+  peekLease(attemptId: string): Promise<LeasePeekDecision>;
+  // #256: atomic compare-and-set clear of an in-flight row. The DO
+  // re-verifies the observed expiresAt at delete time under its own lock, so
+  // a holder that renewed after the observation refuses instead of being
+  // released. Refusal is a decision, not an error. requireOverdue:false drops
+  // the heartbeat-lapse check for callers whose proof is the work state.
+  clearDeadLease(
+    attemptId: string,
+    expectedExpiresAt: number,
+    opts?: { requireOverdue?: boolean },
+  ): Promise<DeadLeaseClearDecision>;
 }
 
 function json(body: unknown, status = 200): Response {
@@ -245,6 +285,31 @@ function parseGuardBody(value: unknown): GuardBody | null {
       ...(kind === "renew_lease" && body.preserveInFlight === true ? { preserveInFlight: true } : {}),
     };
   }
+  if (kind === "peek_lease") {
+    const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
+    if (!attemptId) return null;
+    return { kind, attemptId };
+  }
+  if (kind === "clear_dead_lease") {
+    const attemptId = typeof body.attemptId === "string" ? body.attemptId : "";
+    if (!attemptId) return null;
+    const expected = body.expectedExpiresAt;
+    if (
+      expected !== undefined &&
+      (typeof expected !== "number" || !Number.isFinite(expected) || expected < 0)
+    ) {
+      return null;
+    }
+    if (body.requireOverdue !== undefined && typeof body.requireOverdue !== "boolean") {
+      return null;
+    }
+    return {
+      kind,
+      attemptId,
+      expectedExpiresAt: typeof expected === "number" ? expected : null,
+      ...(body.requireOverdue === false ? { requireOverdue: false } : {}),
+    };
+  }
   return null;
 }
 
@@ -298,7 +363,8 @@ export class TenantUsageGuard implements DurableObject {
       if (body.kind === "acquire_lease") return this.acquireLease(body);
       if (body.kind === "renew_lease") return this.renewHeldLease(body);
       if (body.kind === "pause_lease") return this.pauseHeldLease(body);
-      return this.releaseHeldLease(body);
+      if (body.kind === "peek_lease") return this.peekLeaseRow(body);
+      return this.clearOrReleaseHeldLease(body);
     });
   }
 
@@ -419,6 +485,25 @@ export class TenantUsageGuard implements DurableObject {
     return jsonLease(await releaseStoredLease(this.state.storage, { id: body.attemptId, fence: body.fence, nowMs: body.nowMs }));
   }
 
+  // #256: the overdue gate uses the guard's own clock, never the caller's —
+  // an operator with a skewed clock must not move the "holder may be live"
+  // boundary.
+  private async peekLeaseRow(body: PeekLeaseBody): Promise<Response> {
+    const peek: LeasePeek = await peekStoredLease(this.state.storage, { id: body.attemptId });
+    return json(jsonLeasePeek(peek));
+  }
+
+  private async clearOrReleaseHeldLease(body: FenceLeaseBody | ClearDeadLeaseBody): Promise<Response> {
+    if (body.kind !== "clear_dead_lease") return this.releaseHeldLease(body);
+    const decision: DeadLeaseClearDecision = await clearStoredDeadLease(this.state.storage, {
+      id: body.attemptId,
+      expectedExpiresAt: body.expectedExpiresAt,
+      nowMs: Date.now(),
+      ...(body.requireOverdue === false ? { requireOverdue: false } : {}),
+    });
+    return json(jsonDeadLeaseClear(decision));
+  }
+
   private async requireConcurrency(
     tenantId: string,
   ): Promise<{ ok: true; limit: number } | { ok: false; reason: "missing_limits" }> {
@@ -503,12 +588,75 @@ function jsonLease(decision: LeaseDecision): Response {
   return json({ ok: false, reason: decision.reason });
 }
 
+// Peek and dead-lease decisions deliberately omit the fence: peek feeds
+// release-only adoption inside the Worker (which may see it — acquire already
+// returns fences — but the JSON stays minimal), and the clear decision feeds
+// the operator entrypoint, which must never observe one.
+function jsonLeasePeek(peek: LeasePeek): unknown {
+  if (!peek.present) return { ok: true, present: false };
+  return {
+    ok: true,
+    present: true,
+    fence: peek.fence,
+    expires_at: peek.expiresAt,
+    in_flight: peek.inFlight,
+  };
+}
+
+function jsonDeadLeaseClear(decision: DeadLeaseClearDecision): unknown {
+  if (decision.ok) return { ok: true, cleared: decision.cleared };
+  return { ok: false, reason: decision.reason };
+}
+
 function denyUnavailable(): UsageDecision {
   return { ok: false, reason: "unavailable" };
 }
 
 function denyLeaseUnavailable(): ProcessingLeaseDecision {
   return { ok: false, reason: "unavailable" };
+}
+
+// Shared by both guards' client wrappers: a malformed clear decision is a
+// refusal (fail-closed), never a fabricated success.
+export function parseDeadLeaseClearDecision(payload: unknown): DeadLeaseClearDecision {
+  if (!payload || typeof payload !== "object") return { ok: false, reason: "changed" };
+  const body = payload as { ok?: unknown; cleared?: unknown; reason?: unknown };
+  if (body.ok === true) {
+    if (typeof body.cleared !== "boolean") return { ok: false, reason: "changed" };
+    return { ok: true, cleared: body.cleared };
+  }
+  const reason = body.reason;
+  if (reason !== "changed" && reason !== "not_in_flight" && reason !== "not_overdue") {
+    return { ok: false, reason: "changed" };
+  }
+  return { ok: false, reason };
+}
+
+// Shared by both guards' client wrappers: a malformed peek response is
+// "unavailable" (fail-closed), never a fabricated absence.
+export function parseLeasePeekDecision(payload: unknown): LeasePeekDecision {
+  if (!payload || typeof payload !== "object") return { ok: false, reason: "unavailable" };
+  const body = payload as {
+    ok?: unknown;
+    present?: unknown;
+    fence?: unknown;
+    expires_at?: unknown;
+    in_flight?: unknown;
+  };
+  if (body.ok !== true) return { ok: false, reason: "unavailable" };
+  if (body.present !== true) return { ok: true, present: false };
+  if (typeof body.fence !== "string" || body.fence.length === 0) {
+    return { ok: false, reason: "unavailable" };
+  }
+  const expiresAt = Number(body.expires_at);
+  if (!Number.isFinite(expiresAt)) return { ok: false, reason: "unavailable" };
+  return {
+    ok: true,
+    present: true,
+    fence: body.fence,
+    expiresAtMs: expiresAt,
+    inFlight: body.in_flight === true,
+  };
 }
 
 export function failClosedUsage(): TenantUsage {
@@ -522,6 +670,9 @@ export function failClosedUsage(): TenantUsage {
     renewLease: async () => denyLeaseUnavailable(),
     pauseLease: async () => denyLeaseUnavailable(),
     releaseLease: async () => undefined,
+    peekLease: async () => ({ ok: false, reason: "unavailable" }),
+    // Fail closed as a refusal, never a fabricated success.
+    clearDeadLease: async () => ({ ok: false, reason: "changed" }),
   };
 }
 
@@ -669,6 +820,37 @@ export function tenantUsageFor(env: Env, tenantId: string): TenantUsage {
       callLease({ kind: "pause_lease", attemptId, fence, nowMs }),
     releaseLease: async (attemptId, fence, nowMs) => {
       await callLease({ kind: "release_lease", attemptId, fence, nowMs });
+    },
+    peekLease: async (attemptId) => {
+      try {
+        const res = await stub.fetch("https://tenant-usage-guard/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind: "peek_lease", attemptId } satisfies PeekLeaseBody),
+        });
+        if (!res.ok) return { ok: false, reason: "unavailable" } as const;
+        return parseLeasePeekDecision(await res.json());
+      } catch {
+        return { ok: false, reason: "unavailable" } as const;
+      }
+    },
+    clearDeadLease: async (attemptId, expectedExpiresAt, opts) => {
+      try {
+        const res = await stub.fetch("https://tenant-usage-guard/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            kind: "clear_dead_lease",
+            attemptId,
+            expectedExpiresAt,
+            ...(opts?.requireOverdue === false ? { requireOverdue: false } : {}),
+          } satisfies ClearDeadLeaseBody),
+        });
+        if (!res.ok) return { ok: false, reason: "changed" };
+        return parseDeadLeaseClearDecision(await res.json());
+      } catch {
+        return { ok: false, reason: "changed" };
+      }
     },
   };
 }

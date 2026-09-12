@@ -1,7 +1,13 @@
 import type { Env } from "../index";
 import { PROCESSING_DEFER_DELAY_SECONDS, PROCESSING_LEASE_HEARTBEAT_MS } from "./constants";
 import { globalUsageFor, type GlobalUsage } from "./global-usage-guard";
-import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "./tenant-usage-guard";
+import type { DeadLeaseClearDecision } from "./processing-lease-state";
+import {
+  tenantUsageFor,
+  type LeasePeekDecision,
+  type ProcessingLeaseDecision,
+  type TenantUsage,
+} from "./tenant-usage-guard";
 
 // Tenant-first concurrency saga (ADR 0001). Acquire the tenant lease, then the
 // global lease for the same attempt. Global deny and uncertain global after a
@@ -16,6 +22,14 @@ import { tenantUsageFor, type ProcessingLeaseDecision, type TenantUsage } from "
 // inFlight so a late TTL refresh cannot unpause a 429-parked row. Uncertain
 // responses are held/denied — never fail open. Duplicate deliveries of the
 // same (tenantId, attemptId) reuse the existing fence.
+//
+// #256: a tenant alreadyRunning answer returns a RELEASE-ONLY hold instead of
+// a bare marker. The inFlight row belongs to a delivery that is either still
+// running this attempt (the hold must never steal, renew, or dispatch paid
+// work) or died (the hold is the only thing that can ever release the row,
+// because the sweep deliberately never touches inFlight). The release gates —
+// terminal manifest, defer ceiling, or an operator's compare-and-set clear —
+// decide when that release is legitimate; this module only carries the fences.
 
 export class DeferPaidWorkError extends Error {
   readonly delaySeconds: number;
@@ -33,8 +47,23 @@ export type ProcessingLeaseHold = {
   globalFence: string;
 };
 
+// A hold adopted from an attempt whose tenant row is already inFlight. It
+// authorizes RELEASE ONLY: never a heartbeat, a renew, or a paid dispatch.
+// globalFence is null when no global row exists for the attempt (the tenant
+// orphan stands alone — releasing a nonexistent global row would require
+// creating one first, which is capacity this path must not take). The expiresAt
+// stamps ride along for overdue diagnostics; fences never leave the worker.
+export type ProcessingLeaseReleaseHold = {
+  tenantId: string;
+  attemptId: string;
+  tenantFence: string;
+  tenantExpiresAtMs: number;
+  globalFence: string | null;
+  globalExpiresAtMs: number | null;
+};
+
 export type AcquireProcessingLeasesResult =
-  | { ok: true; alreadyRunning: true }
+  | { ok: true; alreadyRunning: true; releaseHold: ProcessingLeaseReleaseHold }
   | { ok: true; alreadyRunning: false; hold: ProcessingLeaseHold }
   | { ok: false; reason: "contention" | "missing_limits" | "unavailable" | "stale_fence" };
 
@@ -56,7 +85,26 @@ export async function acquireProcessingLeases(
 ): Promise<AcquireProcessingLeasesResult> {
   const tenantResult = await deps.tenant.acquireLease(attemptId, nowMs);
   if (!tenantResult.ok) return { ok: false, reason: tenantResult.reason };
-  if (tenantResult.alreadyRunning) return { ok: true, alreadyRunning: true };
+  if (tenantResult.alreadyRunning) {
+    // Release-only adoption (#256): the tenant row for THIS attempt is
+    // inFlight, so a delivery is either already running it (never steal,
+    // never re-dispatch paid work) or the holder died. Peek the global row
+    // rather than acquiring one: a fresh global row would consume a slot
+    // this path never uses and could itself be orphaned, and acquire would
+    // contend with the live foreign rows that fill the cap in exactly the
+    // wedged state this recovers.
+    return {
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: {
+        tenantId,
+        attemptId,
+        tenantFence: tenantResult.fence,
+        tenantExpiresAtMs: tenantResult.expiresAtMs,
+        ...(await peekGlobalInFlight(deps, tenantId, attemptId)),
+      },
+    };
+  }
 
   let globalResult: ProcessingLeaseDecision;
   try {
@@ -107,6 +155,56 @@ async function compensateTenant(
   } catch {
     // Uncertain compensation: tenant lease stays held until expiry.
   }
+}
+
+// The global half of a release-only hold: the fence of the attempt's existing
+// inFlight global row, or nothing. Absent, paused, and uncertain peeks all
+// yield nothing — releasing a global row this path cannot see is the operator
+// command's job, and a paused row belongs to the expiry sweep, not to orphan
+// recovery.
+async function peekGlobalInFlight(
+  deps: ProcessingLeaseDeps,
+  tenantId: string,
+  attemptId: string,
+): Promise<{ globalFence: string; globalExpiresAtMs: number } | { globalFence: null; globalExpiresAtMs: null }> {
+  let peek: LeasePeekDecision;
+  try {
+    peek = await deps.global.peekLease(tenantId, attemptId);
+  } catch {
+    return { globalFence: null, globalExpiresAtMs: null };
+  }
+  if (!peek.ok || !peek.present || !peek.inFlight) {
+    return { globalFence: null, globalExpiresAtMs: null };
+  }
+  return { globalFence: peek.fence, globalExpiresAtMs: peek.expiresAtMs };
+}
+
+// Peek-only release hold for paths that never acquired: the reading is
+// provably terminal (or purged), so an inFlight tenant row for this attempt
+// is a dead holder's leftover. A live holder that just terminalized and has
+// not released yet is harmless — release is idempotent and it has no further
+// paid dispatch for the fence to protect. Absent or non-inFlight tenant row →
+// null (nothing to recover).
+export async function peekProcessingLeaseReleaseHold(
+  env: Env,
+  tenantId: string,
+  attemptId: string,
+  deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, tenantId),
+): Promise<ProcessingLeaseReleaseHold | null> {
+  let tenantPeek: LeasePeekDecision;
+  try {
+    tenantPeek = await deps.tenant.peekLease(attemptId);
+  } catch {
+    return null;
+  }
+  if (!tenantPeek.ok || !tenantPeek.present || !tenantPeek.inFlight) return null;
+  return {
+    tenantId,
+    attemptId,
+    tenantFence: tenantPeek.fence,
+    tenantExpiresAtMs: tenantPeek.expiresAtMs,
+    ...(await peekGlobalInFlight(deps, tenantId, attemptId)),
+  };
 }
 
 export async function renewProcessingLeases(
@@ -199,14 +297,18 @@ async function restoreTenantInFlight(
 
 export async function releaseProcessingLeases(
   env: Env,
-  hold: ProcessingLeaseHold,
+  hold: ProcessingLeaseHold | ProcessingLeaseReleaseHold,
   nowMs: number,
   deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
 ): Promise<void> {
-  try {
-    await deps.global.releaseLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
-  } catch {
-    // Conservative: uncertain global release stays counted until expiry.
+  // A release-only hold with no observed global row has nothing to release on
+  // that side; a work hold always carries its own fence.
+  if (hold.globalFence !== null) {
+    try {
+      await deps.global.releaseLease(hold.tenantId, hold.attemptId, hold.globalFence, nowMs);
+    } catch {
+      // Conservative: uncertain global release stays counted until expiry.
+    }
   }
   try {
     await deps.tenant.releaseLease(hold.attemptId, hold.tenantFence, nowMs);
@@ -215,9 +317,50 @@ export async function releaseProcessingLeases(
   }
 }
 
-export function throwIfDeferred(result: AcquireProcessingLeasesResult): ProcessingLeaseHold | "already_running" {
-  if (result.ok && result.alreadyRunning) return "already_running";
-  if (result.ok) return result.hold;
+// Atomic compare-and-set clear for the release-only recovery paths. The
+// delivery's own gate (whatever evidence it used) is NOT proof by itself — a
+// stalled holder can renew between observation and this call, and renew
+// preserves the fence, so a blind release would delete the freshly renewed
+// row anyway. The DO's clear_dead_lease re-verifies the observed expiresAt at
+// delete time under its own lock: a row that moved refuses, absent converges,
+// and a refusal leaves the rows to their possibly-live holder. The
+// defer-ceiling path passes requireOverdue (default) — its only death
+// evidence is the lapsed heartbeat. The terminal/purged paths pass false:
+// their proof is the work state, and refusing to touch a not-yet-expired row
+// would strand a holder that died seconds after committing.
+//
+// Returns the TENANT-side decision: that row is the alreadyRunning authority
+// for the attempt, so it is the outcome callers gate terminalization on. The
+// global side stays best-effort — a refused or errored global clear leaves
+// that row to a later duplicate or the operator clear, and must not block
+// progress the tenant side already proved.
+export async function clearOrphanedProcessingLeases(
+  env: Env,
+  hold: ProcessingLeaseReleaseHold,
+  deps: ProcessingLeaseDeps = processingLeaseDepsFor(env, hold.tenantId),
+  opts: { requireOverdue?: boolean } = {},
+): Promise<DeadLeaseClearDecision> {
+  if (hold.globalFence !== null && hold.globalExpiresAtMs !== null) {
+    await deps.global
+      .clearDeadLease(hold.tenantId, hold.attemptId, hold.globalExpiresAtMs, opts)
+      .catch(() => undefined);
+  }
+  try {
+    return await deps.tenant.clearDeadLease(hold.attemptId, hold.tenantExpiresAtMs, opts);
+  } catch {
+    // An errored clear proves nothing; report it as a refusal so callers
+    // treat the holder as possibly live.
+    return { ok: false, reason: "changed" };
+  }
+}
+
+export type AcquiredProcessingLeases =
+  | { kind: "work"; hold: ProcessingLeaseHold }
+  | { kind: "release_only"; hold: ProcessingLeaseReleaseHold };
+
+export function throwIfDeferred(result: AcquireProcessingLeasesResult): AcquiredProcessingLeases {
+  if (result.ok && result.alreadyRunning) return { kind: "release_only", hold: result.releaseHold };
+  if (result.ok) return { kind: "work", hold: result.hold };
   throw new DeferPaidWorkError();
 }
 

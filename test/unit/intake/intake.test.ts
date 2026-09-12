@@ -71,6 +71,8 @@ function allowAllUsage(): TenantUsage {
     pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     releaseLease: async () => undefined,
     refreshReading: async () => undefined,
+    peekLease: async () => ({ ok: true, present: false }),
+    clearDeadLease: async () => ({ ok: false, reason: "changed" }),
   };
 }
 
@@ -629,6 +631,8 @@ function recordingUsage(): TenantUsage & { ops: string[] } {
     pauseLease: async () => ({ ok: true, fence: "test-fence", alreadyRunning: false, expiresAtMs: 0 }),
     releaseLease: async () => undefined,
     refreshReading: async () => undefined,
+    peekLease: async () => ({ ok: true, present: false }),
+    clearDeadLease: async () => ({ ok: false, reason: "changed" }),
   };
 }
 

@@ -43,6 +43,42 @@ adapter's retry loop, including retries. A queue delay alone does not make a
 request eligible for provider Batch API pricing. Only the separate operator
 batch pipeline submits provider batches.
 
+### Orphaned in-flight leases
+
+The expiry sweep never removes an `inFlight` lease row — removing one could
+let a second paid start overlap the first holder's fence — so a Worker death
+mid-attempt leaves one tenant and one global slot occupied until something
+reclaims them (#256). Reclamation is release-only adoption: when a redelivery
+sees the attempt's own tenant row `inFlight`, `acquireProcessingLeases` peeks
+(no capacity side effect) the matching global row and returns a release-only
+hold that never authorizes paid work, a renew, or a heartbeat. Every release
+is a compare-and-set clear the guards verify atomically against the observed
+`expiresAt`, so a holder that renewed between observation and clear refuses
+instead of losing its rows. The release fires on exactly two kinds of proof:
+
+- **The work is over** — a production-terminal manifest (no `active_attempt`:
+  terminal manifests clear it, and a ready/failed status *with* an active
+  attempt is a reprocess still in flight), reached on the `already_running`
+  path and on the canWrite-false early return a real terminal redelivery
+  takes; or a purged reading. A holder that just committed loses at most the
+  remainder of one provider request already in flight — its next fence check
+  aborts further paid work — the accepted residual, in exchange for
+  stopping spend on a reading whose objects are already gone.
+- **The holder is dead** — the 24-hour defer ceiling *and* a lapsed
+  heartbeat. Attempt age alone is not abandonment (an old attempt can have
+  acquired fresh rows moments before a duplicate arrives), so a holder whose
+  rows are still inside their TTL makes the duplicate defer instead of
+  terminalizing: terminalizing a live one would clear `active_attempt` under
+  an in-flight provider request, and the next duplicate would then "recover"
+  its live rows. The deferral is bounded — a live holder ends on its own, and
+  a recently-dead one goes overdue within one TTL.
+
+An orphan with no redelivery left is recovered by the fenced operator verb
+(`clear_dead_lease` on both guards: compare-and-set on the observed
+`expiresAt`, never a fence), reached through the write-shaped
+`OperatorLeaseClear` entrypoint; see
+[operations](operations.md#orphaned-in-flight-processing-leases).
+
 ### Publication and failure ordering
 
 `src/attempt-ownership.ts` supplies the shared ownership verdict.

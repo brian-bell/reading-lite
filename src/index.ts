@@ -315,3 +315,4 @@ export { TenantUsageGuard } from "./control-plane/tenant-usage-guard";
 export { GlobalUsageGuard } from "./control-plane/global-usage-guard";
 
 export { OperatorStatus } from "./control-plane/operator-status";
+export { OperatorLeaseClear } from "./control-plane/operator-lease-clear";

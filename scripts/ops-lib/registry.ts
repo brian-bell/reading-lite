@@ -1,6 +1,7 @@
 import { stagingTokenRevocationCommand } from "./commands/staging-token-revocation";
 import { deployReleaseCommand } from "./commands/deploy-release";
 import { stagingPrepareContextCommand } from "./commands/staging-prepare-context";
+import { systemLeaseClearCommand } from "./commands/system-lease-clear";
 import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
@@ -72,6 +73,7 @@ export const defaultRegistry: Registry = {
   commands: [
     systemPolicyCommand,
     systemStatusCommand,
+    systemLeaseClearCommand,
     corpusAuditCommand,
     corpusRecoverCommand,
     corpusIngestCommand,

@@ -2493,6 +2493,43 @@ and production also requires `--confirm-production`. See
 [the paid-work operator runbook](paid-provider-spend.md#operator-policy-and-accounting)
 for setup, exact commands, version/retry semantics, and accounting limitations.
 
+## Orphaned in-flight processing leases
+
+An attempt whose Worker died while its tenant + global leases were `inFlight`
+leaves both capacity slots occupied: the expiry sweep deliberately never
+removes `inFlight` rows (removing one would let a second paid start overlap
+the first holder's fence). Recovery is automatic at the points where the work
+is provably finished — a redelivery that finds a terminal (or purged)
+reading compare-and-set clears the leftover rows, and a redelivery past the
+24-hour defer ceiling clears them (before writing the
+`ProcessingDeferExpiredError` manifest) only when the holder's heartbeat has
+also lapsed; a holder whose rows are still fresh defers instead of
+terminalizing, because attempt age alone is not proof of death. All paths log
+`processing_lease_orphan_released` with the tenant, attempt, per-side lease
+state, and heartbeat-lapse age. A delivery that cannot prove the work over
+(pending manifest, unreadable manifest, or a foreign active attempt) defers
+and touches nothing.
+
+For an orphan with no redelivery left — or before the ceiling runs out — use
+`npm run ops -- system lease-clear --env staging|production --tenant usr_… --attempt <attemptId> [--execute]`.
+Find the attempt id and the rows with
+`system status --env … --tenant usr_… --details` (lease records carry
+`attemptId`, `tenantId` on global rows, and `heartbeatOverdueMs`). The
+command is plan-first: the plan is the observation; `--execute` re-observes
+fresh and compare-and-set clears each side on the `expiresAt` it just saw,
+through the service-binding-only `OperatorLeaseClear` entrypoint (`POST`
+never rides the read-only `OperatorStatus`). Fences never cross the wire and
+are never printed; the observed `expiresAt` is the operator's fence stand-in.
+Refusals are honest: a row that is not yet overdue (its holder may just be
+between heartbeats) or not `inFlight` (paused rows belong to the expiry
+sweep) blocks the whole invocation with exit 1, and a row that renewed
+between observation and clear refuses with `changed`. Absent rows are
+success, so re-running after a clear converges. Partial clears (one side
+cleared, one refused or unavailable) are safe to re-run. The command
+requires an updated Worker with the `OperatorLeaseClear` entrypoint
+deployed; against an older Worker it fails closed with exit 1 rather than
+fabricating a zero state.
+
 
 ## Relationship refresh queue plumbing
 

@@ -5,7 +5,7 @@ import { z } from 'zod';
 const Amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const Positive = Amount.refine(n => n > 0);
 const Page = <T extends z.ZodType>(record: T) => z.object({ complete: z.boolean(), records: z.array(record) });
-export const LeaseInspectionSchema = Page(z.object({ key: z.string(), expiresAtMs: Amount, inFlight: z.boolean(), occupiesSlot: z.boolean() }));
+export const LeaseInspectionSchema = Page(z.object({ key: z.string(), expiresAtMs: Amount, inFlight: z.boolean(), occupiesSlot: z.boolean(), attemptId: z.string(), heartbeatOverdueMs: Amount, tenantId: z.string().optional() }));
 export const SpendInspectionSchema = Page(z.object({ key: z.string(), tenantId: z.string(), dayKey: z.string(), state: z.enum(['reserved', 'dispatched', 'settled', 'released']), maxMicrodollars: Amount, chargedMicrodollars: Amount, expiresAtMs: Amount.optional() }));
 const Headroom = z.object({ count: Amount, limit: Positive, remaining: Amount, resetAtMs: Amount });
 export const TenantInspectionSchema = z.object({ observedAtMs: Amount, policyVersion: Positive, requests: Headroom, hourly: Headroom, monthly: Headroom, maxConcurrentWork: Positive, reservations: Page(z.object({ key: z.string(), status: z.enum(['held', 'consumed', 'released']), hourKey: z.string(), monthKey: z.string(), expiresAtMs: Amount, expired: z.boolean() })), leases: LeaseInspectionSchema });
@@ -16,13 +16,33 @@ async function page(storage: Pick<Storage, 'list'>, prefix: string) {
     const entries = [...await storage.list({ prefix, limit: LIMIT })];
     return { complete: entries.length < LIMIT, entries: entries.slice(0, LIMIT) };
 }
-export async function inspectLeases(storage: Pick<Storage, 'list'>, now: number) {
+// Lease keys carry the attempt identity, but the two guards spell it
+// differently: the tenant guard holds `lease:<attemptId>` (and refresh attempt
+// ids contain colons — `refresh:<readingId>:<runAt>` — so a naive split would
+// shred them), while the global guard holds
+// `lease:<tenantId>:<attemptId>` where tenant ids are colon-free `usr_<uuid>`.
+// Scope-aware parsing is what keeps the derived attemptId/tenantId honest.
+function leaseKeyIdentity(key: string, scope: 'tenant' | 'global'): { tenantId?: string; attemptId: string } {
+    const rest = key.slice('lease:'.length);
+    if (scope === 'tenant') return { attemptId: rest };
+    const sep = rest.indexOf(':');
+    if (sep === -1) return { attemptId: rest };
+    return { tenantId: rest.slice(0, sep), attemptId: rest.slice(sep + 1) };
+}
+export async function inspectLeases(storage: Pick<Storage, 'list'>, now: number, scope: 'tenant' | 'global') {
     const rows = await page(storage, 'lease:');
     const schema = z.object({ fence: z.string().min(1), expiresAt: Amount, inFlight: z.boolean().optional() });
     return { complete: rows.complete, records: rows.entries.map(([key, value]) => {
             const r = schema.parse(value);
             const inFlight = r.inFlight === true;
-            return { key, expiresAtMs: r.expiresAt, inFlight, occupiesSlot: inFlight || r.expiresAt > now };
+            const identity = leaseKeyIdentity(key, scope);
+            return { key, expiresAtMs: r.expiresAt, inFlight, occupiesSlot: inFlight || r.expiresAt > now,
+                attemptId: identity.attemptId,
+                // How long ago the holder's last heartbeat lapsed, for in-flight
+                // rows only: 0 means the lease is not heartbeat-overdue, and a
+                // paused row is governed by the expiry sweep instead.
+                heartbeatOverdueMs: inFlight && r.expiresAt < now ? now - r.expiresAt : 0,
+                ...(identity.tenantId === undefined ? {} : { tenantId: identity.tenantId }) };
         }) };
 }
 export async function inspectSpend(storage: Pick<Storage, 'list'>) {
@@ -36,7 +56,7 @@ export async function inspectSpend(storage: Pick<Storage, 'list'>) {
         }) };
 }
 export async function inspectGlobal(storage: Pick<Storage, 'list'>, now: number) {
-    return { observedAtMs: now, spend: await inspectSpend(storage), leases: await inspectLeases(storage, now) };
+    return { observedAtMs: now, spend: await inspectSpend(storage), leases: await inspectLeases(storage, now, 'global') };
 }
 export async function inspectTenant(storage: Storage, now: number, rawLimits: unknown) {
     const limits = z.object({ policy_version: Positive, submissions_per_hour: Positive, monthly_readings: Positive, max_concurrent_work: Positive }).parse(rawLimits);
@@ -55,5 +75,5 @@ export async function inspectTenant(storage: Storage, now: number, rawLimits: un
         monthly: head(await counter('m:' + iso.slice(0, 7)), limits.monthly_readings, Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)),
         maxConcurrentWork: limits.max_concurrent_work,
         reservations: { complete: rows.complete, records: rows.entries.map(([key, value]) => { const r = reservation.parse(value); return { key, status: r.status, hourKey: r.hourKey, monthKey: r.monthKey, expiresAtMs: r.expiresAt, expired: r.status === 'held' && r.expiresAt <= now }; }) },
-        leases: await inspectLeases(storage, now) };
+        leases: await inspectLeases(storage, now, 'tenant') };
 }

@@ -3,10 +3,13 @@ import { PROCESSING_LEASE_TTL_MS } from "../../../src/control-plane/constants";
 import { GlobalUsageGuard } from "../../../src/control-plane/global-usage-guard";
 import {
   acquireProcessingLeases,
+  clearOrphanedProcessingLeases,
   DeferPaidWorkError,
   heartbeatProcessingLeases,
   pauseProcessingLeases,
   pauseOrReleaseProcessingLeases,
+  peekProcessingLeaseReleaseHold,
+  releaseProcessingLeases,
   renewProcessingLeases,
   throwIfDeferred,
   type ProcessingLeaseDeps,
@@ -381,6 +384,7 @@ describe("tenant-first lease saga", () => {
     tenantAcquire: ProcessingLeaseDecision[],
     globalAcquire: Array<ProcessingLeaseDecision | Error>,
     released: string[],
+    globalOverride?: Partial<GlobalUsage>,
   ): ProcessingLeaseDeps {
     const tenant: TenantUsage = {
       ...failClosedUsage(),
@@ -400,6 +404,9 @@ describe("tenant-first lease saga", () => {
       releaseLease: async () => {
         released.push("global");
       },
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
+      ...globalOverride,
     };
     return { tenant, global };
   }
@@ -438,16 +445,56 @@ describe("tenant-first lease saga", () => {
     expect(released).toEqual(["tenant"]);
   });
 
-  it("returns already_running without taking a second global permit", async () => {
+  it("already_running returns a release-only hold with both fences, without taking a second global permit", async () => {
+    const released: string[] = [];
+    const globalOverride: Partial<GlobalUsage> = {
+      acquireLease: async () => {
+        throw new Error("must not acquire a global permit on a release-only path");
+      },
+      peekLease: async () => ({
+        ok: true,
+        present: true,
+        fence: "gf_orphan",
+        expiresAtMs: NOW - 1,
+        inFlight: true,
+      }),
+    };
+    const result = await acquireProcessingLeases(
+      {} as Env,
+      TENANT,
+      "at_1",
+      NOW,
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released, globalOverride),
+    );
+    expect(result).toEqual({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: {
+        tenantId: TENANT,
+        attemptId: "at_1",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 1,
+        globalFence: "gf_orphan",
+        globalExpiresAtMs: NOW - 1,
+      },
+    });
+    expect(released).toEqual([]);
+  });
+
+  it("already_running without a global row yields a null-fence release hold", async () => {
     const released: string[] = [];
     const result = await acquireProcessingLeases(
       {} as Env,
       TENANT,
       "at_1",
       NOW,
-      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW + 1 }], [], released),
+      depsFrom([{ ok: true, fence: "tf", alreadyRunning: true, expiresAtMs: NOW - 1 }], [], released),
     );
-    expect(result).toEqual({ ok: true, alreadyRunning: true });
+    expect(result).toMatchObject({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: { tenantFence: "tf", globalFence: null, globalExpiresAtMs: null },
+    });
     expect(released).toEqual([]);
   });
 
@@ -458,7 +505,20 @@ describe("tenant-first lease saga", () => {
       alreadyRunning: false,
       hold: { tenantId: TENANT, attemptId: "at_1", tenantFence: "t", globalFence: "g" },
     });
-    expect(hold).toMatchObject({ tenantFence: "t", globalFence: "g" });
+    expect(hold).toMatchObject({ kind: "work", hold: { tenantFence: "t", globalFence: "g" } });
+    const releaseOnly = throwIfDeferred({
+      ok: true,
+      alreadyRunning: true,
+      releaseHold: {
+        tenantId: TENANT,
+        attemptId: "at_1",
+        tenantFence: "t",
+        tenantExpiresAtMs: NOW,
+        globalFence: null,
+        globalExpiresAtMs: null,
+      },
+    });
+    expect(releaseOnly.kind).toBe("release_only");
   });
 
   it("adopts a same-attempt global already_running instead of compensating tenant", async () => {
@@ -507,6 +567,8 @@ describe("tenant-first lease saga", () => {
       releaseLease: async () => {
         released.push("global");
       },
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
     };
     const first = await acquireProcessingLeases({} as Env, TENANT, "at_1", NOW, { tenant, global });
     expect(first).toEqual({ ok: false, reason: "unavailable" });
@@ -584,6 +646,8 @@ describe("tenant-first lease saga", () => {
       releaseLease: async () => {
         opts.released.push("global");
       },
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
     };
     return { tenant, global };
   }
@@ -762,6 +826,8 @@ describe("tenant-first lease saga", () => {
       releaseLease: async () => {
         released.push("global");
       },
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
     };
     await heartbeatProcessingLeases({} as Env, HOLD, NOW, { tenant, global });
     expect(flags).toEqual([true, true]);
@@ -841,5 +907,395 @@ describe("tenant-first lease saga", () => {
     expect(result).toEqual({ ok: false, reason: "stale_fence" });
     expect(calls).toEqual(["tenant.pause", "global.pause", "tenant.renew"]);
     expect(released).toEqual(["global", "tenant"]);
+  });
+});
+
+describe("dead-lease recovery verbs (#256)", () => {
+  const OVERDUE = Date.now() - 60_000;
+
+  function seedRow(
+    map: Map<string, unknown>,
+    id: string,
+    opts: { expiresAt: number; inFlight?: boolean; fence?: string },
+  ): { fence: string; expiresAt: number } {
+    const fence = opts.fence ?? "f_dead";
+    map.set(leaseStorageKey(id), { fence, expiresAt: opts.expiresAt, inFlight: opts.inFlight ?? true });
+    return { fence, expiresAt: opts.expiresAt };
+  }
+
+  it("peek_lease reports an in-flight row without creating one", async () => {
+    const map = new Map<string, unknown>();
+    seedRow(map, "at_seen", { expiresAt: OVERDUE });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(await post(guard, { kind: "peek_lease", attemptId: "at_seen" })).toMatchObject({
+      ok: true,
+      present: true,
+      fence: "f_dead",
+      in_flight: true,
+      expires_at: OVERDUE,
+    });
+    expect(await post(guard, { kind: "peek_lease", attemptId: "at_missing" })).toEqual({
+      ok: true,
+      present: false,
+    });
+    expect([...map.keys()].filter((key) => key.startsWith("lease:"))).toHaveLength(1);
+  });
+
+  it("peek_lease reports a corrupt row as absent", async () => {
+    const map = new Map<string, unknown>([[leaseStorageKey("at_corrupt"), { fence: 42 }]]);
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(await post(guard, { kind: "peek_lease", attemptId: "at_corrupt" })).toEqual({
+      ok: true,
+      present: false,
+    });
+  });
+
+  it("global peek_lease keys by tenant and attempt", async () => {
+    const map = new Map<string, unknown>();
+    seedRow(map, `${TENANT}:at_g`, { expiresAt: OVERDUE, fence: "f_g" });
+    const guard = new GlobalUsageGuard(guardState(memoryStorage(false, map)), globalEnv());
+    expect(
+      await post(guard, { kind: "peek_lease", tenantId: TENANT, attemptId: "at_g" }),
+    ).toMatchObject({ ok: true, present: true, fence: "f_g", in_flight: true });
+    expect(
+      await post(guard, { kind: "peek_lease", tenantId: TENANT, attemptId: "at_none" }),
+    ).toEqual({ ok: true, present: false });
+  });
+
+  it("clear_dead_lease deletes an overdue in-flight row with the observed expiresAt", async () => {
+    const map = new Map<string, unknown>();
+    const row = seedRow(map, "at_dead", { expiresAt: OVERDUE });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_dead",
+        expectedExpiresAt: row.expiresAt,
+      }),
+    ).toEqual({ ok: true, cleared: true });
+    expect(map.has(leaseStorageKey("at_dead"))).toBe(false);
+  });
+
+  it("clear_dead_lease on an absent row is idempotent success", async () => {
+    const guard = new TenantUsageGuard(guardState(memoryStorage()), tenantEnv());
+    expect(
+      await post(guard, { kind: "clear_dead_lease", attemptId: "at_gone", expectedExpiresAt: OVERDUE }),
+    ).toEqual({ ok: true, cleared: false });
+    expect(await post(guard, { kind: "clear_dead_lease", attemptId: "at_gone" })).toEqual({
+      ok: true,
+      cleared: false,
+    });
+  });
+
+  it("clear_dead_lease refuses a row whose expiresAt changed since observation", async () => {
+    const map = new Map<string, unknown>();
+    seedRow(map, "at_live", { expiresAt: OVERDUE });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    // A live holder renewed between observation and clear: the row moved.
+    expect(
+      await post(guard, { kind: "clear_dead_lease", attemptId: "at_live", expectedExpiresAt: OVERDUE - 1 }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(map.has(leaseStorageKey("at_live"))).toBe(true);
+  });
+
+  it("clear_dead_lease refuses a row that appeared after an absent observation", async () => {
+    const map = new Map<string, unknown>();
+    seedRow(map, "at_new", { expiresAt: OVERDUE });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(await post(guard, { kind: "clear_dead_lease", attemptId: "at_new" })).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    expect(map.has(leaseStorageKey("at_new"))).toBe(true);
+  });
+
+  it("clear_dead_lease refuses a paused row — the expiry sweep owns it", async () => {
+    const map = new Map<string, unknown>();
+    const row = seedRow(map, "at_parked", { expiresAt: OVERDUE, inFlight: false });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_parked",
+        expectedExpiresAt: row.expiresAt,
+      }),
+    ).toEqual({ ok: false, reason: "not_in_flight" });
+    expect(map.has(leaseStorageKey("at_parked"))).toBe(true);
+  });
+
+  it("clear_dead_lease refuses a not-yet-overdue row — the holder may be between heartbeats", async () => {
+    const map = new Map<string, unknown>();
+    const row = seedRow(map, "at_fresh", { expiresAt: Date.now() + 60_000 });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_fresh",
+        expectedExpiresAt: row.expiresAt,
+      }),
+    ).toEqual({ ok: false, reason: "not_overdue" });
+    expect(map.has(leaseStorageKey("at_fresh"))).toBe(true);
+  });
+
+  it("requireOverdue:false clears a fresh in-flight row for work-state-justified recovery", async () => {
+    // Terminal/purged recovery: the proof is the work state, not the holder's
+    // pulse, so a row that died seconds after committing is still reclaimable
+    // while its TTL has time left.
+    const map = new Map<string, unknown>();
+    const row = seedRow(map, "at_justdied", { expiresAt: Date.now() + 60_000 });
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), tenantEnv());
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_justdied",
+        expectedExpiresAt: row.expiresAt,
+        requireOverdue: false,
+      }),
+    ).toEqual({ ok: true, cleared: true });
+    expect(map.has(leaseStorageKey("at_justdied"))).toBe(false);
+    // The compare-and-set and in-flight gates still apply without the overdue
+    // check: a renewed row refuses, and a paused row still belongs to the
+    // expiry sweep.
+    const renewed = seedRow(map, "at_renewed", { expiresAt: Date.now() + 120_000 });
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_renewed",
+        expectedExpiresAt: renewed.expiresAt - 1,
+        requireOverdue: false,
+      }),
+    ).toEqual({ ok: false, reason: "changed" });
+    const parked = seedRow(map, "at_parked2", { expiresAt: Date.now() - 1, inFlight: false });
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        attemptId: "at_parked2",
+        expectedExpiresAt: parked.expiresAt,
+        requireOverdue: false,
+      }),
+    ).toEqual({ ok: false, reason: "not_in_flight" });
+  });
+
+  it("global clear_dead_lease keys by tenant and attempt and uses the guard clock", async () => {
+    const map = new Map<string, unknown>();
+    const row = seedRow(map, `${TENANT}:at_gclear`, { expiresAt: OVERDUE, fence: "f_gc" });
+    const guard = new GlobalUsageGuard(guardState(memoryStorage(false, map)), globalEnv());
+    expect(
+      await post(guard, {
+        kind: "clear_dead_lease",
+        tenantId: TENANT,
+        attemptId: "at_gclear",
+        expectedExpiresAt: row.expiresAt,
+      }),
+    ).toEqual({ ok: true, cleared: true });
+    expect(map.has(leaseStorageKey(`${TENANT}:at_gclear`))).toBe(false);
+  });
+
+  it("releaseProcessingLeases skips the global side of a null-fence release hold", async () => {
+    const released: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      releaseLease: async () => {
+        released.push("tenant");
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => {
+        released.push("global");
+      },
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
+    };
+    await releaseProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_rel",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW,
+        globalFence: null,
+        globalExpiresAtMs: null,
+      },
+      NOW,
+      { tenant, global },
+    );
+    expect(released).toEqual(["tenant"]);
+  });
+
+  it("clearOrphanedProcessingLeases compare-and-set clears both sides with the observed expiresAt", async () => {
+    const calls: Array<{ side: string; attemptId: string; expected: number }> = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async (attemptId, expectedExpiresAt) => {
+        calls.push({ side: "tenant", attemptId, expected: expectedExpiresAt });
+        return { ok: true, cleared: true };
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async (_tenantId, attemptId, expectedExpiresAt) => {
+        calls.push({ side: "global", attemptId, expected: expectedExpiresAt });
+        // The holder renewed between observation and clear: the DO refuses.
+        return { ok: false, reason: "changed" };
+      },
+    };
+    await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_overdue",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 60_000,
+        globalFence: "gf",
+        globalExpiresAtMs: NOW - 60_000,
+      },
+      { tenant, global },
+    );
+    // Both sides were attempted with the OBSERVED expiry — the CAS fence that
+    // makes a live holder's renewal a refusal. A refused global side neither
+    // throws nor hides the tenant decision, which is the one callers gate on.
+    expect(calls).toEqual([
+      { side: "global", attemptId: "at_overdue", expected: NOW - 60_000 },
+      { side: "tenant", attemptId: "at_overdue", expected: NOW - 60_000 },
+    ]);
+  });
+
+  it("clearOrphanedProcessingLeases surfaces a refused tenant clear instead of swallowing it", async () => {
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async () => ({ ok: false, reason: "changed" }),
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => ({ ok: true, cleared: true }),
+    };
+    const decision = await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_moved",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW - 60_000,
+        globalFence: "gf",
+        globalExpiresAtMs: NOW - 60_000,
+      },
+      { tenant, global },
+    );
+    // The stalled-then-resumed race: the tenant row renewed, so the clear
+    // refuses and the caller must NOT terminalize on it.
+    expect(decision).toEqual({ ok: false, reason: "changed" });
+  });
+
+  it("clearOrphanedProcessingLeases skips an absent global row entirely", async () => {
+    const calls: string[] = [];
+    const tenant: TenantUsage = {
+      ...failClosedUsage(),
+      clearDeadLease: async () => {
+        calls.push("tenant");
+        return { ok: true, cleared: false };
+      },
+    };
+    const global: GlobalUsage = {
+      acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+      renewLease: async () => ({ ok: false, reason: "unavailable" }),
+      pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+      releaseLease: async () => undefined,
+      peekLease: async () => ({ ok: false, reason: "unavailable" }),
+      clearDeadLease: async () => {
+        calls.push("global");
+        return { ok: true, cleared: false };
+      },
+    };
+    await clearOrphanedProcessingLeases(
+      {} as Env,
+      {
+        tenantId: TENANT,
+        attemptId: "at_rel",
+        tenantFence: "tf",
+        tenantExpiresAtMs: NOW,
+        globalFence: null,
+        globalExpiresAtMs: null,
+      },
+      { tenant, global },
+    );
+    expect(calls).toEqual(["tenant"]);
+  });
+
+  it("peekProcessingLeaseReleaseHold builds a hold only from an in-flight tenant row", async () => {
+    const peeked: Array<{ inFlight: boolean } | null> = [];
+    const globalPeeks: Array<boolean | null> = [];
+    const makeDeps = (row: { fence: string; expiresAtMs: number; inFlight: boolean } | null) => ({
+      tenant: {
+        ...failClosedUsage(),
+        peekLease: async () => {
+          peeked.push(row === null ? null : { inFlight: row.inFlight });
+          if (row === null) return { ok: true, present: false } as const;
+          return {
+            ok: true,
+            present: true,
+            fence: row.fence,
+            expiresAtMs: row.expiresAtMs,
+            inFlight: row.inFlight,
+          } as const;
+        },
+      },
+      global: {
+        acquireLease: async () => ({ ok: false, reason: "unavailable" }),
+        renewLease: async () => ({ ok: false, reason: "unavailable" }),
+        pauseLease: async () => ({ ok: false, reason: "unavailable" }),
+        releaseLease: async () => undefined,
+        clearDeadLease: async () => ({ ok: false, reason: "changed" }),
+        peekLease: async () => {
+          globalPeeks.push(null);
+          return {
+            ok: true,
+            present: true,
+            fence: "gf",
+            expiresAtMs: NOW,
+            inFlight: true,
+          } as const;
+        },
+      } as GlobalUsage,
+    });
+
+    const hold = await peekProcessingLeaseReleaseHold(
+      {} as Env,
+      TENANT,
+      "at_orphan",
+      makeDeps({ fence: "tf", expiresAtMs: NOW - 5_000, inFlight: true }),
+    );
+    expect(hold).toEqual({
+      tenantId: TENANT,
+      attemptId: "at_orphan",
+      tenantFence: "tf",
+      tenantExpiresAtMs: NOW - 5_000,
+      globalFence: "gf",
+      globalExpiresAtMs: NOW,
+    });
+
+    // Absent and paused tenant rows yield null without touching the global.
+    expect(
+      await peekProcessingLeaseReleaseHold({} as Env, TENANT, "at_absent", makeDeps(null)),
+    ).toBeNull();
+    expect(
+      await peekProcessingLeaseReleaseHold(
+        {} as Env,
+        TENANT,
+        "at_parked",
+        makeDeps({ fence: "tf", expiresAtMs: NOW, inFlight: false }),
+      ),
+    ).toBeNull();
+    expect(globalPeeks).toHaveLength(1);
   });
 });

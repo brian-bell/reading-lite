@@ -9,7 +9,16 @@ function storage(values: Record<string, unknown>) {
 }
 describe('read-only operator inspection', () => {
     it('keeps expired in-flight leases occupied without exposing fences', async () => {
-        expect(await inspectLeases(storage({ 'lease:a': { fence: 'secret', expiresAt: now - 1, inFlight: true }, 'lease:b': { fence: 'other', expiresAt: now - 1, inFlight: false } }), now)).toEqual({ complete: true, records: [{ key: 'lease:a', expiresAtMs: now - 1, inFlight: true, occupiesSlot: true }, { key: 'lease:b', expiresAtMs: now - 1, inFlight: false, occupiesSlot: false }] });
+        expect(await inspectLeases(storage({ 'lease:a': { fence: 'secret', expiresAt: now - 1, inFlight: true }, 'lease:b': { fence: 'other', expiresAt: now - 1, inFlight: false } }), now, 'tenant')).toEqual({ complete: true, records: [{ key: 'lease:a', expiresAtMs: now - 1, inFlight: true, occupiesSlot: true, attemptId: 'a', heartbeatOverdueMs: 1 }, { key: 'lease:b', expiresAtMs: now - 1, inFlight: false, occupiesSlot: false, attemptId: 'b', heartbeatOverdueMs: 0 }] });
+        expect(JSON.stringify(await inspectLeases(storage({ 'lease:a': { fence: 'secret', expiresAt: now - 1, inFlight: true } }), now, 'tenant'))).not.toContain('secret');
+    });
+    it('parses identity per scope, including colon-bearing refresh attempt ids', async () => {
+        const tenantRows = await inspectLeases(storage({ 'lease:refresh:rd_x:123': { fence: 'f', expiresAt: now + 1, inFlight: true } }), now, 'tenant');
+        expect(tenantRows.records[0].attemptId).toBe('refresh:rd_x:123');
+        expect(tenantRows.records[0].tenantId).toBeUndefined();
+        expect(tenantRows.records[0].heartbeatOverdueMs).toBe(0);
+        const globalRows = await inspectLeases(storage({ 'lease:usr_550e8400-e29b-41d4-a716-446655440000:refresh:rd_x:123': { fence: 'f', expiresAt: now - 60_000, inFlight: true } }), now, 'global');
+        expect(globalRows.records[0]).toMatchObject({ attemptId: 'refresh:rd_x:123', tenantId: 'usr_550e8400-e29b-41d4-a716-446655440000', heartbeatOverdueMs: 60_000 });
     });
     it('reports retained unsettled operations across midnight without refunding expired holds', async () => {
         const base = { tenantId: 'usr_one', policyVersion: 1, quote: { dayKey: '2026-09-05', catalogVersion: 1, requestFingerprint: 'private', maxMicrodollars: 90 } };
@@ -20,7 +29,7 @@ describe('read-only operator inspection', () => {
     });
     it('marks a bounded scan incomplete rather than claiming zero outstanding work', async () => {
         const data = Object.fromEntries(Array.from({ length: 1001 }, (_, i) => ['lease:' + i, { fence: 'x', expiresAt: now + 1, inFlight: false }]));
-        const r = await inspectLeases(storage(data), now);
+        const r = await inspectLeases(storage(data), now, 'tenant');
         expect(r.complete).toBe(false);
         expect(r.records).toHaveLength(1000);
     });
@@ -35,6 +44,6 @@ describe('read-only operator inspection', () => {
     it('fails closed on malformed counters, spend, and leases', async () => {
         await expect(inspectTenant(storage({ 'm:2026-09': { count: -1 } }), now, { policy_version: 1, submissions_per_hour: 20, monthly_readings: 200, max_concurrent_work: 2 })).rejects.toThrow();
         await expect(inspectSpend(storage({ 'spend:op:x': { state: 'reserved' } }))).rejects.toThrow();
-        await expect(inspectLeases(storage({ 'lease:x': { expiresAt: now } }), now)).rejects.toThrow();
+        await expect(inspectLeases(storage({ 'lease:x': { expiresAt: now } }), now, 'tenant')).rejects.toThrow();
     });
 });

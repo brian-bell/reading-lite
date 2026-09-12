@@ -197,3 +197,77 @@ export async function releaseLease(
   await storage.delete(key);
   return { ok: true, fence: opts.fence, alreadyRunning: false, expiresAt: existing.expiresAt };
 }
+
+// #256 dead-lease recovery. An inFlight row whose holder died is invisible to
+// the sweep (B1: sweeping inFlight would let a second paid start overlap the
+// fence), so recovery is explicit. peekLease reads the row without touching
+// capacity — acquire would create a fresh row this path never uses and would
+// contend with the live foreign rows that fill the cap in exactly the wedged
+// state being recovered. clearDeadLease removes the row only under
+// compare-and-set on the observed expiresAt — the operator's fence stand-in,
+// since fences never leave the guard. A row that moved (renewed by a live
+// holder's heartbeat, paused, released, re-acquired) refuses rather than
+// steals.
+
+export type LeasePeek =
+  | { present: false }
+  | { present: true; fence: string; expiresAt: number; inFlight: boolean };
+
+export async function peekLease(
+  storage: DurableObjectStorage,
+  opts: { id: string },
+): Promise<LeasePeek> {
+  const lease = asLease(await storage.get(leaseStorageKey(opts.id)));
+  if (!lease) return { present: false };
+  return {
+    present: true,
+    fence: lease.fence,
+    expiresAt: lease.expiresAt,
+    inFlight: lease.inFlight,
+  };
+}
+
+export type DeadLeaseClearDecision =
+  | { ok: true; cleared: boolean }
+  | { ok: false; reason: "changed" | "not_in_flight" | "not_overdue" };
+
+// Compare-and-set removal of one lease row. `expectedExpiresAt` is the
+// caller's observation of the row at decision time; a row that moved
+// (renewed by a live holder's heartbeat, paused, released, re-acquired)
+// refuses rather than steals. `requireOverdue` (the default) additionally
+// demands that the row's TTL lapsed — the heartbeat-based proof that the
+// holder is dead, which is the operator's and the defer-ceiling path's only
+// evidence. The Worker's terminal/purged recovery passes false: there the
+// proof is that the work is over or its target is gone, not that the holder
+// stopped, and refusing to touch a not-yet-expired row would strand a
+// holder that died seconds after committing.
+export async function clearDeadLease(
+  storage: DurableObjectStorage,
+  opts: { id: string; expectedExpiresAt: number | null; nowMs: number; requireOverdue?: boolean },
+): Promise<DeadLeaseClearDecision> {
+  const key = leaseStorageKey(opts.id);
+  const existing = asLease(await storage.get(key));
+  // Absent is success: the goal is "no orphaned row", and a row legitimately
+  // released or swept already satisfies it. Re-running a completed clear
+  // converges instead of erroring.
+  if (!existing) return { ok: true, cleared: false };
+  // The observed expiresAt is the compare-and-set fence. null means the caller
+  // observed absence, so a row that appeared since is a NEW holder's live
+  // permit; any other mismatch means a heartbeat, pause, or re-acquire moved
+  // the row and the observation is stale.
+  if (opts.expectedExpiresAt === null || existing.expiresAt !== opts.expectedExpiresAt) {
+    return { ok: false, reason: "changed" };
+  }
+  if (!existing.inFlight) {
+    // A paused row is 429-parked, not orphaned: its holder means to resume,
+    // and the ordinary expiry sweep owns its end.
+    return { ok: false, reason: "not_in_flight" };
+  }
+  if (opts.requireOverdue !== false && existing.expiresAt > opts.nowMs) {
+    // Not overdue: the holder may merely be between heartbeats. Only a row
+    // whose TTL lapsed without a renew is evidence the holder is gone.
+    return { ok: false, reason: "not_overdue" };
+  }
+  await storage.delete(key);
+  return { ok: true, cleared: true };
+}

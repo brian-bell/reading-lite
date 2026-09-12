@@ -100,8 +100,13 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   if (!await neighboursUnchanged(neighbourVersions) || !await stillCurrent(original.etag)) return;
   const attemptId = `refresh:${job.readingId}:${runAt}`;
   const clock = () => Date.parse(services.now());
-  const hold = throwIfDeferred(await acquireProcessingLeases(env, job.tenantId, attemptId, clock()));
-  if (hold === "already_running") throw new DeferPaidWorkError();
+  const acquired = throwIfDeferred(await acquireProcessingLeases(env, job.tenantId, attemptId, clock()));
+  // #256 residual, deliberately unchanged: the refresh path treats a
+  // release-only hold as plain defer. Its orphan recovery is a separate
+  // follow-up; adopting the release semantics here would change a queue's
+  // retry contract that this issue does not touch.
+  if (acquired.kind === "release_only") throw new DeferPaidWorkError();
+  const hold = acquired.hold;
   const stop = startProcessingLeaseHeartbeat(env, hold, clock);
   const owner = services.newId();
   try {
