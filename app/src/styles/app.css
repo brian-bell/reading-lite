@@ -440,6 +440,87 @@ textarea {
   gap: var(--space-4);
 }
 
+/* ---- Reading ---------------------------------------------------------- */
+
+/* Long titles wrap and are never truncated on the reading page, so a 130-char
+   title stays readable rather than ending in an ellipsis (design spec, Source
+   content). Long unbroken text breaks anywhere rather than widening the page. */
+.reading .page-title {
+  max-width: 24ch;
+  overflow-wrap: anywhere;
+}
+
+@media (min-width: 700px) {
+  .reading .page-title {
+    max-width: 32ch;
+  }
+}
+
+/* Hostname, saved date, and "Imported Markdown", separated by a rule rather
+   than punctuation so each part is its own element for a screen reader. */
+.reading-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-5);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* The separator trails the part before it, so a line that wraps does not begin
+   with a stray dot. */
+.reading-meta span:not(:last-child)::after {
+  content: "·";
+  margin-left: var(--space-3);
+  color: var(--border);
+}
+
+.status-card {
+  max-width: 40rem;
+  margin: 0 0 var(--space-6);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.status-card-failed {
+  border-left-color: var(--danger);
+}
+
+.status-card-headline {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.status-card-detail {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.status-card .form-hint {
+  margin: var(--space-2) 0 0;
+}
+
+.reading-state {
+  max-width: 34rem;
+}
+
+.reading-state .page-title {
+  font-size: 26px;
+}
+
+.reading-loading {
+  min-height: 2rem;
+}
+
 /* ---- Compact bar at container width ≤650 px --------------------------- */
 
 @container shell (max-width: 650px) {
