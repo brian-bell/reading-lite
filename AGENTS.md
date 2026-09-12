@@ -19,6 +19,7 @@ npm ci
 cp .dev.vars.example .dev.vars   # first setup only
 npm run dev                     # local D1 setup, founder bootstrap, Worker :8787
 npm run seed:local              # seed the accepted-state fixture pack into local R2
+npm run fixtures:app            # regenerate app/'s browser-evidence fixture snapshot
 npm run test:quiet              # preferred; same suite as npm test
 npm run types:check             # verify checked-in Wrangler runtime types
 npm run typecheck
@@ -34,14 +35,15 @@ npm ci
 npm run dev                     # :5174, proxies /api to :8787
 npm run typecheck && npm test
 npm run build && npm run test:smoke
+npm run test:browser            # Playwright: themes, viewports, axe, keyboard
 ```
 
 There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; SPA verification is `npm test`
 plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
-`build`, and `test:smoke` in `app/`. CI runs Worker and Node tests, SPA
-tests/build, the `app/` checks on Node 22, and the ops compatibility check on
-Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
+`build`, `test:smoke`, and `test:browser` in `app/`. CI runs Worker and Node
+tests, SPA tests/build, the `app/` checks and its browser-evidence job on
+Node 22, and the ops compatibility check on Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
 
 Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
