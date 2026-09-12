@@ -69,6 +69,29 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Slow reading week",
     fixture: "imported-markdown",
   },
+  // The Summary view's own states (#370): the sparse-archive sentence, the
+  // degraded-YouTube notice, and an old manifest with no novelty panel at all.
+  {
+    name: "reading-sparse-archive",
+    path: "/readings/rd_FXSPARSE01",
+    state: "signed-in",
+    heading: "Against the endless queue",
+    fixture: "sparse-archive",
+  },
+  {
+    name: "reading-degraded-youtube",
+    path: "/readings/rd_FXYTDEGRD1",
+    state: "signed-in",
+    heading: "Building a quiet reading app — chapter 4",
+    fixture: "degraded-youtube",
+  },
+  {
+    name: "reading-old-manifest",
+    path: "/readings/rd_FXPAST0001",
+    state: "signed-in",
+    heading: "Before the archive",
+    fixture: "old-manifest",
+  },
   {
     name: "reading-pending",
     path: "/readings/rd_FXPENDNG01",

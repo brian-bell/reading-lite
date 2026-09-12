@@ -198,6 +198,148 @@ describe("a ready reading", () => {
   });
 });
 
+describe("the Summary view", () => {
+  it("leads with the tldr and follows it with the summary", async () => {
+    const reading = readings[ATTENTION]!;
+    backendAnswers(200, reading);
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getByText(reading.tldr!)).toBeInTheDocument();
+    expect(screen.getByText(/^Saving is only the beginning\./)).toBeInTheDocument();
+  });
+
+  // The summarizer opens summary_markdown with the tldr itself, so rendering
+  // both verbatim would print the lead twice.
+  it("prints the lead once", async () => {
+    const reading = readings[ATTENTION]!;
+    backendAnswers(200, reading);
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getAllByText(reading.tldr!)).toHaveLength(1);
+  });
+
+  it("renders the summary's Markdown rather than its source text", async () => {
+    backendAnswers(200, {
+      ...readings[ATTENTION],
+      tldr: "The lead.",
+      summary_markdown: "The lead.\n\nA point with **weight** and a [link](https://elsewhere.example/x).",
+    });
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getByText("weight").tagName).toBe("STRONG");
+    const link = screen.getByRole("link", { name: "link" });
+    expect(link).toHaveAttribute("href", "https://elsewhere.example/x");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer nofollow");
+  });
+
+  // The captured page is untrusted and the summary is written from it, so
+  // markup in a summary is text, never elements on this page.
+  it("does not let markup in a summary reach the page", async () => {
+    backendAnswers(200, {
+      ...readings[ATTENTION],
+      tldr: undefined,
+      summary_markdown: '<img src="x" onerror="alert(1)"><script>alert(2)</script>\n\nThe argument.',
+    });
+    await openTab(`/readings/${ATTENTION}`);
+
+    const prose = document.querySelector(".reading-prose")!;
+    expect(prose.querySelector("img")).toBeNull();
+    expect(prose.querySelector("script")).toBeNull();
+    expect(screen.getByText("The argument.")).toBeInTheDocument();
+  });
+
+  // Design spec, Source content: remote images are never loaded on their own,
+  // so an image host cannot learn what is being read. A Markdown image
+  // survives the sanitizer, so the renderer has to refuse it — the summarizer
+  // is asked for paragraphs, and an image in one is nothing the reader loses.
+  it("never requests a remote image a summary asks for", async () => {
+    backendAnswers(200, {
+      ...readings[ATTENTION],
+      tldr: undefined,
+      summary_markdown: "![a tracking pixel](https://tracker.example/p.gif?id=1)\n\nThe argument.",
+    });
+    await openTab(`/readings/${ATTENTION}`);
+
+    const prose = document.querySelector(".reading-prose")!;
+    expect(prose.querySelector("img")).toBeNull();
+    expect(prose.innerHTML).not.toContain("tracker.example");
+    // The alt text survives, so nothing the writer said is lost.
+    expect(screen.getByText("a tracking pixel")).toBeInTheDocument();
+    expect(screen.getByText("The argument.")).toBeInTheDocument();
+  });
+
+  it("offers each tag as a link into the library filtered by it", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const tags = within(screen.getByRole("list", { name: "Tags" })).getAllByRole("link");
+    expect(tags.map((tag) => tag.textContent)).toEqual(["attention", "design"]);
+    expect(tags[0]).toHaveAttribute("href", "/?tag=attention");
+  });
+
+  it("shows no tag list for a reading that has none", async () => {
+    backendAnswers(200, { ...readings[ATTENTION], tags: [] });
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.queryByRole("list", { name: "Tags" })).not.toBeInTheDocument();
+  });
+
+  it("names what a degraded YouTube reading was missing", async () => {
+    backendAnswers(200, readings.rd_FXYTDEGRD1);
+    await openTab("/readings/rd_FXYTDEGRD1");
+
+    expect(
+      screen.getByText(
+        "This video's transcript couldn't be read, so the summary is based on its title, channel, and description.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about enrichment for a reading that was not degraded", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.queryByText(/couldn't be read/)).not.toBeInTheDocument();
+  });
+});
+
+describe("the novelty panel", () => {
+  it("gives the verdict a label and its sentence", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const panel = screen.getByRole("region", { name: "What this adds" });
+    expect(within(panel).getByText("Familiar")).toBeInTheDocument();
+    expect(within(panel).getByText("Overlaps with readings already in your library.")).toBeInTheDocument();
+  });
+
+  // A library with nothing close to compare against is its own sentence: the
+  // page must not imply a comparison it never made.
+  it("says a sparse archive had nothing close to compare with", async () => {
+    backendAnswers(200, readings.rd_FXSPARSE01);
+    await openTab("/readings/rd_FXSPARSE01");
+
+    const panel = screen.getByRole("region", { name: "What this adds" });
+    expect(within(panel).getByText("Your library had no close readings when this was processed.")).toBeInTheDocument();
+    expect(within(panel).queryByText("Nothing already in your library covers this closely.")).not.toBeInTheDocument();
+  });
+
+  it("omits the panel on a manifest with no verdict, and never says unclassified", async () => {
+    backendAnswers(200, readings.rd_FXPAST0001);
+    await openTab("/readings/rd_FXPAST0001");
+
+    expect(screen.queryByRole("region", { name: "What this adds" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/unclassified/i)).not.toBeInTheDocument();
+  });
+
+  it("shows no novelty for a reading that is not ready", async () => {
+    backendAnswers(200, readings.rd_FXPENDNG01);
+    await openTab("/readings/rd_FXPENDNG01");
+
+    expect(screen.queryByRole("region", { name: "What this adds" })).not.toBeInTheDocument();
+  });
+});
+
 describe("pending and failed readings", () => {
   it("shows a pending reading's stage without inventing progress", async () => {
     backendAnswers(200, readings.rd_FXPENDNG01);

@@ -1,4 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { hostnameOf, savedOn, sourceLabel } from "../reading-presentation";
 import { readingQueryOptions } from "../reading-query";
@@ -12,12 +13,18 @@ import {
   ReadingServerError,
 } from "./ReadingStates";
 import { ReadingStatusCard } from "./ReadingStatusCard";
+import { ReadingSummary } from "./ReadingSummary";
 
-// The reading page (#370). This slice is the data path and the states: the
-// reading is read during the server render through the backend entrypoint,
-// dehydrated into the page, and rendered here without a second request. The
-// Summary view's lead, summary Markdown, tags, and novelty panel land in the
-// next slice; relationships (#371), source (#372), and details (#373) follow.
+// The reading page (#370). The reading is read during the server render
+// through the backend entrypoint, dehydrated into the page, and rendered here
+// without a second request.
+//
+// The order of the reading column is the design spec's (Reading surface):
+// title, metadata line, tags, status card when active or failed, the view's
+// content, then the novelty panel. Relationships (#371), the Source view and
+// its tabs (#372), and Details (#373) follow in their own slices; the actions
+// in the heading row (Reprocess, Open original URL) arrive with capture in
+// Phase 4.
 
 export function ReadingPage({ id }: { id: string }) {
   const queryClient = useQueryClient();
@@ -34,8 +41,9 @@ export function ReadingPage({ id }: { id: string }) {
 }
 
 /**
- * Title, metadata line, and status (design spec, Reading surface). A very long
- * title wraps and is never truncated, so the heading carries the whole thing.
+ * Title, metadata line, tags, status, and the Summary view (design spec,
+ * Reading surface). A very long title wraps and is never truncated, so the
+ * heading carries the whole thing.
  */
 function ReadingSurface({ reading }: { reading: Reading }) {
   const saved = savedOn(reading.created_at);
@@ -48,7 +56,30 @@ function ReadingSurface({ reading }: { reading: Reading }) {
         {saved ? <span>{saved}</span> : null}
         {source ? <span>{source}</span> : null}
       </p>
+      <ReadingTags tags={reading.tags} />
       <ReadingStatusCard reading={reading} />
+      <ReadingSummary reading={reading} />
     </article>
+  );
+}
+
+/**
+ * Tags open the library filtered by that tag (design spec, Data mapping). They
+ * are links, not buttons, because they are a navigation to the library URL the
+ * spec fixes as `/?q=&tag=&offset=` — the library reads `tag` when its filters
+ * land in Phase 4 (#339); the URL it lands on is already settled.
+ */
+function ReadingTags({ tags }: { tags: string[] | undefined }) {
+  if (!tags || tags.length === 0) return null;
+  return (
+    <ul className="reading-tags" aria-label="Tags">
+      {tags.map((tag) => (
+        <li key={tag}>
+          <Link className="tag" to="/" search={{ tag }}>
+            {tag}
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }
