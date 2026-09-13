@@ -157,7 +157,8 @@ calls providers. Production stays GET-only. `ops eval summarizer` uses fixtures.
 Reddit and full YouTube recovery use local import skills; X threads older than
 seven days fail the recent-search path. See [source recovery](docs/operations.md#sources-that-need-a-local-skill).
 
-Code merges run CI, then deploy the same commit's Worker and SPA under a shared
+Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
+(to its `next.readinglite.ai` preview host) under a shared
 release lock with stale-commit checks. Worker deployment applies pending D1
 migrations before upload. The workflow checks unfinished wipes and wipe queues;
 a direct `ops deploy worker` invocation does not run that separate wipe check.

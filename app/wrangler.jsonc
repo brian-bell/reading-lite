@@ -8,11 +8,17 @@
 //   * production        — reading-lite-app, binds reading-lite.
 //
 // The build fixes the environment (CLOUDFLARE_ENV=staging|production npm run
-// build). Deploys need separate authorization and are not wired up yet.
+// build). Production deploys after every production backend release
+// (.github/workflows/deploy-spa.yml); staging deploys by manual dispatch
+// (.github/workflows/deploy-app-staging.yml).
 //
-// There are no routes. The frontend is attached per host later with a `host/*`
-// route; the backend keeps its more specific /api/*, /health, and /mcp* routes,
-// and this Worker returns 404 for those paths instead of proxying them.
+// Routes (ADR 0003, amended 2026-09-13): each deployed environment owns only its
+// preview host, next-staging.readinglite.ai or next.readinglite.ai, with a
+// `host/*` route. The backend of the same environment keeps the more specific
+// /api/* and /health routes there (root wrangler.toml), and this Worker returns
+// 404 for backend paths instead of proxying them. test/frontend-routes.test.ts
+// fails when a route has no matching backend routes. The apex and staging hosts
+// get routes only at their cutovers.
 //
 // BACKEND binds the backend's read-only FrontendReads entrypoint (the repo
 // root's src/frontend-reads.ts), used for server renders; browser API calls go
@@ -24,7 +30,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reading-lite-app-dev",
   "main": "@tanstack/react-start/server-entry",
-  // No public hostnames until a route is added deliberately. Wrangler defaults
+  // No public hostname for the local config. Wrangler defaults
   // workers_dev to true, so a bare deploy of this local config would otherwise
   // publish reading-lite-app-dev on workers.dev. Repeated in each environment.
   "workers_dev": false,
@@ -42,12 +48,14 @@
       "name": "reading-lite-app-staging",
       "workers_dev": false,
       "preview_urls": false,
+      "routes": [{ "pattern": "next-staging.readinglite.ai/*", "zone_name": "readinglite.ai" }],
       "services": [{ "binding": "BACKEND", "service": "reading-lite-staging", "entrypoint": "FrontendReads" }]
     },
     "production": {
       "name": "reading-lite-app",
       "workers_dev": false,
       "preview_urls": false,
+      "routes": [{ "pattern": "next.readinglite.ai/*", "zone_name": "readinglite.ai" }],
       "services": [{ "binding": "BACKEND", "service": "reading-lite", "entrypoint": "FrontendReads" }]
     }
   }
