@@ -377,6 +377,18 @@ zone_name = "readinglite.app"
 pattern = "staging.readinglite.app/mcp*"
 zone_name = "readinglite.app"
 
+# New-frontend preview host (ADR 0003). The frontend Worker
+# (app/wrangler.jsonc, reading-lite-app-staging) owns next-staging.readinglite.ai/*;
+# these more specific routes keep the API and health check on this Worker. No
+# /mcp* and no Pages here. Retire with the host after the Phase 5 cutover.
+[[env.staging.routes]]
+pattern = "next-staging.readinglite.ai/api/*"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "next-staging.readinglite.ai/health"
+zone_name = "readinglite.ai"
+
 # ---- production ----
 # Deploy with `npm run ops -- deploy worker --env production --execute`.
 # Environments do NOT inherit top-level [vars] / bindings — repeat them here.
@@ -638,3 +650,15 @@ zone_name = "readinglite.app"
 [[env.production.routes]]
 pattern = "readinglite.app/mcp*"
 zone_name = "readinglite.app"
+
+# New-frontend preview host (ADR 0003). The frontend Worker
+# (app/wrangler.jsonc, reading-lite-app) owns next.readinglite.ai/*; these more
+# specific routes keep the API and health check on this Worker. No /mcp* and no
+# Pages here. Retire with the host after the Phase 5 cutover.
+[[env.production.routes]]
+pattern = "next.readinglite.ai/api/*"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "next.readinglite.ai/health"
+zone_name = "readinglite.ai"
