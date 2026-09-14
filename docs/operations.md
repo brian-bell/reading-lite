@@ -2594,9 +2594,15 @@ With the gate set to `1`, the separate `7 3 * * *` cron (03:07 UTC nightly)
 starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
 `TENANT_DATA_PLANE=1` is required. The existing */15 digest/wipe cron is separate.
 Each queue shard reads at most 25 manifests and queries their stored vector IDs;
-no embedding calls are made. Missing, non-ready, reprocessing and purged readings
-are skipped. The existing offline neighbourhood-drift rules select judge targets.
-All scan shards finish before any judge jobs are enqueued.
+no embedding calls are made. Missing, non-ready, and purged readings are skipped.
+A ready target whose `active_attempt` is still running inside `PENDING_TTL_SECONDS`
+is skipped at scan time; the same in-TTL running state on a judge delivery throws
+`DeferPaidWorkError` and re-enqueues that `(runAt, readingId, keyPrefix)` without
+a D1 checkpoint. A TTL-expired (zombie) running attempt is not a terminal skip:
+scan still flags the target, and the judge treats it as not running. The nightly
+cap still counts a reserved judge identity, including identities later deferred
+for in-TTL running. The existing offline neighbourhood-drift rules select judge
+targets. All scan shards finish before any judge jobs are enqueued.
 
 Progress lives at `u/{tenantId}/index/refresh-cursor.json`: the scan's fixed target
 list, scan offset, flagged candidates, dispatch offset and nightly allowance.

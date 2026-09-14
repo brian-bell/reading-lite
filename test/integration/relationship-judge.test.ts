@@ -148,13 +148,110 @@ describe("hosted relationship judge", () => {
     expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("novel");
   });
 
-  it.each(["purged", "running"])("skips an initially %s reading before any dispatch checkpoint", async kind => {
-    const store = testReadingStore(env);
-    if (kind === "purged") await store.removeListIndexItem(id);
-    else await store.writeManifest(keyPrefix, { ...original, active_attempt: { id: "at_busy", trigger: "reprocess", stage: "queued", status: "running", started_at: new Date().toISOString() } });
+  it("skips an initially purged reading before any dispatch checkpoint", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await testReadingStore(env).removeListIndexItem(id);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
     expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
+    expect(logged).toContain(`"readingId":"${id}"`);
+    expect(logged).toContain('"reason":"purged"');
+  });
+
+  it("defers an initially in-TTL running target without a dispatch checkpoint", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    services.now = () => nowIso;
+    await testReadingStore(env).writeManifest(keyPrefix, {
+      ...original,
+      active_attempt: { id: "at_busy", trigger: "reprocess", stage: "queued", status: "running", started_at: nowIso },
+    });
+    await expect(processRelationshipJudge(job, runtime, services)).rejects.toMatchObject({ name: "DeferPaidWorkError" });
+    expect(provider).not.toHaveBeenCalled();
+    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
+    expect(logged).toContain(id);
+    expect(logged).toContain("target_running");
+  });
+
+  it("judges when a neighbour's running attempt has expired", async () => {
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    services.now = () => nowIso;
+    const store = testReadingStore(env);
+    const neighbourPrefix = buildKeyPrefix(other, createdAt);
+    const neighbour = (await store.readManifest(neighbourPrefix))!;
+    await store.writeManifest(neighbourPrefix, {
+      ...neighbour,
+      active_attempt: { id: "at_zombie", trigger: "reprocess", stage: "queued", status: "running", started_at: "2026-09-06T02:00:00.000Z" },
+    });
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(await env.CONTROL_PLANE.prepare("SELECT reading_id FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()).toEqual({ reading_id: id });
+    expect((await store.readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
+  });
+
+  it("defers when a neighbour is still running inside TTL", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    services.now = () => nowIso;
+    const store = testReadingStore(env);
+    const neighbourPrefix = buildKeyPrefix(other, createdAt);
+    const neighbour = (await store.readManifest(neighbourPrefix))!;
+    await store.writeManifest(neighbourPrefix, {
+      ...neighbour,
+      active_attempt: { id: "at_live", trigger: "reprocess", stage: "queued", status: "running", started_at: nowIso },
+    });
+    await expect(processRelationshipJudge(job, runtime, services)).rejects.toMatchObject({ name: "DeferPaidWorkError" });
+    expect(provider).not.toHaveBeenCalled();
+    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
+    expect(logged).toContain(id);
+    expect(logged).toContain("neighbour_running");
+    expect(logged).toContain(other);
+  });
+
+  it("judges a target whose running attempt has expired", async () => {
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    services.now = () => nowIso;
+    await testReadingStore(env).writeManifest(keyPrefix, {
+      ...original,
+      active_attempt: { id: "at_zombie", trigger: "reprocess", stage: "queued", status: "running", started_at: "2026-09-06T02:00:00.000Z" },
+    });
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(await env.CONTROL_PLANE.prepare("SELECT reading_id FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()).toEqual({ reading_id: id });
+  });
+
+  it.each([
+    { kind: "target" as const, reason: "target_running" },
+    { kind: "neighbour" as const, reason: "neighbour_running" },
+  ])("re-enqueues the same judge identity when consume sees in-TTL $kind running", async ({ kind, reason }) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    services.now = () => nowIso;
+    const store = testReadingStore(env);
+    const busy = { id: "at_busy", trigger: "reprocess" as const, stage: "queued" as const, status: "running" as const, started_at: nowIso };
+    if (kind === "target") await store.writeManifest(keyPrefix, { ...original, active_attempt: busy });
+    else {
+      const neighbourPrefix = buildKeyPrefix(other, createdAt);
+      const neighbour = (await store.readManifest(neighbourPrefix))!;
+      await store.writeManifest(neighbourPrefix, { ...neighbour, active_attempt: busy });
+    }
+    const send = vi.fn(async () => {});
+    runtime.RELATIONSHIP_REFRESH_JOBS = { send } as unknown as Queue;
+    const ack = vi.fn(); const retry = vi.fn();
+    await consumeRelationshipRefresh({ body: job, ack, retry } as unknown as Message<unknown>, runtime, undefined, services);
+    expect(send).toHaveBeenCalledWith({ ...job, deferredAt: expect.any(String) }, { delaySeconds: 15 });
+    expect(ack).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
+    expect(logged).toContain(id);
+    expect(logged).toContain(reason);
+    if (kind === "neighbour") expect(logged).toContain(other);
   });
 
   it("does not recreate a purged reading or its checkpoint after an in-flight call", async () => {

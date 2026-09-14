@@ -3,6 +3,9 @@
  * spend admission as reading processing; the latest-job checkpoint prevents
  * another delivery repeating an uncertain charge. Only relationship fields and
  * an existing list row's novelty verdict are published, guarded by manifest CAS.
+ * Running predicates overlay applyStaleness: a zombie (TTL-expired) attempt is
+ * not running. In-TTL running defers with DeferPaidWorkError before any D1
+ * checkpoint so consumeRelationshipRefresh re-enqueues the same identity.
  */
 import type { Env } from "./index";
 import { sha256Hex, type Services } from "./services";
@@ -18,7 +21,8 @@ import { buildReportReading, diffNeighbourhood, resolveJudgedAt, REFRESH_CANDIDA
 import { judgeRelationships } from "./modules/relationship-judgement";
 import { buildRelationshipJudgementInput, mergeRelationshipJudgement } from "./modules/relationship-judgement/refresh";
 import { retryDepsFromEnv, RateLimitedError } from "./modules/http-retry";
-import { ManifestSchema } from "./schemas/manifest";
+import { ManifestSchema, type Manifest } from "./schemas/manifest";
+import { effectivelyRunning, pendingTtlSeconds } from "./modules/staleness";
 
 type JudgeJob = Extract<RefreshEnvelope, { kind: "judge" }>;
 export async function processRelationshipJudge(job: JudgeJob, env: Env, services: Services): Promise<void> {
@@ -28,24 +32,54 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   const runAt = new Date(job.runAt).toISOString();
   const db = fromD1(env.CONTROL_PLANE);
   const store = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  const liveTarget = async () => {
+  const ttl = pendingTtlSeconds(env.PENDING_TTL_SECONDS);
+  const running = (manifest: Manifest) => effectivelyRunning(manifest, ttl, services.now());
+  const deferRunning = (reason: "target_running" | "neighbour_running", neighbourId?: string): never => {
+    console.warn(JSON.stringify({
+      event: "relationship_refresh_deferred",
+      readingId: job.readingId,
+      reason,
+      ...(neighbourId !== undefined ? { neighbourId } : {}),
+    }));
+    throw new DeferPaidWorkError();
+  };
+  const logNoop = (reason: string, extra?: Record<string, unknown>) => {
+    console.warn(JSON.stringify({ event: "relationship_refresh_noop", readingId: job.readingId, reason, ...extra }));
+  };
+  // Overlay applyStaleness for the running bit only. Raw manifest + etag stay
+  // on `stored` for hashing and CAS. Pre-checkpoint callers pass deferIfRunning
+  // so in-TTL running re-enqueues instead of silently acking.
+  const liveTarget = async (deferIfRunning = false) => {
     const row = await store.findListIndexItem(job.readingId);
     if (!row || row.status !== "ready" || row.key_prefix !== job.keyPrefix) return null;
     const stored = await store.readManifestWithEtag(job.keyPrefix);
-    if (!stored || stored.manifest.id !== job.readingId || stored.manifest.status !== "ready" || stored.manifest.active_attempt?.status === "running") return null;
+    if (!stored || stored.manifest.id !== job.readingId || stored.manifest.status !== "ready") return null;
+    if (running(stored.manifest)) {
+      if (deferIfRunning) deferRunning("target_running");
+      return null;
+    }
     return stored;
   };
-  const neighboursUnchanged = async (versions: SavedRefreshResult["neighbour_versions"]) => {
+  const neighboursUnchanged = async (versions: SavedRefreshResult["neighbour_versions"], deferIfRunning = false) => {
     for (const version of versions) {
       const row = await store.findListIndexItem(version.id);
       if (!row || row.status !== "ready" || row.key_prefix !== version.key_prefix) return false;
       const stored = await store.readManifestWithEtag(row.key_prefix);
-      if (!stored || stored.etag !== version.etag || stored.manifest.id !== version.id || stored.manifest.status !== "ready" || stored.manifest.active_attempt?.status === "running") return false;
+      if (!stored || stored.manifest.id !== version.id || stored.manifest.status !== "ready") return false;
+      if (running(stored.manifest)) {
+        if (deferIfRunning) deferRunning("neighbour_running", version.id);
+        return false;
+      }
+      if (stored.etag !== version.etag) return false;
     }
     return true;
   };
-  const original = await liveTarget();
-  if (!original) return;
+  const original = await liveTarget(true);
+  if (!original) {
+    const row = await store.findListIndexItem(job.readingId);
+    logNoop(!row ? "purged" : "not_ready");
+    return;
+  }
   const checkpoint = await readRefreshJob(db, job.tenantId, job.readingId);
   if (checkpoint && checkpoint.run_at > runAt) return;
 
@@ -74,21 +108,37 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
     const waitMs = checkpoint.retry_at_ms - Date.now();
     if (waitMs > 0) throw new DeferPaidWorkError(Math.ceil(waitMs / 1000));
   }
-  if (Date.parse(original.manifest.connections_computed_at ?? "") >= Date.parse(runAt)) return;
+  if (Date.parse(original.manifest.connections_computed_at ?? "") >= Date.parse(runAt)) {
+    logNoop("already_computed");
+    return;
+  }
   const list = (await store.readListIndex())?.items ?? [];
   const matches = await similarityStoreFor(env.READINGS_INDEX, tenant, env).queryByVectorId(job.readingId, REFRESH_CANDIDATE_TOP_K);
-  if (matches === null) return;
+  if (matches === null) {
+    logNoop("not_ready");
+    return;
+  }
   const row = { ...original.manifest, key_prefix: job.keyPrefix };
   const judgedAt = resolveJudgedAt(row);
   const reasons = diffNeighbourhood(row, matches, list, judgedAt.judged_at);
-  if (reasons.length === 0) return;
+  if (reasons.length === 0) {
+    logNoop("empty_diff");
+    return;
+  }
   const report = buildReportReading(row, matches, list, reasons, judgedAt);
   const neighbourVersions: SavedRefreshResult["neighbour_versions"] = [];
   for (const neighbour of report.current_neighbours) {
     const row = await store.findListIndexItem(neighbour.id);
-    if (!row || row.status !== "ready") return;
+    if (!row || row.status !== "ready") {
+      logNoop("not_ready", { neighbourId: neighbour.id });
+      return;
+    }
     const stored = await store.readManifestWithEtag(row.key_prefix);
-    if (!stored || stored.manifest.id !== neighbour.id || stored.manifest.status !== "ready" || stored.manifest.active_attempt?.status === "running") return;
+    if (!stored || stored.manifest.id !== neighbour.id || stored.manifest.status !== "ready") {
+      logNoop("not_ready", { neighbourId: neighbour.id });
+      return;
+    }
+    if (running(stored.manifest)) deferRunning("neighbour_running", neighbour.id);
     neighbourVersions.push({ id: neighbour.id, key_prefix: row.key_prefix, etag: stored.etag });
     // Describe the captured manifest version, not potentially lagging vector metadata.
     neighbour.title = stored.manifest.title;
@@ -97,7 +147,10 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   }
   const input = buildRelationshipJudgementInput(original.manifest, report, report.current_neighbours);
   const allowedIds = new Set(report.current_neighbours.map(n => n.id));
-  if (!await neighboursUnchanged(neighbourVersions) || !await stillCurrent(original.etag)) return;
+  if (!await neighboursUnchanged(neighbourVersions, true) || (await liveTarget(true))?.etag !== original.etag) {
+    logNoop("not_ready");
+    return;
+  }
   const attemptId = `refresh:${job.readingId}:${runAt}`;
   const clock = () => Date.parse(services.now());
   const hold = throwIfDeferred(await acquireProcessingLeases(env, job.tenantId, attemptId, clock()));

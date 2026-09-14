@@ -30,7 +30,7 @@ import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./inta
 import { purgeReading } from "./reading-purge";
 import { vectorLedgerFor } from "./control-plane/vector-ledger";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
-import { applyStaleness } from "./modules/staleness";
+import { applyStaleness, pendingTtlSeconds as parsePendingTtlSeconds } from "./modules/staleness";
 import {
   handleAuthChallenge,
   handleAuthLogout,
@@ -525,6 +525,5 @@ function extFromContentType(contentType: string): string {
 }
 
 function pendingTtlSeconds(env: Env): number {
-  const n = Number(env.PENDING_TTL_SECONDS);
-  return Number.isFinite(n) ? n : 300;
+  return parsePendingTtlSeconds(env.PENDING_TTL_SECONDS);
 }

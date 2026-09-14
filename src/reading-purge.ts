@@ -2,7 +2,7 @@ import { ZodError } from "zod";
 import type { ReadingStore } from "./modules/stores/reading-store";
 import type { SimilarityStore } from "./modules/stores/similarity-store";
 import type { VectorLedger } from "./control-plane/vector-ledger";
-import { applyStaleness } from "./modules/staleness";
+import { effectivelyRunning } from "./modules/staleness";
 import { sha256Hex } from "./services";
 import type { Manifest } from "./schemas/manifest";
 
@@ -217,8 +217,7 @@ function hasRunningAttempt(
 ): boolean {
   // The same read-time staleness rule reprocess applies: a zombie attempt past
   // TTL reads as failed and must not block the purge forever.
-  const effective = applyStaleness(manifest, opts.pendingTtlSeconds, opts.now);
-  return effective.active_attempt?.status === "running";
+  return effectivelyRunning(manifest, opts.pendingTtlSeconds, opts.now);
 }
 
 /**

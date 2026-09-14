@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../../src/index";
-import { REFRESH_CRON, REFRESH_SCAN_SIZE, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
+import { REFRESH_CRON, REFRESH_SCAN_SIZE, consumeRelationshipRefresh, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
 import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, testReadingStore } from "../helpers/tenant-fixtures";
@@ -214,19 +214,52 @@ describe("relationship refresh scan", () => {
     expect((await (await bucket.get(KEY()))!.json<{ scan_offset: number }>()).scan_offset).toBe(0);
   });
 
-  it("skips purged, reprocessing and vectorless readings", async () => {
+  it("skips purged, in-TTL reprocessing and vectorless readings", async () => {
     const manifests = await seed(3);
     await scheduleRelationshipRefresh(runtime, NOW);
     const store = testReadingStore(env);
     const [purged, running, vectorless] = manifests;
     await store.removeListIndexItem(purged!.id);
     await store.writeManifest(buildKeyPrefix(running!.id, running!.created_at), {
-      ...running!, active_attempt: { id: "at_test", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-06T00:00:00Z" },
+      ...running!, active_attempt: { id: "at_test", trigger: "reprocess", status: "running", stage: "queued", started_at: new Date().toISOString() },
     });
     vi.mocked(runtime.READINGS_INDEX.getByIds).mockResolvedValue([]);
     await drainScans();
     expect(runtime.READINGS_INDEX.getByIds).toHaveBeenCalledWith([`${FOUNDER_TENANT_ID}:${vectorless!.id}`]);
     expect(query).not.toHaveBeenCalled();
+    expect(judges()).toHaveLength(0);
+  });
+
+  it("keeps a zombie-running ready target as a scan candidate", async () => {
+    const [target] = await seed(1);
+    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+      ...target!,
+      active_attempt: { id: "at_zombie", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-01T00:00:00Z" },
+    });
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(judges()).toContainEqual(expect.objectContaining({ readingId: target!.id }));
+  });
+
+  it("omits an in-TTL running target when the scan clock is services.now()", async () => {
+    const nowIso = "2026-09-06T03:07:00.000Z";
+    const [target] = await seed(1);
+    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+      ...target!,
+      active_attempt: { id: "at_live", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-06T03:06:00.000Z" },
+    });
+    await scheduleRelationshipRefresh(runtime, NOW);
+    const services = { fetch: async () => new Response(), now: () => nowIso, newId: () => crypto.randomUUID(), lookup: async () => [] };
+    for (let count = 0; count < 100; count++) {
+      const idx = queued.findIndex(x => x.kind === "scan");
+      if (idx < 0) break;
+      const ack = vi.fn(); const retry = vi.fn();
+      await consumeRelationshipRefresh(
+        { body: queued.splice(idx, 1)[0]!, ack, retry } as unknown as Message<unknown>,
+        runtime, () => crypto.randomUUID(), services,
+      );
+      expect(retry).not.toHaveBeenCalled();
+    }
     expect(judges()).toHaveLength(0);
   });
 
