@@ -117,7 +117,10 @@ axe (WCAG 2.2 AA), the keyboard pass (skip link first and landing on main,
 focus order, a visible focus indicator on every tab stop, no focus trap), and a
 layout check that no positioned panel escapes the viewport fail the run.
 Reduced motion and zoom — 200% of the desktop window, and the 320 px reflow
-floor — run for the shell.
+floor — run for the shell. `e2e/specs/reading-cache.spec.ts` (the
+`reading-cache` project) records every request a server-rendered reading page
+makes and fails if the browser asks for the reading or identity again after
+hydration, or when the reader leaves for the library and returns (#370).
 
 The focus indicator is measured on the element the reader sees, as a rendering
 that changes when focus arrives: the theme options focus a transparent radio
