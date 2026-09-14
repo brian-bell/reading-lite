@@ -36,6 +36,18 @@ describe("publicWebBase", () => {
     );
   });
 
+  it("mails new-frontend preview logins back to their preview host", () => {
+    expect(publicWebBase(CONFIGURED_BASE, "https://next.readinglite.ai/api/auth/request")).toBe(
+      "https://next.readinglite.ai",
+    );
+    expect(
+      publicWebBase("https://staging.readinglite.ai/", "https://next-staging.readinglite.ai/api/auth/request"),
+    ).toBe("https://next-staging.readinglite.ai");
+    expect(publicWebBase(CONFIGURED_BASE, "https://next.staging.readinglite.ai/api/auth/request")).toBe(
+      "https://readinglite.ai",
+    );
+  });
+
   it("produces a verify URL on the host the request arrived at", () => {
     const base = publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request");
     expect(buildMagicLinkVerifyUrl(base, "ml_abc.def")).toBe("https://readinglite.ai/auth/verify#ml_abc.def");

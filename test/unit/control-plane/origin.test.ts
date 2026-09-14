@@ -13,6 +13,9 @@ describe("PUBLIC_WEB_ORIGINS", () => {
       "https://readinglite.app",
       "https://staging.readinglite.ai",
       "https://staging.readinglite.app",
+      // New-frontend preview hosts (ADR 0003); retired after the Phase 5 cutover.
+      "https://next.readinglite.ai",
+      "https://next-staging.readinglite.ai",
     ]);
   });
 });

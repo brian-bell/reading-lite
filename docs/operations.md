@@ -420,8 +420,8 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (Pages + `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; `reading-lite-staging.bbell.dev` retired |
-| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; `reading-lite.bbell.dev` retired |
+| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (Pages + `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
+| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -925,6 +925,25 @@ intentional:
 - Local/dev `wrangler.toml` `[vars] MCP_ALLOWED_ORIGINS`, fixtures, and tests
   that use a retired hostname as an example URL rather than a live host.
 - This dual-serve runbook's S9 captain checklist.
+
+### New-frontend preview hosts
+
+The TanStack Start frontend in `app/` is served ahead of cutover on one preview
+host per environment ([ADR 0003](decisions/0003-frontend-worker-topology.md)):
+`next.readinglite.ai` (production) and `next-staging.readinglite.ai`
+(staging). `next-staging` is a first-level subdomain on purpose, so the zone's
+Universal SSL certificate covers it. Each host needs a proxied DNS record
+(`AAAA 100::`). No Pages custom domain is attached.
+
+On each host the frontend Worker owns `host/*`, and the backend keeps the more
+specific `/api/*` and `/health` routes from `wrangler.toml`. There is no
+`/mcp*` route; the frontend answers `/mcp*` with 404. Both origins are in
+`PUBLIC_WEB_ORIGINS`, so a sign-in started there is mailed back there. Sessions
+are host-scoped as elsewhere, so each preview host needs its own sign-in.
+Emitted links still follow `WEB_BASE_URL`. The backend routes and allowlist
+entry must be live before the frontend route, or `/api/*` on that host reaches
+the frontend and returns 404. Both hosts and their allowlist entries are
+retired after the Phase 5 cutover.
 
 ### MCP connector
 

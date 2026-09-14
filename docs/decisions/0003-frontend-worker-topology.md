@@ -1,6 +1,7 @@
 # ADR 0003: New frontend Worker topology, server reads, and rollout hosts
 
-- **Status:** Accepted
+- **Status:** Accepted; hosts and release amended 2026-09-13 (see
+  [Amendment](#amendment-2026-09-13-preview-hosts-from-phase-3))
 - **Date:** 2026-09-10
 - **Decision owners:** Brian Bell
 - **Task:** [#338](https://github.com/brian-bell/reading-lite/issues/338), under
@@ -127,6 +128,7 @@ bearer material enters browser storage.
 | Local | `localhost` | App dev server proxies `/api` to `wrangler dev` on :8787, as `web/` does; loopback requests already count as same-origin |
 | Phase 4 daily use | `next.readinglite.ai` (production) | Frontend `next.readinglite.ai/*`; backend `next.readinglite.ai/api/*` and `/health`; add `https://next.readinglite.ai` to `PUBLIC_WEB_ORIGINS`. Separate sign-in. Proxied DNS record required. Deploys need separate authorization |
 | Staging switch | `staging.readinglite.ai`, `staging.readinglite.app` | Both hosts move together once Phase 4 reaches parity. This is the cutover and rollback rehearsal. Before then, staging runs only the old SPA |
+| Staging preview (amended) | `next-staging.readinglite.ai` (staging) | Same shape as `next.readinglite.ai` on the staging Worker pair. Deployed from Phase 3 by manual dispatch. See the amendment |
 | Production cutover (Phase 5) | `readinglite.ai`, `readinglite.app` | Add frontend `/*` routes. Rollback deletes them. Retire `next.readinglite.ai` and its allowlist entry afterwards |
 
 Each environment's frontend binds only the backend Worker of the same
@@ -142,6 +144,9 @@ same in both frontends, so those links work before and after cutover.
   The operator's Node 20.19 `ops` path does not build it.
 - Until Phase 5, the frontend deploys only to `next.readinglite.ai`, manually
   and with separate authorization.
+  > **Amended 2026-09-13:** the frontend deploys from Phase 3 to the preview
+  > hosts only: production after every production backend release, staging by
+  > manual dispatch.
 - Phase 5 adds the frontend to the `deploy-production-release` concurrency group
   and the same-SHA artifact chain, alongside or in place of the SPA deploy, with
   the same stale-`main` refusal.
@@ -149,6 +154,7 @@ same in both frontends, so those links work before and after cutover.
 ## Consequences
 
 - The first deployed environment is production's `next` host, ahead of staging.
+  (Amended 2026-09-13: `next-staging` deploys first.)
   The two-tenant server-render isolation tests and the cache-header tests must
   pass in CI before that first deploy.
 - MCP and API latency and behavior are unchanged, and a frontend outage does not
@@ -176,3 +182,33 @@ same in both frontends, so those links work before and after cutover.
   drops #335's first SSR goal. Rejected.
 - **Move `staging.readinglite.app` first.** Declined in favor of moving both
   staging hosts together at Phase 4 parity.
+
+## Amendment (2026-09-13): preview hosts from Phase 3
+
+Brian wants to use the new frontend against real data while Phases 3–4 are
+built, instead of waiting for Phase 4 daily use. This amends the host table and
+release section above; routing, server reads, caching, and the apex cutover and
+rollback are unchanged.
+
+- **Hosts.** `next.readinglite.ai` (production) and `next-staging.readinglite.ai`
+  (staging) serve the frontend from Phase 3. `next-staging` is a first-level
+  subdomain so the zone's Universal SSL certificate covers it
+  (`next.staging.readinglite.ai` would not be). Each host has a frontend
+  `host/*` route and backend `/api/*` and `/health` routes, no `/mcp*` route,
+  no Pages attachment, and a `PUBLIC_WEB_ORIGINS` entry. Both hosts and entries
+  are retired after the Phase 5 cutover.
+- **Order.** Staging deploys first. The backend routes and allowlist entry go
+  live before a host's frontend route, so `/api/*` never reaches the frontend.
+- **Production release.** The frontend deploys to `next.readinglite.ai` after
+  every production backend release, as a job in the production SPA release
+  workflow: same released SHA, same `deploy-production-release` group, same
+  stale-`main` refusal. It is a job in that workflow rather than a separate
+  workflow because a concurrency group keeps only one pending run, and a second
+  workflow queued behind the Worker release could cancel the SPA release or be
+  cancelled by it. The SPA and frontend jobs do not depend on each other, so a
+  frontend failure never blocks the SPA that serves the apex hosts.
+- **Staging release.** The staging backend is deployed by hand, so the staging
+  frontend deploys by manual workflow dispatch after it.
+- **Unchanged.** Both staging hosts still move to the new frontend at Phase 4
+  parity as the cutover rehearsal, and the apex hosts cut over in Phase 5 with
+  rollback by route deletion.

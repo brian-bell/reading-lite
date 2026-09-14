@@ -68,7 +68,7 @@ const wrangler = readFileSync("wrangler.toml", "utf8");
 describe("production worker routes", () => {
   const routes = routesFor(wrangler, "env.production.routes");
 
-  it("serves the same three path sets on readinglite.ai and readinglite.app", () => {
+  it("serves the same three path sets on readinglite.ai and readinglite.app, and the API on next", () => {
     expect(routes).toEqual([
       { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -76,13 +76,17 @@ describe("production worker routes", () => {
       { pattern: "readinglite.app/api/*", zone_name: "readinglite.app" },
       { pattern: "readinglite.app/health", zone_name: "readinglite.app" },
       { pattern: "readinglite.app/mcp*", zone_name: "readinglite.app" },
+      // New-frontend preview host (ADR 0003): the frontend Worker owns
+      // next.readinglite.ai/*; these more specific routes keep the API here.
+      { pattern: "next.readinglite.ai/api/*", zone_name: "readinglite.ai" },
+      { pattern: "next.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
   });
 
-  it("routes exactly those six patterns and nothing else", () => {
+  it("routes exactly those eight patterns and nothing else", () => {
     // `www` belongs to a Cloudflare redirect rule, never to a worker route.
     // The retired reading-lite.bbell.dev host is not a Worker route.
-    expect(routes).toHaveLength(6);
+    expect(routes).toHaveLength(8);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
     expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
@@ -90,14 +94,14 @@ describe("production worker routes", () => {
 
   it("counts a route however its block is spelled", () => {
     // The assertions above are only as good as the parser's blind spots, so
-    // prove the shapes that could smuggle a seventh route past them.
+    // prove the shapes that could smuggle a ninth route past them.
     const smuggled = [
       '[[env.production.routes]] # temporarily\npattern = "extra.example/api/*"\nzone_name = "example"',
       '[[ env.production.routes ]]\npattern = "extra.example/api/*"\nzone_name = "example"',
       "[[env.production.routes]]\npattern = 'extra.example/api/*' # note\nzone_name = 'example'",
     ];
     for (const block of smuggled) {
-      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(7);
+      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(9);
     }
 
     // A block that is not a plain (pattern, zone_name) route still has to be
@@ -108,7 +112,7 @@ describe("production worker routes", () => {
     ];
     for (const block of notPlain) {
       const parsed = routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes");
-      expect(parsed).toHaveLength(7);
+      expect(parsed).toHaveLength(9);
       expect(parsed.at(-1)).toBeNull();
     }
   });
@@ -165,7 +169,7 @@ describe("production link-emitting config", () => {
 describe("staging worker routes", () => {
   const routes = routesFor(wrangler, "env.staging.routes");
 
-  it("serves the same three path sets on staging.readinglite.ai and staging.readinglite.app", () => {
+  it("serves the same three path sets on both staging hosts, and the API on next-staging", () => {
     expect(routes).toEqual([
       { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -173,11 +177,13 @@ describe("staging worker routes", () => {
       { pattern: "staging.readinglite.app/api/*", zone_name: "readinglite.app" },
       { pattern: "staging.readinglite.app/health", zone_name: "readinglite.app" },
       { pattern: "staging.readinglite.app/mcp*", zone_name: "readinglite.app" },
+      { pattern: "next-staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
+      { pattern: "next-staging.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
   });
 
-  it("routes exactly those six patterns and nothing else", () => {
-    expect(routes).toHaveLength(6);
+  it("routes exactly those eight patterns and nothing else", () => {
+    expect(routes).toHaveLength(8);
     expect(routes.every((route) => route !== null)).toBe(true);
     expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
     expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
