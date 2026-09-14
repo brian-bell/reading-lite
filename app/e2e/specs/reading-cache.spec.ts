@@ -1,10 +1,12 @@
 // The reading is read once, on the server (#370, "not refetched after
-// hydration"). Everything the page asks for is recorded, so the assertion is
-// on what the browser did not do: no `/api/*` request after hydration, and
-// none when the reader leaves for the library and comes back, because the
-// router navigates in place and the query is served from the cache it
-// hydrated. A full document reload would also pass the API check, so the
-// document requests are counted too: one, the first.
+// hydration"). Every request for the reading or for identity is recorded, so
+// the assertion is on what the browser did not do: neither is asked for after
+// hydration, nor when the reader leaves for the library and comes back,
+// because the router navigates in place and the query is served from the
+// cache it hydrated. Other API traffic is not the test's concern: the library
+// will ask for its rows once it reads them (#339), and that must not fail a
+// test about the reading. A full document reload would also pass the API
+// check, so the document requests are counted too: one, the first.
 //
 // Runs in its own project because it is about requests, not rendering, and
 // one viewport and theme is enough to prove them. It uses Playwright's own
@@ -25,6 +27,9 @@ const test = base.extend({
 
 const READING = { path: "/readings/rd_FXATTENT01", heading: "A quieter internet is a choice we can make" };
 
+/** The two requests the server render already answered. */
+const CRITICAL_API_PATHS = new Set(["/api/whoami", `/api${READING.path}`]);
+
 interface Recorded {
   api: string[];
   documents: string[];
@@ -34,7 +39,7 @@ function recordRequests(page: Page): Recorded {
   const recorded: Recorded = { api: [], documents: [] };
   page.on("request", (request) => {
     const { pathname } = new URL(request.url());
-    if (pathname.startsWith("/api/")) recorded.api.push(`${request.method()} ${pathname}`);
+    if (CRITICAL_API_PATHS.has(pathname)) recorded.api.push(`${request.method()} ${pathname}`);
     if (request.resourceType() === "document") recorded.documents.push(pathname);
   });
   return recorded;
