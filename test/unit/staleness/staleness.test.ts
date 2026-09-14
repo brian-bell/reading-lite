@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyStaleness,
+  effectivelyRunning,
   isBatchOwnedPending,
+  pendingTtlSeconds,
   stalenessOf,
   type StaleInput,
 } from "../../../src/modules/staleness";
@@ -254,5 +256,27 @@ describe("applyStaleness", () => {
     expect(out.tags).toEqual(["t1"]);
     expect(out.active_attempt).toBeUndefined();
     expect(out.last_attempt).toMatchObject({ id: "att_1", status: "failed" });
+  });
+});
+
+describe("pendingTtlSeconds", () => {
+  it("parses a finite integer and falls back when the raw value is not a number", () => {
+    expect(pendingTtlSeconds("900")).toBe(900);
+    expect(pendingTtlSeconds("300")).toBe(300);
+    expect(pendingTtlSeconds(undefined)).toBe(300);
+    expect(pendingTtlSeconds("nope")).toBe(300);
+  });
+});
+
+describe("effectivelyRunning", () => {
+  it("treats an in-TTL running attempt as running and a TTL-expired one as not", () => {
+    const ready = {
+      status: "ready" as const,
+      updated_at: NOW,
+      active_attempt: runningAttempt({ started_at: ONE_MINUTE_AGO }),
+    };
+    expect(effectivelyRunning(ready, TTL, NOW)).toBe(true);
+    expect(effectivelyRunning({ ...ready, active_attempt: runningAttempt() }, TTL, NOW)).toBe(false);
+    expect(effectivelyRunning({ status: "ready" as const, updated_at: NOW }, TTL, NOW)).toBe(false);
   });
 });

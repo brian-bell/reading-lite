@@ -11,6 +11,10 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  * sends may redeliver the same judge identity (runAt + readingId); the judge
  * deduplicates that identity before paid work. The next cron recovers interrupted
  * continuations. Offline refresh-state.json remains owned by the operator.
+ * Scan running checks overlay applyStaleness via services.now(): a zombie
+ * (TTL-expired) running target stays candidatable. In-TTL running is skipped
+ * at scan time only; a later judge that sees in-TTL running defers the same
+ * identity instead of acking.
  */
 import { z } from "zod";
 import type { Env } from "./index";
@@ -21,6 +25,7 @@ import { readingStoreFor, tenantKeyRoot } from "./modules/stores/reading-store";
 import { r2KeyLayout } from "./modules/stores/layout";
 import { similarityStoreFor } from "./modules/stores/similarity-store";
 import { diffNeighbourhood, resolveJudgedAt, REFRESH_CANDIDATE_TOP_K } from "./modules/refresh-neighbours";
+import { effectivelyRunning, pendingTtlSeconds } from "./modules/staleness";
 
 export const REFRESH_CRON = "7 3 * * *";
 export const REFRESH_SCAN_SIZE = 25;
@@ -120,7 +125,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
   await enqueueScan(env, tenant, c);
 }
 
-async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan" }>, newId: () => string): Promise<void> {
+async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan" }>, newId: () => string, nowIso: string): Promise<void> {
   const tenant = await activeRefreshFounder(env);
   if (!tenant || tenant.tenantId !== job.tenantId || !env.RELATIONSHIP_REFRESH_JOBS) return;
   const stored = await readCursor(env, tenant);
@@ -152,7 +157,10 @@ async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan
       const row = live.get(target.id);
       if (!row || row.status !== "ready" || row.key_prefix !== target.key_prefix) continue;
       const manifest = await store.readManifest(target.key_prefix);
-      if (!manifest || manifest.id !== target.id || manifest.status !== "ready" || manifest.active_attempt?.status === "running") continue;
+      // Overlay applyStaleness for running only. A zombie attempt on a ready
+      // manifest is still candidatable; in-TTL reprocess is skipped here.
+      if (!manifest || manifest.id !== target.id || manifest.status !== "ready") continue;
+      if (effectivelyRunning(manifest, pendingTtlSeconds(env.PENDING_TTL_SECONDS), nowIso)) continue;
       const matches = await similarity.queryByVectorId(target.id, REFRESH_CANDIDATE_TOP_K);
       if (matches === null) continue;
       const judged = resolveJudgedAt({ ...manifest, key_prefix: target.key_prefix });
@@ -184,7 +192,7 @@ export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env
   }
   try {
     if (parsed.data.kind === "judge") await processRelationshipJudge(parsed.data, env, services);
-    else await processScan(env, parsed.data, newId);
+    else await processScan(env, parsed.data, newId, services.now());
     msg.ack();
   } catch (error) {
     console.error(error);

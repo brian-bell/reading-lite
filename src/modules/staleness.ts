@@ -70,6 +70,29 @@ export function stalenessOf(input: StaleInput, ttlSeconds: number, nowIso: strin
 }
 
 /**
+ * Parsed `PENDING_TTL_SECONDS`. Non-finite values fall back to 300s, matching
+ * the HTTP seam, so refresh/purge/intake share one clock length.
+ */
+export function pendingTtlSeconds(raw: string | undefined): number {
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : 300;
+}
+
+/**
+ * Overlay for the running bit only: a `running` active attempt is live only
+ * while inside TTL. TTL-expired (zombie) running is not running. Callers keep
+ * the raw record plus etag for hashing and CAS — they must not write this
+ * overlay back.
+ */
+export function effectivelyRunning(
+  record: ApplyStalenessRecord,
+  ttlSeconds: number,
+  nowIso: string,
+): boolean {
+  return applyStaleness(record, ttlSeconds, nowIso).active_attempt?.status === "running";
+}
+
+/**
  * The apply half of the rule, single-homed with the verdict so the manifest
  * path and the index-item path can never drift: an expired running attempt is
  * cleared into `last_attempt` (flipping a pending record to `failed`); a stale
