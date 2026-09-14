@@ -19,8 +19,10 @@ npm run test:browser # browser evidence: themes, viewports, axe, keyboard; build
 ```
 
 Build a deployable environment with `CLOUDFLARE_ENV=staging` or
-`CLOUDFLARE_ENV=production`. Deploys need separate authorization and are not
-wired into any workflow yet.
+`CLOUDFLARE_ENV=production`. Production deploys to `next.readinglite.ai` after
+every production backend release; staging deploys to
+`next-staging.readinglite.ai` by manual dispatch. See
+[New-frontend preview hosts](../docs/operations.md#new-frontend-preview-hosts).
 
 To sign in locally, request a link at `http://127.0.0.1:5174/login` and open
 `verify_url` from `/api/dev/mailbox?email=…` on the backend. The backend builds
@@ -136,9 +138,11 @@ Extending it:
   fails while it is stale.
 - **A viewport or theme:** add a project in `playwright.config.ts`.
 - **Another host:** `E2E_BASE_URL=https://host npm run test:browser` runs the
-  same suite against a running host instead of starting the harness — the
-  route-precedence check after a route change, and Phase 5's rollback
-  rehearsal. `E2E_SESSION_COOKIE` supplies a real session there.
+  same suite against a running host instead of starting the harness, with
+  `E2E_SESSION_COOKIE` supplying a real session. Its reading cases are still
+  pinned to fixture ids, so it cannot pass against a real host yet (#392). For
+  route precedence after a deploy or route change, use
+  `scripts/smoke-host.sh https://host`.
 
 The local harness runs on `http://127.0.0.1`, where a browser refuses the
 `Secure`-only `__Host-session` cookie, so the signed-in state uses the plain

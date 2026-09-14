@@ -945,6 +945,28 @@ entry must be live before the frontend route, or `/api/*` on that host reaches
 the frontend and returns 404. Both hosts and their allowlist entries are
 retired after the Phase 5 cutover.
 
+Deploying the frontend:
+
+- **Production.** The **Deploy production SPA** workflow has a second job that
+  builds `app/` with `CLOUDFLARE_ENV=production` on Node 22 and runs
+  `wrangler deploy` for `reading-lite-app` from the same released SHA, with the
+  same stale-`main` refusal. It does not depend on the SPA job, and a failure
+  there does not block the SPA. Rerun that job to redeploy.
+- **Staging.** Deploy the staging backend first
+  (`npm run ops -- deploy worker --env staging --execute`), then run the
+  **Deploy staging frontend** workflow by manual dispatch from the same ref.
+- **Smoke check.** Both end with `app/scripts/smoke-host.sh <https://host>`,
+  which also runs by hand from any machine. It passes only when `/health` is
+  `ok` and a signed-out `/api/whoami` is a JSON 401 from the backend, and `/`
+  comes from the frontend (`Cache-Control: private, no-store`, which Pages does
+  not send).
+- **Rollback.** Delete the host's frontend route in the dashboard, or
+  `wrangler rollback` the frontend Worker to its previous version. Neither
+  affects the backend or the apex hosts.
+
+The deploy token's zone Workers Routes permission on `readinglite.ai` covers the
+frontend routes.
+
 ### MCP connector
 
 `POST /mcp` is a Streamable HTTP MCP endpoint on the Worker. Cursor and Grok Bot

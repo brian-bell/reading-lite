@@ -9,10 +9,18 @@ interface Step {
   with?: Record<string, unknown>;
   env?: Record<string, string>;
   "continue-on-error"?: boolean;
+  "working-directory"?: string;
+}
+
+interface Job {
+  if?: string;
+  needs?: string | string[];
+  steps?: Step[];
 }
 
 interface Workflow {
   on?: {
+    workflow_dispatch?: unknown;
     workflow_run?: {
       workflows?: string[];
       types?: string[];
@@ -24,18 +32,19 @@ interface Workflow {
     "cancel-in-progress"?: boolean;
   };
   permissions?: Record<string, string>;
-  jobs?: Record<string, { if?: string; steps?: Step[] }>;
+  jobs?: Record<string, Job>;
 }
 
 async function readWorkflow(path: string): Promise<Workflow> {
   return parse(await readFile(path, "utf8")) as Workflow;
 }
 
-function steps(workflow: Workflow): Step[] {
-  return Object.values(workflow.jobs ?? {}).flatMap((job) => job.steps ?? []);
+function steps(workflow: Workflow | Job): Step[] {
+  if ("steps" in workflow) return (workflow as Job).steps ?? [];
+  return Object.values((workflow as Workflow).jobs ?? {}).flatMap((job) => job.steps ?? []);
 }
 
-function commands(workflow: Workflow): string {
+function commands(workflow: Workflow | Job): string {
   return steps(workflow)
     .map((step) => step.run)
     .filter((run): run is string => typeof run === "string")
@@ -90,13 +99,14 @@ describe("coordinated production deployment workflows", () => {
 
   it("deploys only the exact SHA recorded by a successful Worker release", async () => {
     const workflow = await readWorkflow(".github/workflows/deploy-spa.yml");
-    const allSteps = steps(workflow);
+    const spa = workflow.jobs?.deploy ?? {};
+    const allSteps = steps(spa);
     const download = allSteps.find((step) => step.uses === "actions/download-artifact@v7");
     const checkout = allSteps.find((step) => step.uses === "actions/checkout@v7");
     const deploy = allSteps.find((step) =>
       step.run?.includes("npm run ops -- deploy web --branch main --execute"),
     );
-    const allCommands = commands(workflow);
+    const allCommands = commands(spa);
 
     expect(workflow.on?.workflow_run).toEqual({
       workflows: ["Deploy production worker"],
@@ -111,5 +121,53 @@ describe("coordinated production deployment workflows", () => {
     expect(allCommands).toContain("npm ci");
     expectBoundaryCheck(deploy?.run, "npm run ops -- deploy web --branch main --execute");
     expect(allCommands).not.toMatch(/deploy worker|wrangler deploy/);
+  });
+
+  it("deploys the frontend Worker to next.readinglite.ai from the same released SHA", async () => {
+    // ADR 0003 (amended 2026-09-13). A job in the SPA run, not its own
+    // workflow: the release group keeps one pending run, so a second workflow
+    // queued behind the Worker release could cancel the SPA release.
+    const workflow = await readWorkflow(".github/workflows/deploy-spa.yml");
+    const app = workflow.jobs?.app ?? {};
+    const appSteps = steps(app);
+    const download = appSteps.find((step) => step.uses === "actions/download-artifact@v7");
+    const checkout = appSteps.find((step) => step.uses === "actions/checkout@v7");
+    const build = appSteps.find((step) => step.env?.CLOUDFLARE_ENV !== undefined);
+    const deploy = appSteps.find((step) => step.run?.includes("npx wrangler deploy"));
+    const smoke = appSteps.find((step) => step.run?.includes("app/scripts/smoke-host.sh"));
+
+    expect(app.if).toContain("conclusion == 'success'");
+    expect(app.if).toContain("head_branch == 'main'");
+    // Independent of the SPA job, so a frontend failure never blocks the SPA.
+    expect(app.needs).toBeUndefined();
+    expect(download?.with?.name).toBe("production-worker-release-sha");
+    expect(download?.with?.["run-id"]).toBe("${{ github.event.workflow_run.id }}");
+    expect(checkout?.with?.ref).toBe("${{ steps.release.outputs.sha }}");
+    expect(build?.env?.CLOUDFLARE_ENV).toBe("production");
+    expect(build?.["working-directory"]).toBe("app");
+    expect(build?.run).toContain('test "$name" = "reading-lite-app"');
+    expect(deploy?.["working-directory"]).toBe("app");
+    expectBoundaryCheck(deploy?.run, "npx wrangler deploy");
+    expect(appSteps.indexOf(smoke!)).toBeGreaterThan(appSteps.indexOf(deploy!));
+    expect(smoke?.run).toContain("https://next.readinglite.ai");
+    expect(commands(app)).not.toMatch(/deploy worker|deploy web|--env/);
+  });
+});
+
+describe("staging frontend deployment workflow", () => {
+  it("deploys only the staging frontend, by manual dispatch, outside the production lock", async () => {
+    const workflow = await readWorkflow(".github/workflows/deploy-app-staging.yml");
+    const allSteps = steps(workflow);
+    const build = allSteps.find((step) => step.env?.CLOUDFLARE_ENV !== undefined);
+    const deploy = allSteps.find((step) => step.run?.includes("npx wrangler deploy"));
+    const smoke = allSteps.find((step) => step.run?.includes("app/scripts/smoke-host.sh"));
+
+    expect(Object.keys(workflow.on ?? {})).toEqual(["workflow_dispatch"]);
+    expect(workflow.concurrency?.group).not.toBe(productionReleaseLock.group);
+    expect(build?.env?.CLOUDFLARE_ENV).toBe("staging");
+    expect(build?.run).toContain('test "$name" = "reading-lite-app-staging"');
+    expect(deploy?.["working-directory"]).toBe("app");
+    expect(smoke?.run).toContain("https://next-staging.readinglite.ai");
+    expect(commands(workflow)).not.toMatch(/production|deploy worker|deploy web/);
   });
 });
