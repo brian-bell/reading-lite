@@ -55,6 +55,13 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
+      // Requests, not rendering: the reading is read on the server and never
+      // again in the browser, so one viewport and theme is enough.
+      name: "reading-cache",
+      testMatch: /reading-cache\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       name: "shell-extras",
       testMatch: /shell-extras\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },

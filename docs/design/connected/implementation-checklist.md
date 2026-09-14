@@ -54,16 +54,16 @@ item on September 10, 2026.
 
 - [x] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
   OpenAPI, SPA type, and test updates (#367).
-- [ ] Add the backend's read-only frontend `WorkerEntrypoint` (whoami, reading
+- [x] Add the backend's read-only frontend `WorkerEntrypoint` (whoami, reading
   detail) per [ADR 0003](../../decisions/0003-frontend-worker-topology.md#server-reads-backend-rpc-entrypoint),
   with 401 and cross-tenant tests.
-- [ ] Create the approved TanStack Start application in `app/` on its own
+- [x] Create the approved TanStack Start application in `app/` on its own
   Cloudflare Worker, with pinned approved dependencies and a Node 22 CI job.
-- [ ] Use same-origin browser API access and explicit request-scoped identity for
+- [x] Use same-origin browser API access and explicit request-scoped identity for
   server reads through the service binding. Keep the backend authoritative.
-- [ ] Return 404 from the frontend for `/api/*`, `/health`, and `/mcp*`; add a CI
+- [x] Return 404 from the frontend for `/api/*`, `/health`, and `/mcp*`; add a CI
   check that each environment's service binding targets the same environment.
-- [ ] Make authenticated reading detail the first selective SSR slice; prevent
+- [x] Make authenticated reading detail the first selective SSR slice; prevent
   private readings, identity, and provider data from entering shared caches or
   static prerender output.
 - [ ] Render summary/source, novelty, connections, tensions, and missing targets
