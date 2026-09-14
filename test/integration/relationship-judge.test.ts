@@ -375,6 +375,59 @@ describe("hosted relationship judge", () => {
     expect(provider).not.toHaveBeenCalled();
   });
 
+  it("soft-acks without taking a lease when the gate turns off after neighbourhood capture", async () => {
+    let reads = 0;
+    Object.defineProperty(runtime, "RELATIONSHIP_REFRESH", {
+      configurable: true,
+      get() {
+        reads += 1;
+        return reads === 1 ? "1" : "0";
+      },
+    });
+    const queryById = vi.fn(async () => ({ matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] }));
+    runtime.READINGS_INDEX = { getByIds: async (ids: string[]) => ids.map(id => ({ id })), queryById } as unknown as VectorizeIndex;
+    await processRelationshipJudge(job, runtime, services);
+    expect(queryById).toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+  });
+
+  it("soft-acks without taking a lease when the founder is suppressed after neighbourhood capture", async () => {
+    runtime.READINGS_INDEX = {
+      getByIds: async (ids: string[]) => ids.map(id => ({ id })),
+      queryById: async () => {
+        await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").bind(FOUNDER_TENANT_ID).run();
+        return { matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] };
+      },
+    } as unknown as VectorizeIndex;
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider).not.toHaveBeenCalled();
+    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+  });
+
+  it("logs neighbours_changed when a neighbour version drifts before admission", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const bucket = env.READINGS_BUCKET;
+    const neighbourPrefix = buildKeyPrefix(other, createdAt);
+    let captured = false;
+    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
+      if (key === "get") return async (...args: Parameters<R2Bucket["get"]>) => {
+        const result = await bucket.get(...args);
+        if (!captured && typeof args[0] === "string" && args[0].endsWith(`${neighbourPrefix}/manifest.json`)) {
+          captured = true;
+          const neighbour = (await testReadingStore(env).readManifest(neighbourPrefix))!;
+          await testReadingStore(env).writeManifest(neighbourPrefix, { ...neighbour, title: "Drifted neighbour" });
+        }
+        return result;
+      };
+      const value = Reflect.get(target, key);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider).not.toHaveBeenCalled();
+    expect(warn.mock.calls.map(call => String(call[0])).join("\n")).toContain("neighbours_changed");
+  });
+
   it("uses the Anthropic adapter through the same paid admission seam", async () => {
     runtime.SUMMARIZER_PROVIDER = "anthropic";
     runtime.ANTHROPIC_MODEL = "claude-sonnet-5";

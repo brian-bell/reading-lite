@@ -83,8 +83,8 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   const checkpoint = await readRefreshJob(db, job.tenantId, job.readingId);
   if (checkpoint && checkpoint.run_at > runAt) return;
 
-  const stillCurrent = async (etag: string) =>
-    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId && (await liveTarget())?.etag === etag;
+  const stillCurrent = async (etag: string, deferIfRunning = false) =>
+    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId && (await liveTarget(deferIfRunning))?.etag === etag;
   const publish = async (saved: SavedRefreshResult, sourceEtag: string) => {
     const current = await liveTarget();
     if (!current || (await activeRefreshFounder(env))?.tenantId !== tenant.tenantId) return;
@@ -147,8 +147,16 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   }
   const input = buildRelationshipJudgementInput(original.manifest, report, report.current_neighbours);
   const allowedIds = new Set(report.current_neighbours.map(n => n.id));
-  if (!await neighboursUnchanged(neighbourVersions, true) || (await liveTarget(true))?.etag !== original.etag) {
-    logNoop("not_ready");
+  if (!await neighboursUnchanged(neighbourVersions, true)) {
+    logNoop("neighbours_changed");
+    return;
+  }
+  if (!await stillCurrent(original.etag, true)) {
+    // Gate/founder loss soft-acks; etag drift is a terminal noop. In-TTL
+    // running already threw from liveTarget(true) inside stillCurrent.
+    if (env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId) {
+      logNoop("etag_changed");
+    }
     return;
   }
   const attemptId = `refresh:${job.readingId}:${runAt}`;
