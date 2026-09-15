@@ -53,7 +53,7 @@ export type ReadingStatus = z.infer<typeof ReadingStatusSchema>;
  * through at runtime; the type just keeps a misspelt property a compile error,
  * as the hand-written interfaces before this projection did.
  */
-type Declared<T> = { [K in keyof T as string extends K ? never : K]: T[K] };
+export type Declared<T> = { [K in keyof T as string extends K ? never : K]: T[K] };
 
 /**
  * An optional field that may also arrive as `null`. A cleared field reads as

@@ -51,6 +51,18 @@ const READING = {
   similarity: { count: 2, max: 0.61, mean: 0.58 },
 };
 
+// Each tenant's first library page: rows no other tenant has, so a render that
+// mixed two sessions' reads would show it.
+const LIBRARIES = {
+  "session-a": [
+    { id: "rd_A000000001", url: "https://fieldnotes.example/a-quieter-internet", status: "ready", title: "Reader A's quiet internet" },
+    { id: "rd_A000000002", url: "https://fieldnotes.example/pending", status: "pending" },
+  ],
+  "session-b": [
+    { id: "rd_B000000001", url: "https://working-notes.example/gardens", status: "ready", title: "Reader B's library gardens" },
+  ],
+};
+
 function sessionOf(cookie) {
   const match = /(?:^|;\s*)__Host-session=([^;]+)/.exec(cookie ?? "");
   return match ? SESSIONS[match[1]] : undefined;
@@ -70,6 +82,20 @@ export class FrontendReads extends WorkerEntrypoint {
   // other id is a reading this tenant does not have. The pin is echoed back in
   // the identity check above, not here: an expected-tenant mismatch is the
   // backend's own middleware in production.
+  // The first page only, answered after the tenant's delay so concurrent
+  // renders overlap. Filters and offsets are the backend's; the frontend only
+  // forwards them.
+  async list({ cookie, host, offset }) {
+    if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
+    if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
+    const session = sessionOf(cookie);
+    if (!session) return { status: 401, body: { error: "unauthorized" } };
+    await new Promise((resolve) => setTimeout(resolve, session.delayMs));
+    const name = /__Host-session=([^;]+)/.exec(cookie)[1];
+    const rows = offset ? [] : LIBRARIES[name];
+    return { status: 200, body: { readings: rows, limit: 20, offset: offset ?? 0, has_more: false } };
+  }
+
   async reading({ cookie, host, id }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
     if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");

@@ -31,7 +31,17 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
   { name: "library-signed-out", path: "/", state: "signed-out", heading: "Sign in" },
-  { name: "library-signed-in", path: "/", state: "signed-in", heading: "Library" },
+  // Signed in, the first page of the pack's list index, rendered on the server
+  // (#413).
+  {
+    name: "library-signed-in",
+    path: "/",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
+    },
+  },
   {
     name: "library-account-menu-open",
     path: "/",

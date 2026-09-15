@@ -4,8 +4,8 @@
 // hydration, nor when the reader leaves for the library and comes back,
 // because the router navigates in place and the query is served from the
 // cache it hydrated. Other API traffic is not the test's concern: the library
-// will ask for its rows once it reads them (#339), and that must not fail a
-// test about the reading. A full document reload would also pass the API
+// asks for its rows on a client-side visit (#413), served here from the pack,
+// and that must not fail a test about the reading. A full document reload would also pass the API
 // check, so the document requests are counted too: one, the first.
 //
 // Runs in its own project because it is about requests, not rendering, and
@@ -17,7 +17,7 @@
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
-import { signIn } from "../test";
+import { serveLibraryInBrowser, signIn } from "../test";
 
 const test = base.extend({
   baseURL: async ({}, use) => {
@@ -63,6 +63,7 @@ test("hydrates the server-rendered reading without asking for it again", async (
 
 test("reuses the cached reading when the reader comes back to it", async ({ page, baseURL }) => {
   const recorded = await openReading(page, baseURL!);
+  await serveLibraryInBrowser(page);
 
   await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Library" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();

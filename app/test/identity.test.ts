@@ -40,7 +40,8 @@ describe("readWhoamiFromBackend", () => {
   function backend(result: { status: number; body: unknown }) {
     const whoami = vi.fn(async () => result);
     const reading = vi.fn(async () => ({ status: 500, body: null }));
-    return { binding: { whoami, reading } satisfies BackendReads, whoami };
+    const list = vi.fn(async () => ({ status: 500, body: null }));
+    return { binding: { whoami, reading, list } satisfies BackendReads, whoami };
   }
 
   it("passes the incoming Cookie header and host to the entrypoint", async () => {
@@ -64,6 +65,7 @@ describe("readWhoamiFromBackend", () => {
         throw new Error("binding down");
       },
       reading: async () => ({ status: 500, body: null }),
+      list: async () => ({ status: 500, body: null }),
     };
     await expect(readWhoamiFromBackend(binding, new Request("https://readinglite.ai/"))).rejects.toThrow(
       IdentityUnavailableError,
