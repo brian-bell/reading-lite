@@ -7,7 +7,12 @@ import {
   buildAppFixturePack,
   serializeAppFixturePack,
 } from "../../fixtures/app-fixture-pack";
-import { GetReadingDiagnosticsResponseSchema, GetReadingResponseSchema } from "../../../src/schemas/api";
+import {
+  GetReadingDiagnosticsResponseSchema,
+  GetReadingResponseSchema,
+  ListIndexItemSchema,
+} from "../../../src/schemas/api";
+import { ARCHIVE_ROW_COUNT, libraryItems } from "../../../app/e2e/library-page.js";
 
 // The committed snapshot app/'s browser-evidence suite serves. It is generated,
 // so this test is the drift guard: edit test/fixtures/local-seed.ts, run the
@@ -100,6 +105,16 @@ describe("app browser-evidence fixture pack", () => {
       }
     }
     expect(pack.raws.rd_FXMDPAGE01.content_type).toMatch(/^text\/markdown/);
+  });
+
+  // Pages (#414): the browser-evidence stub serves the pack's list rows plus
+  // generated ones, so every row it pages, generated or not, must be a row
+  // the list endpoint could answer.
+  it("generates library rows past the pack's that the list schema accepts", () => {
+    const pack = buildAppFixturePack();
+    const items = ListIndexItemSchema.array().parse(libraryItems(pack.list_index.items));
+    expect(items).toHaveLength(pack.list_index.items.length + ARCHIVE_ROW_COUNT);
+    expect(new Set(items.map((item) => item.id)).size).toBe(items.length);
   });
 
   it("omits the removed relationship target from the resolved targets", () => {

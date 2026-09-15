@@ -153,6 +153,53 @@ describe("signed-in identity", () => {
     expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":0}]');
   });
 
+  // A reload or a deep link renders the page the URL names (#414), with the
+  // offset snapped as the current SPA snaps it and the URL left as it came.
+  it.each([
+    ["/?offset=20", 20],
+    ["/?offset=25", 20],
+    ["/?offset=abc", 0],
+  ])("server-renders %s as the page it names, without a redirect", async (path, offset) => {
+    const response = await request(path, { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Location")).toBeNull();
+    const html = await response.text();
+    expect(dehydratedQueryKeys(html)).toEqual(expect.arrayContaining([`["library",{"offset":${offset}}]`]));
+    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["library"'))).toHaveLength(1);
+    const pager = /<nav class="library-pager" aria-label="Pagination">.*?<\/nav>/.exec(html)?.[0] ?? "";
+    if (offset === 20) {
+      expect(html).toContain("Reader A&#x27;s second page");
+      expect(pager).toContain("Page <!-- -->2");
+      expect(pager).toContain('href="/"');
+      expect(pager).not.toMatch(/href="\/\?offset=40"/);
+    } else {
+      expect(html).toContain("Reader A&#x27;s quiet internet");
+      expect(pager).toContain("Page <!-- -->1");
+      expect(pager).toContain('href="/?offset=20"');
+    }
+  });
+
+  // As in the current SPA, a parameter the library doesn't read neither
+  // redirects nor is dropped from the pages it links to.
+  it("keeps an unknown parameter without redirecting", async () => {
+    const response = await request("/?offset=20&utm_source=feed", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain("Reader A&#x27;s second page");
+    expect(html).toMatch(/<a[^>]*href="\/\?utm_source=feed"[^>]*>Previous<\/a>/);
+    expect(html).not.toContain('aria-current="page">Previous');
+  });
+
+  it("server-renders an offset past the end with its page number and the first page", async () => {
+    const response = await request("/?offset=100", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(heading("Library"));
+    expect(html).toMatch(/No readings on page (<!-- -->)?6(<!-- -->)?\./);
+    expect(html).toMatch(/<a[^>]*href="\/"[^>]*>First page<\/a>/);
+    expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":100}]');
+  });
+
   it("renders a sign-in link back to the current URL without a session", async () => {
     for (const cookie of ["", "theme=light", "__Host-session=unknown"]) {
       const response = await request("/save", { headers: cookie ? { Cookie: cookie } : {} });

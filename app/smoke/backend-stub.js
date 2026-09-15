@@ -51,12 +51,19 @@ const READING = {
   similarity: { count: 2, max: 0.61, mean: 0.58 },
 };
 
-// Each tenant's first library page: rows no other tenant has, so a render that
-// mixed two sessions' reads would show it.
+// Each tenant's library: rows no other tenant has, so a render that mixed two
+// sessions' reads would show it. Reader A's runs to a second page (#414): the
+// two named rows, filler to complete the first page, and one row past it.
+const PAGE_SIZE = 20;
 const LIBRARIES = {
   "session-a": [
     { id: "rd_A000000001", url: "https://fieldnotes.example/a-quieter-internet", status: "ready", title: "Reader A's quiet internet" },
     { id: "rd_A000000002", url: "https://fieldnotes.example/pending", status: "pending" },
+    ...Array.from({ length: PAGE_SIZE - 2 }, (_, index) => {
+      const n = String(index + 3).padStart(2, "0");
+      return { id: `rd_A0000000${n}`, url: `https://fieldnotes.example/notes/${n}`, status: "ready", title: `Reader A's note ${n}` };
+    }),
+    { id: "rd_A000000021", url: "https://fieldnotes.example/second-page", status: "ready", title: "Reader A's second page" },
   ],
   "session-b": [
     { id: "rd_B000000001", url: "https://working-notes.example/gardens", status: "ready", title: "Reader B's library gardens" },
@@ -82,9 +89,10 @@ export class FrontendReads extends WorkerEntrypoint {
   // other id is a reading this tenant does not have. The pin is echoed back in
   // the identity check above, not here: an expected-tenant mismatch is the
   // backend's own middleware in production.
-  // The first page only, answered after the tenant's delay so concurrent
-  // renders overlap. Filters and offsets are the backend's; the frontend only
-  // forwards them.
+  // Pages by offset, sliced and `has_more` derived as the list handler does,
+  // answered after the tenant's delay so concurrent renders overlap. Filters
+  // and snapping are not applied here: the frontend forwards the offset it
+  // snapped, and anything past a tenant's rows is empty.
   async list({ cookie, host, offset }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
     if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
@@ -92,8 +100,10 @@ export class FrontendReads extends WorkerEntrypoint {
     if (!session) return { status: 401, body: { error: "unauthorized" } };
     await new Promise((resolve) => setTimeout(resolve, session.delayMs));
     const name = /__Host-session=([^;]+)/.exec(cookie)[1];
-    const rows = offset ? [] : LIBRARIES[name];
-    return { status: 200, body: { readings: rows, limit: 20, offset: offset ?? 0, has_more: false } };
+    const start = offset ?? 0;
+    const all = LIBRARIES[name];
+    const rows = all.slice(start, start + PAGE_SIZE);
+    return { status: 200, body: { readings: rows, limit: PAGE_SIZE, offset: start, has_more: start + rows.length < all.length } };
   }
 
   async reading({ cookie, host, id }) {

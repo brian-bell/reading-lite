@@ -4,7 +4,6 @@ import { getRequest } from "@tanstack/react-start/server";
 import { fetchLibrary } from "./api/library";
 import { identityOf } from "./auth/guards";
 import {
-  FIRST_LIBRARY_PAGE,
   libraryQueryKey,
   readLibraryFromBackend,
   type LibraryParams,
@@ -47,13 +46,15 @@ export function libraryQueryOptions(
 }
 
 /**
- * The library route's loader. Identity is shared with the root loader's
- * in-flight whoami rather than read twice; signed out or unknown, there is no
- * library to read. prefetchQuery never throws, so an unavailable backend
- * renders its state in the page instead of failing the route.
+ * The library route's loader, for the page the URL names (#414), so a reload
+ * or a deep link renders that page on the server. Identity is shared with the
+ * root loader's in-flight whoami rather than read twice; signed out or
+ * unknown, there is no library to read. prefetchQuery never throws, so an
+ * unavailable backend renders its state in the page instead of failing the
+ * route.
  */
-export async function prefetchFirstLibraryPage(queryClient: QueryClient): Promise<void> {
+export async function prefetchLibraryPage(queryClient: QueryClient, params: LibraryParams): Promise<void> {
   const identity = await identityOf(queryClient);
   if (!identity) return;
-  await queryClient.prefetchQuery(libraryQueryOptions(queryClient, FIRST_LIBRARY_PAGE, identity));
+  await queryClient.prefetchQuery(libraryQueryOptions(queryClient, params, identity));
 }

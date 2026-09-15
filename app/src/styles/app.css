@@ -390,6 +390,34 @@ textarea {
   min-height: 2rem;
 }
 
+/* Previous, page number, Next (#414), under the cards at their width. An
+   unavailable step keeps its place, muted, so the pager never shifts. */
+.library-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 68ch;
+  margin-top: var(--space-5);
+}
+
+.library-pager-step {
+  min-width: 88px;
+  min-height: 44px;
+}
+
+.library-pager-step[aria-disabled="true"] {
+  border-color: var(--border);
+  color: var(--muted);
+  cursor: default;
+}
+
+.library-pager-page {
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---- Controls --------------------------------------------------------- */
 
 .button {

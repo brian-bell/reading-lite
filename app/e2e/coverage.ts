@@ -42,6 +42,36 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
       await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
     },
   },
+  // Pages (#414): with the generated rows past the pack's 18 there are 42 rows,
+  // so page 2 is a middle page, page 3 the last (no Next), and page 6 is past
+  // the end. Each is a deep link, rendered on the server.
+  {
+    name: "library-page-2",
+    path: "/?offset=20",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByRole("navigation", { name: "Pagination" }).getByText("Page 2")).toBeVisible();
+    },
+  },
+  {
+    name: "library-last-page",
+    path: "/?offset=40",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByRole("navigation", { name: "Pagination" }).getByText("Page 3")).toBeVisible();
+    },
+  },
+  {
+    name: "library-offset-past-end",
+    path: "/?offset=100",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings on page 6.")).toBeVisible();
+    },
+  },
   {
     name: "library-account-menu-open",
     path: "/",
