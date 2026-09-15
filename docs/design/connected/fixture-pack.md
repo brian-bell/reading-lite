@@ -14,7 +14,10 @@ needed for a test, screenshot, or browser-evidence run. `app/`'s browser
 evidence ([#374](https://github.com/brian-bell/reading-lite/issues/374)) serves
 the pack without R2: `npm run fixtures:app` projects it into
 `app/e2e/fixtures/fixture-pack.json` — the same bodies
-`GET /api/readings/:id` returns, at a fixed clock — and
+`GET /api/readings/:id` returns, at a fixed clock, plus the extracted Markdown
+(`contents`), the `GET …/diagnostics` bodies assembled from the seed's
+pointers, objects, and attempt logs (`diagnostics`), and each ready fixture's
+raw capture with its stored content type (`raws`) — and
 `test/unit/fixtures/app-fixture-pack.test.ts` fails while that file is stale, so
 a new state is one edit here plus a regenerate.
 

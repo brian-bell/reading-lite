@@ -1186,3 +1186,310 @@ describe("the Source view", () => {
     expect(panel("Source").contains(novelty())).toBe(false);
   });
 });
+
+// The Details section (#373; design spec, Reading surface and Components:
+// "Details disclosure: collapsed, open, diagnostics loading and failed"). The
+// reading comes from the server path as above; diagnostics and the files are
+// the browser's own requests, so `fetch` is stubbed per path.
+describe("the Details section", () => {
+  const diagnostics = pack.diagnostics as Record<string, unknown>;
+
+  /** The browser's /api/* endpoints answer by path suffix; a path with no answer fails the test. */
+  function browserAnswers(routes: Record<string, () => Response>) {
+    const fetchMock = vi.fn(async (input: Request | URL | string) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const route = Object.entries(routes).find(([suffix]) => url.pathname.endsWith(suffix));
+      if (!route) throw new Error(`unexpected request ${url.pathname}`);
+      return route[1]();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function requestsTo(fetchMock: ReturnType<typeof vi.fn>, suffix: string): Request[] {
+    return fetchMock.mock.calls
+      .map((call) => call[0] as Request)
+      .filter((request) => new URL(request.url).pathname.endsWith(suffix));
+  }
+
+  function details(): HTMLDetailsElement {
+    return screen.getByRole("heading", { level: 2, name: "Details" }).closest("details")!;
+  }
+
+  async function openDetails(): Promise<HTMLElement> {
+    await userEvent.click(screen.getByText("Details"));
+    await waitFor(() => expect(details().open).toBe(true));
+    return details();
+  }
+
+  /** The tabs window.open handed out, in order. */
+  const tabs: { opener: unknown; location: { href: string }; close: ReturnType<typeof vi.fn> }[] = [];
+  const blobs: Blob[] = [];
+
+  beforeEach(() => {
+    tabs.length = 0;
+    blobs.length = 0;
+    vi.stubGlobal(
+      "open",
+      vi.fn((url: string, target: string) => {
+        expect([url, target]).toEqual(["", "_blank"]);
+        const tab = { opener: {}, location: { href: "about:blank" }, close: vi.fn() };
+        tabs.push(tab);
+        return tab;
+      }),
+    );
+    // jsdom has no object URLs.
+    URL.createObjectURL = vi.fn((blob: Blob) => {
+      blobs.push(blob);
+      return `blob:app/${blobs.length}`;
+    });
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete (URL as { createObjectURL?: unknown }).createObjectURL;
+    delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
+  });
+
+  it("is collapsed by default, below the novelty panel, with the manifest's facts already in the page", async () => {
+    const fetchMock = browserAnswers({});
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const section = details();
+    expect(section.open).toBe(false);
+    expect(within(section).getByRole("heading", { level: 2, name: "Details" })).toBeInTheDocument();
+    // Collapsed: the body is in the HTML but not shown.
+    expect(within(section).getByText("Keywords")).not.toBeVisible();
+    const novelty = screen.getByRole("region", { name: "What this adds" });
+    expect(novelty.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("lists keywords, people, and organizations, and omits a group the reading has none of", async () => {
+    browserAnswers({ "/diagnostics": () => Response.json(diagnostics[ATTENTION]) });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    const keywords = within(section).getByRole("list", { name: "Keywords" });
+    expect(within(keywords).getAllByRole("listitem").map((li) => li.textContent)).toEqual(readings[ATTENTION]!.keywords);
+    expect(within(section).getByRole("list", { name: "People" })).toBeVisible();
+    // `attention` names no organisation, so there is no heading for one.
+    expect(within(section).queryByRole("heading", { name: "Organizations" })).toBeNull();
+    // Nothing here is a link or a filter; a keyword leads nowhere.
+    expect(within(keywords).queryByRole("link")).toBeNull();
+  });
+
+  // Design spec, Novelty: the numbers go in Details, not the panel; missing
+  // values are omitted.
+  it("shows the similarity numbers here and not in the novelty panel, omitting what is missing", async () => {
+    browserAnswers({ "/diagnostics": () => Response.json(diagnostics[ATTENTION]) });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    const novelty = screen.getByRole("region", { name: "What this adds" });
+    expect(novelty.textContent).not.toContain("0.61");
+    expect(within(section).getByText("Highest similarity").nextElementSibling?.textContent).toBe("0.61");
+    expect(within(section).getByText("Mean similarity").nextElementSibling?.textContent).toBe("0.58");
+    expect(within(section).getByText("Close readings").nextElementSibling?.textContent).toBe("2");
+    expect(within(section).getByText("Computed").nextElementSibling?.textContent).toBe("7 September 2026, 09:30 UTC");
+    cleanup();
+
+    backendAnswers(200, readings.rd_FXSPARSE01);
+    await openTab("/readings/rd_FXSPARSE01");
+    const sparse = await openDetails();
+    expect(within(sparse).getByText("Close readings").nextElementSibling?.textContent).toBe("0");
+    expect(within(sparse).queryByText("Highest similarity")).toBeNull();
+    cleanup();
+
+    backendAnswers(200, readings.rd_FXPAST0001);
+    await openTab("/readings/rd_FXPAST0001");
+    const old = await openDetails();
+    expect(within(old).queryByRole("heading", { name: "Similarity" })).toBeNull();
+  });
+
+  // Acceptance: "Diagnostics and attempts load only when Details is opened".
+  it("requests diagnostics once, pinned, when opened, and not again on reopening", async () => {
+    const fetchMock = browserAnswers({ "/diagnostics": () => Response.json(diagnostics[ATTENTION]) });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const section = await openDetails();
+    await within(section).findByText("Storage key");
+    const requests = requestsTo(fetchMock, "/diagnostics");
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe(`/api/readings/${ATTENTION}/diagnostics`);
+    expect(requests[0]!.headers.get("x-expected-tenant")).toBe("usr_a");
+
+    await userEvent.click(screen.getByText("Details"));
+    await waitFor(() => expect(details().open).toBe(false));
+    await userEvent.click(screen.getByText("Details"));
+    await waitFor(() => expect(details().open).toBe(true));
+    expect(requestsTo(fetchMock, "/diagnostics")).toHaveLength(1);
+  });
+
+  it("shows the pointers, objects, and attempts the backend reported", async () => {
+    browserAnswers({ "/diagnostics": () => Response.json(diagnostics[ATTENTION]) });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    await within(section).findByText("Storage key");
+    expect(within(section).getByText("Storage key").nextElementSibling?.textContent).toBe(
+      "readings/2026/09/07T093000Z-rd_FXATTENT01",
+    );
+    expect(within(section).getByText("By-id pointer").nextElementSibling?.textContent).toBe("OK");
+    expect(within(section).getByText("By-URL pointer").nextElementSibling?.textContent).toBe("OK");
+    expect(within(section).getByText("Library row").nextElementSibling?.textContent).toBe("ready");
+    expect(within(section).getByText("manifest.json")).toBeInTheDocument();
+    expect(within(section).getByText("extracted.md")).toBeInTheDocument();
+
+    const attempt = within(section).getByRole("article", { name: "Saved attempt" });
+    expect(within(attempt).getByText("Succeeded")).toBeInTheDocument();
+    expect(within(attempt).getByText(/^Started 7 September 2026/)).toBeInTheDocument();
+    // The stage log sits behind its own disclosure so it does not swamp the section.
+    const steps = within(attempt).getByText(/\d+ steps/);
+    // Stages keep their backend names in the log, so rows can be told apart.
+    expect(within(attempt).getAllByText("fetch_source")[0]).not.toBeVisible();
+    await userEvent.click(steps);
+    await waitFor(() => expect(within(attempt).getAllByText("write_indexes")[0]).toBeVisible());
+  });
+
+  it("shows a failed attempt's error and stage, with the event that failed", async () => {
+    const FAILED = "rd_FXERR00001";
+    browserAnswers({ "/diagnostics": () => Response.json(diagnostics[FAILED]) });
+    backendAnswers(200, readings[FAILED]);
+    await openTab(`/readings/${FAILED}`);
+    const section = await openDetails();
+
+    const attempt = await within(section).findByRole("article", { name: "Saved attempt" });
+    const line = attempt.querySelector(".reading-details-attempt-line")!;
+    expect(line.textContent).toContain("Failed");
+    expect(line.textContent).toContain("fetch_source");
+    expect(within(attempt).getAllByText(/bad response status 403/).length).toBeGreaterThan(0);
+  });
+
+  it("shows loading, then a failure with a Retry that asks again", async () => {
+    browserAnswers({
+      "/diagnostics": (() => {
+        let calls = 0;
+        return () => {
+          calls += 1;
+          return calls === 1
+            ? Response.json({ error: "storage unavailable" }, { status: 503 })
+            : Response.json(diagnostics[ATTENTION]);
+        };
+      })(),
+    });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    await within(section).findByText(/storage unavailable/);
+    expect(heading()).toBe("A quieter internet is a choice we can make");
+    await userEvent.click(within(section).getByRole("button", { name: "Retry" }));
+    await within(section).findByText("Storage key");
+  });
+
+  it("shows the loading state while diagnostics are on their way", async () => {
+    let settle: (response: Response) => void = () => undefined;
+    browserAnswers({ "/diagnostics": () => new Promise<Response>((resolve) => (settle = resolve)) as never });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    expect(section.querySelector("[aria-busy='true']")).not.toBeNull();
+    await within(section).findByText("Loading diagnostics…", {}, { timeout: 1000 });
+    await act(async () => settle(Response.json(diagnostics[ATTENTION])));
+    await within(section).findByText("Storage key");
+    expect(section.querySelector("[aria-busy='true']")).toBeNull();
+  });
+
+  // 403 and 412 are not retryable and say what the reading's own pages would.
+  it("shows the forbidden and account-changed states without a Retry", async () => {
+    browserAnswers({ "/diagnostics": () => Response.json({ error: "forbidden" }, { status: 403 }) });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    let section = await openDetails();
+    await within(section).findByText(/don't have access to this reading's diagnostics/);
+    expect(within(section).queryByRole("button", { name: "Retry" })).toBeNull();
+    cleanup();
+    vi.unstubAllGlobals();
+
+    browserAnswers({ "/diagnostics": () => Response.json({ error: "mismatch", acting_tenant: "usr_b" }, { status: 412 }) });
+    await openTab(`/readings/${ATTENTION}`);
+    section = await openDetails();
+    await within(section).findByText(/different account/);
+    expect(within(section).queryByRole("button", { name: "Retry" })).toBeNull();
+  });
+
+  // Acceptance: "Open as file" opens extracted Markdown and the raw capture as
+  // the current SPA does — a blob in a new tab — except that the blob is
+  // plain text whatever the capture was (reading-files.ts).
+  it("opens the extracted Markdown and the raw capture in a new tab as plain text", async () => {
+    const fetchMock = browserAnswers({
+      "/diagnostics": () => Response.json(diagnostics[ATTENTION]),
+      "/content/raw": () => new Response("<html><script>alert(1)</script></html>", { headers: { "content-type": "text/html" } }),
+      "/content": () => new Response("# Somewhere to return", { headers: { "content-type": "text/markdown" } }),
+    });
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const section = await openDetails();
+
+    await userEvent.click(within(section).getByRole("button", { name: "Open extracted Markdown" }));
+    // The tab opens on the click, severed from this page, and gets the file once it arrives.
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]!.opener).toBeNull();
+    await waitFor(() => expect(tabs[0]!.location.href).toBe("blob:app/1"));
+    expect(blobs[0]!.type).toBe("text/plain; charset=utf-8");
+    expect(await blobs[0]!.text()).toBe("# Somewhere to return");
+    expect(requestsTo(fetchMock, "/content")[0]!.headers.get("x-expected-tenant")).toBe("usr_a");
+
+    await userEvent.click(within(section).getByRole("button", { name: "Open raw capture" }));
+    await waitFor(() => expect(tabs[1]!.location.href).toBe("blob:app/2"));
+    expect(blobs[1]!.type).toBe("text/plain; charset=utf-8");
+    expect(await blobs[1]!.text()).toBe("<html><script>alert(1)</script></html>");
+    expect(requestsTo(fetchMock, "/content/raw")).toHaveLength(1);
+    expect(within(section).queryByRole("alert")).toBeNull();
+    expect(tabs[0]!.close).not.toHaveBeenCalled();
+  });
+
+  it("says when a file isn't there, and offers only the raw capture for an uncaptured source", async () => {
+    browserAnswers({
+      "/diagnostics": () => Response.json(diagnostics.rd_FXRAWSRC01),
+      "/content/raw": () => Response.json({ error: "not found" }, { status: 404 }),
+    });
+    backendAnswers(200, readings.rd_FXRAWSRC01);
+    await openTab("/readings/rd_FXRAWSRC01");
+    const section = await openDetails();
+
+    expect(within(section).queryByRole("button", { name: "Open extracted Markdown" })).toBeNull();
+    await userEvent.click(within(section).getByRole("button", { name: "Open raw capture" }));
+    await within(section).findByRole("alert");
+    expect(within(section).getByRole("alert").textContent).toBe("That file isn't available for this reading.");
+    // The tab that was waiting for the file is closed again.
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0]!.close).toHaveBeenCalled();
+    expect(tabs[0]!.location.href).toBe("about:blank");
+  });
+
+  // Reading-to-reading navigation reuses the route component; Details starts
+  // closed for each reading rather than carrying the previous one's state.
+  it("starts collapsed again after following a connection to another reading", async () => {
+    const fetchMock = browserAnswers({ "/diagnostics": () => Response.json(diagnostics[ATTENTION]) });
+    backendServes({ [ATTENTION]: readings[ATTENTION], rd_FXGARDEN01: readings.rd_FXGARDEN01 });
+    await openTab(`/readings/${ATTENTION}`);
+    await openDetails();
+    await screen.findByText("Storage key");
+
+    const context = screen.getByRole("complementary", { name: "Connections & tensions" });
+    await userEvent.click(within(context).getByRole("link", { name: "Libraries are gardens, not warehouses" }));
+    await headingSettles("Libraries are gardens, not warehouses");
+    expect(details().open).toBe(false);
+    expect(requestsTo(fetchMock, "/diagnostics")).toHaveLength(1);
+  });
+});

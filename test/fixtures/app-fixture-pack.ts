@@ -18,7 +18,13 @@
 import { projectRelationshipTargets, relationshipTargetIds } from "../../src/modules/relationship-targets";
 import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
-import type { GetReadingResponse, ListIndex } from "../../src/schemas/api";
+import type { GetReadingDiagnosticsResponse, GetReadingResponse, ListIndex } from "../../src/schemas/api";
+import {
+  ByUrlPointerSchema,
+  ProcessingAttemptSchema,
+  type ByUrlPointer,
+  type ProcessingAttempt,
+} from "../../src/schemas/manifest";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID } from "./local-seed";
 
 /** Seed clock for the snapshot, and the browser clock the suite pins. */
@@ -46,6 +52,11 @@ export interface AppFixtureEntry {
   state: string;
 }
 
+export interface RawCapture {
+  content_type: string;
+  body: string;
+}
+
 export interface AppFixturePack {
   generated_at: string;
   regenerate_with: string;
@@ -59,6 +70,19 @@ export interface AppFixturePack {
    * `unavailable-source` fixture does (#372).
    */
   contents: Record<string, string>;
+  /**
+   * `GET /api/readings/:id/diagnostics` bodies, keyed by reading id (#373).
+   * Assembled the way src/router.ts assembles them, from the seed's pointers,
+   * objects, and attempt logs; `uploaded` is the seed clock, since local R2's
+   * upload time is whenever the seed ran.
+   */
+  diagnostics: Record<string, GetReadingDiagnosticsResponse>;
+  /**
+   * `GET /api/readings/:id/content/raw` bodies with their stored content
+   * type, keyed by reading id (#373). Only ready fixtures have one; the
+   * endpoint 404s for the rest, and so does the browser stub.
+   */
+  raws: Record<string, RawCapture>;
   /** The tenant's `index/list.json`, as the list route reads it. */
   list_index: ListIndex;
   /** Referenced by `attention` but never written: the removed-target card. */
@@ -69,8 +93,11 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
   const plan = buildLocalSeed(nowIso);
   const readings: Record<string, GetReadingResponse> = {};
   const contents: Record<string, string> = {};
+  const diagnostics: Record<string, GetReadingDiagnosticsResponse> = {};
+  const raws: Record<string, RawCapture> = {};
   const fixtures: AppFixtureEntry[] = [];
   const bodyByKey = new Map(plan.objects.map((object) => [object.key, object.body]));
+  const encoder = new TextEncoder();
 
   for (const fixture of plan.fixtures) {
     const extracted = bodyByKey.get(layout.extractedKey(fixture.keyPrefix));
@@ -85,6 +112,49 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     };
     readings[fixture.id] = body;
     fixtures.push({ name: fixture.name, id: fixture.id, status: body.status, state: fixture.state });
+
+    const objectsPrefix = layout.readingObjectsPrefix(fixture.keyPrefix);
+    const owned = plan.objects.filter((object) => object.key.startsWith(objectsPrefix));
+    const attemptsPrefix = layout.attemptsPrefix(fixture.keyPrefix);
+    // The endpoint's final ordering (ReadingStore.listAttempts sorts its
+    // shortlist by started_at, newest first). Its 20-attempt shortlist by
+    // upload time is not modelled: no fixture has more than one attempt.
+    const attempts: ProcessingAttempt[] = owned
+      .filter((object) => object.key.startsWith(attemptsPrefix))
+      .map((object) => ProcessingAttemptSchema.parse(JSON.parse(object.body)))
+      .sort((a, b) => (a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0));
+    // Pointer verdicts as src/router.ts computes them, from the seed's own
+    // pointer objects rather than assumed healthy.
+    const byId = pointerAt(bodyByKey.get(layout.byIdKey(fixture.id)));
+    const byUrl = pointerAt(bodyByKey.get(layout.byUrlKey(fixture.manifest.url_hash)));
+    const indexItem = plan.listIndex.items.find((item) => item.id === fixture.id);
+    diagnostics[fixture.id] = {
+      id: fixture.id,
+      key_prefix: fixture.keyPrefix,
+      manifest: applyStaleness(fixture.manifest, PENDING_TTL_SECONDS, nowIso),
+      index_item: indexItem ? applyStaleness(indexItem, PENDING_TTL_SECONDS, nowIso) : null,
+      pointers: {
+        by_id: {
+          exists: byId !== undefined,
+          ...(byId ? { pointer: byId } : {}),
+          matches_manifest: byId?.id === fixture.id && fixture.manifest.id === fixture.id,
+        },
+        by_url: {
+          exists: byUrl !== undefined,
+          ...(byUrl ? { pointer: byUrl } : {}),
+          matches_manifest: byUrl?.id === fixture.manifest.id && byUrl?.key_prefix === fixture.keyPrefix,
+        },
+      },
+      objects: owned.map((object) => ({
+        key: object.key,
+        size: encoder.encode(object.body).byteLength,
+        uploaded: nowIso,
+      })),
+      attempts,
+    };
+
+    const raw = owned.find((object) => object.key.startsWith(`${fixture.keyPrefix}/raw.`));
+    if (raw) raws[fixture.id] = { content_type: raw.contentType, body: raw.body };
   }
 
   return {
@@ -93,9 +163,16 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     fixtures,
     readings,
     contents,
+    diagnostics,
+    raws,
     list_index: plan.listIndex,
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
   };
+}
+
+/** A seeded pointer object, when the seed wrote one. */
+function pointerAt(body: string | undefined): ByUrlPointer | undefined {
+  return body === undefined ? undefined : ByUrlPointerSchema.parse(JSON.parse(body));
 }
 
 /** The file's exact bytes, so the emitter and the drift test agree. */

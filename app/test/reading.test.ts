@@ -57,6 +57,15 @@ describe("readingFromResponse", () => {
     expect(result.state === "ready" ? result.reading.tensions : "kept").toBeUndefined();
   });
 
+  it("reads keywords, people, and organizations for the Details section", () => {
+    const result = readingFromResponse(200, pack.readings.rd_FXATTENT01);
+    expect(result.state).toBe("ready");
+    if (result.state !== "ready") return;
+    expect(result.reading.keywords?.length).toBeGreaterThan(0);
+    expect(result.reading.people?.length).toBeGreaterThan(0);
+    expect(result.reading.orgs).toEqual([]);
+  });
+
   it("carries fields this app never reads through untouched", () => {
     const result = readingFromResponse(200, { ...READY, url_hash: "abc", usage: { tokens: 1 } });
     expect(result.state === "ready" && result.reading).toMatchObject({ url_hash: "abc", usage: { tokens: 1 } });

@@ -98,7 +98,7 @@ return path is per origin.
   projection in `src/reading.ts`: only `id`, `url`, and `status` are required,
   every other field the app reads is optional and null-tolerant, unknown fields
   pass through, and a malformed field the app does read is the retryable
-  "unexpected body" error rather than a crash in a component. Details is #373.
+  "unexpected body" error rather than a crash in a component.
 - **Source view.** `?view=source` selects the Source tab (`src/reading-view.ts`:
   any other value is Summary); the tabs (`src/components/ViewTabs.tsx`) follow
   the ARIA pattern and switch by replacing the history entry with the
@@ -119,6 +119,23 @@ return path is per origin.
   `referrerpolicy="no-referrer"` and stays loaded across a tab switch. Loading
   and failure (with Retry) stay inside the view; the novelty panel sits below
   either view at the same readable width.
+- **Details.** One native `<details>` at the foot of the reading column
+  (`src/components/ReadingDetails.tsx`), collapsed in the server render and
+  operable from the keyboard without script. Keywords, people, organizations,
+  and the similarity numbers behind the novelty verdict come from the manifest
+  and are in the page from the start; a missing value is omitted, never shown
+  as a dash. Diagnostics and the attempts they carry are fetched in the browser
+  from same-origin `/api/readings/:id/diagnostics` only once the section is
+  opened (`src/diagnostics-query.ts`, `src/api/diagnostics.ts`), pinned like
+  the reading, through the loose projection in `src/reading-diagnostics.ts`;
+  loading, failure with Retry, and the 403/412 states stay inside the section.
+  "Open as file" fetches the extracted Markdown or the raw capture on click
+  (`src/api/files.ts`) and opens it in a new tab as a blob URL, as the SPA
+  does — but always as `text/plain` (`src/reading-files.ts`): a blob page runs
+  in this app's origin, so a raw HTML capture opened with its stored type
+  would execute the captured page's scripts against `/api/*` with the session
+  cookie. The extracted file follows the Source view's `content_status` rule;
+  the raw file is always offered and a 404 says so in place.
 - **Connections and tensions.** Cards come from the manifest's `connections`
   and `tensions` plus the read-time `relationship_targets` map
   (`src/reading-relationships.ts`): an id absent from the map is the removed
