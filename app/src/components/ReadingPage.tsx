@@ -73,7 +73,7 @@ function ReadingSurface({ reading, view, trail }: { reading: Reading; view: Read
         <ReadingTags tags={reading.tags} />
         {context ? <ContextJump /> : null}
         <ReadingStatusCard reading={reading} />
-        <ReadingViews reading={reading} view={view} />
+        <ReadingViews key={reading.id} reading={reading} view={view} />
         <ReadingNovelty reading={reading} />
       </article>
       {context ? <ReadingContext reading={reading} /> : null}
@@ -101,7 +101,9 @@ function ReadingViews({ reading, view }: { reading: Reading; view: ReadingView }
   const navigate = useNavigate();
   // The images the reader loaded in the Source view live here, above the tab
   // panel, so switching to Summary and back does not turn them back into
-  // placeholders.
+  // placeholders. Consent is per reading: the route component is reused when
+  // a connection leads to another reading, so ReadingSurface keys this on the
+  // reading id and the set starts empty there.
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(() => new Set());
   const onLoad = useCallback((src: string) => setLoaded((prev) => new Set(prev).add(src)), []);
   const images = useMemo<LoadedImages>(() => ({ loaded, onLoad }), [loaded, onLoad]);

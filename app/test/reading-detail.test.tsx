@@ -1077,6 +1077,24 @@ describe("the Source view", () => {
     expect(within(panel("Source")).queryByRole("button", { name: "Load image" })).toBeNull();
   });
 
+  // Consent is per image, per reading. The route component is reused when the
+  // reader follows a connection to another reading, so what was loaded here
+  // must not load there on its own.
+  it("forgets loaded images when the reader moves to another reading", async () => {
+    contentAnswers(() => markdownResponse("![The desk](https://images.example/desk.jpg)\n\nText."));
+    backendServes({ [ATTENTION]: readings[ATTENTION], rd_FXGARDEN01: readings.rd_FXGARDEN01 });
+    await openTab(`/readings/${ATTENTION}?view=source`);
+    await userEvent.click(await within(panel("Source")).findByRole("button", { name: "Load image" }));
+    expect(within(panel("Source")).getByRole("img", { name: "The desk" })).toBeInTheDocument();
+
+    const context = screen.getByRole("complementary", { name: "Connections & tensions" });
+    await userEvent.click(within(context).getByRole("link", { name: "Libraries are gardens, not warehouses" }));
+    await headingSettles("Libraries are gardens, not warehouses");
+    await selectSource();
+    await within(panel("Source")).findByRole("button", { name: "Load image" });
+    expect(within(panel("Source")).queryByRole("img")).toBeNull();
+  });
+
   it("offers no load for http: or relative images", async () => {
     contentAnswers(() => markdownResponse("![Plain](http://images.example/a.png)\n\n![Local](/a.png)\n\nText."));
     backendAnswers(200, readings[ATTENTION]);
