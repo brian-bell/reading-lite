@@ -1199,7 +1199,13 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         ),
       ),
     );
-    expect(responses.every((r) => r.status === 200 || r.status === 202)).toBe(true);
+    // Exactly one submit claims the slot and activates (202). Each loser either
+    // reads the winner's pending manifest (200) or lands in the documented gap
+    // between the winner's by-url pointer write and its manifest write, which
+    // is a 409 "initializing" carrying the winner's id (see reading-claim.ts).
+    // All three converge on the same reading; none may claim a second slot.
+    expect(responses.every((r) => [200, 202, 409].includes(r.status))).toBe(true);
+    expect(responses.filter((r) => r.status === 202)).toHaveLength(1);
     const bodies = await Promise.all(
       responses.map((response) => response.json() as Promise<{ id: string }>),
     );
