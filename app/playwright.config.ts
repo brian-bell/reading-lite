@@ -62,6 +62,15 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
+      // The return trail's history behaviour and the phone jump's focus and
+      // motion (#371): Back and reload, and the reduced-motion contexts, are
+      // about state rather than rendering. The matrix already screenshots the
+      // trail states in every project.
+      name: "reading-trail",
+      testMatch: /reading-trail\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       name: "shell-extras",
       testMatch: /shell-extras\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },

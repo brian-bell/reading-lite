@@ -30,7 +30,8 @@ export interface Failure {
   headline: string;
   /** The backend's message. Shown as supporting detail unless it is the headline. */
   message: string;
-  stage?: ProcessingStage;
+  /** The manifest's stage as written; open so a stage added later still categorises. */
+  stage?: string;
 }
 
 const HEADLINES: Record<Exclude<FailureCategory, "unknown">, string> = {

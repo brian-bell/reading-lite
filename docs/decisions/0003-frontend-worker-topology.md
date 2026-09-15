@@ -68,6 +68,9 @@ Approved dependencies, pinned to exact versions in `app/`:
 - Browser evidence (development, approved September 10, 2026 for
   [#374](https://github.com/brian-bell/reading-lite/issues/374)):
   `@playwright/test`, `@axe-core/playwright`.
+- Response projection (runtime, approved September 14, 2026 for
+  [#371](https://github.com/brian-bell/reading-lite/issues/371)): `zod`, to
+  parse `GET /api/readings/:id` at the API seam.
 
 Anything else needs separate approval. The Wrangler config keeps
 `nodejs_compat`, uses `@tanstack/react-start/server-entry` as `main`, and enables

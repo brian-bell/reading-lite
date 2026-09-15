@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
 import { ApiError } from "../src/api/errors";
 import {
   expectedLayoutOf,
@@ -38,6 +39,66 @@ describe("readingFromResponse", () => {
     for (const body of [null, "a reading", {}, { id: "rd_1", url: "https://e.com/a", status: "finished" }]) {
       expect(() => readingFromResponse(200, body)).toThrow(ApiError);
     }
+  });
+
+  // The projection (#371, from the #390 review thread): every body the fixture
+  // pack serves is a reading, including the old manifest and the one whose
+  // tensions are null.
+  it("accepts every fixture-pack body", () => {
+    for (const fixture of pack.fixtures) {
+      const body = pack.readings[fixture.id as keyof typeof pack.readings];
+      expect(readingFromResponse(200, body).state, fixture.name).toBe("ready");
+    }
+  });
+
+  it("normalises a null field to an absent one", () => {
+    const result = readingFromResponse(200, { ...READY, tensions: null, tags: null });
+    expect(result).toEqual({ state: "ready", reading: READY });
+    expect(result.state === "ready" ? result.reading.tensions : "kept").toBeUndefined();
+  });
+
+  it("carries fields this app never reads through untouched", () => {
+    const result = readingFromResponse(200, { ...READY, url_hash: "abc", usage: { tokens: 1 } });
+    expect(result.state === "ready" && result.reading).toMatchObject({ url_hash: "abc", usage: { tokens: 1 } });
+  });
+
+  // A malformed field the page reads is the documented unexpected-body error,
+  // not a crash in a component.
+  it("rejects a reading whose read fields are malformed", () => {
+    const malformed = [
+      { ...READY, title: { text: "not a string" } },
+      { ...READY, active_attempt: { status: "running" } },
+      { ...READY, error: { code: "X" } },
+      { ...READY, connections: [{ id: "rd_2" }] },
+      { ...READY, tensions: [{ id: "rd_2", kind: "contradicts" }] },
+      { ...READY, relationship_targets: { rd_2: { url: "https://e.com/b" } } },
+    ];
+    for (const body of malformed) {
+      const error = catchError(() => readingFromResponse(200, body));
+      expect(error, JSON.stringify(body)).toBeInstanceOf(ApiError);
+      expect((error as Error).message).toBe("reading returned an unexpected body");
+    }
+  });
+
+  // A stage, trigger, or attempt status the backend adds later must not turn
+  // the page into an error either: the status card degrades to the raw name.
+  it("keeps an unknown stage or trigger rather than rejecting the reading", () => {
+    const body = {
+      ...READY,
+      last_attempt: { id: "at_1", trigger: "backfill", status: "succeeded", stage: "judge_tensions", started_at: "2026-09-09T03:07:00.000Z" },
+      error: { code: "X", message: "why", stage: "judge_tensions" },
+    };
+    expect(readingFromResponse(200, body)).toEqual({ state: "ready", reading: body });
+  });
+
+  // A tension kind the backend adds later has no label yet, but it must not
+  // turn the page into an error.
+  it("keeps an unknown tension kind rather than rejecting the reading", () => {
+    const body = {
+      ...READY,
+      tensions: [{ id: "rd_2", kind: "echoes", reason: "why", computed_at: "2026-09-09T03:07:00.000Z" }],
+    };
+    expect(readingFromResponse(200, body)).toEqual({ state: "ready", reading: body });
   });
 
   it("turns the statuses with a page of their own into states", () => {

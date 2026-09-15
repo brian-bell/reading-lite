@@ -2,6 +2,7 @@ import Markdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import { degradationNotice, noveltyPanel, summaryBodyBelowLead } from "../reading-presentation";
 import type { Reading } from "../reading";
+import { CONTEXT_HEADING_ID, jumpTo } from "./ReadingContext";
 
 // The Summary view (#370, design spec: Data mapping, Novelty, Reading surface).
 //
@@ -27,7 +28,13 @@ export function ReadingSummary({ reading }: { reading: Reading }) {
       {notice ? <DegradedNotice>{notice}</DegradedNotice> : null}
       {reading.tldr ? <p className="reading-lead">{reading.tldr}</p> : null}
       {body ? <SummaryMarkdown markdown={body} /> : null}
-      {novelty ? <NoveltyPanel label={novelty.label} sentence={novelty.sentence} /> : null}
+      {novelty ? (
+        <NoveltyPanel
+          label={novelty.label}
+          sentence={novelty.sentence}
+          linkToConnections={novelty.linksToConnections}
+        />
+      ) : null}
     </div>
   );
 }
@@ -93,16 +100,33 @@ function SummaryLink({ href, children }: { href?: string; children?: React.React
  * accent surface with the accent rule.
  *
  * The similarity numbers behind the verdict go in Details (#373), not here.
- * "Familiar" links to the connections when there are any — that link arrives
- * with the connections section itself in #371, since there is nothing on this
- * page yet to link to.
+ * "Familiar" links to the connections when there are any: the sentence stays
+ * as written and the link follows it, so the copy the spec fixes is intact.
  */
-function NoveltyPanel({ label, sentence }: { label: string; sentence: string }) {
+function NoveltyPanel({
+  label,
+  sentence,
+  linkToConnections,
+}: {
+  label: string;
+  sentence: string;
+  linkToConnections: boolean;
+}) {
   return (
     <section className="novelty" aria-labelledby="novelty-heading">
       <h2 id="novelty-heading">What this adds</h2>
       <p className="novelty-verdict">{label}</p>
-      <p className="novelty-sentence">{sentence}</p>
+      <p className="novelty-sentence">
+        {sentence}
+        {linkToConnections ? (
+          <>
+            {" "}
+            <a href={`#${CONTEXT_HEADING_ID}`} onClick={(event) => jumpTo(event, CONTEXT_HEADING_ID)}>
+              See the connections
+            </a>
+          </>
+        ) : null}
+      </p>
     </section>
   );
 }

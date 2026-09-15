@@ -53,7 +53,19 @@ describe("the novelty panel", () => {
     ["duplicate", "Duplicate", "Effectively the same piece as one already in your library."],
   ])("says what %s means", (verdict, label, sentence) => {
     const panel = noveltyPanel(ready({ novelty_verdict: verdict, similarity: { count: 2 } }));
-    expect(panel).toEqual({ label, sentence });
+    expect(panel).toEqual({ label, sentence, linksToConnections: false });
+  });
+
+  // "Familiar" links to the connections when there are some (#371): tensions
+  // alone are not connections, and the sparse sentence names nothing to see.
+  it("links a familiar verdict to the connections only when there are connections", () => {
+    const familiar = { novelty_verdict: "familiar", similarity: { count: 2 } };
+    const connection = { id: "rd_2", reason: "why" };
+    const tension = { ...connection, kind: "contradicts" };
+    expect(noveltyPanel(ready({ ...familiar, connections: [connection] }))?.linksToConnections).toBe(true);
+    expect(noveltyPanel(ready({ ...familiar, tensions: [tension] }))?.linksToConnections).toBe(false);
+    expect(noveltyPanel(ready({ ...familiar, connections: [connection], similarity: { count: 0 } }))?.linksToConnections).toBe(false);
+    expect(noveltyPanel(ready({ novelty_verdict: "novel", connections: [connection] }))?.linksToConnections).toBe(false);
   });
 
   // A library with nothing close is not the same claim as a novel reading, and
@@ -63,6 +75,7 @@ describe("the novelty panel", () => {
     expect(panel).toEqual({
       label: "Novel",
       sentence: "Your library had no close readings when this was processed.",
+      linksToConnections: false,
     });
   });
 
@@ -102,6 +115,7 @@ describe("the novelty panel", () => {
     expect(noveltyPanel(readings.rd_FXSPARSE01!)).toEqual({
       label: "Novel",
       sentence: "Your library had no close readings when this was processed.",
+      linksToConnections: false,
     });
     // The old manifest predates novelty entirely.
     expect(noveltyPanel(readings.rd_FXPAST0001!)).toBeUndefined();

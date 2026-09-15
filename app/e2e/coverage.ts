@@ -8,7 +8,9 @@
 // edit in test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo
 // root.
 
-import type { Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import pack from "./fixtures/fixture-pack.json" with { type: "json" };
+import { serveReadingsInBrowser } from "./test";
 
 export type SignedState = "signed-out" | "signed-in";
 
@@ -114,4 +116,69 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "This reading isn't in your library.",
   },
+
+  // Connections and tensions (#371). `attention` (reading-ready above) has
+  // connections, a removed target, and a tension; `gardens` has a pending and
+  // a failed target. The trail states are reached by following cards, so the
+  // browser needs the readings served (serveReadingsInBrowser).
+  {
+    name: "reading-connections-non-ready",
+    path: "/readings/rd_FXGARDEN01",
+    state: "signed-in",
+    heading: "Libraries are gardens, not warehouses",
+    fixture: "gardens",
+  },
+  {
+    name: "reading-trail-one-hop",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await serveReadingsInBrowser(page);
+      await followCard(page, "Libraries are gardens, not warehouses");
+    },
+  },
+  {
+    name: "reading-trail-two-hops",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await serveReadingsInBrowser(page);
+      await followCard(page, "Libraries are gardens, not warehouses");
+      await followCard(page, "A quieter internet is a choice we can make");
+    },
+  },
+  // Arrived from a removed target: the target was in the map when its card
+  // rendered and gone when followed. `attention` is served to the browser with
+  // the removed id resolved, so its card links; the id itself still 404s.
+  {
+    name: "reading-not-found-from-trail",
+    path: "/readings/rd_FXGARDEN01",
+    state: "signed-in",
+    heading: "Libraries are gardens, not warehouses",
+    fixture: "gardens",
+    prepare: async (page) => {
+      const attention = pack.readings.rd_FXATTENT01;
+      await serveReadingsInBrowser(page, {
+        rd_FXATTENT01: {
+          ...attention,
+          relationship_targets: {
+            ...attention.relationship_targets,
+            [pack.removed_target_id]: { url: "https://feeds.example/infinite", title: "Infinite feeds", status: "ready" },
+          },
+        },
+      });
+      await followCard(page, "A quieter internet is a choice we can make");
+      await followCard(page, "Infinite feeds", "This reading isn't in your library.");
+    },
+  },
 ];
+
+/** Follows a relationship card by its title and waits for the destination's heading. */
+export async function followCard(page: Page, title: string, heading = title): Promise<void> {
+  await page.getByRole("complementary", { name: "Connections & tensions" }).getByRole("link", { name: title }).click();
+  await expect(page.getByRole("heading", { level: 1, name: heading })).toBeVisible();
+}

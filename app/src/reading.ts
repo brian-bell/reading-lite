@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ApiError } from "./api/errors";
 import { forwardedFrom, type BackendReads } from "./server/backend-reads";
 import type { Identity } from "./identity";
@@ -8,56 +9,97 @@ import type { Identity } from "./identity";
 // status means.
 //
 // The response is the stored manifest plus `relationship_targets`
-// (src/schemas/api.ts, GetReadingResponseSchema). This declares the fields the
-// frontend renders rather than restating the whole manifest: the backend's zod
-// schemas stay authoritative, and a field this app never reads cannot fail its
-// narrowing. Later slices add the fields they need — #371 relationships, #372
-// source, #373 details.
+// (src/schemas/api.ts, GetReadingResponseSchema). The projection below
+// declares the fields the frontend renders rather than restating the whole
+// manifest: the backend's zod schemas stay authoritative, unknown fields pass
+// through untouched, and only a malformed field this app reads fails the
+// parse (#371, from the #390 review thread).
+//
+// Leniency is deliberate. Old manifests are missing fields by design (fixture
+// `old-manifest`), and a manifest can carry `null` where a field was cleared
+// (fixture `gardens`, `tensions: null`), so every optional field is also
+// null-tolerant and normalised to absent. Only `id`, `url`, and `status` are
+// load-bearing. Later slices add the fields they need — #372 source, #373
+// details.
 
-/** ProcessingStageSchema in the backend's src/schemas/manifest.ts. */
-export type ProcessingStage =
-  | "queued"
-  | "fetch_source"
-  | "prepare_markdown"
-  | "write_raw"
-  | "write_extracted"
-  | "embed_source"
-  | "query_similar"
-  | "summarize"
-  | "embed_summary"
-  | "upsert_vector"
-  | "write_manifest"
-  | "write_indexes"
-  | "send_email";
+/**
+ * ProcessingStageSchema in the backend's src/schemas/manifest.ts, for the
+ * label maps. The projection below keeps `stage` an open string: a stage the
+ * backend adds later must not fail the page (ReadingStatusCard and
+ * reading-failure.ts already degrade on one they do not know).
+ */
+export const ProcessingStageSchema = z.enum([
+  "queued",
+  "fetch_source",
+  "prepare_markdown",
+  "write_raw",
+  "write_extracted",
+  "embed_source",
+  "query_similar",
+  "summarize",
+  "embed_summary",
+  "upsert_vector",
+  "write_manifest",
+  "write_indexes",
+  "send_email",
+]);
+export type ProcessingStage = z.infer<typeof ProcessingStageSchema>;
 
-export type ReadingStatus = "pending" | "ready" | "failed";
+export const ReadingStatusSchema = z.enum(["pending", "ready", "failed"]);
+export type ReadingStatus = z.infer<typeof ReadingStatusSchema>;
+
+/**
+ * The declared fields of a loose schema's output, without the `[k: string]:
+ * unknown` index signature `z.looseObject` adds. Unknown fields still pass
+ * through at runtime; the type just keeps a misspelt property a compile error,
+ * as the hand-written interfaces before this projection did.
+ */
+type Declared<T> = { [K in keyof T as string extends K ? never : K]: T[K] };
+
+/**
+ * An optional field that may also arrive as `null`. A cleared field reads as
+ * an absent one, so components test `=== undefined` and nothing else.
+ */
+function absent<T extends z.ZodType>(schema: T) {
+  return schema
+    .nullable()
+    .transform((value) => value ?? undefined)
+    .optional();
+}
 
 /** ManifestErrorSchema. `code` is the backend error class name, or a stale_* marker. */
-export interface ReadingError {
-  code: string;
-  message: string;
-  stage?: ProcessingStage;
-  failed_at?: string;
-  retryable?: boolean;
-}
+export const ReadingErrorSchema = z.looseObject({
+  code: z.string(),
+  message: z.string(),
+  stage: absent(z.string()),
+  failed_at: absent(z.string()),
+  retryable: absent(z.boolean()),
+});
+export type ReadingError = Declared<z.output<typeof ReadingErrorSchema>>;
 
-/** ProcessingAttemptSummarySchema. */
-export interface ProcessingAttempt {
-  id: string;
-  trigger: "submit" | "reprocess" | "import";
-  status: "running" | "succeeded" | "failed";
-  stage?: ProcessingStage;
-  started_at: string;
-  finished_at?: string;
-  error?: ReadingError;
-}
+/**
+ * ProcessingAttemptSummarySchema. `trigger` and `status` are closed enums in
+ * the backend ("submit" | "reprocess" | "import"; "running" | "succeeded" |
+ * "failed"), open here for the same reason as `stage`.
+ */
+export const ProcessingAttemptSchema = z.looseObject({
+  id: z.string(),
+  trigger: z.string(),
+  status: z.string(),
+  stage: absent(z.string()),
+  started_at: z.string(),
+  finished_at: absent(z.string()),
+  error: absent(ReadingErrorSchema),
+});
+export type ProcessingAttempt = Declared<z.output<typeof ProcessingAttemptSchema>>;
 
-export interface SimilaritySnapshot {
-  count?: number;
-  max?: number;
-  mean?: number;
-  computed_at?: string;
-}
+export const SimilaritySnapshotSchema = z.looseObject({
+  count: absent(z.number()),
+  max: absent(z.number()),
+  mean: absent(z.number()),
+  computed_at: absent(z.string()),
+});
+export type SimilaritySnapshot = Declared<z.output<typeof SimilaritySnapshotSchema>>;
 
 /**
  * EnrichmentDegradationSchema. Written when YouTube watch-page or transcript
@@ -66,32 +108,71 @@ export interface SimilaritySnapshot {
  * here so a tier this app has no sentence for stays quiet rather than
  * narrowing wrongly (see `degradationNotice`).
  */
-export interface EnrichmentDegradation {
-  source?: string;
-  tier?: string;
-  code?: string;
-  message?: string;
-}
+export const EnrichmentDegradationSchema = z.looseObject({
+  source: absent(z.string()),
+  tier: absent(z.string()),
+  code: absent(z.string()),
+  message: absent(z.string()),
+});
+export type EnrichmentDegradation = Declared<z.output<typeof EnrichmentDegradationSchema>>;
 
-export interface Reading {
-  id: string;
-  url: string;
-  status: ReadingStatus;
-  title?: string;
-  tldr?: string;
-  summary_markdown?: string;
-  tags?: string[];
-  source_type?: string;
-  content_status?: string;
-  created_at?: string;
-  updated_at?: string;
-  novelty_verdict?: string;
-  similarity?: SimilaritySnapshot;
-  enrichment_degradation?: EnrichmentDegradation;
-  error?: ReadingError;
-  active_attempt?: ProcessingAttempt;
-  last_attempt?: ProcessingAttempt;
-}
+/** ConnectionSchema: a related reading and why it was suggested. */
+export const ConnectionSchema = z.looseObject({
+  id: z.string(),
+  reason: z.string(),
+});
+export type Connection = Declared<z.output<typeof ConnectionSchema>>;
+
+/**
+ * TensionSchema. `kind` is a closed enum in the backend (contradicts,
+ * supersedes, superseded_by, qualifies, qualified_by), kept open here so a
+ * kind added later renders with a generic label instead of failing the page
+ * (see `tensionKindLabel`).
+ */
+export const TensionSchema = z.looseObject({
+  id: z.string(),
+  kind: z.string(),
+  reason: z.string(),
+  computed_at: absent(z.string()),
+});
+export type Tension = Declared<z.output<typeof TensionSchema>>;
+
+/**
+ * RelationshipTargetSchema: what the same tenant's list index knows about a
+ * connection or tension target, computed on read. An id absent from the map
+ * is removed or unavailable.
+ */
+export const RelationshipTargetSchema = z.looseObject({
+  url: z.string(),
+  title: absent(z.string()),
+  status: ReadingStatusSchema,
+});
+export type RelationshipTarget = Declared<z.output<typeof RelationshipTargetSchema>>;
+
+export const ReadingSchema = z.looseObject({
+  id: z.string(),
+  url: z.string(),
+  status: ReadingStatusSchema,
+  title: absent(z.string()),
+  tldr: absent(z.string()),
+  summary_markdown: absent(z.string()),
+  tags: absent(z.array(z.string())),
+  source_type: absent(z.string()),
+  content_status: absent(z.string()),
+  created_at: absent(z.string()),
+  updated_at: absent(z.string()),
+  novelty_verdict: absent(z.string()),
+  similarity: absent(SimilaritySnapshotSchema),
+  enrichment_degradation: absent(EnrichmentDegradationSchema),
+  error: absent(ReadingErrorSchema),
+  active_attempt: absent(ProcessingAttemptSchema),
+  last_attempt: absent(ProcessingAttemptSchema),
+  connections: absent(z.array(ConnectionSchema)),
+  connections_computed_at: absent(z.string()),
+  tensions: absent(z.array(TensionSchema)),
+  relationship_targets: absent(z.record(z.string(), RelationshipTargetSchema)),
+});
+export type Reading = Declared<z.output<typeof ReadingSchema>>;
 
 export function readingQueryKey(id: string): readonly unknown[] {
   return ["reading", id];
@@ -128,8 +209,9 @@ export function expectedLayoutOf(identity: Identity | null | undefined): string 
 
 export function readingFromResponse(status: number, body: unknown): ReadingResult {
   if (status === 200) {
-    if (!isReading(body)) throw new ApiError(status, "reading returned an unexpected body");
-    return { state: "ready", reading: body };
+    const parsed = ReadingSchema.safeParse(body);
+    if (!parsed.success) throw new ApiError(status, "reading returned an unexpected body");
+    return { state: "ready", reading: parsed.data };
   }
   if (status === 404) return { state: "not-found" };
   if (status === 403) return { state: "forbidden" };
@@ -155,21 +237,6 @@ export async function readReadingFromBackend(
     throw new ApiError(0, `backend entrypoint failed: ${String(err)}`);
   }
   return readingFromResponse(result.status, result.body);
-}
-
-/**
- * Only what the frontend depends on. Everything else travels untouched, so a
- * manifest field this slice does not render cannot turn a readable page into an
- * error — old manifests are missing fields by design (fixture `old-manifest`).
- */
-function isReading(body: unknown): body is Reading {
-  if (typeof body !== "object" || body === null) return false;
-  const value = body as Record<string, unknown>;
-  return (
-    typeof value.id === "string" &&
-    typeof value.url === "string" &&
-    (value.status === "pending" || value.status === "ready" || value.status === "failed")
-  );
 }
 
 function messageOf(body: unknown): string | undefined {
