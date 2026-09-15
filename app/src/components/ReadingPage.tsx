@@ -10,6 +10,7 @@ import type { Reading } from "../reading";
 import type { TrailHop } from "../reading-trail";
 import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
+import { ReadingDetails } from "./ReadingDetails";
 import { ReadingSource, type LoadedImages } from "./ReadingSource";
 import {
   ReadingAccountChanged,
@@ -31,9 +32,9 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 // the return trail when the reader followed a relationship here, title,
 // metadata line, tags, the phone jump to the context column, status card when
 // active or failed, the Summary/Source tabs (#372), the selected view's
-// content, then the novelty panel below either view. Connections and tensions
-// sit beside the column on desktop and after it on phones (#371). Details
-// (#373) follows in its own slice; the actions in the heading row (Reprocess,
+// content, the novelty panel below either view, then the collapsed Details
+// section (#373). Connections and tensions sit beside the column on desktop
+// and after it on phones (#371). The actions in the heading row (Reprocess,
 // Open original URL) arrive with capture in Phase 4.
 
 export function ReadingPage({ id, view = "summary" }: { id: string; view?: ReadingView }) {
@@ -52,8 +53,8 @@ export function ReadingPage({ id, view = "summary" }: { id: string; view?: Readi
 }
 
 /**
- * Title, metadata line, tags, status, the views, and novelty (design spec,
- * Reading surface). A very long title wraps and is never truncated, so the
+ * Title, metadata line, tags, status, the views, novelty, and Details (design
+ * spec, Reading surface). A very long title wraps and is never truncated, so the
  * heading carries the whole thing.
  */
 function ReadingSurface({ reading, view, trail }: { reading: Reading; view: ReadingView; trail: readonly TrailHop[] }) {
@@ -75,6 +76,7 @@ function ReadingSurface({ reading, view, trail }: { reading: Reading; view: Read
         <ReadingStatusCard reading={reading} />
         <ReadingViews key={reading.id} reading={reading} view={view} />
         <ReadingNovelty reading={reading} />
+        <ReadingDetails key={`details-${reading.id}`} reading={reading} />
       </article>
       {context ? <ReadingContext reading={reading} /> : null}
     </div>

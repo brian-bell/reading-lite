@@ -19,8 +19,7 @@ import type { Identity } from "./identity";
 // `old-manifest`), and a manifest can carry `null` where a field was cleared
 // (fixture `gardens`, `tensions: null`), so every optional field is also
 // null-tolerant and normalised to absent. Only `id`, `url`, and `status` are
-// load-bearing. Later slices add the fields they need — #372 source, #373
-// details.
+// load-bearing.
 
 /**
  * ProcessingStageSchema in the backend's src/schemas/manifest.ts, for the
@@ -60,7 +59,7 @@ type Declared<T> = { [K in keyof T as string extends K ? never : K]: T[K] };
  * An optional field that may also arrive as `null`. A cleared field reads as
  * an absent one, so components test `=== undefined` and nothing else.
  */
-function absent<T extends z.ZodType>(schema: T) {
+export function absent<T extends z.ZodType>(schema: T) {
   return schema
     .nullable()
     .transform((value) => value ?? undefined)
@@ -157,6 +156,9 @@ export const ReadingSchema = z.looseObject({
   tldr: absent(z.string()),
   summary_markdown: absent(z.string()),
   tags: absent(z.array(z.string())),
+  keywords: absent(z.array(z.string())),
+  people: absent(z.array(z.string())),
+  orgs: absent(z.array(z.string())),
   source_type: absent(z.string()),
   content_status: absent(z.string()),
   created_at: absent(z.string()),

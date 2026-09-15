@@ -10,7 +10,7 @@
 
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
-import { serveReadingsInBrowser, serveSourceInBrowser } from "./test";
+import { serveDiagnosticsInBrowser, serveReadingsInBrowser, serveSourceInBrowser } from "./test";
 
 export type SignedState = "signed-out" | "signed-in";
 
@@ -212,7 +212,70 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     heading: "The web we can no longer revisit",
     fixture: "unavailable-source",
   },
+
+  // The Details disclosure (#373): collapsed is every reading case above.
+  // Open on `attention` shows entities, similarity numbers, both files, and
+  // loaded diagnostics with a succeeded attempt; the failed reading's open
+  // section shows a failed attempt and only the raw file; and the diagnostics
+  // loading and failed states are reached by holding and failing the request.
+  {
+    name: "reading-details-open",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await serveDiagnosticsInBrowser(page);
+      await openDetails(page);
+      await expect(page.getByText("Storage key")).toBeVisible();
+    },
+  },
+  {
+    name: "reading-details-failed-reading",
+    path: "/readings/rd_FXERR00001",
+    state: "signed-in",
+    heading: "https://registration-wall.example/members-only-report",
+    fixture: "fail-source-unreachable",
+    prepare: async (page) => {
+      await serveDiagnosticsInBrowser(page);
+      await openDetails(page);
+      await expect(page.getByRole("article", { name: "Saved attempt" })).toBeVisible();
+    },
+  },
+  {
+    name: "reading-details-diagnostics-loading",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      // Never answered: the section stays in its loading state.
+      await serveDiagnosticsInBrowser(page, async () => undefined);
+      await openDetails(page);
+      await expect(page.getByText("Loading diagnostics…")).toBeVisible();
+    },
+  },
+  {
+    name: "reading-details-diagnostics-failed",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await serveDiagnosticsInBrowser(page, (route) =>
+        route.fulfill({ status: 503, json: { error: "storage unavailable" } }),
+      );
+      await openDetails(page);
+      await expect(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    },
+  },
 ];
+
+/** Opens the Details disclosure. */
+export async function openDetails(page: Page): Promise<void> {
+  await page.locator("details.reading-details > summary").click();
+  await expect(page.locator("details.reading-details[open]")).toBeVisible();
+}
 
 /** Selects the Source tab and waits for the source to render. */
 export async function selectSourceView(page: Page): Promise<void> {

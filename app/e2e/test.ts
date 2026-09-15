@@ -2,7 +2,7 @@
 // baseURL, the fixture pack's clock pinned in the browser, and one helper that
 // loads a coverage case in its signed-in or signed-out state.
 
-import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
+import { test as base, expect, type BrowserContext, type Page, type Route } from "@playwright/test";
 import type { EvidenceCase, SignedState } from "./coverage";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "./harness";
@@ -79,6 +79,52 @@ export async function serveSourceInBrowser(page: Page): Promise<void> {
       return;
     }
     await route.fulfill({ status: 200, contentType: "text/markdown; charset=utf-8", body: markdown });
+  });
+}
+
+/**
+ * Serves `GET /api/readings/:id/diagnostics` in the browser from the pack
+ * (#373). The Details section fetches it once opened, never through the
+ * server render. `answer` replaces the fulfilment for the failure and
+ * still-loading states.
+ */
+export async function serveDiagnosticsInBrowser(
+  page: Page,
+  answer?: (route: Route) => Promise<void>,
+): Promise<void> {
+  await page.route("**/api/readings/*/diagnostics", async (route) => {
+    if (answer) {
+      await answer(route);
+      return;
+    }
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const id = decodeURIComponent(segments.at(-2) ?? "");
+    const body = pack.diagnostics[id as keyof typeof pack.diagnostics];
+    if (!body) {
+      await route.fulfill({ status: 404, json: { error: "not found" } });
+      return;
+    }
+    await route.fulfill({ status: 200, json: body });
+  });
+}
+
+/**
+ * Serves the two files "Open as file" fetches (#373): the extracted Markdown
+ * as serveSourceInBrowser does, and `GET /api/readings/:id/content/raw` from
+ * the pack's raw captures with their stored content type. An id without one
+ * is a 404, as for a pending or failed reading.
+ */
+export async function serveFilesInBrowser(page: Page): Promise<void> {
+  await serveSourceInBrowser(page);
+  await page.route("**/api/readings/*/content/raw", async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const id = decodeURIComponent(segments.at(-3) ?? "");
+    const raw = pack.raws[id as keyof typeof pack.raws];
+    if (!raw) {
+      await route.fulfill({ status: 404, json: { error: "not found" } });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: raw.content_type, body: raw.body });
   });
 }
 

@@ -41,6 +41,27 @@ export function dateOn(iso: string | undefined): string | undefined {
   }).format(parsed);
 }
 
+/**
+ * An ISO timestamp → "7 September 2026, 09:30 UTC", for the Details section's
+ * attempts and events (#373), where the time of day is the point. Same fixed
+ * locale and zone as `dateOn`, for the same hydration reason.
+ */
+export function dateTimeOn(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return undefined;
+  const formatted = new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZone: "UTC",
+  }).format(parsed);
+  return `${formatted.replace(" at ", ", ")} UTC`;
+}
+
 /** Only imported Markdown is called out; a fetched URL is the unremarkable case. */
 export function sourceLabel(sourceType: string | undefined): string | undefined {
   return sourceType === "markdown" ? "Imported Markdown" : undefined;

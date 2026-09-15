@@ -15,11 +15,13 @@ import { hostnameOf } from "./reading-presentation";
 // change. A 401 throws into the shell's expired-session page and anything
 // else is the retryable failure shown inside the view.
 
-export type SourceResult =
-  | { state: "ready"; markdown: string }
+/** What a content endpoint answered with when it did not answer with content. */
+export type ContentProblem =
   | { state: "unavailable" }
   | { state: "forbidden" }
   | { state: "account-changed"; acting_tenant?: string };
+
+export type SourceResult = { state: "ready"; markdown: string } | ContentProblem;
 
 export function sourceQueryKey(id: string): readonly unknown[] {
   return ["reading-source", id];
@@ -27,11 +29,19 @@ export function sourceQueryKey(id: string): readonly unknown[] {
 
 export function sourceFromResponse(status: number, body: string): SourceResult {
   if (status === 200) return { state: "ready", markdown: body };
+  return contentProblem(status, body, "source");
+}
+
+/**
+ * The non-200 half of the mapping, shared with "Open as file" (reading-files.ts),
+ * which reads the same endpoints: one place decides what each status means.
+ */
+export function contentProblem(status: number, body: string, noun: string): ContentProblem {
   if (status === 404) return { state: "unavailable" };
   const envelope = parseJson(body);
   if (status === 403) return { state: "forbidden" };
   if (status === 412) return { state: "account-changed", acting_tenant: actingTenantOf(envelope) };
-  throw new ApiError(status, messageOf(envelope) ?? `source returned ${status}`);
+  throw new ApiError(status, messageOf(envelope) ?? `${noun} returned ${status}`);
 }
 
 /**

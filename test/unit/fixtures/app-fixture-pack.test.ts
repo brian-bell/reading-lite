@@ -7,7 +7,7 @@ import {
   buildAppFixturePack,
   serializeAppFixturePack,
 } from "../../fixtures/app-fixture-pack";
-import { GetReadingResponseSchema } from "../../../src/schemas/api";
+import { GetReadingDiagnosticsResponseSchema, GetReadingResponseSchema } from "../../../src/schemas/api";
 
 // The committed snapshot app/'s browser-evidence suite serves. It is generated,
 // so this test is the drift guard: edit test/fixtures/local-seed.ts, run the
@@ -55,6 +55,51 @@ describe("app browser-evidence fixture pack", () => {
     const pack = buildAppFixturePack();
     const pending = pack.fixtures.find((f) => f.name === "pending");
     expect(pending?.status).toBe("pending");
+  });
+
+  // Details (#373): diagnostics and the raw capture are served in the browser
+  // from the pack, so each fixture carries what the backend's endpoints would
+  // answer, projected through the backend's own response schema.
+  it("serves a diagnostics body for every fixture, shaped like the endpoint's", () => {
+    const pack = buildAppFixturePack();
+    for (const fixture of pack.fixtures) {
+      const body = GetReadingDiagnosticsResponseSchema.parse(pack.diagnostics[fixture.id]);
+      expect(body.id, fixture.name).toBe(fixture.id);
+      expect(body.manifest.status).toBe(fixture.status);
+      // Computed from the seed's pointer objects the way the router computes
+      // them; every seeded reading owns its own pointers.
+      expect(body.pointers.by_id).toMatchObject({ exists: true, matches_manifest: true });
+      expect(body.pointers.by_url).toMatchObject({ exists: true, matches_manifest: true });
+      expect(body.pointers.by_url.pointer).toEqual({ id: fixture.id, key_prefix: body.key_prefix });
+      expect(body.objects.length, fixture.name).toBeGreaterThan(0);
+      expect(body.attempts.length, fixture.name).toBeGreaterThan(0);
+      for (const object of body.objects) expect(object.key.startsWith(`${body.key_prefix}/`)).toBe(true);
+    }
+  });
+
+  // The endpoint's final sort; its 20-attempt shortlist is not modelled.
+  it("lists attempts newest first by started_at", () => {
+    const pack = buildAppFixturePack();
+    for (const body of Object.values(pack.diagnostics)) {
+      const starts = body.attempts.map((a) => a.started_at);
+      expect(starts).toEqual([...starts].sort().reverse());
+    }
+  });
+
+  it("serves each ready fixture's raw capture with its stored content type, and none for the rest", () => {
+    const pack = buildAppFixturePack();
+    for (const fixture of pack.fixtures) {
+      const raw = pack.raws[fixture.id];
+      if (fixture.status === "ready") {
+        expect(raw, fixture.name).toBeDefined();
+        expect(raw.content_type).toBe(pack.readings[fixture.id].content_type);
+      } else {
+        // The seed writes no capture for a pending or failed reading; the
+        // endpoint 404s, and so does the browser stub.
+        expect(raw, fixture.name).toBeUndefined();
+      }
+    }
+    expect(pack.raws.rd_FXMDPAGE01.content_type).toMatch(/^text\/markdown/);
   });
 
   it("omits the removed relationship target from the resolved targets", () => {

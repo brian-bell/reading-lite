@@ -79,6 +79,14 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
+      // The Details section (#373): request timing, the native disclosure
+      // from the keyboard, the files opening in a new tab as plain text, and
+      // the open section at 390 px. The matrix screenshots its states.
+      name: "reading-details",
+      testMatch: /reading-details\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       name: "shell-extras",
       testMatch: /shell-extras\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },

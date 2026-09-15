@@ -849,6 +849,189 @@ textarea {
   }
 }
 
+/* ---- Details (#373) --------------------------------------------------- */
+
+/* One collapsed disclosure at the foot of the reading column. The summary is
+   the section's heading row; the native marker stays, since it is the only
+   hint that the row opens. */
+.reading-details {
+  max-width: 68ch;
+  margin: var(--space-7) 0 0;
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-4);
+}
+
+.reading-details-summary {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.reading-details-summary h2 {
+  display: inline;
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.3;
+}
+
+.reading-details-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  padding-top: var(--space-4);
+}
+
+.reading-details-group h3,
+.reading-details-group h4 {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.reading-details-group h4 {
+  margin-top: var(--space-4);
+}
+
+.reading-details-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* The tag look, but not a control: keywords and names lead nowhere. */
+.chip {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.reading-details-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.reading-details-fact {
+  display: contents;
+}
+
+.reading-details-facts dt {
+  color: var(--muted);
+}
+
+.reading-details-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.reading-details-objects,
+.reading-details-attempts,
+.reading-details-events ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.reading-details-objects li,
+.reading-details-events li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  min-width: 0;
+}
+
+.reading-details-objects code {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.reading-details-size {
+  color: var(--muted);
+}
+
+.reading-details-attempts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reading-details-attempt {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.reading-details-attempt p {
+  margin: 0;
+}
+
+.reading-details-attempt-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+
+.reading-details-status-failed,
+.reading-details-error {
+  color: var(--danger);
+}
+
+.reading-details-error {
+  overflow-wrap: anywhere;
+}
+
+.reading-details-events {
+  margin-top: var(--space-2);
+}
+
+.reading-details-events summary {
+  cursor: pointer;
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.reading-details-events ol {
+  margin-top: var(--space-2);
+  font-size: 13px;
+}
+
+.reading-details-failed p,
+.reading-details-loading p {
+  margin: 0 0 var(--space-3);
+}
+
+@media (max-width: 650px) {
+  .reading-details-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .reading-details-facts dt {
+    margin-top: var(--space-2);
+  }
+}
+
 /* ---- Connections and tensions (#371) ---------------------------------- */
 
 /* Flexible reading column plus a 320 px context column (design spec, Layout

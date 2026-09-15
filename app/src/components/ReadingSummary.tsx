@@ -91,7 +91,8 @@ function SummaryImage({ alt }: { alt?: string }) {
  * Novelty (design spec): the verdict's label and its fixed sentence, on the
  * accent surface with the accent rule.
  *
- * The similarity numbers behind the verdict go in Details (#373), not here.
+ * The similarity numbers behind the verdict are in Details (ReadingDetails),
+ * not here.
  * "Familiar" links to the connections when there are any: the sentence stays
  * as written and the link follows it, so the copy the spec fixes is intact.
  */
