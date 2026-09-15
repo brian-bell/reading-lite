@@ -71,6 +71,10 @@ Approved dependencies, pinned to exact versions in `app/`:
 - Response projection (runtime, approved September 14, 2026 for
   [#371](https://github.com/brian-bell/reading-lite/issues/371)): `zod`, to
   parse `GET /api/readings/:id` at the API seam.
+- Source rendering (runtime, approved September 14, 2026 for
+  [#372](https://github.com/brian-bell/reading-lite/issues/372)): `remark-gfm`,
+  so tables in imported Markdown render as tables beside `react-markdown` and
+  `rehype-sanitize`.
 
 Anything else needs separate approval. The Wrangler config keeps
 `nodejs_compat`, uses `@tanstack/react-start/server-entry` as `main`, and enables

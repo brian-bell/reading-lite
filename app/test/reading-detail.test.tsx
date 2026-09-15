@@ -20,6 +20,7 @@ import { ReadingPage } from "../src/components/ReadingPage";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 import { readingQueryKey, type ProcessingStage, type Reading } from "../src/reading";
 import { readingQueryOptions } from "../src/reading-query";
+import { readingViewOf, validateReadingSearch } from "../src/reading-view";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 
@@ -88,13 +89,15 @@ const authedRoute = createRoute({ getParentRoute: () => rootRoute, id: "_authed"
 const readingRoute = createRoute({
   getParentRoute: () => authedRoute,
   path: "/readings/$id",
+  validateSearch: validateReadingSearch,
   loader: ({ context, params }) => {
     const identity = context.queryClient.getQueryData<Identity | null>(whoamiQueryKey);
     return context.queryClient.prefetchQuery(readingQueryOptions(context.queryClient, params.id, identity));
   },
   component: function ReadingRoute() {
     const { id } = readingRoute.useParams();
-    return <ReadingPage id={id} />;
+    const search = readingRoute.useSearch();
+    return <ReadingPage id={id} view={readingViewOf(search)} />;
   },
 });
 const routeTree = rootRoute.addChildren([indexRoute, authedRoute.addChildren([readingRoute])]);
@@ -828,5 +831,358 @@ describe("the return trail", () => {
 
     expect(screen.queryByText(/You followed/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Back to / })).not.toBeInTheDocument();
+  });
+});
+
+// The Source view (#372; design spec: Source content; Routes and navigation
+// state; Keyboard, focus, and motion). The reading comes from the server path
+// as above; the source is the browser's own request, so `fetch` is stubbed
+// with the content the backend would stream.
+describe("the Source view", () => {
+  const RAW_ONLY = "rd_FXRAWSRC01";
+  const SOURCE = "# Somewhere to return\n\nOn a Sunday morning, I opened a folder.\n\n## From collection to conversation\n\nAn old idea meets a new question.";
+
+  function markdownResponse(body: string, status = 200): Response {
+    return new Response(body, { status, headers: { "content-type": "text/markdown; charset=utf-8" } });
+  }
+
+  /** The browser's /content endpoint answers with this, or per call. */
+  function contentAnswers(...responses: (() => Response)[]) {
+    const fetchMock = vi.fn(async (input: Request | URL | string) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      expect(url.pathname).toMatch(/^\/api\/readings\/[^/]+\/content$/);
+      const next = responses.length > 1 ? responses.shift()! : responses[0]!;
+      return next();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function tab(name: "Summary" | "Source") {
+    return screen.getByRole("tab", { name });
+  }
+
+  function panel(name: "Summary" | "Source") {
+    return screen.getByRole("tabpanel", { name });
+  }
+
+  async function selectSource() {
+    await userEvent.click(tab("Source"));
+    return panel("Source");
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("offers Summary and Source tabs on a ready reading, with Summary selected", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const list = screen.getByRole("tablist", { name: "View" });
+    expect(within(list).getAllByRole("tab").map((t) => t.textContent)).toEqual(["Summary", "Source"]);
+    expect(tab("Summary")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Source")).toHaveAttribute("aria-selected", "false");
+    expect(panel("Summary")).toHaveAttribute("tabindex", "0");
+    expect(within(panel("Summary")).getByText(readings[ATTENTION]!.tldr!)).toBeInTheDocument();
+  });
+
+  it("shows no tabs on a pending or failed reading", async () => {
+    backendServes({ rd_FXPENDNG01: readings.rd_FXPENDNG01, rd_FXERR00001: readings.rd_FXERR00001 });
+    await openTab("/readings/rd_FXPENDNG01?view=source");
+    expect(screen.queryByRole("tablist")).toBeNull();
+    cleanup();
+    await openTab("/readings/rd_FXERR00001");
+    expect(screen.queryByRole("tablist")).toBeNull();
+  });
+
+  // Design spec, Source content: fetched on demand, never during the server
+  // render. Nothing asks for the source until the reader selects the view.
+  it("requests the source only once Source is selected, pinned like the reading", async () => {
+    const fetchMock = contentAnswers(() => markdownResponse(SOURCE));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    const source = await selectSource();
+    await within(source).findByText("On a Sunday morning, I opened a folder.");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const request = fetchMock.mock.calls[0]![0] as Request;
+    expect(new URL(request.url).pathname).toBe(`/api/readings/${ATTENTION}/content`);
+    expect(request.headers.get("x-expected-tenant")).toBe("usr_a");
+    expect(tab("Source")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("selects Source from a ?view=source deep link", async () => {
+    contentAnswers(() => markdownResponse(SOURCE));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    expect(tab("Source")).toHaveAttribute("aria-selected", "true");
+    await within(panel("Source")).findByText("On a Sunday morning, I opened a folder.");
+  });
+
+  // Routes and navigation state: switching replaces the history entry, keeps
+  // the reading's history state, and does not touch the hash.
+  it("switches views by replacing the URL rather than adding history", async () => {
+    contentAnswers(() => markdownResponse(SOURCE));
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab(`/readings/${ATTENTION}`);
+    expect(router.history.canGoBack()).toBe(false);
+
+    await selectSource();
+    await waitFor(() => expect(router.state.location.search).toEqual({ view: "source" }));
+    expect(router.history.canGoBack()).toBe(false);
+
+    await userEvent.click(tab("Summary"));
+    await waitFor(() => expect(router.state.location.search).toEqual({}));
+    expect(router.state.location.href).toBe(`/readings/${ATTENTION}`);
+    expect(router.history.canGoBack()).toBe(false);
+  });
+
+  it("follows the ARIA tabs pattern from the keyboard", async () => {
+    contentAnswers(() => markdownResponse(SOURCE));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    tab("Summary").focus();
+    expect(tab("Source")).toHaveAttribute("tabindex", "-1");
+
+    await userEvent.keyboard("{ArrowRight}");
+    await waitFor(() => expect(tab("Source")).toHaveAttribute("aria-selected", "true"));
+    expect(tab("Source")).toHaveFocus();
+    expect(tab("Source")).toHaveAttribute("tabindex", "0");
+    expect(tab("Summary")).toHaveAttribute("tabindex", "-1");
+
+    await userEvent.keyboard("{ArrowRight}");
+    await waitFor(() => expect(tab("Summary")).toHaveAttribute("aria-selected", "true"));
+    expect(tab("Summary")).toHaveFocus();
+
+    await userEvent.keyboard("{ArrowLeft}");
+    await waitFor(() => expect(tab("Source")).toHaveAttribute("aria-selected", "true"));
+
+    await userEvent.keyboard("{Home}");
+    await waitFor(() => expect(tab("Summary")).toHaveAttribute("aria-selected", "true"));
+    expect(tab("Summary")).toHaveFocus();
+
+    await userEvent.keyboard("{End}");
+    await waitFor(() => expect(tab("Source")).toHaveAttribute("aria-selected", "true"));
+    expect(tab("Source")).toHaveFocus();
+
+    // The panel is a tab stop of its own, after the tabs.
+    await userEvent.tab();
+    expect(panel("Source")).toHaveFocus();
+  });
+
+  it("demotes source headings one level under the page title", async () => {
+    contentAnswers(() => markdownResponse("# Top\n\n## Second\n\n###### Sixth\n\nText."));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    expect((await within(source).findByText("Top")).tagName).toBe("H2");
+    expect(within(source).getByText("Second").tagName).toBe("H3");
+    expect(within(source).getByText("Sixth").tagName).toBe("H6");
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+  });
+
+  it("never lets raw HTML from the captured page reach the DOM", async () => {
+    contentAnswers(() =>
+      markdownResponse('<img src="https://x.example/p.gif" onerror="alert(1)">\n\n<script>alert(2)</script>\n\nSafe text.'),
+    );
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    await within(source).findByText("Safe text.");
+    expect(source.querySelector("img")).toBeNull();
+    expect(source.querySelector("script")).toBeNull();
+    expect(source.innerHTML).not.toContain("onerror");
+  });
+
+  // A captured page's site-relative links belong to its site, not to this host.
+  it("resolves relative links against the captured page's URL", async () => {
+    contentAnswers(() => markdownResponse("See [part two](/2026/part-2) and [the anchor](#notes)."));
+    backendAnswers(200, { ...readings[ATTENTION], url: "https://fieldnotes.example/quiet/part-1" });
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    expect(await within(source).findByRole("link", { name: "part two" })).toHaveAttribute(
+      "href",
+      "https://fieldnotes.example/2026/part-2",
+    );
+    expect(within(source).getByRole("link", { name: "the anchor" })).toHaveAttribute(
+      "href",
+      "https://fieldnotes.example/quiet/part-1#notes",
+    );
+  });
+
+  it("opens links in a new tab without a referrer, opener, or endorsement", async () => {
+    contentAnswers(() => markdownResponse("See [elsewhere](https://elsewhere.example/x) and <javascript:alert(1)>."));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const link = await within(panel("Source")).findByRole("link", { name: "elsewhere" });
+    expect(link).toHaveAttribute("href", "https://elsewhere.example/x");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer nofollow");
+    // The autolink's text survives; its href does not.
+    const links = within(panel("Source")).getAllByRole("link");
+    expect(links.map((l) => l.getAttribute("href"))).toEqual(["https://elsewhere.example/x"]);
+  });
+
+  it("renders GFM tables and fenced code in their own containers", async () => {
+    contentAnswers(() => markdownResponse("| a | b |\n| --- | --- |\n| 1 | 2 |\n\n```sh\necho hi\n```"));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    const table = await within(source).findByRole("table");
+    expect(within(table).getByRole("columnheader", { name: "a" })).toBeInTheDocument();
+    expect(source.querySelector("pre > code")?.textContent).toBe("echo hi\n");
+    // Each scrolls on its own, so each is reachable from the keyboard.
+    expect(table).toHaveAttribute("tabindex", "0");
+    expect(source.querySelector("pre")).toHaveAttribute("tabindex", "0");
+  });
+
+  // Design spec, Source content: a placeholder with the alt text and host, and
+  // the image itself only on request, over https:, with no referrer.
+  it("shows a remote image as its alt text and host until the reader loads it", async () => {
+    contentAnswers(() => markdownResponse("![The desk on Friday](https://images.example/desk.jpg?w=800)\n\nText."));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    await within(source).findByText("The desk on Friday");
+    expect(within(source).getByText("images.example")).toBeInTheDocument();
+    expect(source.querySelector("img")).toBeNull();
+
+    await userEvent.click(within(source).getByRole("button", { name: "Load image" }));
+    const image = within(source).getByRole("img", { name: "The desk on Friday" });
+    expect(image).toHaveAttribute("src", "https://images.example/desk.jpg?w=800");
+    expect(image).toHaveAttribute("referrerpolicy", "no-referrer");
+    expect(within(source).queryByRole("button", { name: "Load image" })).toBeNull();
+  });
+
+  it("remembers a loaded image across a switch to Summary and back", async () => {
+    contentAnswers(() => markdownResponse("![The desk](https://images.example/desk.jpg)\n\nText."));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+    await userEvent.click(await within(panel("Source")).findByRole("button", { name: "Load image" }));
+    expect(within(panel("Source")).getByRole("img", { name: "The desk" })).toBeInTheDocument();
+
+    await userEvent.click(tab("Summary"));
+    await waitFor(() => expect(tab("Summary")).toHaveAttribute("aria-selected", "true"));
+    await selectSource();
+    expect(await within(panel("Source")).findByRole("img", { name: "The desk" })).toBeInTheDocument();
+    expect(within(panel("Source")).queryByRole("button", { name: "Load image" })).toBeNull();
+  });
+
+  // Consent is per image, per reading. The route component is reused when the
+  // reader follows a connection to another reading, so what was loaded here
+  // must not load there on its own.
+  it("forgets loaded images when the reader moves to another reading", async () => {
+    contentAnswers(() => markdownResponse("![The desk](https://images.example/desk.jpg)\n\nText."));
+    backendServes({ [ATTENTION]: readings[ATTENTION], rd_FXGARDEN01: readings.rd_FXGARDEN01 });
+    await openTab(`/readings/${ATTENTION}?view=source`);
+    await userEvent.click(await within(panel("Source")).findByRole("button", { name: "Load image" }));
+    expect(within(panel("Source")).getByRole("img", { name: "The desk" })).toBeInTheDocument();
+
+    const context = screen.getByRole("complementary", { name: "Connections & tensions" });
+    await userEvent.click(within(context).getByRole("link", { name: "Libraries are gardens, not warehouses" }));
+    await headingSettles("Libraries are gardens, not warehouses");
+    await selectSource();
+    await within(panel("Source")).findByRole("button", { name: "Load image" });
+    expect(within(panel("Source")).queryByRole("img")).toBeNull();
+  });
+
+  it("offers no load for http: or relative images", async () => {
+    contentAnswers(() => markdownResponse("![Plain](http://images.example/a.png)\n\n![Local](/a.png)\n\nText."));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    await within(source).findByText("Plain");
+    expect(within(source).getByText("images.example")).toBeInTheDocument();
+    expect(within(source).getByText("Local")).toBeInTheDocument();
+    expect(within(source).queryByRole("button", { name: "Load image" })).toBeNull();
+    expect(source.querySelector("img")).toBeNull();
+  });
+
+  // Acceptance matrix, Source unavailable: `/content` 404s.
+  it("says the source is unavailable on a 404 and keeps the rest of the reading", async () => {
+    contentAnswers(() => Response.json({ error: "extracted markdown not available" }, { status: 404 }));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    await within(source).findByRole("heading", { level: 2, name: "Source text is unavailable" });
+    expect(screen.getByRole("heading", { level: 2, name: "What this adds" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Connections & tensions" })).toBeInTheDocument();
+
+    await userEvent.click(within(source).getByRole("button", { name: "Read summary" }));
+    await waitFor(() => expect(tab("Summary")).toHaveAttribute("aria-selected", "true"));
+    expect(tab("Summary")).toHaveFocus();
+    expect(within(panel("Summary")).getByText(readings[ATTENTION]!.tldr!)).toBeInTheDocument();
+  });
+
+  // ... or `content_status` is not `captured`: then there is nothing to ask.
+  it("says the source is unavailable without a request when the manifest already says so", async () => {
+    const fetchMock = contentAnswers(() => markdownResponse("never"));
+    backendAnswers(200, readings[RAW_ONLY]);
+    await openTab(`/readings/${RAW_ONLY}?view=source`);
+
+    expect(within(panel("Source")).getByRole("heading", { level: 2, name: "Source text is unavailable" })).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // 403 and 412 are not retryable; the view says what the reading's own pages
+  // would say, without touching the reading, novelty, or relationships.
+  it("shows the account-changed and forbidden states inside the view without a Retry", async () => {
+    contentAnswers(() => Response.json({ error: "expected tenant mismatch", acting_tenant: "usr_b" }, { status: 412 }));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+    const source = panel("Source");
+    await within(source).findByRole("button", { name: "Reload" });
+    expect(within(source).getByText(/different account/)).toBeInTheDocument();
+    expect(within(source).getByText("Signed in as usr_b.")).toBeInTheDocument();
+    expect(within(source).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(heading()).toBe("A quieter internet is a choice we can make");
+    cleanup();
+    vi.unstubAllGlobals();
+
+    contentAnswers(() => Response.json({ error: "forbidden" }, { status: 403 }));
+    await openTab(`/readings/${ATTENTION}?view=source`);
+    await within(panel("Source")).findByText(/don't have access/);
+    expect(within(panel("Source")).queryByRole("button")).toBeNull();
+  });
+
+  it("shows a failure inside the view and retries from it", async () => {
+    contentAnswers(
+      () => Response.json({ error: "storage unavailable" }, { status: 503 }),
+      () => markdownResponse(SOURCE),
+    );
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}?view=source`);
+
+    const source = panel("Source");
+    await within(source).findByText(/storage unavailable/);
+    expect(heading()).toBe("A quieter internet is a choice we can make");
+
+    await userEvent.click(within(source).getByRole("button", { name: "Retry" }));
+    await within(source).findByText("On a Sunday morning, I opened a folder.");
+  });
+
+  it("keeps the novelty panel below either view", async () => {
+    contentAnswers(() => markdownResponse(SOURCE));
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const novelty = () => screen.getByRole("region", { name: "What this adds" });
+    expect(novelty()).toBeInTheDocument();
+    expect(panel("Summary").contains(novelty())).toBe(false);
+
+    await selectSource();
+    await within(panel("Source")).findByText("On a Sunday morning, I opened a folder.");
+    expect(novelty()).toBeInTheDocument();
+    expect(panel("Source").contains(novelty())).toBe(false);
   });
 });

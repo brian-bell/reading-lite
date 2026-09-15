@@ -4,11 +4,21 @@
 // routes. The frontend never renders or proxies those paths: if a misconfigured
 // route delivers one here, it answers 404 so the fault is visible.
 //
-// Every response this Worker renders is private and uncacheable. Hashed static
-// assets never reach this code; Workers Assets serves them with the headers in
-// public/_headers.
+// Every response this Worker renders is private and uncacheable, and carries
+// the content-security policy the Source view needs (design spec, Source
+// content). Hashed static assets never reach this code; Workers Assets serves
+// them with the headers in public/_headers.
 
 export const HTML_CACHE_CONTROL = "private, no-store";
+
+/**
+ * Images: the page's own, remote `https:` ones a reader chose to load in the
+ * Source view, and the `data:` SVG behind the theme's grain token
+ * (styles/tokens.css) — and nothing broader. Only `img-src` is set: a full
+ * policy needs script nonces through the router's SSR options and Turnstile's
+ * frame and script origins, which is its own change.
+ */
+export const CONTENT_SECURITY_POLICY = "img-src 'self' https: data:";
 
 export function isBackendPath(pathname: string): boolean {
   return (
@@ -27,9 +37,10 @@ export function backendPathResponse(): Response {
   });
 }
 
-export function withNoStore(response: Response): Response {
+export function withResponsePolicy(response: Response): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", HTML_CACHE_CONTROL);
+  headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

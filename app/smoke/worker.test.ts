@@ -64,6 +64,8 @@ describe("rendered pages", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    // The Source view's image policy (#372) rides on every rendered page.
+    expect(response.headers.get("Content-Security-Policy")).toBe("img-src 'self' https: data:");
     const html = await response.text();
     expect(html).toMatch(/<html lang="en">/);
     expect(html).toContain('<nav aria-label="Main">');

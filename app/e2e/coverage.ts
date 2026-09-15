@@ -10,7 +10,7 @@
 
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
-import { serveReadingsInBrowser } from "./test";
+import { serveReadingsInBrowser, serveSourceInBrowser } from "./test";
 
 export type SignedState = "signed-out" | "signed-in";
 
@@ -175,7 +175,50 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
       await followCard(page, "Infinite feeds", "This reading isn't in your library.");
     },
   },
+
+  // The Source view (#372). `attention` selects Source from the Summary tab,
+  // which proves the tab switch and the on-demand fetch; `imported-markdown`
+  // deep-links to `?view=source` and carries the rich content the spec covers
+  // (table, code block, image placeholder, raw HTML, an unbreakable link);
+  // `unavailable-source` is the raw_only manifest, unavailable without a
+  // request.
+  {
+    name: "reading-source",
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await serveSourceInBrowser(page);
+      await selectSourceView(page);
+    },
+  },
+  {
+    name: "reading-source-rich",
+    path: "/readings/rd_FXMDPAGE01?view=source",
+    state: "signed-in",
+    heading: "Slow reading week",
+    fixture: "imported-markdown",
+    prepare: async (page) => {
+      await serveSourceInBrowser(page);
+      await page.reload();
+      await expect(page.getByRole("tabpanel", { name: "Source" }).getByRole("table")).toBeVisible();
+    },
+  },
+  {
+    name: "reading-source-unavailable",
+    path: "/readings/rd_FXRAWSRC01?view=source",
+    state: "signed-in",
+    heading: "The web we can no longer revisit",
+    fixture: "unavailable-source",
+  },
 ];
+
+/** Selects the Source tab and waits for the source to render. */
+export async function selectSourceView(page: Page): Promise<void> {
+  await page.getByRole("tab", { name: "Source" }).click();
+  await expect(page.getByRole("tabpanel", { name: "Source" }).locator(".reading-source")).toBeVisible();
+}
 
 /** Follows a relationship card by its title and waits for the destination's heading. */
 export async function followCard(page: Page, title: string, heading = title): Promise<void> {

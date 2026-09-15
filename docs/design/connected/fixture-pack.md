@@ -40,7 +40,7 @@ see these states locally.
 | `degraded-youtube` | `rd_FXYTDEGRD1` | ready | `enrichment_degradation` present (`youtube`, tier `transcript`): ready on the oEmbed floor with description but no transcript |
 | `old-manifest` | `rd_FXPAST0001` | ready | No `similarity`, `novelty_verdict`, or `connections_computed_at`; legacy usage shape. Omit the missing lines; never show "unclassified" |
 | `long-title` | `rd_FXMAXNAME1` | ready | 130-character title, past the summarizer's 120-char output cap (the manifest field has none); must wrap, never truncate |
-| `imported-markdown` | `rd_FXMDPAGE01` | ready | `source_type: "markdown"` with a `text/markdown` raw capture; metadata line says "Imported Markdown" |
+| `imported-markdown` | `rd_FXMDPAGE01` | ready | `source_type: "markdown"` with a `text/markdown` raw capture; metadata line says "Imported Markdown". Its body carries the rich content the Source view handles: a table, a fenced code block, an image, raw HTML, and an unbreakable link |
 | `pending` | `rd_FXPENDNG01` | pending | Fresh submit with a running attempt (`stage: "queued"`). Stamped from the seed clock; re-seed once it passes the 15-minute pending TTL |
 | `fail-source-unreachable` | `rd_FXERR00001` | failed | `BadStatusError` at `fetch_source` — source unreachable category |
 | `fail-source-incomplete` | `rd_FXERR00002` | failed | `SourceRejectedError` at `summarize` — source incomplete category; also `gardens`' failed connection target |

@@ -36,8 +36,12 @@ return path is per origin.
 - **Backend paths.** `/api`, `/api/*`, `/health`, and `/mcp*` return 404 from
   `src/start.ts` before rendering. The backend's more specific routes own them;
   the frontend never proxies.
-- **Caching.** Every rendered response is `Cache-Control: private, no-store`.
-  Only `/assets/*` (content-hashed) is publicly cacheable, via `public/_headers`.
+- **Caching and policy.** Every rendered response is `Cache-Control: private,
+  no-store` and carries `Content-Security-Policy: img-src 'self' https: data:`
+  (`src/server/request-policy.ts`): the page's own images, the remote `https:`
+  images a reader loads in the Source view, and the `data:` grain in
+  `tokens.css`, nothing broader. Only `/assets/*` (content-hashed) is publicly
+  cacheable, via `public/_headers`.
 - **Service bindings.** Each environment's `BACKEND` binding in
   `wrangler.jsonc` names the backend Worker of the same environment and its
   `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
@@ -94,8 +98,27 @@ return path is per origin.
   projection in `src/reading.ts`: only `id`, `url`, and `status` are required,
   every other field the app reads is optional and null-tolerant, unknown fields
   pass through, and a malformed field the app does read is the retryable
-  "unexpected body" error rather than a crash in a component. Source and
-  details are #372 and #373.
+  "unexpected body" error rather than a crash in a component. Details is #373.
+- **Source view.** `?view=source` selects the Source tab (`src/reading-view.ts`:
+  any other value is Summary); the tabs (`src/components/ViewTabs.tsx`) follow
+  the ARIA pattern and switch by replacing the history entry with the
+  location's state kept, so Back leaves the reading and a reload keeps the view.
+  Only ready readings have tabs. The extracted Markdown is fetched in the
+  browser from same-origin `/api/readings/:id/content` once the view is
+  selected (`src/source-query.ts`, `src/api/source.ts`), never in a loader or
+  through `BACKEND`, so it is not part of the server render; a manifest whose
+  `content_status` is not `captured` shows the unavailable state without a
+  request, and a 404 shows it after one; a 403 and the 412 mismatch show their
+  own states in the view, with no Retry. `src/components/ReadingSource.tsx`
+  renders through `remark-gfm` and `rehype-sanitize` with no raw HTML, source
+  headings demoted one level under the title, links opening in a new tab with
+  `rel="noopener noreferrer nofollow"` and site-relative hrefs resolved against
+  the reading's URL (`src/components/ExternalLink.tsx`, shared with the
+  summary), and every image as its alt text and host with a "Load image"
+  button offered for `https:` URLs only; a loaded image carries
+  `referrerpolicy="no-referrer"` and stays loaded across a tab switch. Loading
+  and failure (with Retry) stay inside the view; the novelty panel sits below
+  either view at the same readable width.
 - **Connections and tensions.** Cards come from the manifest's `connections`
   and `tensions` plus the read-time `relationship_targets` map
   (`src/reading-relationships.ts`): an id absent from the map is the removed
