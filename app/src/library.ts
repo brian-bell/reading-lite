@@ -58,9 +58,6 @@ export interface LibraryParams {
   offset: number;
 }
 
-/** The first, unfiltered page. The URL's `q`, `tag`, and `offset` arrive with filters and pagination. */
-export const FIRST_LIBRARY_PAGE: LibraryParams = { offset: 0 };
-
 export function libraryQueryKey(params: LibraryParams): readonly unknown[] {
   return ["library", { q: params.q || undefined, tag: params.tag || undefined, offset: params.offset }];
 }

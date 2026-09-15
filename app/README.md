@@ -82,7 +82,7 @@ return path is per origin.
   `reading-lite.bearerToken` entry is removed at boot
   (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
   parameters stay plain strings (`src/search.ts`).
-- **Library.** Signed in, `/` reads the first page of `GET /api/readings`
+- **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit
   calls same-origin `/api/readings`. Both paths map the response in
@@ -90,9 +90,15 @@ return path is per origin.
   anything else throw) and pin the read with `x-expected-tenant`. Only `q`,
   `tag`, and `offset` cross the binding; the 20-row page size is the backend's.
   Signed out, the loader reads nothing and the sign-in form renders in place.
+  `src/library-search.ts` snaps `offset` as the current SPA does (parseInt,
+  down to a 20-row page, the first page written without it) but keeps the
+  URL's own string, so no spelling redirects. Previous and Next are links to
+  the neighbouring page; an offset past the end offers the first page. The
+  browser-evidence stub adds 24 generated rows past the fixture pack's 18 for
+  pages two and three (`e2e/library-page.js`); the pack is unchanged.
   Cards are plain for now: a title link (the URL when there is no title)
-  stretched over the card. Filters, pagination, badges, and the matrix's
-  library states are later slices of #404.
+  stretched over the card. Filters, badges, and the matrix's common states are
+  later slices of #404.
 - **Reading detail.** `/readings/:id` reads the reading during the server
   render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
   identity), so it is dehydrated into the page and the browser does not ask
