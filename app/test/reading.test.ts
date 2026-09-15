@@ -163,6 +163,7 @@ describe("readReadingFromBackend", () => {
     return {
       whoami: vi.fn(),
       reading: vi.fn(async (_input: ReadingInput) => result),
+      list: vi.fn(),
     } satisfies BackendReads;
   }
 
@@ -206,6 +207,7 @@ describe("readReadingFromBackend", () => {
       reading: vi.fn(async (_input: ReadingInput) => {
         throw new Error("binding is down");
       }),
+      list: vi.fn(),
     } satisfies BackendReads;
 
     await expect(readReadingFromBackend(backend, request, "rd_1", undefined)).rejects.toThrow(/binding is down/);

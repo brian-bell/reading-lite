@@ -19,6 +19,15 @@ export interface BackendReads {
     id: string;
     expectedTenant?: string;
   }): Promise<BackendReadResult>;
+  /** GET /api/readings with the library's filters and offset, optionally pinned. No page size. */
+  list(input: {
+    cookie: string | null;
+    host: string;
+    q?: string;
+    tag?: string;
+    offset?: number;
+    expectedTenant?: string;
+  }): Promise<BackendReadResult>;
 }
 
 /** What a server render forwards: the incoming Cookie header and host, nothing else. */

@@ -10,7 +10,7 @@ import { clearReturnPath, loginHref, safeReturnPath } from "./return-path";
 // these only decide which page to show.
 
 /** Identity, null when signed out, or undefined when it cannot be determined (never a sign-out). */
-async function identityOf(queryClient: QueryClient): Promise<Identity | null | undefined> {
+export async function identityOf(queryClient: QueryClient): Promise<Identity | null | undefined> {
   try {
     return await queryClient.ensureQueryData(whoamiQueryOptions());
   } catch {

@@ -62,6 +62,15 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
+      // The library's first page (#413): read on the server and not again after
+      // hydration, asked for in the browser only on a client-side visit, and
+      // each card one target from the pointer and the keyboard. The matrix
+      // screenshots the page in every project.
+      name: "library",
+      testMatch: /library\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       // The return trail's history behaviour and the phone jump's focus and
       // motion (#371): Back and reload, and the reduced-motion contexts, are
       // about state rather than rendering. The matrix already screenshots the

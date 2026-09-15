@@ -70,8 +70,9 @@ describe("rendered pages", () => {
     expect(html).toMatch(/<html lang="en">/);
     expect(html).toContain('<nav aria-label="Main">');
     expect(html).toContain("Skip to content");
-    // Signed out, the library renders the sign-in form in place.
+    // Signed out, the library renders the sign-in form in place, and reads no rows.
     expect(html).toContain(heading("Sign in"));
+    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["library"'))).toEqual([]);
     // The skip link precedes every other focusable element.
     expect(html.match(/<(?:a|button|input|select|textarea)\b[^>]*>/)?.[0]).toBe(
       '<a class="skip-link" href="#main">',
@@ -106,8 +107,18 @@ describe("rendered pages", () => {
 });
 
 describe("signed-in identity", () => {
-  const A = { cookie: "__Host-session=session-a", email: "reader-a@example.com", csrf: "csrf-token-for-a" };
-  const B = { cookie: "__Host-session=session-b", email: "reader-b@example.com", csrf: "csrf-token-for-b" };
+  const A = {
+    cookie: "__Host-session=session-a",
+    email: "reader-a@example.com",
+    csrf: "csrf-token-for-a",
+    row: "rd_A000000001",
+  };
+  const B = {
+    cookie: "__Host-session=session-b",
+    email: "reader-b@example.com",
+    csrf: "csrf-token-for-b",
+    row: "rd_B000000001",
+  };
 
   it("server-renders the account menu for a session, as private, uncacheable HTML", async () => {
     const response = await request("/", { headers: { Cookie: `theme=dark; ${A.cookie}` } });
@@ -122,6 +133,24 @@ describe("signed-in identity", () => {
     expect(html).toContain(A.csrf);
     expect(html).not.toContain("Sign in");
     expect(html).toContain(heading("Library"));
+  });
+
+  // The first page is read during the server render, through the binding, and
+  // is in the HTML before any script runs (#413).
+  it("server-renders the library's first page for a session", async () => {
+    const response = await request("/", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("Library"));
+    expect(html).toContain('aria-label="Readings"');
+    expect(html).toContain('href="/readings/rd_A000000001"');
+    expect(html).toContain("Reader A&#x27;s quiet internet");
+    // An untitled row is named by its URL.
+    expect(html).toContain('href="/readings/rd_A000000002"');
+    expect(html).toContain("https://fieldnotes.example/pending");
+    // It travels with the page, so the browser does not ask for it again.
+    expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":0}]');
   });
 
   it("renders a sign-in link back to the current URL without a session", async () => {
@@ -144,13 +173,13 @@ describe("signed-in identity", () => {
     expect(html).not.toContain("Sign in");
   });
 
-  it("keeps identity and dehydrated state separate across concurrent renders for two tenants", async () => {
+  it("keeps identity, library rows, and dehydrated state separate across concurrent renders for two tenants", async () => {
     // A answers slower than B, so renders overlap and finish out of order.
     const order = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? A : B));
     const pages = await Promise.all(
       order.map(async (tenant) => ({
         tenant,
-        response: await request(tenant === A ? "/" : "/save", { headers: { Cookie: tenant.cookie } }),
+        response: await request("/", { headers: { Cookie: tenant.cookie } }),
       })),
     );
     for (const { tenant, response } of pages) {
@@ -159,8 +188,10 @@ describe("signed-in identity", () => {
       const html = await response.text();
       expect(html).toContain(tenant.email);
       expect(html).toContain(tenant.csrf);
+      expect(html).toContain(tenant.row);
       expect(html).not.toContain(other.email);
       expect(html).not.toContain(other.csrf);
+      expect(html).not.toContain(other.row);
     }
   });
 });

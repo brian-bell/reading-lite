@@ -82,6 +82,17 @@ return path is per origin.
   `reading-lite.bearerToken` entry is removed at boot
   (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
   parameters stay plain strings (`src/search.ts`).
+- **Library.** Signed in, `/` reads the first page of `GET /api/readings`
+  during the server render through `BACKEND.list` (`src/library-query.ts`), so
+  it is dehydrated and hydration makes no list request; a client-side visit
+  calls same-origin `/api/readings`. Both paths map the response in
+  `src/library.ts` as reading detail does (403 and 412 are values, 401 and
+  anything else throw) and pin the read with `x-expected-tenant`. Only `q`,
+  `tag`, and `offset` cross the binding; the 20-row page size is the backend's.
+  Signed out, the loader reads nothing and the sign-in form renders in place.
+  Cards are plain for now: a title link (the URL when there is no title)
+  stretched over the card. Filters, pagination, badges, and the matrix's
+  library states are later slices of #404.
 - **Reading detail.** `/readings/:id` reads the reading during the server
   render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
   identity), so it is dehydrated into the page and the browser does not ask

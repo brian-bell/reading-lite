@@ -6,6 +6,7 @@ import { test as base, expect, type BrowserContext, type Page, type Route } from
 import type { EvidenceCase, SignedState } from "./coverage";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "./harness";
+import { libraryPage } from "./library-page.js";
 import { SESSION_COOKIE_VALUE, sessionCookieName } from "./sessions";
 
 export type ThemeOption = "system" | "light" | "dark";
@@ -59,6 +60,26 @@ export async function serveReadingsInBrowser(
       await route.fulfill({ status: 404, json: { error: "not found" } });
       return;
     }
+    await route.fulfill({ status: 200, json: body });
+  });
+}
+
+/**
+ * Serves `GET /api/readings` in the browser from the pack's list index (#413),
+ * the same page the stub entrypoint gives the server render. The library reads
+ * its first page on the server, so only a client-side navigation to it asks
+ * here. `requests` records each list request the browser made.
+ */
+export async function serveLibraryInBrowser(page: Page, requests: string[] = []): Promise<void> {
+  await page.route(/\/api\/readings(\?.*)?$/, async (route) => {
+    const url = new URL(route.request().url());
+    requests.push(`${url.pathname}${url.search}`);
+    const offset = url.searchParams.get("offset");
+    const body = libraryPage(pack.list_index.items, {
+      q: url.searchParams.get("q") ?? undefined,
+      tag: url.searchParams.get("tag") ?? undefined,
+      offset: offset === null ? 0 : Number(offset),
+    });
     await route.fulfill({ status: 200, json: body });
   });
 }
