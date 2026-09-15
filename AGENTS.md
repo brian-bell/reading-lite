@@ -46,7 +46,8 @@ tests, SPA tests/build, the `app/` checks and its browser-evidence job on
 Node 22, and the ops compatibility check on Node 20.19.2. Documentation-only changes skip runtime CI and deployment.
 
 Use [reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) to run the
-`app/` frontend and the backend together locally.
+`app/` frontend and the backend together locally. [docs/docker-compose.md](docs/docker-compose.md)
+runs the same two Workers in isolated containers instead, as an alternative.
 
 Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
