@@ -20,18 +20,25 @@ export function hostnameOf(url: string): string {
 
 /** `created_at` → "Saved 7 September 2026". Omitted when the manifest has no date. */
 export function savedOn(createdAt: string | undefined): string | undefined {
-  if (!createdAt) return undefined;
-  const parsed = new Date(createdAt);
+  const formatted = dateOn(createdAt);
+  return formatted ? `Saved ${formatted}` : undefined;
+}
+
+/**
+ * An ISO timestamp → "7 September 2026", or nothing for a missing or unparseable
+ * one. A fixed locale and zone, so the server render and the browser agree and
+ * hydration does not swap the text under the reader.
+ */
+export function dateOn(iso: string | undefined): string | undefined {
+  if (!iso) return undefined;
+  const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return undefined;
-  // A fixed locale, so the server render and the browser agree and hydration
-  // does not swap the text under the reader.
-  const formatted = new Intl.DateTimeFormat("en-GB", {
+  return new Intl.DateTimeFormat("en-GB", {
     day: "numeric",
     month: "long",
     year: "numeric",
     timeZone: "UTC",
   }).format(parsed);
-  return `Saved ${formatted}`;
 }
 
 /** Only imported Markdown is called out; a fetched URL is the unremarkable case. */
@@ -54,9 +61,11 @@ export function sourceLabel(sourceType: string | undefined): string | undefined 
 export interface NoveltyPanel {
   label: string;
   sentence: string;
+  /** "Familiar" links to the connections when there are some to see (#371). */
+  linksToConnections: boolean;
 }
 
-const VERDICTS: Record<string, NoveltyPanel> = {
+const VERDICTS: Record<string, Omit<NoveltyPanel, "linksToConnections">> = {
   novel: { label: "Novel", sentence: "Nothing already in your library covers this closely." },
   familiar: { label: "Familiar", sentence: "Overlaps with readings already in your library." },
   duplicate: { label: "Duplicate", sentence: "Effectively the same piece as one already in your library." },
@@ -73,8 +82,13 @@ export function noveltyPanel(reading: Reading): NoveltyPanel | undefined {
   if (!verdict) return undefined;
   // A missing count is not a count of zero: an older manifest that never
   // recorded one must not be described as having faced an empty library.
-  if (reading.similarity?.count === 0) return { label: verdict.label, sentence: SPARSE_SENTENCE };
-  return verdict;
+  if (reading.similarity?.count === 0) {
+    return { label: verdict.label, sentence: SPARSE_SENTENCE, linksToConnections: false };
+  }
+  // Connections, not tensions: the link names what it goes to, and a reading
+  // whose only relationships are tensions has no Connections group to reach.
+  const linksToConnections = reading.novelty_verdict === "familiar" && (reading.connections?.length ?? 0) > 0;
+  return { ...verdict, linksToConnections };
 }
 
 /**

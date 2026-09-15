@@ -40,6 +40,29 @@ export const test = base.extend<EvidenceOptions>({
 
 export { expect };
 
+/**
+ * Serves `GET /api/readings/:id` in the browser from the fixture pack, so a
+ * client-side navigation between readings has a backend to ask. The frontend
+ * Worker under test answers `/api/*` with 404 by design (ADR 0003: the backend
+ * owns those routes), and the harness binds the stub only as the server
+ * render's service binding. `overrides` replaces a body, and an id absent from
+ * both is a 404 — the removed target.
+ */
+export async function serveReadingsInBrowser(
+  page: Page,
+  overrides: Record<string, unknown> = {},
+): Promise<void> {
+  await page.route("**/api/readings/*", async (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    const body = overrides[id] ?? pack.readings[id as keyof typeof pack.readings];
+    if (!body) {
+      await route.fulfill({ status: 404, json: { error: "not found" } });
+      return;
+    }
+    await route.fulfill({ status: 200, json: body });
+  });
+}
+
 export async function signIn(context: BrowserContext, baseURL: string): Promise<void> {
   await context.addCookies([
     { name: sessionCookieName(baseURL), value: SESSION_COOKIE_VALUE, url: baseURL },

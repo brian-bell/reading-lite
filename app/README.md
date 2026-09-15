@@ -90,8 +90,24 @@ return path is per origin.
   as someone else is caught rather than silently rendering their reading.
   `src/reading-failure.ts` maps a failed manifest's `error.code` and stage to
   the acceptance matrix's categories, pinned against the fixture pack by
-  `test/reading-failure.test.ts`. Summary content, relationships, source, and
-  details are #370's next slice and #371–#373.
+  `test/reading-failure.test.ts`. A 200 body is parsed through the zod
+  projection in `src/reading.ts`: only `id`, `url`, and `status` are required,
+  every other field the app reads is optional and null-tolerant, unknown fields
+  pass through, and a malformed field the app does read is the retryable
+  "unexpected body" error rather than a crash in a component. Source and
+  details are #372 and #373.
+- **Connections and tensions.** Cards come from the manifest's `connections`
+  and `tensions` plus the read-time `relationship_targets` map
+  (`src/reading-relationships.ts`): an id absent from the map is the removed
+  card, a pending or failed target links with a text badge. Following a card
+  records a trail in router history state (`src/reading-trail.ts`): at most ten
+  hops of previous id, title, and reason, stamped with the document load that
+  wrote them. Only a trail from the current load renders, so a reload or a
+  shared link keeps the reading and drops the trail, and the server never
+  renders one. "Back to {title}" is history back when there is history, else a
+  link carrying the trail popped by one hop. On phones the "Connections &
+  tensions" jump and "Back to the reading" move focus without touching the URL,
+  scrolling smoothly only under `prefers-reduced-motion: no-preference`.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -134,7 +150,11 @@ Extending it:
 
 - **A route or state:** add a case to `e2e/coverage.ts`. Every project picks it
   up. `prepare` reaches states that need interaction, as the open account menu
-  does.
+  does. A state reached by navigating between readings needs
+  `serveReadingsInBrowser` (`e2e/test.ts`) first: the frontend Worker answers
+  `/api/*` with 404 by design, so the browser's own reading requests are served
+  from the fixture pack by a Playwright route. `e2e/specs/reading-trail.spec.ts`
+  (the `reading-trail` project) covers Back, reload, and the phone jump (#371).
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
   `e2e/fixtures/fixture-pack.json`. `test/unit/fixtures/app-fixture-pack.test.ts`

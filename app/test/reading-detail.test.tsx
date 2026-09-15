@@ -8,7 +8,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
@@ -585,5 +585,248 @@ describe("hydration and navigation", () => {
     expect(queryClient.getQueryData(readingQueryKey("rd_FXSPARSE01"))).toMatchObject({
       reading: { id: "rd_FXSPARSE01" },
     });
+  });
+});
+
+// Connections and tensions beside the reading (#371): cards from
+// relationship_targets, the removed and non-ready states, and the phone jump.
+describe("connections and tensions", () => {
+  const GARDENS = "rd_FXGARDEN01";
+
+  function context() {
+    return screen.getByRole("complementary", { name: "Connections & tensions" });
+  }
+
+  it("titles and links connection cards from relationship_targets", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const connections = within(context()).getByRole("region", { name: "Connections" });
+    const link = within(connections).getByRole("link", { name: "Libraries are gardens, not warehouses" });
+    expect(link).toHaveAttribute("href", `/readings/${GARDENS}`);
+    expect(within(connections).getByText("Computed 8 September 2026")).toBeInTheDocument();
+    expect(within(connections).getByText(/Both treat revisiting as the work/)).toBeInTheDocument();
+  });
+
+  it("gives tension cards the danger rule and the kind label", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const tensions = within(context()).getByRole("region", { name: "Tensions" });
+    expect(within(tensions).getByText("Contradicts")).toBeInTheDocument();
+    const card = within(tensions).getByRole("link", { name: "The case for a little friction" }).closest("article");
+    expect(card).toHaveClass("relationship-card-tension");
+  });
+
+  // Acceptance matrix, Removed target: dashed card, "Reading removed", the
+  // reason kept, and nothing to follow.
+  it("renders a removed target as a dashed card with its reason and no link", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    const card = within(context()).getByText("Reading removed").closest("article")!;
+    expect(card).toHaveClass("relationship-card-removed");
+    expect(within(card).getByText(/has since been removed/)).toBeInTheDocument();
+    expect(within(card).queryByRole("link")).not.toBeInTheDocument();
+    expect(document.querySelector(`a[href="/readings/${pack.removed_target_id}"]`)).toBeNull();
+  });
+
+  // Acceptance matrix, Non-ready target: the card links, with a text badge.
+  it("links pending and failed targets with a text status badge", async () => {
+    backendAnswers(200, readings[GARDENS]);
+    await openTab(`/readings/${GARDENS}`);
+
+    const pending = within(context())
+      .getByRole("link", { name: "https://fieldnotes.example/making-room-for-slow-work" })
+      .closest("article")!;
+    expect(within(pending).getByText("Processing")).toBeInTheDocument();
+    const failed = within(context())
+      .getByRole("link", { name: "https://consent-walls.example/teaser-article" })
+      .closest("article")!;
+    expect(within(failed).getByText("Failed")).toBeInTheDocument();
+  });
+
+  // Sparse archive: the novelty panel already says the library had nothing
+  // close; there is no column to jump to.
+  it("shows no context column or jump link when there is nothing to show", async () => {
+    backendAnswers(200, readings.rd_FXSPARSE01);
+    await openTab("/readings/rd_FXSPARSE01");
+
+    expect(screen.queryByRole("complementary", { name: "Connections & tensions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connections & tensions" })).not.toBeInTheDocument();
+  });
+
+  it("links a Familiar verdict to the connections, and only then", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+    const panel = screen.getByRole("region", { name: "What this adds" });
+    expect(within(panel).getByRole("link", { name: "See the connections" })).toBeInTheDocument();
+
+    // Tensions alone are not connections: `friction` is Familiar with one
+    // tension and no connections, so there is no Connections group to send
+    // the reader to.
+    cleanup();
+    backendAnswers(200, readings.rd_FXFRICTN01);
+    await openTab("/readings/rd_FXFRICTN01");
+    expect(screen.getByRole("complementary", { name: "Connections & tensions" })).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("region", { name: "What this adds" })).queryByRole("link"),
+    ).not.toBeInTheDocument();
+  });
+
+  // Design spec, Keyboard, focus, and motion: the jump moves focus to the
+  // section heading and the return moves it back to the jump link. Neither
+  // writes a hash into the URL.
+  it("moves focus between the jump link and the context heading", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab(`/readings/${ATTENTION}`);
+
+    await userEvent.click(screen.getByRole("link", { name: "Connections & tensions" }));
+    expect(screen.getByRole("heading", { level: 2, name: "Connections & tensions" })).toHaveFocus();
+    expect(router.state.location.hash).toBe("");
+
+    await userEvent.click(screen.getByRole("link", { name: "Back to the reading" }));
+    expect(screen.getByRole("link", { name: "Connections & tensions" })).toHaveFocus();
+    expect(router.state.location.hash).toBe("");
+  });
+});
+
+// The return trail (#371; design spec, Routes and navigation state): following
+// a relationship records where the reader came from and why, in history state.
+describe("the return trail", () => {
+  const GARDENS = "rd_FXGARDEN01";
+  const FRICTION = "rd_FXFRICTN01";
+  const ATTENTION_TITLE = "A quieter internet is a choice we can make";
+  const GARDENS_TITLE = "Libraries are gardens, not warehouses";
+
+  function trail() {
+    return screen.queryByRole("navigation", { name: "Return trail" });
+  }
+
+  async function follow(name: string, heading: string) {
+    await userEvent.click(screen.getByRole("link", { name }));
+    await screen.findByRole("heading", { level: 1, name: heading });
+  }
+
+  beforeEach(() => {
+    backendServes({
+      [ATTENTION]: readings[ATTENTION],
+      [GARDENS]: readings[GARDENS],
+      [FRICTION]: readings[FRICTION],
+    });
+  });
+
+  it("shows the previous title and reason after following a connection", async () => {
+    await openTab(`/readings/${ATTENTION}`);
+    expect(trail()).toBeNull();
+
+    await follow(GARDENS_TITLE, GARDENS_TITLE);
+
+    expect(within(trail()!).getByText(/You followed a connection from/)).toHaveTextContent(ATTENTION_TITLE);
+    expect(within(trail()!).getByText(/Both treat revisiting as the work/)).toBeInTheDocument();
+    expect(within(trail()!).getByRole("button", { name: `Back to ${ATTENTION_TITLE}` })).toBeInTheDocument();
+  });
+
+  it("names a tension as one", async () => {
+    await openTab(`/readings/${ATTENTION}`);
+    await follow("The case for a little friction", "The case for a little friction");
+
+    expect(within(trail()!).getByText(/You followed a tension from/)).toHaveTextContent(ATTENTION_TITLE);
+  });
+
+  it("returns to the previous reading, which carries no trail of its own", async () => {
+    await openTab(`/readings/${ATTENTION}`);
+    await follow(GARDENS_TITLE, GARDENS_TITLE);
+
+    await userEvent.click(within(trail()!).getByRole("button", { name: `Back to ${ATTENTION_TITLE}` }));
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    expect(trail()).toBeNull();
+  });
+
+  // Several hops: each destination names the reading it was reached from, and
+  // going back restores the trail that reading had.
+  it("keeps one hop per reading across several hops, and browser Back restores each", async () => {
+    const { router } = await openTab(`/readings/${ATTENTION}`);
+    await follow(GARDENS_TITLE, GARDENS_TITLE);
+    await follow(ATTENTION_TITLE, ATTENTION_TITLE);
+
+    expect(within(trail()!).getByText(/You followed a connection from/)).toHaveTextContent(GARDENS_TITLE);
+    expect(within(trail()!).getByText(/garden metaphor into a design principle/)).toBeInTheDocument();
+
+    await act(() => router.history.back());
+    await waitFor(() => expect(heading()).toBe(GARDENS_TITLE));
+    expect(within(trail()!).getByText(/You followed a connection from/)).toHaveTextContent(ATTENTION_TITLE);
+
+    await act(() => router.history.back());
+    await waitFor(() => expect(heading()).toBe(ATTENTION_TITLE));
+    expect(trail()).toBeNull();
+  });
+
+  it("keeps at most ten hops", async () => {
+    const { router } = await openTab(`/readings/${ATTENTION}`);
+    for (let hop = 0; hop < 12; hop += 1) {
+      const toGardens = hop % 2 === 0;
+      await follow(toGardens ? GARDENS_TITLE : ATTENTION_TITLE, toGardens ? GARDENS_TITLE : ATTENTION_TITLE);
+    }
+
+    expect(router.state.location.state.trail?.hops).toHaveLength(10);
+    expect(within(trail()!).getByText(/You followed a connection from/)).toHaveTextContent(GARDENS_TITLE);
+  });
+
+  // A shared link or a reload arrives without a trail from this document
+  // load. The reading renders; the trail does not.
+  it("shows no trail on a direct link, nor for state another document load wrote", async () => {
+    const { router } = await openTab(`/readings/${GARDENS}`);
+    expect(trail()).toBeNull();
+
+    await act(() =>
+      router.navigate({
+        to: "/readings/$id",
+        params: { id: ATTENTION },
+        state: {
+          trail: {
+            load: "a previous document load",
+            hops: [{ id: GARDENS, title: GARDENS_TITLE, kind: "connection", reason: "stale" }],
+          },
+        },
+      }),
+    );
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+    expect(trail()).toBeNull();
+  });
+
+  // Acceptance matrix, Arrived from a removed target: the target was in the
+  // map when the page rendered and gone by the time the reader followed it.
+  it("explains a target that is gone on arrival, and offers the way back", async () => {
+    const REMOVED = pack.removed_target_id;
+    const attention = readings[ATTENTION]!;
+    backendServes({
+      [ATTENTION]: {
+        ...attention,
+        relationship_targets: {
+          ...attention.relationship_targets,
+          [REMOVED]: { url: "https://feeds.example/infinite", title: "Infinite feeds", status: "ready" },
+        },
+      },
+    });
+    await openTab(`/readings/${ATTENTION}`);
+    await follow("Infinite feeds", "This reading isn't in your library.");
+
+    expect(screen.getByText(/You followed a connection from/)).toHaveTextContent(ATTENTION_TITLE);
+    expect(screen.getByText(/This earlier reading linked infinite feeds/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to library" })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: `Back to ${ATTENTION_TITLE}` }));
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+  });
+
+  it("offers only the library from a missing reading reached directly", async () => {
+    backendAnswers(404, { error: "not found" });
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.queryByText(/You followed/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Back to / })).not.toBeInTheDocument();
   });
 });

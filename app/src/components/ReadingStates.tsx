@@ -1,6 +1,8 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
+import { previousHop, type TrailHop } from "../reading-trail";
 import { PageHeading } from "./PageHeading";
+import { BackTo } from "./ReturnTrail";
 
 // The states a reading page shows instead of a reading (acceptance matrix,
 // Common states and Reading detail). Each is a real page with its own heading,
@@ -28,11 +30,27 @@ function BackToLibrary() {
   );
 }
 
-export function ReadingNotFound() {
+/**
+ * 404. Reached by following a relationship whose target is gone (acceptance
+ * matrix, Arrived from a removed target), the page keeps the reason the
+ * reader followed and offers the way back before the library.
+ */
+export function ReadingNotFound({ trail = [] }: { trail?: readonly TrailHop[] }) {
+  const previous = previousHop(trail);
   return (
     <StatePage heading="This reading isn't in your library.">
       <p className="auth-lede">It may have been removed, or the link may be wrong.</p>
-      <BackToLibrary />
+      {previous ? (
+        <p className="reading-trail-context">
+          You followed a {previous.kind} from <strong>{previous.title}</strong>: {previous.reason}
+        </p>
+      ) : null}
+      <div className="form-actions">
+        {previous ? <BackTo hops={trail} previous={previous} className="button button-primary" /> : null}
+        <Link className="button" to="/">
+          Back to library
+        </Link>
+      </div>
     </StatePage>
   );
 }
