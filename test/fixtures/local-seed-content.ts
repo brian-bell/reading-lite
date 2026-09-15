@@ -112,6 +112,32 @@ I kept a single question open for the whole week and read toward it. Notes went 
 - Starting was easier, because the question was already there.
 - I reread two passages instead of opening new tabs.
 - The summary I wrote on Friday was more useful than anything I saved that week.
+
+## The log itself
+
+Rich content an imported page can carry, for the Source view (#372): a table,
+a code block, an image, raw HTML, and a link too long to break.
+
+| Day | Piece | Pages | Note |
+| --- | --- | --- | --- |
+| Monday | The long essay on attention | 34 | Read twice; the second pass was the useful one |
+| Wednesday | A field guide to commonplace books | 58 | Skimmed the history, read the method closely |
+| Friday | An interview about slow tools | 21 | Wrote the summary straight after |
+
+The script that pulled the week's notes together:
+
+\`\`\`sh
+for day in mon wed fri; do
+  cat "notes/$day.md" >> week.md
+done
+wc -w week.md
+\`\`\`
+
+![The desk on Friday, three books and one notebook](https://images.fieldnotes.example/slow-reading-week/desk.jpg)
+
+<img src="https://images.fieldnotes.example/pixel.gif" onerror="alert('imported')">
+
+The full notes: <https://notes.fieldnotes.example/slow-reading-week/everything-i-wrote-down-during-the-week-including-the-parts-that-did-not-fit-anywhere-else-and-the-questions-i-am-still-holding>
 `;
 
 const YT_DESCRIPTION =

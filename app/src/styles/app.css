@@ -549,7 +549,7 @@ textarea {
   color: var(--accent);
 }
 
-/* Readable width for the lead, the summary, and (in #372) the source. */
+/* Readable width for the lead, the summary, the source, and the novelty panel. */
 .reading-summary {
   max-width: 68ch;
 }
@@ -652,6 +652,8 @@ textarea {
   border-collapse: collapse;
   font-family: var(--font-ui);
   font-size: 15px;
+  /* The table scrolls, so its cells wrap at spaces rather than inside words. */
+  overflow-wrap: normal;
 }
 
 .reading-prose th,
@@ -664,6 +666,7 @@ textarea {
 /* Novelty: accent surface with a 2 px accent rule and the page grain, so the
    panel reads as a note about the reading rather than part of it. */
 .novelty {
+  max-width: 68ch;
   margin: var(--space-6) 0 0;
   padding: var(--space-5) 22px;
   border-left: 2px solid var(--accent);
@@ -710,6 +713,139 @@ textarea {
 
   .novelty {
     padding: 22px;
+  }
+}
+
+/* ---- Summary/Source tabs and the Source view (#372) ------------------- */
+
+/* The tablist is a hairline rule the selected tab underlines in ink, as in the
+   prototype. Tabs are buttons: they change what the column shows and rewrite
+   the URL in place, never a navigation. */
+.view-tabs {
+  max-width: 68ch;
+}
+
+.tablist {
+  display: flex;
+  gap: var(--space-5);
+  margin: 0 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  margin: 0 0 -1px;
+  padding: var(--space-2) 0 var(--space-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.tab:hover {
+  color: var(--ink);
+}
+
+.tab[aria-selected="true"] {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+}
+
+.tabpanel[tabindex="0"]:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: 4px;
+}
+
+/* Source paragraphs (design spec, Layout table): serif 20 px / 1.85, 19 px at
+   ≤650 px. Everything else — headings one level down, scrolling code and
+   tables, wrapping of unbroken text — comes with .reading-prose. */
+.reading-source {
+  font-size: 20px;
+  line-height: 1.85;
+}
+
+/* An image the reader has not asked for: its alt text and host, and the
+   button that loads it. Inline, so it sits where the image would. */
+.source-image {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  max-width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--control-border);
+  border-radius: 6px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.source-image-alt {
+  font-style: italic;
+}
+
+.source-image-host {
+  color: var(--muted);
+}
+
+.source-image-load {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--control-border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.reading-source img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Source unavailable (acceptance matrix): a soft card in the view's place,
+   dashed like the removed relationship card, with the summary one click away. */
+.source-unavailable {
+  padding: var(--space-5) 22px;
+  border: 1px dashed var(--control-border);
+  border-radius: 8px;
+  background-color: var(--soft);
+  background-image: var(--grain);
+  background-size: 240px 240px;
+}
+
+.source-unavailable h2 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.source-unavailable p,
+.source-failed p {
+  margin: 0 0 var(--space-4);
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.source-loading {
+  min-height: 3rem;
+}
+
+@media (max-width: 650px) {
+  .reading-source {
+    font-size: 19px;
+  }
+
+  .source-unavailable {
+    padding: 18px;
   }
 }
 

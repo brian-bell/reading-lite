@@ -4,7 +4,8 @@ import {
   HTML_CACHE_CONTROL,
   backendPathResponse,
   isBackendPath,
-  withNoStore,
+  withResponsePolicy,
+  CONTENT_SECURITY_POLICY,
 } from "../src/server/request-policy";
 
 describe("isBackendPath", () => {
@@ -33,13 +34,13 @@ describe("backendPathResponse", () => {
   });
 });
 
-describe("withNoStore", () => {
+describe("withResponsePolicy", () => {
   it("marks rendered responses private and uncacheable", async () => {
     const original = new Response("<!doctype html>", {
       status: 200,
       headers: { "Content-Type": "text/html", "Cache-Control": "public, max-age=600" },
     });
-    const response = withNoStore(original);
+    const response = withResponsePolicy(original);
     expect(HTML_CACHE_CONTROL).toBe("private, no-store");
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response.headers.get("Content-Type")).toBe("text/html");
@@ -47,8 +48,18 @@ describe("withNoStore", () => {
     expect(await response.text()).toBe("<!doctype html>");
   });
 
+  // Design spec, Source content: the policy must allow remote https: images for
+  // "Load image", and the issue (#372) says nothing broader. data: is the
+  // theme's grain SVG in tokens.css; img-src governs background images too.
+  it("allows the page's own, remote https:, and data: images and nothing broader", () => {
+    const response = withResponsePolicy(new Response("<!doctype html>"));
+    expect(CONTENT_SECURITY_POLICY).toBe("img-src 'self' https: data:");
+    expect(response.headers.get("Content-Security-Policy")).toBe(CONTENT_SECURITY_POLICY);
+    expect(CONTENT_SECURITY_POLICY).not.toMatch(/http:|\*/);
+  });
+
   it("preserves redirects", () => {
-    const response = withNoStore(new Response(null, { status: 307, headers: { Location: "/" } }));
+    const response = withResponsePolicy(new Response(null, { status: 307, headers: { Location: "/" } }));
     expect(response.status).toBe(307);
     expect(response.headers.get("Location")).toBe("/");
   });

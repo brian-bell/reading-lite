@@ -71,6 +71,14 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
+      // The Source view (#372): URL and history behaviour, request timing, the
+      // no-referrer image load, the policy header, and rich content at 390 px.
+      // The matrix screenshots the view's states in every project.
+      name: "reading-source",
+      testMatch: /reading-source\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+    },
+    {
       name: "shell-extras",
       testMatch: /shell-extras\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },

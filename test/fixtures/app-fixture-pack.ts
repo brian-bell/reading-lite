@@ -17,6 +17,7 @@
 
 import { projectRelationshipTargets, relationshipTargetIds } from "../../src/modules/relationship-targets";
 import { applyStaleness } from "../../src/modules/staleness";
+import { r2KeyLayout } from "../../src/modules/stores/layout";
 import type { GetReadingResponse, ListIndex } from "../../src/schemas/api";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID } from "./local-seed";
 
@@ -31,6 +32,9 @@ export const APP_FIXTURE_PACK_COMMAND = "npm run fixtures:app";
 
 /** PENDING_TTL_SECONDS as wrangler.toml sets it; read-time staleness only. */
 const PENDING_TTL_SECONDS = 900;
+
+/** The seed writes under the bucket root, as local R2 is laid out. */
+const layout = r2KeyLayout("");
 
 export interface AppFixtureEntry {
   /** The pack's stable slug (docs/design/connected/fixture-pack.md). */
@@ -49,6 +53,12 @@ export interface AppFixturePack {
   fixtures: AppFixtureEntry[];
   /** `GET /api/readings/:id` bodies, keyed by reading id. */
   readings: Record<string, GetReadingResponse>;
+  /**
+   * `GET /api/readings/:id/content` bodies (extracted.md), keyed by reading
+   * id, for the readings that have one; an id absent here 404s, as the
+   * `unavailable-source` fixture does (#372).
+   */
+  contents: Record<string, string>;
   /** The tenant's `index/list.json`, as the list route reads it. */
   list_index: ListIndex;
   /** Referenced by `attention` but never written: the removed-target card. */
@@ -58,9 +68,13 @@ export interface AppFixturePack {
 export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): AppFixturePack {
   const plan = buildLocalSeed(nowIso);
   const readings: Record<string, GetReadingResponse> = {};
+  const contents: Record<string, string> = {};
   const fixtures: AppFixtureEntry[] = [];
+  const bodyByKey = new Map(plan.objects.map((object) => [object.key, object.body]));
 
   for (const fixture of plan.fixtures) {
+    const extracted = bodyByKey.get(layout.extractedKey(fixture.keyPrefix));
+    if (typeof extracted === "string") contents[fixture.id] = extracted;
     const targetIds = relationshipTargetIds(fixture.manifest);
     const body: GetReadingResponse = {
       ...applyStaleness(fixture.manifest, PENDING_TTL_SECONDS, nowIso),
@@ -78,6 +92,7 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     regenerate_with: APP_FIXTURE_PACK_COMMAND,
     fixtures,
     readings,
+    contents,
     list_index: plan.listIndex,
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
   };

@@ -239,13 +239,15 @@ export async function readReadingFromBackend(
   return readingFromResponse(result.status, result.body);
 }
 
-function messageOf(body: unknown): string | undefined {
+/** The backend error envelope's `error` string, when it is one. */
+export function messageOf(body: unknown): string | undefined {
   if (typeof body !== "object" || body === null) return undefined;
   const error = (body as { error?: unknown }).error;
   return typeof error === "string" && error !== "" ? error : undefined;
 }
 
-function actingTenantOf(body: unknown): string | undefined {
+/** The `acting_tenant` a 412 names, when it names one. */
+export function actingTenantOf(body: unknown): string | undefined {
   if (typeof body !== "object" || body === null) return undefined;
   const acting = (body as { acting_tenant?: unknown }).acting_tenant;
   return typeof acting === "string" ? acting : undefined;

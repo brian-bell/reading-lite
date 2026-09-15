@@ -2,14 +2,16 @@ import Markdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import { degradationNotice, noveltyPanel, summaryBodyBelowLead } from "../reading-presentation";
 import type { Reading } from "../reading";
+import { ExternalLink } from "./ExternalLink";
 import { CONTEXT_HEADING_ID, jumpTo } from "./ReadingContext";
 
 // The Summary view (#370, design spec: Data mapping, Novelty, Reading surface).
 //
 // Order inside the reading column, after the title, metadata line, tags, and
-// status card: the degraded-source notice, the serif lead, the rendered
-// summary, then the novelty panel. The Summary/Source tabs go around this in
-// #372; until then Summary is the only view and needs no tab to select it.
+// status card: the degraded-source notice, the serif lead, then the rendered
+// summary. The Summary/Source tabs sit around this view (#372), and the
+// novelty panel follows the tabs, below either view, so ReadingPage renders
+// it separately (ReadingNovelty).
 //
 // Everything here is either a manifest field or a sentence derived from one by
 // a fixed rule in reading-presentation.ts. Nothing on this page is written
@@ -18,25 +20,24 @@ import { CONTEXT_HEADING_ID, jumpTo } from "./ReadingContext";
 export function ReadingSummary({ reading }: { reading: Reading }) {
   const notice = degradationNotice(reading.enrichment_degradation);
   const body = summaryBodyBelowLead(reading.tldr, reading.summary_markdown);
-  const novelty = noveltyPanel(reading);
   // A reading with nothing summarized yet — a fresh pending one, or a failed
   // one — renders its status card and stops rather than showing empty
   // furniture. A reprocess of a ready reading keeps the summary it still has.
-  if (!notice && !reading.tldr && !body && !novelty) return null;
+  if (!notice && !reading.tldr && !body) return null;
   return (
     <div className="reading-summary">
       {notice ? <DegradedNotice>{notice}</DegradedNotice> : null}
       {reading.tldr ? <p className="reading-lead">{reading.tldr}</p> : null}
       {body ? <SummaryMarkdown markdown={body} /> : null}
-      {novelty ? (
-        <NoveltyPanel
-          label={novelty.label}
-          sentence={novelty.sentence}
-          linkToConnections={novelty.linksToConnections}
-        />
-      ) : null}
     </div>
   );
+}
+
+/** The novelty panel, below whichever view is selected (design spec, Reading surface). */
+export function ReadingNovelty({ reading }: { reading: Reading }) {
+  const novelty = noveltyPanel(reading);
+  if (!novelty) return null;
+  return <NoveltyPanel label={novelty.label} sentence={novelty.sentence} linkToConnections={novelty.linksToConnections} />;
 }
 
 /**
@@ -62,7 +63,7 @@ function DegradedNotice({ children }: { children: string }) {
 function SummaryMarkdown({ markdown }: { markdown: string }) {
   return (
     <div className="reading-prose">
-      <Markdown rehypePlugins={[rehypeSanitize]} components={{ a: SummaryLink, img: SummaryImage }}>
+      <Markdown rehypePlugins={[rehypeSanitize]} components={{ a: ExternalLink, img: SummaryImage }}>
         {markdown}
       </Markdown>
     </div>
@@ -77,22 +78,13 @@ function SummaryMarkdown({ markdown }: { markdown: string }) {
  * Markdown image syntax survives the sanitizer — its schema allows `img` with
  * an http(s) `src` — so refusing it is the renderer's job, not the sanitizer's.
  * The Source view renders a placeholder with a "Load image" button because the
- * images there are the article's (#372). A summary is 2-6 paragraphs the
+ * images there are the article's (ReadingSource). A summary is 2-6 paragraphs the
  * summarizer wrote; an image in one is not content the reader came for, so the
  * alt text stands in for it and no request is made.
  */
 function SummaryImage({ alt }: { alt?: string }) {
   if (!alt) return null;
   return <span className="reading-prose-image">{alt}</span>;
-}
-
-/** Links leave for a third-party page, so they carry the same rel as the source view's. */
-function SummaryLink({ href, children }: { href?: string; children?: React.ReactNode }) {
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer nofollow">
-      {children}
-    </a>
-  );
 }
 
 /**

@@ -63,6 +63,25 @@ export async function serveReadingsInBrowser(
   });
 }
 
+/**
+ * Serves `GET /api/readings/:id/content` in the browser from the pack's
+ * extracted Markdown (#372). The Source view fetches it on demand and never
+ * through the server render, so the stub entrypoint has no part in it. An id
+ * without content is a 404 — the `unavailable-source` fixture.
+ */
+export async function serveSourceInBrowser(page: Page): Promise<void> {
+  await page.route("**/api/readings/*/content", async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const id = decodeURIComponent(segments.at(-2) ?? "");
+    const markdown = pack.contents[id as keyof typeof pack.contents];
+    if (markdown === undefined) {
+      await route.fulfill({ status: 404, json: { error: "extracted markdown not available" } });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "text/markdown; charset=utf-8", body: markdown });
+  });
+}
+
 export async function signIn(context: BrowserContext, baseURL: string): Promise<void> {
   await context.addCookies([
     { name: sessionCookieName(baseURL), value: SESSION_COOKIE_VALUE, url: baseURL },
