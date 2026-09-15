@@ -204,7 +204,8 @@ to the `READER_API_TOKEN` secret. See the [API guide](api.md).
 `FrontendReads` (`src/frontend-reads.ts`) is a named `WorkerEntrypoint` for the
 `app/` frontend's server renders, reachable only through a service binding
 ([ADR 0003](decisions/0003-frontend-worker-topology.md)). Its RPC methods,
-`whoami` and `reading`, rebuild a GET from the browser's Cookie header and
+`whoami`, `reading`, and `list` (the library's `q`, `tag`, and `offset`, never
+a page size), rebuild a GET from the browser's Cookie header and
 host and dispatch it through the Worker's own Hono app, so auth, tenant
 resolution, `x-expected-tenant`, and handlers match the HTTP API. The rebuilt
 `Request` object is registered in `control-plane/frontend-read-trust.ts`;

@@ -44,8 +44,22 @@ const ReadingInputSchema = z
   })
   .strict();
 
+// Only the library's own parameters cross the binding. The page size is not
+// one: the list handler's default is the library's 20-row page.
+const ListInputSchema = z
+  .object({
+    cookie: z.string().max(16_384).nullable(),
+    host: HostSchema,
+    q: z.string().max(2048).optional(),
+    tag: z.string().max(2048).optional(),
+    offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+    expectedTenant: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
 export type FrontendWhoamiInput = z.infer<typeof WhoamiInputSchema>;
 export type FrontendReadingInput = z.infer<typeof ReadingInputSchema>;
+export type FrontendListInput = z.infer<typeof ListInputSchema>;
 
 const INVALID: FrontendReadResult = { status: 400, body: { error: "invalid request" } };
 
@@ -70,7 +84,28 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
       host,
       `/api/readings/${encodeURIComponent(id)}`,
       cookie,
-      expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant },
+      pinned(expectedTenant),
+    );
+  }
+
+  /** GET /api/readings for the session in `cookie`, with `q`, `tag`, and `offset`, optionally pinned. */
+  async list(input: FrontendListInput): Promise<FrontendReadResult> {
+    const parsed = ListInputSchema.safeParse(input);
+    if (!parsed.success) return INVALID;
+    const { host, cookie, q, tag, offset, expectedTenant } = parsed.data;
+    const query = new URLSearchParams();
+    // Empty filters are omitted, as the SPA writes them.
+    if (q) query.set("q", q);
+    if (tag) query.set("tag", tag);
+    if (offset !== undefined) query.set("offset", String(offset));
+    const search = query.toString();
+    return dispatch(
+      this.env,
+      this.ctx,
+      host,
+      search === "" ? "/api/readings" : `/api/readings?${search}`,
+      cookie,
+      pinned(expectedTenant),
     );
   }
 
@@ -81,6 +116,10 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
       headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" },
     });
   }
+}
+
+function pinned(expectedTenant: string | undefined): Record<string, string> {
+  return expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant };
 }
 
 async function dispatch(

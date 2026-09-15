@@ -151,6 +151,7 @@ describe("FrontendReads.whoami", () => {
       await entrypoint().whoami({ cookie, host: HOST }),
       await entrypoint().whoami({ cookie: null, host: HOST }),
       await entrypoint().reading({ cookie, host: HOST, id: "rd_MISSING01" }),
+      await entrypoint().list({ cookie, host: HOST }),
     ]) {
       expect(Object.keys(result).sort()).toEqual(["body", "status"]);
     }
@@ -253,10 +254,110 @@ describe("FrontendReads.reading", () => {
   );
 });
 
+describe("FrontendReads.list", () => {
+  function tagged(id: string, createdAt: string, title: string, tags: string[]): Manifest {
+    return { ...manifest(id), title, tags, created_at: createdAt, updated_at: createdAt };
+  }
+
+  async function seedLibrary() {
+    await seed(founderTenant(), tagged("rd_LISTA0001", "2026-09-01T10:00:00.000Z", "Gardens of attention", ["design"]));
+    await seed(founderTenant(), tagged("rd_LISTA0002", "2026-09-02T10:00:00.000Z", "Quiet software", ["attention"]));
+    await seed(founderTenant(), tagged("rd_LISTA0003", "2026-09-03T10:00:00.000Z", "Slow reading", ["attention"]));
+  }
+
+  it("returns 401 without a session", async () => {
+    await seedLibrary();
+    expect(await entrypoint().list({ cookie: null, host: HOST })).toEqual({
+      status: 401,
+      body: { error: "unauthorized" },
+    });
+  });
+
+  it.each([
+    ["the first page", {}, ""],
+    ["a search", { q: "quiet" }, "?q=quiet"],
+    ["a tag", { tag: "attention" }, "?tag=attention"],
+    ["an offset", { offset: 1 }, "?offset=1"],
+    ["everything at once", { q: "slow", tag: "attention", offset: 0 }, "?q=slow&tag=attention&offset=0"],
+  ])("matches the HTTP API for %s", async (_label, params, query) => {
+    await seedLibrary();
+    const cookie = await signIn("founder@test.example", `clm_front_list_${query.length}`);
+    const result = await entrypoint().list({ cookie, host: HOST, ...params });
+    expect(result.status).toBe(200);
+
+    const http = await publicRequest(`/api/readings${query}`, { cookie, "sec-fetch-site": "same-origin" });
+    expect(http.res.status).toBe(200);
+    expect(result.body).toEqual(await http.res.json());
+  });
+
+  it("forwards q, tag, and offset to the list handler", async () => {
+    await seedLibrary();
+    const cookie = await signIn("founder@test.example", "clm_front_list_params");
+    const ids = async (params: { q?: string; tag?: string; offset?: number }) => {
+      const result = await entrypoint().list({ cookie, host: HOST, ...params });
+      return (result.body as { readings: { id: string }[] }).readings.map((row) => row.id);
+    };
+    expect(await ids({})).toEqual(["rd_LISTA0003", "rd_LISTA0002", "rd_LISTA0001"]);
+    expect(await ids({ q: "quiet" })).toEqual(["rd_LISTA0002"]);
+    expect(await ids({ tag: "attention" })).toEqual(["rd_LISTA0003", "rd_LISTA0002"]);
+    expect(await ids({ offset: 2 })).toEqual(["rd_LISTA0001"]);
+    expect(await ids({ q: "", tag: "" })).toEqual(["rd_LISTA0003", "rd_LISTA0002", "rd_LISTA0001"]);
+  });
+
+  it.each([
+    ["a negative offset", { offset: -1 }],
+    ["a fractional offset", { offset: 1.5 }],
+    ["an offset given as a string", { offset: "20" }],
+    ["an oversized search", { q: "x".repeat(2049) }],
+    ["an oversized tag", { tag: "x".repeat(2049) }],
+    ["a page size", { limit: 100 }],
+    ["a bad host", { host: "readinglite.ai/api" }],
+  ])("rejects %s with 400", async (_label, extra) => {
+    const cookie = await signIn("founder@test.example", "clm_front_list_invalid");
+    expect(await entrypoint().list({ cookie, host: HOST, ...extra } as never)).toEqual({
+      status: 400,
+      body: { error: "invalid request" },
+    });
+  });
+
+  it("returns 412 when the expected tenant is not the acting tenant", async () => {
+    await seedLibrary();
+    const cookie = await signIn("founder@test.example", "clm_front_list_412");
+    expect(await entrypoint().list({ cookie, host: HOST, expectedTenant: OTHER_TENANT_ID })).toEqual({
+      status: 412,
+      body: { error: "expected tenant mismatch", acting_tenant: FOUNDER_TENANT_ID },
+    });
+    const matching = await entrypoint().list({ cookie, host: HOST, expectedTenant: FOUNDER_TENANT_ID });
+    expect(matching.status).toBe(200);
+  });
+
+  it("never mixes two tenants' concurrent lists", async () => {
+    await insertSecondTenant(workerEnv);
+    await seed(founderTenant(), manifest("rd_LISTA0001"));
+    await seed(founderTenant(), manifest("rd_LISTA0002"));
+    await seed(otherTenant(), manifest("rd_LISTB0001"));
+    const founder = await signIn("founder@test.example", "clm_front_list_a");
+    const other = await signIn("other@test.example", "clm_front_list_b");
+
+    const order = Array.from({ length: 20 }, (_, i) => (i % 2 === 0 ? "founder" : "other"));
+    const results = await Promise.all(
+      order.map(async (who) => ({
+        who,
+        result: await entrypoint().list({ cookie: who === "founder" ? founder : other, host: HOST }),
+      })),
+    );
+    for (const { who, result } of results) {
+      expect(result.status).toBe(200);
+      const ids = (result.body as { readings: { id: string }[] }).readings.map((row) => row.id).sort();
+      expect(ids, who).toEqual(who === "founder" ? ["rd_LISTA0001", "rd_LISTA0002"] : ["rd_LISTB0001"]);
+    }
+  });
+});
+
 describe("FrontendReads surface", () => {
   it("exposes only the allowlisted read methods", () => {
     const methods = Object.getOwnPropertyNames(FrontendReads.prototype).filter((name) => name !== "constructor");
-    expect(methods.sort()).toEqual(["fetch", "reading", "whoami"]);
+    expect(methods.sort()).toEqual(["fetch", "list", "reading", "whoami"]);
   });
 
   it("answers fetch with 404", async () => {
