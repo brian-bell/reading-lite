@@ -1,8 +1,8 @@
-// The library's first page in a real browser (#413). The component tests prove
-// what renders; these prove what only a browser can: the page read on the
-// server is not asked for again after hydration, a client-side visit asks the
-// same-origin API once and pinned to the account, and each card is one target
-// from the pointer and the keyboard.
+// The library in a real browser (#413, #414). The component tests prove what
+// renders; these prove what only a browser can: the page read on the server is
+// not asked for again after hydration, a client-side visit or page change asks
+// the same-origin API once and pinned to the account, a reload keeps the page,
+// and each card is one target from the pointer and the keyboard.
 //
 // Requests only, so one viewport and theme; the matrix screenshots the page
 // in every project. It uses Playwright's own `test` for the request tests, as
@@ -11,7 +11,7 @@
 import { expect, test as base, type Page } from "@playwright/test";
 import pack from "../fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "../harness";
-import { libraryPage } from "../library-page.js";
+import { LIBRARY_PAGE_SIZE, libraryItems, libraryPage } from "../library-page.js";
 import { serveLibraryInBrowser, serveReadingsInBrowser, signIn } from "../test";
 
 const test = base.extend({
@@ -20,7 +20,9 @@ const test = base.extend({
   },
 });
 
-const FIRST_PAGE = libraryPage(pack.list_index.items).readings;
+const ITEMS = libraryItems(pack.list_index.items);
+const FIRST_PAGE = libraryPage(ITEMS).readings;
+const SECOND_PAGE = libraryPage(ITEMS, { offset: LIBRARY_PAGE_SIZE }).readings;
 const TITLED = FIRST_PAGE.find((row): row is typeof row & { title: string } => "title" in row && !!row.title)!;
 const READING = { path: "/readings/rd_FXATTENT01", heading: "A quieter internet is a choice we can make" };
 
@@ -42,6 +44,14 @@ function recordRequests(page: Page): Recorded {
 
 function readings(page: Page) {
   return page.getByRole("list", { name: "Readings" });
+}
+
+function pager(page: Page) {
+  return page.getByRole("navigation", { name: "Pagination" });
+}
+
+function titleOf(row: { url: string; title?: string }): string {
+  return row.title || row.url;
 }
 
 async function openLibrary(page: Page, baseURL: string): Promise<Recorded> {
@@ -111,6 +121,92 @@ test("a card opens from the keyboard", async ({ page, baseURL }) => {
   await expect(link).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { level: 1, name: TITLED.title })).toBeFocused();
+});
+
+test("Next and Previous change page through the same-origin API, once each", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page);
+
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(page).toHaveURL(/\/\?offset=20$/);
+  await expect(pager(page).getByText("Page 2")).toBeVisible();
+  await expect(readings(page).getByRole("link").first()).toHaveText(titleOf(SECOND_PAGE[0]!));
+  await page.waitForLoadState("networkidle");
+
+  await pager(page).getByRole("link", { name: "Previous" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(pager(page).getByText("Page 1")).toBeVisible();
+  await expect(readings(page).getByRole("link").first()).toHaveText(titleOf(FIRST_PAGE[0]!));
+  await page.waitForLoadState("networkidle");
+
+  // The first page came with the document and was not asked for again.
+  expect(recorded.documents).toEqual(["/"]);
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+});
+
+test("a deep link to a later page renders it on the server, and a reload keeps it", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  for (const load of [() => page.goto("/?offset=20"), () => page.reload()]) {
+    await load();
+    await expect(pager(page).getByText("Page 2")).toBeVisible();
+    await expect(readings(page).getByRole("listitem")).toHaveCount(SECOND_PAGE.length);
+    await expect(readings(page).getByRole("link").first()).toHaveText(titleOf(SECOND_PAGE[0]!));
+    await page.waitForLoadState("networkidle");
+  }
+  expect(recorded.documents).toEqual(["/", "/"]);
+  expect(recorded.lists).toEqual([]);
+});
+
+test("Next is unavailable on the last page and the keyboard skips it", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await page.goto("/?offset=40");
+  await expect(pager(page).getByText("Page 3")).toBeVisible();
+  const next = pager(page).getByRole("link", { name: "Next" });
+  await expect(next).toHaveAttribute("aria-disabled", "true");
+  await expect(next).not.toHaveAttribute("href", /./);
+
+  const previous = pager(page).getByRole("link", { name: "Previous" });
+  await previous.focus();
+  await page.keyboard.press("Tab");
+  expect(await page.evaluate(() => document.activeElement?.closest("nav[aria-label='Pagination']"))).toBeNull();
+});
+
+test("keeps the reader's place when the step they used becomes unavailable", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await page.goto("/?offset=20");
+  await expect(pager(page).getByText("Page 2")).toBeVisible();
+  await serveLibraryInBrowser(page);
+
+  // Entering the last page leaves Next with nowhere to go, and the new page is
+  // a new mount, so the focus it held is gone. The page number takes it,
+  // naming where the reader landed, instead of leaving them at the top of the
+  // document.
+  await pager(page).getByRole("link", { name: "Next" }).focus();
+  await page.keyboard.press("Enter");
+  await expect(pager(page).getByText("Page 3")).toBeVisible();
+  expect(await page.evaluate(() => document.activeElement?.textContent)).toBe("Page 3");
+  await expect(pager(page).getByRole("link", { name: "Next" })).toHaveAttribute("aria-disabled", "true");
+
+  // Tab carries on from the pager rather than from the top of the page.
+  await page.keyboard.press("Shift+Tab");
+  expect(await page.evaluate(() => document.activeElement?.textContent)).toBe("Previous");
+});
+
+test("a page past the end offers the first page, from the keyboard", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  await page.goto("/?offset=100");
+  await expect(page.getByText("No readings on page 6.")).toBeVisible();
+  await serveLibraryInBrowser(page);
+
+  const first = page.getByRole("link", { name: "First page" });
+  await first.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/$/);
+  await expect(readings(page).getByRole("listitem")).toHaveCount(FIRST_PAGE.length);
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=0"]);
 });
 
 test("signed out, the sign-in form renders in place and no library is read", async ({ page }) => {

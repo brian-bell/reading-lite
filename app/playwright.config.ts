@@ -62,10 +62,10 @@ export default defineConfig<EvidenceOptions>({
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
     },
     {
-      // The library's first page (#413): read on the server and not again after
-      // hydration, asked for in the browser only on a client-side visit, and
-      // each card one target from the pointer and the keyboard. The matrix
-      // screenshots the page in every project.
+      // The library (#413, #414): read on the server and not again after
+      // hydration, asked for in the browser only on a client-side visit or a
+      // page change, and each card one target from the pointer and the
+      // keyboard. The matrix screenshots its pages in every project.
       name: "library",
       testMatch: /library\.spec\.ts/,
       use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
