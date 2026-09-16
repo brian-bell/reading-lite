@@ -38,7 +38,9 @@ export default defineConfig<EvidenceOptions>({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  workers: process.env.CI ? 2 : undefined,
+  // GitHub's standard Linux runner has 4 vCPUs. The harness's workerd shares
+  // them, but the suite is page-load bound, so four workers still beat two.
+  workers: process.env.CI ? 4 : undefined,
   reporter: process.env.CI
     ? [["html", { outputFolder: "e2e/report", open: "never" }], ["list"]]
     : [["list"]],

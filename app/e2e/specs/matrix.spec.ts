@@ -50,13 +50,20 @@ for (const evidence of EVIDENCE_CASES) {
 
     // Each tab walk starts from a fresh load: Chromium resumes tabbing from
     // wherever focus last was, so the skip-link assertions need a clean page.
-    test("is usable from the keyboard", async ({ page, baseURL }) => {
-      const pristine = { ...evidence, prepare: undefined };
-      await openCase(page, baseURL!, pristine);
-      await expectSkipLinkFirst(page);
+    // Where the skip link sits and where it lands are facts about the
+    // document, not the theme, so the light project of each viewport checks
+    // them once. The walk itself runs everywhere: the focus indicator is a
+    // themed token, and a dark ring can fail to paint while the light one
+    // passes.
+    test("is usable from the keyboard", async ({ page, baseURL, theme }) => {
+      if (theme !== "dark") {
+        const pristine = { ...evidence, prepare: undefined };
+        await openCase(page, baseURL!, pristine);
+        await expectSkipLinkFirst(page);
 
-      await openCase(page, baseURL!, pristine);
-      await expectSkipLinkReachesMain(page);
+        await openCase(page, baseURL!, pristine);
+        await expectSkipLinkReachesMain(page);
+      }
 
       await openCase(page, baseURL!, evidence);
       const stops = await walkTabStops(page);

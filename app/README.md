@@ -230,7 +230,9 @@ is reproducible.
 Every covered route and state runs at 390 px and 1440 px in light and dark:
 axe (WCAG 2.2 AA), the keyboard pass (skip link first and landing on main,
 focus order, a visible focus indicator on every tab stop, no focus trap), and a
-layout check that no positioned panel escapes the viewport fail the run.
+layout check that no positioned panel escapes the viewport fail the run. The
+two skip-link checks are about the document rather than the theme, so each
+viewport runs them in its light project only; the tab walk runs in all four.
 Reduced motion and zoom — 200% of the desktop window, and the 320 px reflow
 floor — run for the shell. `e2e/specs/reading-cache.spec.ts` (the
 `reading-cache` project) records every request a server-rendered reading page
