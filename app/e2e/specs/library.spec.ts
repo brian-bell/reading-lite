@@ -1,11 +1,13 @@
-// The library in a real browser (#413, #414, #415, #416). The component tests
+// The library in a real browser (#413, #414, #415, #416, #417). The component tests
 // prove what renders; these prove what only a browser can: the page read on
 // the server is not asked for again after hydration, a client-side visit or
 // page change asks the same-origin API once and pinned to the account, a
 // reload keeps the page, each card is one target from the pointer and the
 // keyboard with or without a badge, at phone width a long title wraps whole
-// while the summary clamps at three lines, and the common states arrive on a
-// page change with one request each, or none while offline.
+// while the summary clamps at three lines, the common states arrive on a
+// page change with one request each, or none while offline, and a search or
+// a tag is one request with the filter in it, while a filtered deep link and
+// its reload make none.
 //
 // Requests only, so one viewport and theme; the matrix screenshots the page
 // in every project. It uses Playwright's own `test` for the request tests, as
@@ -86,7 +88,7 @@ test("hydrates the server-rendered first page without asking for it again", asyn
 
 test("renders the pack's rows newest first, each title linking to its reading", async ({ page, baseURL }) => {
   await openLibrary(page, baseURL!);
-  const links = readings(page).getByRole("link");
+  const links = readings(page).getByRole("heading", { level: 2 }).getByRole("link");
   await expect(links).toHaveCount(FIRST_PAGE.length);
   for (const [index, row] of FIRST_PAGE.entries()) {
     await expect(links.nth(index)).toHaveAttribute("href", `/readings/${row.id}`);
@@ -125,6 +127,19 @@ test("the whole card opens its reading", async ({ page, baseURL }) => {
   await page.mouse.click(box.x + box.width - 8, box.y + box.height - 6);
   await expect(page).toHaveURL(new RegExp(`/readings/${TITLED.id}$`));
   await expect(page.getByRole("heading", { level: 1, name: TITLED.title })).toBeVisible();
+});
+
+test("the space beside a card's tags is still the card", async ({ page, baseURL }) => {
+  await openLibrary(page, baseURL!);
+  await serveReadingsInBrowser(page);
+  const card = readings(page).getByRole("listitem").filter({ has: page.getByRole("link", { name: TAGGED.title }) });
+  const tags = card.locator(".library-card-tags");
+  await tags.scrollIntoViewIfNeeded();
+  const row = (await tags.boundingBox())!;
+  const last = (await card.getByRole("link", { name: TAG, exact: true }).boundingBox())!;
+  // Just right of the last tag, on the tags' own row.
+  await page.mouse.click(last.x + last.width + 12, row.y + row.height / 2);
+  await expect(page).toHaveURL(new RegExp(`/readings/${TAGGED.id}$`));
 });
 
 test("badges the pending, failed, and reprocess-failed rows, and only those", async ({ page, baseURL }) => {
@@ -401,4 +416,158 @@ test("a server-rendered permission denied keeps the account menu", async ({ page
   await page.waitForLoadState("networkidle");
   // A value, dehydrated with the page: nothing to ask again.
   expect(recorded.lists).toEqual([]);
+});
+
+// Search and tags (#417): each filter change is one same-origin request with
+// the filter in it and the offset back at the first page; a filtered deep
+// link renders on the server and a reload keeps it.
+
+const SEARCH = "quiet";
+const SEARCH_PAGE = libraryPage(ITEMS, { q: SEARCH }).readings;
+const TAG = "design";
+const TAG_PAGE = libraryPage(ITEMS, { tag: TAG }).readings;
+/** A first-page row carrying TAG, whose card the tests click. */
+const TAGGED = FIRST_PAGE.find((row) => row.id === "rd_FXATTENT01")!;
+
+function searchField(page: Page) {
+  return page.getByRole("searchbox", { name: "Search" });
+}
+
+function filterBar(page: Page) {
+  return page.getByRole("search", { name: "Filter readings" });
+}
+
+test("a search is one request with q, from the first page, and the field keeps focus", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page);
+  expect(SEARCH_PAGE.length).toBeGreaterThan(0);
+  expect(SEARCH_PAGE.length).toBeLessThan(FIRST_PAGE.length);
+
+  await searchField(page).fill(`  ${SEARCH} `);
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/\\?q=${SEARCH}$`));
+  await expect(readings(page).getByRole("listitem")).toHaveCount(SEARCH_PAGE.length);
+  await expect(readings(page).getByRole("heading", { level: 2 }).first()).toHaveText(titleOf(SEARCH_PAGE[0]!));
+  await expect(searchField(page)).toHaveValue(SEARCH);
+  await expect(searchField(page)).toBeFocused();
+  await expect(filterBar(page).getByRole("link", { name: `Clear search “${SEARCH}”` })).toHaveAttribute("href", "/");
+  await page.waitForLoadState("networkidle");
+  expect(recorded.documents).toEqual(["/"]);
+  expect(recorded.lists).toEqual([`/api/readings?q=${SEARCH}&offset=0`]);
+});
+
+test("a search from a later page starts again from the first", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  await page.goto("/?offset=20");
+  await expect(pager(page).getByText("Page 2")).toBeVisible();
+  await serveLibraryInBrowser(page);
+
+  await searchField(page).fill(SEARCH);
+  await filterBar(page).getByRole("button", { name: "Search" }).click();
+  await expect(page).toHaveURL(new RegExp(`/\\?q=${SEARCH}$`));
+  await expect(pager(page).getByText("Page 1")).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual([`/api/readings?q=${SEARCH}&offset=0`]);
+});
+
+test("a tag on a card filters by it without opening the reading, and the chip takes focus", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page);
+  await serveReadingsInBrowser(page);
+  const card = readings(page).getByRole("listitem").filter({ has: page.getByRole("link", { name: TAGGED.title }) });
+  const tag = card.getByRole("link", { name: TAG, exact: true });
+  await expect(tag).toHaveAttribute("href", `/?tag=${TAG}`);
+
+  await tag.click();
+  await expect(page).toHaveURL(new RegExp(`/\\?tag=${TAG}$`));
+  await expect(readings(page).getByRole("listitem")).toHaveCount(TAG_PAGE.length);
+  // The active tag is text on every card, so none claims to be the current page.
+  await expect(readings(page).getByRole("link", { name: TAG, exact: true })).toHaveCount(0);
+  await expect(readings(page).locator(".tag-current")).toHaveCount(TAG_PAGE.length);
+  const chip = filterBar(page).getByRole("link", { name: `Clear tag ${TAG}` });
+  await expect(chip).toHaveText(new RegExp(`^${TAG}`));
+  await expect(chip).toBeFocused();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.documents).toEqual(["/"]);
+  expect(recorded.lists).toEqual([`/api/readings?tag=${TAG}&offset=0`]);
+});
+
+test("a tag is its own target from the keyboard, after the card's title", async ({ page, baseURL }) => {
+  await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page);
+  const card = readings(page).getByRole("listitem").filter({ has: page.getByRole("link", { name: TAGGED.title }) });
+  const title = card.getByRole("link", { name: TAGGED.title });
+  await title.focus();
+  await page.keyboard.press("Tab");
+  await expect(card.getByRole("link", { name: TAGGED.tags![0]!, exact: true })).toBeFocused();
+  for (let i = 1; i < TAGGED.tags!.length; i += 1) await page.keyboard.press("Tab");
+  await expect(card.getByRole("link", { name: TAG, exact: true })).toBeFocused();
+
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/\\?tag=${TAG}$`));
+  await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+  await expect(readings(page).getByRole("listitem")).toHaveCount(TAG_PAGE.length);
+});
+
+test("the chip clears the tag, keeping the search, and the field takes focus", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  await page.goto(`/?q=a&tag=${TAG}&offset=20`);
+  await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+  await serveLibraryInBrowser(page);
+
+  await filterBar(page).getByRole("link", { name: `Clear tag ${TAG}` }).click();
+  await expect(page).toHaveURL(/\/\?q=a$/);
+  await expect(filterBar(page).getByRole("link", { name: /^Clear tag/ })).toHaveCount(0);
+  await expect(searchField(page)).toHaveValue("a");
+  await expect(searchField(page)).toBeFocused();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?q=a&offset=0"]);
+});
+
+test("a filtered deep link renders on the server, and a reload keeps it", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  const both = libraryPage(ITEMS, { q: "a", tag: TAG }).readings;
+  expect(both.length).toBeGreaterThan(0);
+  for (const load of [() => page.goto(`/?q=a&tag=${TAG}`), () => page.reload()]) {
+    await load();
+    await expect(page).toHaveURL(new RegExp(`/\\?q=a&tag=${TAG}$`));
+    await expect(readings(page).getByRole("listitem")).toHaveCount(both.length);
+    await expect(searchField(page)).toHaveValue("a");
+    await expect(filterBar(page).getByRole("link", { name: `Clear tag ${TAG}` })).toHaveAttribute("href", "/?q=a");
+    await page.waitForLoadState("networkidle");
+  }
+  expect(recorded.documents).toEqual(["/", "/"]);
+  expect(recorded.lists).toEqual([]);
+});
+
+test("no results name the search and the tag, and each clear control is one request", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  const recorded = recordRequests(page);
+  await page.goto(`/?q=zzzz&tag=${TAG}`);
+  const message = page.getByText(`No readings match “zzzz” tagged ${TAG}.`);
+  await expect(message).toBeVisible();
+  await expect(readings(page)).toHaveCount(0);
+  await expect(pager(page)).toHaveCount(0);
+  await serveLibraryInBrowser(page);
+
+  const actions = message.locator("xpath=..").getByRole("link");
+  await expect(actions).toHaveText(["Clear search", "Clear tag"]);
+  await actions.filter({ hasText: "Clear search" }).click();
+  await expect(page).toHaveURL(new RegExp(`/\\?tag=${TAG}$`));
+  await expect(readings(page).getByRole("listitem")).toHaveCount(TAG_PAGE.length);
+  await expect(searchField(page)).toBeFocused();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual([`/api/readings?tag=${TAG}&offset=0`]);
+});
+
+test("an empty library offers to save a reading", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!, LIBRARY_STATE_SESSIONS.empty);
+  await page.goto("/");
+  await expect(page.getByText("No readings yet.")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Save a reading" })).toHaveAttribute("href", "/save");
+  await expect(page.getByRole("link", { name: /^Clear/ })).toHaveCount(0);
+  await expect(pager(page)).toHaveCount(0);
 });

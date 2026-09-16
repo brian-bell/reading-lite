@@ -9,10 +9,11 @@ export const SESSION_COOKIE_VALUE = process.env.E2E_SESSION_COOKIE ?? "reader-a"
 
 /**
  * The same reader, with the library's list answering one of the common
- * states (#416). Only e2e/backend-stub.js knows these; against a real host
- * they are ordinary unknown sessions.
+ * states (#416) or nothing at all (#417). Only e2e/backend-stub.js knows
+ * these; against a real host they are ordinary unknown sessions.
  */
 export const LIBRARY_STATE_SESSIONS = {
+  empty: "reader-empty",
   "session-ended": "reader-expired",
   forbidden: "reader-forbidden",
   "account-changed": "reader-mismatch",

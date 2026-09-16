@@ -190,6 +190,29 @@ describe("signed-in identity", () => {
     expect(html).not.toContain('aria-current="page">Previous');
   });
 
+  // A filtered deep link (#417): the filters cross the binding as the URL
+  // spells them, the field shows the search, and the query key carries both.
+  it("server-renders a search and a tag as the page they name, without a redirect", async () => {
+    const response = await request("/?q=second&tag=none", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Location")).toBeNull();
+    const html = await response.text();
+    expect(html).toContain(heading("Library"));
+    expect(html).toMatch(/<input[^>]*id="library-search"[^>]*value="second"/);
+    const chip = /<a[^>]*aria-label="Clear tag none"[^>]*>/.exec(html)?.[0] ?? "";
+    expect(chip).toContain('href="/?q=second"');
+    expect(html).toMatch(/No readings match “second” tagged none\./);
+    expect(html).not.toContain("Reader A&#x27;s second page");
+    // The hash sorts the key's fields.
+    expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":0,"q":"second","tag":"none"}]');
+
+    const searched = await (await request("/?q=second", { headers: { Cookie: A.cookie } })).text();
+    expect(searched).toContain("Reader A&#x27;s second page");
+    expect(searched).not.toContain("Reader A&#x27;s quiet internet");
+    const searchChip = /<a[^>]*aria-label="Clear search “second”"[^>]*>/.exec(searched)?.[0] ?? "";
+    expect(searchChip).toContain('href="/"');
+  });
+
   it("server-renders an offset past the end with its page number and the first page", async () => {
     const response = await request("/?offset=100", { headers: { Cookie: A.cookie } });
     expect(response.status).toBe(200);
