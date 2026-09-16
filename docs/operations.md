@@ -420,7 +420,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (Pages + `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
+| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
 | production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
@@ -955,6 +955,11 @@ Deploying the frontend:
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
+  Since the Phase 4 staging switch (#339, 2026-09-16) the same deploy also
+  owns `staging.readinglite.ai/*` and `staging.readinglite.app/*`, ahead of
+  the Pages custom domains that stay bound there. The workflow smoke-checks all
+  three hosts. Until Phase 5 lands, staging account pages are unavailable in
+  the browser; use local development or the API for account checks.
 - **Smoke check.** Both end with `app/scripts/smoke-host.sh <https://host>`,
   which also runs by hand from any machine. It passes only when `/health` is
   `ok` and a signed-out `/api/whoami` is a JSON 401 from the backend, and `/`
@@ -962,7 +967,9 @@ Deploying the frontend:
   not send).
 - **Rollback.** Delete the host's frontend route in the dashboard, or
   `wrangler rollback` the frontend Worker to its previous version. Neither
-  affects the backend or the apex hosts.
+  affects the backend or the apex hosts. On the two staging hosts, deleting
+  the `/*` route hands `/` back to the Pages SPA immediately; this is the
+  cutover and rollback rehearsal for Phase 5.
 
 The deploy token's zone Workers Routes permission on `readinglite.ai` covers the
 frontend routes.

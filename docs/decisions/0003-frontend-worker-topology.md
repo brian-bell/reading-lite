@@ -134,7 +134,7 @@ bearer material enters browser storage.
 | --- | --- | --- |
 | Local | `localhost` | App dev server proxies `/api` to `wrangler dev` on :8787, as `web/` does; loopback requests already count as same-origin |
 | Phase 4 daily use | `next.readinglite.ai` (production) | Frontend `next.readinglite.ai/*`; backend `next.readinglite.ai/api/*` and `/health`; add `https://next.readinglite.ai` to `PUBLIC_WEB_ORIGINS`. Separate sign-in. Proxied DNS record required. Deploys need separate authorization |
-| Staging switch | `staging.readinglite.ai`, `staging.readinglite.app` | Both hosts move together once Phase 4 reaches parity. This is the cutover and rollback rehearsal. Before then, staging runs only the old SPA |
+| Staging switch | `staging.readinglite.ai`, `staging.readinglite.app` | Both hosts move together once Phase 4 reaches parity. This is the cutover and rollback rehearsal. Before then, staging runs only the old SPA. **Decided 2026-09-16** after the #412 daily-use review: the staging frontend owns `host/*` on both hosts, over the Pages custom domains that stay bound as the rollback target |
 | Staging preview (amended) | `next-staging.readinglite.ai` (staging) | Same shape as `next.readinglite.ai` on the staging Worker pair. Deployed from Phase 3 by manual dispatch. See the amendment |
 | Production cutover (Phase 5) | `readinglite.ai`, `readinglite.app` | Add frontend `/*` routes. Rollback deletes them. Retire `next.readinglite.ai` and its allowlist entry afterwards |
 

@@ -1,5 +1,7 @@
-# Deploy the new frontend Worker (app/) to its staging preview host,
-# next-staging.readinglite.ai (ADR 0003, amended 2026-09-13). Manual only: the
+# Deploy the new frontend Worker (app/) to its staging hosts:
+# next-staging.readinglite.ai, and since the Phase 4 staging switch (#339,
+# 2026-09-16) staging.readinglite.ai and staging.readinglite.app (ADR 0003,
+# amended 2026-09-13). Manual only: the
 # staging backend is deployed by hand (`npm run ops -- deploy worker --env
 # staging --execute`), so run this after that, from the same ref.
 
@@ -17,7 +19,7 @@ permissions:
 
 jobs:
   deploy:
-    name: Build and deploy frontend Worker (next-staging.readinglite.ai)
+    name: Build and deploy frontend Worker (staging hosts)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -52,5 +54,8 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy
-      - name: Smoke-check route precedence
-        run: app/scripts/smoke-host.sh https://next-staging.readinglite.ai
+      - name: Smoke-check route precedence on every staging host
+        run: |
+          app/scripts/smoke-host.sh https://next-staging.readinglite.ai
+          app/scripts/smoke-host.sh https://staging.readinglite.ai
+          app/scripts/smoke-host.sh https://staging.readinglite.app
