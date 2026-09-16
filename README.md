@@ -67,6 +67,14 @@ matches. List, detail, content, lookup, and `q` text search work with
 [seeded local data](docs/operations.md#seeding-local-r2). Integration tests cover
 the processing pipeline with queue, Vectorize, and provider fakes.
 
+The `web/` SPA above is being replaced by a TanStack Start frontend in
+[app/](app/README.md), on its own Worker at `next.readinglite.ai`; it runs
+locally on `:5174` against the same backend. `web/` stays live until that
+rollout's observation period ends (see [ADR
+0003](docs/decisions/0003-frontend-worker-topology.md)). Run both together
+locally with the
+[reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) skill.
+
 ## Verification
 
 ```sh
@@ -127,6 +135,7 @@ extraction adds description and transcript when available. See
 
 - [Architecture](docs/architecture.md), module responsibilities and storage rules.
 - [AGENTS.md](AGENTS.md), commands and constraints for coding agents.
+- [app/README.md](app/README.md), the new frontend's commands and rules.
 - [CONTEXT.md](CONTEXT.md), domain terminology.
 - [Hosted provider spend](docs/paid-provider-spend.md), budgets and accounting.
 - [Staging context preparation](docs/staging-context-copy.md), local fixture packets.

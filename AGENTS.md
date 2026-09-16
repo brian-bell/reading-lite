@@ -132,6 +132,18 @@ on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 integration tests inject `installQueueStub()` and `installVectorizeStub()`.
 Do not drain a queue before asserting an active pending state.
 
+Give each behavior one test owner; don't re-assert the same case at unit and
+integration, at phase and orchestrator, or at parser and every caller. Prefer
+`it.each` tables over near-identical copies. Exceptions worth keeping even
+when they look redundant: every ordering pin this file names as a contract
+(ledger before manifest, vectors before objects, spend RPC order, sidecar
+before create), fail-closed `not.toHaveBeenCalled` guards, cached-prefix
+snapshots, and SPA-mirror typed parses. Don't add a test that can't fail
+(asserting a constant equals its own literal, grepping source or docs for a
+string, or exercising a plan-mode path that swallows the assertion) or a
+duplicate `--tenant`-style check per command when a registry-level loop
+covers all of them plus a unit test of the shared guard.
+
 Local `wrangler dev` has neither Queue nor Vectorize. Submit/import/reprocess
 return 503; vector similarity is empty. List, detail, content, lookup, and `q`
 text search work with the [seeded local R2 fixture
