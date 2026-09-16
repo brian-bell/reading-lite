@@ -1045,14 +1045,20 @@ describe("ops corpus ingest", () => {
 
   it("still allows --tenant global on any bucket", async () => {
     // The pre-tenant corpus has no tenant id to key ledger rows by, and no
-    // account wipe addresses it, so there is nothing to refuse.
+    // account wipe addresses it, so there is nothing to refuse. Run in execute
+    // mode: plan mode swallows a ledger refusal and still exits 0, so only a
+    // submitted batch proves the guard let global through.
     const { deps, calls } = makeDeps();
     deps.resolveConfig = (flags) => {
       calls.configResolves++;
       return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
     };
-    const code = await corpusIngestCommand.run(["--tenant", "global", "--dir", "/md"], deps);
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
     expect(code).toBe(0);
+    expect(calls.executes).toBe(1);
   });
 
   it("plan mode degrades gracefully without credentials", async () => {

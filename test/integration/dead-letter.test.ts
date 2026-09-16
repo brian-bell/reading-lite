@@ -84,6 +84,8 @@ describe("markDeadLettered", () => {
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    const pointer = { id: READING_ID, key_prefix: KEY_PREFIX };
+    await reader.writeByUrlPointer(DLQ_URL_HASH, pointer);
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
@@ -95,8 +97,9 @@ describe("markDeadLettered", () => {
     const item = await reader.findListIndexItem(READING_ID);
     expect(item?.status).toBe("failed");
 
-    // Failed readings must stay re-submittable: no by-url pointer.
-    expect(await reader.readByUrlPointer("d".repeat(64))).toBeNull();
+    // Failed owners reprocess in place: the by-url claim survives the DLQ mark
+    // so the next submit of this URL lands on this reading, not a new one.
+    expect(await reader.readByUrlPointer(DLQ_URL_HASH)).toEqual(pointer);
   });
 
   it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {

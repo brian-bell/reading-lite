@@ -263,44 +263,6 @@ describe("summarizeReading provider selection", () => {
     expect(unused).not.toHaveBeenCalled();
   });
 
-  it("rejects an effort the configured Anthropic model cannot take before calling an API", async () => {
-    const unused = vi.fn<typeof fetch>();
-    const error = await summarizeReading(input, {
-      fetch: unused,
-      provider: "anthropic",
-      openaiApiKey: "sk-openai",
-      anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-sonnet-4-6",
-      anthropicReasoningEffort: "xhigh",
-    }).catch((caught) => caught);
-
-    expect(error).toBeInstanceOf(SummarizerConfigError);
-    expect(error).toHaveProperty(
-      "message",
-      "invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh",
-    );
-    expect(unused).not.toHaveBeenCalled();
-  });
-
-  it("rejects a thinking-disabled-incompatible Anthropic model before calling an API", async () => {
-    const unused = vi.fn<typeof fetch>();
-    const error = await summarizeReading(input, {
-      fetch: unused,
-      provider: "anthropic",
-      openaiApiKey: "sk-openai",
-      anthropicApiKey: "sk-anthropic",
-      anthropicModel: "claude-fable-5",
-      anthropicReasoningEffort: "low",
-    }).catch((caught) => caught);
-
-    expect(error).toBeInstanceOf(SummarizerConfigError);
-    expect(error).toHaveProperty(
-      "message",
-      "unsupported ANTHROPIC_MODEL for effort: claude-fable-5",
-    );
-    expect(unused).not.toHaveBeenCalled();
-  });
-
   it("does not fall back after the selected provider fails", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response(JSON.stringify({ error: { message: "OpenAI failed" } }), {
@@ -383,16 +345,9 @@ describe("validateProcessingCredentials", () => {
     ).not.toThrow();
   });
 
-  it("rejects an invalid Anthropic effort at the preflight seam", () => {
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-sonnet-5",
-        anthropicReasoningEffort: "extreme",
-      }),
-    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: extreme/);
+  it("wires Anthropic effort validation into the preflight seam", () => {
+    // parseAnthropicEffort owns the model/effort table; this only proves the
+    // seam calls it for the selected provider.
     expect(() =>
       validateProcessingCredentials({
         provider: "anthropic",
@@ -411,98 +366,7 @@ describe("validateProcessingCredentials", () => {
         anthropicReasoningEffort: "medium",
       }),
     ).not.toThrow();
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-sonnet-5",
-        anthropicReasoningEffort: "xhigh",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-sonnet-5",
-        anthropicReasoningEffort: "max",
-      }),
-    ).not.toThrow();
   });
-
-  it("rejects an effort the configured Anthropic model cannot take", () => {
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-sonnet-4-6",
-        anthropicReasoningEffort: "xhigh",
-      }),
-    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
-  });
-
-  it("rejects models that 400 on thinking disabled before any spend", () => {
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-fable-5",
-        anthropicReasoningEffort: "low",
-      }),
-    ).toThrow(/unsupported ANTHROPIC_MODEL for effort: claude-fable-5/);
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-mythos-5",
-        anthropicReasoningEffort: "medium",
-      }),
-    ).toThrow(/unsupported ANTHROPIC_MODEL for effort: claude-mythos-5/);
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-mythos-preview",
-        anthropicReasoningEffort: "max",
-      }),
-    ).toThrow(/unsupported ANTHROPIC_MODEL for effort: claude-mythos-preview/);
-  });
-
-  it("rejects Opus 5 xhigh|max because thinking is disabled", () => {
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-opus-5",
-        anthropicReasoningEffort: "xhigh",
-      }),
-    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-opus-5",
-        anthropicReasoningEffort: "max",
-      }),
-    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/);
-    expect(() =>
-      validateProcessingCredentials({
-        provider: "anthropic",
-        openaiApiKey: "sk-openai",
-        anthropicApiKey: "sk-anthropic",
-        anthropicModel: "claude-opus-5",
-        anthropicReasoningEffort: "low",
-      }),
-    ).not.toThrow();
-  });
-
   it("ignores Anthropic-only effort when OpenAI is selected", () => {
     expect(() =>
       validateProcessingCredentials({

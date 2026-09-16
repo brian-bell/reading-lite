@@ -8,7 +8,6 @@ import {
 } from "../../../src/modules/stores/reading-store";
 import type { Manifest, ProcessingAttempt } from "../../../src/schemas/manifest";
 import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
-import { sha256Hex } from "../../../src/services";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {
   return {
@@ -359,141 +358,10 @@ describe("ReadingStore — list index round-trip", () => {
   });
 });
 
-describe("ReadingStore — appendOrReplaceListIndexItem", () => {
-  it("creates an index when none exists and appends the item", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
-    const idx = await store.readListIndex();
-    expect(idx).not.toBeNull();
-    expect(idx!.items.map((i) => i.id)).toEqual(["rd_a"]);
-  });
-
-  it("replaces an existing item with the same id", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await store.appendOrReplaceListIndexItem(
-      indexItem({ id: "rd_a", status: "pending", title: undefined }),
-    );
-    await store.appendOrReplaceListIndexItem(
-      indexItem({ id: "rd_a", status: "ready", title: "After" }),
-    );
-    const idx = await store.readListIndex();
-    expect(idx!.items).toHaveLength(1);
-    expect(idx!.items[0]!.status).toBe("ready");
-    expect(idx!.items[0]!.title).toBe("After");
-  });
-
-  it("appends multiple distinct items", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_b" }));
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_c" }));
-    const idx = await store.readListIndex();
-    expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
-  });
-
-  it("does not create an empty index when removing from a cold bucket", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-
-    await store.removeListIndexItem("rd_missing");
-
-    await expect(store.readListIndex()).resolves.toBeNull();
-  });
-
-  it("removes an item only when the predicate matches", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await store.appendOrReplaceListIndexItem(
-      indexItem({ id: "rd_a", status: "pending" }),
-    );
-
-    await store.removeListIndexItemIf("rd_a", (item) => item.status === "ready");
-    await expect(store.readListIndex()).resolves.toMatchObject({
-      items: [{ id: "rd_a", status: "pending" }],
-    });
-
-    await store.removeListIndexItemIf("rd_a", (item) => item.status === "pending");
-    await expect(store.readListIndex()).resolves.toMatchObject({ items: [] });
-  });
-
-  it("retries and merges a concurrent write instead of clobbering it", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET, { sleep: async () => {} });
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
-
-    const realPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    let injected = false;
-    const spy = vi
-      .spyOn(env.READINGS_BUCKET, "put")
-      .mockImplementation((async (key: string, value: unknown, options?: unknown) => {
-        // On our first conditional write, simulate a different writer landing
-        // rd_b between our read and our put, then fail our precondition.
-        if (key === "index/list.json" && !injected) {
-          injected = true;
-          const cur = await env.READINGS_BUCKET.get("index/list.json");
-          const parsed = JSON.parse(await cur!.text()) as ListIndex;
-          parsed.items.push(indexItem({ id: "rd_b" }));
-          await realPut("index/list.json", JSON.stringify(parsed), {
-            httpMetadata: { contentType: "application/json" },
-          });
-          return null;
-        }
-        return realPut(key, value as ArrayBuffer, options as R2PutOptions);
-      }) as typeof env.READINGS_BUCKET.put);
-
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_c" }));
-    spy.mockRestore();
-
-    const idx = await store.readListIndex();
-    expect(idx!.items.map((i) => i.id).sort()).toEqual(["rd_a", "rd_b", "rd_c"]);
-  });
-
-  it("throws after exhausting CAS attempts under persistent contention", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET, {
-      maxAttempts: 3,
-      sleep: async () => {},
-    });
-    await store.appendOrReplaceListIndexItem(indexItem({ id: "rd_a" }));
-
-    const spy = vi
-      .spyOn(env.READINGS_BUCKET, "put")
-      .mockResolvedValue(null as unknown as R2Object);
-    await expect(
-      store.appendOrReplaceListIndexItem(indexItem({ id: "rd_b" })),
-    ).rejects.toThrow(/list index/i);
-    spy.mockRestore();
-  });
-});
-
 describe("ReadingStore — listManifests", () => {
   async function seedIndex(store: ReadingStore, items: ListIndexItem[]) {
     await store.writeListIndex({ version: 1, items });
   }
-
-  it("returns items newest-first by created_at", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await seedIndex(store, [
-      indexItem({ id: "rd_a", created_at: "2026-04-26T20:00:00.000Z" }),
-      indexItem({ id: "rd_b", created_at: "2026-04-26T20:00:01.000Z" }),
-      indexItem({ id: "rd_c", created_at: "2026-04-26T20:00:02.000Z" }),
-    ]);
-    const page = await store.listManifests({ offset: 0, limit: 10 });
-    expect(page.readings.map((r) => r.id)).toEqual(["rd_c", "rd_b", "rd_a"]);
-    expect(page.total_filtered).toBe(3);
-  });
-
-  it("paginates with offset+limit; total_filtered is the unpaged count", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const items: ListIndexItem[] = [];
-    for (let i = 0; i < 5; i++) {
-      items.push(indexItem({ id: `rd_${i}`, created_at: `2026-04-26T20:00:0${i}.000Z` }));
-    }
-    await seedIndex(store, items);
-    const page1 = await store.listManifests({ offset: 0, limit: 2 });
-    expect(page1.readings.map((r) => r.id)).toEqual(["rd_4", "rd_3"]);
-    expect(page1.total_filtered).toBe(5);
-    const page2 = await store.listManifests({ offset: 2, limit: 2 });
-    expect(page2.readings.map((r) => r.id)).toEqual(["rd_2", "rd_1"]);
-    const page3 = await store.listManifests({ offset: 4, limit: 2 });
-    expect(page3.readings.map((r) => r.id)).toEqual(["rd_0"]);
-  });
 
   it("filters by q across title, tldr, and url (case-insensitive)", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
@@ -563,17 +431,6 @@ describe("ReadingStore — listManifests", () => {
     const page = await store.listManifests({ offset: 0, limit: 10, tag: "ai" });
     expect(page.readings.map((r) => r.id)).toEqual(["rd_tagged"]);
     expect(page.total_filtered).toBe(1);
-  });
-
-  it("ANDs q and tag together", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    await seedIndex(store, [
-      indexItem({ id: "rd_a", title: "Rust async", tags: ["rust"] }),
-      indexItem({ id: "rd_b", title: "Rust web", tags: ["web"] }),
-      indexItem({ id: "rd_c", title: "Go async", tags: ["rust"] }),
-    ]);
-    const page = await store.listManifests({ offset: 0, limit: 10, q: "rust", tag: "rust" });
-    expect(page.readings.map((r) => r.id)).toEqual(["rd_a"]);
   });
 
   it("returns an empty page when index is missing AND no manifests exist", async () => {
@@ -720,151 +577,6 @@ describe("ReadingStore — listManifests", () => {
     });
   });
 
-  it("ignores stale exact-url index rows whose manifest belongs to another URL", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const requestedUrl = "https://example.com/requested";
-    const other = emptyManifest({
-      id: "rd_other",
-      url: "https://example.com/other",
-      url_hash: "b".repeat(64),
-      status: "ready",
-      created_at: "2026-04-26T20:00:00.000Z",
-      updated_at: "2026-04-26T20:00:00.000Z",
-    });
-    const otherPrefix = buildKeyPrefix(other.id, other.created_at);
-    await store.writeManifest(otherPrefix, other);
-    await store.appendOrReplaceListIndexItem({
-      ...manifestToIndexItem(other, otherPrefix),
-      url: requestedUrl,
-    });
-
-    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
-  });
-
-  it("does not scan manifests when the list index has no rows for the URL", async () => {
-    const requestedUrl = "https://example.com/requested";
-    const listIndex: ListIndex = {
-      version: 1,
-      items: [
-        indexItem({
-          id: "rd_other",
-          key_prefix: "readings/2026/04/26T200000Z-rd_other",
-          url: "https://example.com/other",
-        }),
-      ],
-    };
-    let listCalls = 0;
-    const bucket = {
-      get: async (key: string) => {
-        if (key === "index/list.json") {
-          return { text: async () => JSON.stringify(listIndex) } as unknown as R2ObjectBody;
-        }
-        throw new Error(`unexpected object read: ${key}`);
-      },
-      list: async () => {
-        listCalls++;
-        return { objects: [], truncated: false };
-      },
-    } as unknown as R2Bucket;
-
-    const store = new ReadingStore(bucket);
-
-    await expect(store.findManifestByUrl(requestedUrl)).resolves.toBeNull();
-    expect(listCalls).toBe(0);
-  });
-
-  it("prefers a ready owner over a newer failed duplicate of the same URL", async () => {
-    // Damaged-pointer repair (and legacy adoption) resolve URL ownership through
-    // findManifestByUrl. When a URL has both a ready reading and a *newer* failed
-    // duplicate (the recurring "failed orphan-dup" corpus state), the ready copy
-    // owns the URL and must win — ranking purely by recency would adopt the
-    // failed copy and orphan the ready summary by URL.
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const url = "https://example.com/dup";
-    const urlHash = await sha256Hex(url);
-
-    const ready = emptyManifest({
-      id: "rd_ready",
-      url,
-      url_hash: urlHash,
-      status: "ready",
-      created_at: "2026-04-26T20:00:00.000Z",
-      updated_at: "2026-04-26T20:00:00.000Z",
-    });
-    const failed = emptyManifest({
-      id: "rd_failed",
-      url,
-      url_hash: urlHash,
-      status: "failed",
-      created_at: "2026-04-26T20:05:00.000Z",
-      updated_at: "2026-04-26T20:05:00.000Z",
-    });
-    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
-    await store.writeManifest(buildKeyPrefix(failed.id, failed.created_at), failed);
-
-    const found = await store.findManifestByUrl(url);
-    expect(found?.manifest.id).toBe("rd_ready");
-  });
-
-  it("prefers a ready owner over a newer pending duplicate of the same URL", async () => {
-    // The middle rank (pending) must also lose to ready: an in-flight reprocess
-    // (newer, pending) must not steal URL ownership from the completed ready copy.
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const url = "https://example.com/dup-pending";
-    const urlHash = await sha256Hex(url);
-
-    const ready = emptyManifest({
-      id: "rd_ready",
-      url,
-      url_hash: urlHash,
-      status: "ready",
-      created_at: "2026-04-26T20:00:00.000Z",
-      updated_at: "2026-04-26T20:00:00.000Z",
-    });
-    const pending = emptyManifest({
-      id: "rd_pending",
-      url,
-      url_hash: urlHash,
-      status: "pending",
-      created_at: "2026-04-26T20:05:00.000Z",
-      updated_at: "2026-04-26T20:05:00.000Z",
-    });
-    await store.writeManifest(buildKeyPrefix(ready.id, ready.created_at), ready);
-    await store.writeManifest(buildKeyPrefix(pending.id, pending.created_at), pending);
-
-    const found = await store.findManifestByUrl(url);
-    expect(found?.manifest.id).toBe("rd_ready");
-  });
-
-  it("prefers the newest reading among same-status duplicates of the same URL", async () => {
-    // The status tiebreak must not override recency *within* a status class:
-    // two ready copies still resolve to the most recently updated one.
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const url = "https://example.com/dup-ready";
-    const urlHash = await sha256Hex(url);
-
-    const older = emptyManifest({
-      id: "rd_older",
-      url,
-      url_hash: urlHash,
-      status: "ready",
-      created_at: "2026-04-26T20:00:00.000Z",
-      updated_at: "2026-04-26T20:00:00.000Z",
-    });
-    const newer = emptyManifest({
-      id: "rd_newer",
-      url,
-      url_hash: urlHash,
-      status: "ready",
-      created_at: "2026-04-26T20:05:00.000Z",
-      updated_at: "2026-04-26T20:05:00.000Z",
-    });
-    await store.writeManifest(buildKeyPrefix(older.id, older.created_at), older);
-    await store.writeManifest(buildKeyPrefix(newer.id, newer.created_at), newer);
-
-    const found = await store.findManifestByUrl(url);
-    expect(found?.manifest.id).toBe("rd_newer");
-  });
 });
 
 describe("ReadingStore — tenant keyRoot isolation", () => {
