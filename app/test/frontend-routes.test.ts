@@ -7,7 +7,9 @@ import type { EnvironmentLabel } from "../config/backend-bindings";
 // per environment, and the backend of the same environment keeps the more
 // specific /api/* and /health routes on that host. Without those, /api/* on the
 // host would reach this Worker and 404, so a frontend route is only valid when
-// its own backend already routes the API there.
+// its own backend already routes the API there. Staging switched at Phase 4
+// parity (#339, 2026-09-16), so the staging frontend also owns both staging
+// hosts; production gains the apex hosts only at the Phase 5 cutover.
 
 type Route = { pattern: string; zone_name?: string };
 
@@ -19,9 +21,13 @@ function routes(configPath: string, env: string | undefined): Route[] {
   return (config.routes ?? []).map((route) => (typeof route === "string" ? { pattern: route } : route));
 }
 
-const PREVIEW_HOST: Record<Exclude<EnvironmentLabel, "local">, string> = {
-  staging: "next-staging.readinglite.ai",
-  production: "next.readinglite.ai",
+const HOSTS: Record<Exclude<EnvironmentLabel, "local">, Route[]> = {
+  staging: [
+    { pattern: "next-staging.readinglite.ai/*", zone_name: "readinglite.ai" },
+    { pattern: "staging.readinglite.ai/*", zone_name: "readinglite.ai" },
+    { pattern: "staging.readinglite.app/*", zone_name: "readinglite.app" },
+  ],
+  production: [{ pattern: "next.readinglite.ai/*", zone_name: "readinglite.ai" }],
 };
 
 describe("frontend Worker routes", () => {
@@ -29,10 +35,8 @@ describe("frontend Worker routes", () => {
     expect(routes("wrangler.jsonc", undefined)).toEqual([]);
   });
 
-  it.each(["staging", "production"] as const)("attach the %s frontend to its preview host only", (label) => {
-    expect(routes("wrangler.jsonc", label)).toEqual([
-      { pattern: `${PREVIEW_HOST[label]}/*`, zone_name: "readinglite.ai" },
-    ]);
+  it.each(["staging", "production"] as const)("attach the %s frontend to exactly its own hosts", (label) => {
+    expect(routes("wrangler.jsonc", label)).toEqual(HOSTS[label]);
   });
 
   it.each(["staging", "production"] as const)(
@@ -45,10 +49,13 @@ describe("frontend Worker routes", () => {
         expect(backend).toContain(`${host}/api/*`);
         expect(backend).toContain(`${host}/health`);
       }
-      // The other environment's backend never serves this environment's host.
+      // The other environment's backend never serves this environment's hosts.
       const other = label === "staging" ? "production" : "staging";
       const otherBackend = routes("../wrangler.toml", other).map(({ pattern }) => pattern);
-      expect(otherBackend.some((pattern) => pattern.startsWith(`${PREVIEW_HOST[label]}/`))).toBe(false);
+      for (const { pattern } of HOSTS[label]) {
+        const host = pattern.replace(/\/\*$/, "");
+        expect(otherBackend.some((backendPattern) => backendPattern.startsWith(`${host}/`))).toBe(false);
+      }
     },
   );
 });

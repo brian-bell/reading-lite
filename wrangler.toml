@@ -348,8 +348,11 @@ class_name = "TenantUsageGuard"
 name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
-# Worker routes scoped to API, health, and MCP; Pages on the same hostname
-# serves the SPA. Staging dual-serves staging.readinglite.ai (canonical) and
+# Worker routes scoped to API, health, and MCP. Since the Phase 4 staging
+# switch (#339, 2026-09-16) the frontend Worker (app/wrangler.jsonc,
+# reading-lite-app-staging) owns `/*` on both staging hosts; the Pages custom
+# domains stay bound underneath as the rollback target. Staging dual-serves
+# staging.readinglite.ai (canonical) and
 # staging.readinglite.app. The reading-lite-staging.bbell.dev host is retired
 # (S9); removing these blocks does not delete live Cloudflare routes.
 # This file does not flip live DNS.
