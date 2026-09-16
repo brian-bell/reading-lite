@@ -53,6 +53,21 @@ function saveField(page: Page) {
   return page.getByRole("textbox", { name: "URL" });
 }
 
+/**
+ * Saves a URL and waits for the answer the case stubbed (#433). The click
+ * leaves focus on Save, the form's last tab stop, so the keyboard walk is
+ * started again from the heading — above the notice the save put there.
+ */
+function saveAndExpect(sentence: string, also?: (page: Page) => Promise<void>) {
+  return async (page: Page) => {
+    await saveField(page).fill("https://example.com/a");
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByText(sentence).first()).toBeVisible();
+    await also?.(page);
+    await page.locator("#main h1").focus();
+  };
+}
+
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
@@ -311,6 +326,58 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       // in your library", which a substring match would find too.
       await expect(page.getByText("Already in your library", { exact: true })).toBeVisible();
     },
+  },
+  // Refused, not broken (#433): the form and the URL stay, and the sentence is
+  // both in the notice above them and in the page's standing polite region.
+  {
+    name: "save-rate-limited",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      serveSaveInBrowser(page, {
+        status: 429,
+        json: { error: "rate limited", code: "rate_limited", limit: "request_rate", reset_at: "2026-12-31T23:59:00Z" },
+      });
+    },
+    prepare: saveAndExpect("You've reached the request rate limit. It resets at 31 December 2026, 23:59 UTC."),
+  },
+  {
+    name: "save-quota-monthly",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      serveSaveInBrowser(page, {
+        status: 429,
+        json: { error: "quota exhausted", code: "quota_exhausted", limit: "monthly", reset_at: "2026-12-31T23:59:00Z" },
+      });
+    },
+    prepare: saveAndExpect("You've reached the monthly reading limit. It resets at 31 December 2026, 23:59 UTC."),
+  },
+  {
+    name: "save-guard-unavailable",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      serveSaveInBrowser(page, { status: 429, json: { error: "usage guard unavailable" } });
+    },
+    prepare: saveAndExpect("Limits can't be checked right now."),
+  },
+  {
+    name: "save-unavailable",
+    essential: true,
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      serveSaveInBrowser(page, { status: 503, json: { error: "queue unavailable", id: "rd_FXPENDNG01" } });
+    },
+    // The attempt exists even though nothing was enqueued, so it is worth opening.
+    prepare: saveAndExpect("Saving is unavailable right now.", async (page) => {
+      await expect(page.getByRole("link", { name: "Open the reading" })).toBeVisible();
+    }),
   },
   { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 

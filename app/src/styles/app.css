@@ -512,6 +512,12 @@ textarea {
   line-height: 1.6;
 }
 
+/* A notice can offer somewhere to go as well as something to do (#433): the
+   link reads with the sentence, the button stays the control beside it. */
+.offline-notice .notice-link {
+  font-size: 14px;
+}
+
 /* Previous, page number, Next (#414), under the cards at their width. An
    unavailable step keeps its place, muted, so the pager never shifts. */
 .library-pager {

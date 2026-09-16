@@ -199,7 +199,82 @@ describe("submitFromResponse", () => {
     });
   });
 
-  it.each([401, 429, 503, 500])("throws an ApiError carrying %i", (status) => {
+  // 429 and 503 are values too (#433): the page keeps the form and offers the
+  // way on, rather than replacing it with the retryable server error.
+  it("names the request rate a 429 hit, and when it resets", () => {
+    expect(
+      submitFromResponse(429, {
+        error: "rate limited",
+        code: "rate_limited",
+        limit: "request_rate",
+        reset_at: "2026-09-16T12:00:00Z",
+      }),
+    ).toEqual({ kind: "limited", limit: "request_rate", resetAt: "2026-09-16T12:00:00Z" });
+  });
+
+  it.each(["hourly", "monthly"] as const)("names the %s quota a 429 exhausted", (limit) => {
+    expect(
+      submitFromResponse(429, {
+        error: "quota exhausted",
+        code: "quota_exhausted",
+        limit,
+        reset_at: "2026-10-01T00:00:00Z",
+      }),
+    ).toEqual({ kind: "limited", limit, resetAt: "2026-10-01T00:00:00Z" });
+  });
+
+  // The enum stays open, as the reading projection's do: a window added to the
+  // backend later must not cost the reader the URL they typed. The page has a
+  // sentence for a limit it does not recognize.
+  it("carries a window it has never seen through", () => {
+    expect(
+      submitFromResponse(429, { error: "quota exhausted", code: "quota_exhausted", limit: "daily" }),
+    ).toEqual({ kind: "limited", limit: "daily", resetAt: undefined });
+  });
+
+  // A reset the page cannot format is left out rather than thrown over: the
+  // reader is told which limit they hit either way.
+  it.each([{ reset_at: 1737000000 }, { reset_at: "" }, {}])("drops a reset_at it cannot read (%#)", (reset) => {
+    expect(submitFromResponse(429, { error: "rate limited", code: "rate_limited", limit: "hourly", ...reset })).toEqual(
+      { kind: "limited", limit: "hourly", resetAt: undefined },
+    );
+  });
+
+  // The usage guard's own 429 names no limit at all.
+  it("reports the usage guard's 429 as the state of its own", () => {
+    expect(submitFromResponse(429, { error: "usage guard unavailable" })).toEqual({ kind: "guard-unavailable" });
+  });
+
+  it.each([{ error: "rate limited" }, { error: "rate limited", limit: "" }, null])(
+    "throws on a 429 that names neither a limit nor the guard (%#)",
+    (body) => {
+      try {
+        submitFromResponse(429, body);
+        expect.unreachable();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ApiError);
+        expect((error as ApiError).status).toBe(429);
+        expect((error as ApiError).message).toBe(body === null ? "save returned 429" : "rate limited");
+      }
+    },
+  );
+
+  it("reports a 503 that names the reading it could not queue", () => {
+    expect(submitFromResponse(503, { error: "queue unavailable", id: "rd_FXPENDNG01" })).toEqual({
+      kind: "unavailable",
+      id: "rd_FXPENDNG01",
+    });
+  });
+
+  // The local `wrangler dev` body: no queue binding, and so no reading.
+  it("reports a 503 that names no reading", () => {
+    expect(submitFromResponse(503, { error: "queue binding READING_JOBS is not configured" })).toEqual({
+      kind: "unavailable",
+      id: undefined,
+    });
+  });
+
+  it.each([401, 500])("throws an ApiError carrying %i", (status) => {
     try {
       submitFromResponse(status, { error: "nope" });
       expect.unreachable();
