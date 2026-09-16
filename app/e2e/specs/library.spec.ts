@@ -1,10 +1,11 @@
-// The library in a real browser (#413, #414, #415). The component tests prove
-// what renders; these prove what only a browser can: the page read on the
-// server is not asked for again after hydration, a client-side visit or page
-// change asks the same-origin API once and pinned to the account, a reload
-// keeps the page, each card is one target from the pointer and the keyboard
-// with or without a badge, and at phone width a long title wraps whole while
-// the summary clamps at three lines.
+// The library in a real browser (#413, #414, #415, #416). The component tests
+// prove what renders; these prove what only a browser can: the page read on
+// the server is not asked for again after hydration, a client-side visit or
+// page change asks the same-origin API once and pinned to the account, a
+// reload keeps the page, each card is one target from the pointer and the
+// keyboard with or without a badge, at phone width a long title wraps whole
+// while the summary clamps at three lines, and the common states arrive on a
+// page change with one request each, or none while offline.
 //
 // Requests only, so one viewport and theme; the matrix screenshots the page
 // in every project. It uses Playwright's own `test` for the request tests, as
@@ -16,6 +17,7 @@ import { harnessBaseUrl } from "../harness";
 import { libraryBadge } from "../../src/library-card";
 import { LibraryRowSchema } from "../../src/library";
 import { LIBRARY_PAGE_SIZE, libraryItems, libraryPage } from "../library-page.js";
+import { LIBRARY_STATE_SESSIONS, SESSION_EMAIL } from "../sessions";
 import { serveLibraryInBrowser, serveReadingsInBrowser, signIn } from "../test";
 
 const test = base.extend({
@@ -257,7 +259,10 @@ test("keeps the reader's place when the step they used becomes unavailable", asy
   await pager(page).getByRole("link", { name: "Next" }).focus();
   await page.keyboard.press("Enter");
   await expect(pager(page).getByText("Page 3")).toBeVisible();
-  expect(await page.evaluate(() => document.activeElement?.textContent)).toBe("Page 3");
+  // The step is unavailable from the moment the page is asked for (#416), and
+  // the browser drops its focus a frame after the href goes.
+  await expect.poll(() => page.evaluate(() => document.activeElement?.textContent)).toBe("Page 3");
+  await expect(readings(page).getByRole("listitem")).toHaveCount(3);
   await expect(pager(page).getByRole("link", { name: "Next" })).toHaveAttribute("aria-disabled", "true");
 
   // Tab carries on from the pager rather than from the top of the page.
@@ -289,4 +294,111 @@ test("signed out, the sign-in form renders in place and no library is read", asy
   await page.waitForLoadState("networkidle");
   expect(recorded.lists).toEqual([]);
   await expect(readings(page)).toHaveCount(0);
+});
+
+// The common states (#416) after a page change: each is the answer to the one
+// request the change makes, rendered on the page the URL names, with the
+// session left alone unless it really ended.
+
+test("a page change answered 403 shows permission denied and keeps the session", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page, [], () => ({ status: 403, body: { error: "forbidden" } }));
+
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "You don't have access to this." })).toBeVisible();
+  await expect(page).toHaveURL(/\/\?offset=20$/);
+  await expect(page.getByText(SESSION_EMAIL)).toBeAttached();
+  await expect(page.getByRole("main").getByRole("link", { name: "Back to library" })).toHaveCount(0);
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+});
+
+test("a page change answered 412 asks for a reload", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page, [], () => ({
+    status: 412,
+    body: { error: "expected tenant mismatch", acting_tenant: "usr_bbbbbbbb" },
+  }));
+
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "This tab is signed in to a different account than the page expects." }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(page.getByText("Signed in as usr_bbbbbbbb.")).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+});
+
+test("a page change answered 5xx offers Retry, which asks for that page again", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  let failing = true;
+  await serveLibraryInBrowser(page, [], () =>
+    failing
+      ? { status: 503, body: { error: "backend unavailable" } }
+      : { status: 200, body: libraryPage(ITEMS, { offset: LIBRARY_PAGE_SIZE }) },
+  );
+
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Something went wrong on our side." })).toBeVisible();
+  await expect(page.getByText("backend unavailable")).toBeVisible();
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+
+  failing = false;
+  await page.getByRole("button", { name: "Retry" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+  await expect(readings(page).getByRole("link").first()).toHaveText(titleOf(SECOND_PAGE[0]!));
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20", "/api/readings?offset=20"]);
+});
+
+test("a page change answered 401 shows the expired session at that page's URL", async ({ page, baseURL }) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page, [], () => ({ status: 401, body: { error: "unauthorized" } }));
+
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Your session ended." })).toBeVisible();
+  await expect(page).toHaveURL(/\/\?offset=20$/);
+  await expect(page.getByRole("main").getByRole("link", { name: "Sign in" })).toHaveAttribute(
+    "href",
+    "/login?next=%2F%3Foffset%3D20",
+  );
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+});
+
+test("offline, a page change says so without a request, and the page arrives once the network is back", async ({
+  page,
+  baseURL,
+}) => {
+  const recorded = await openLibrary(page, baseURL!);
+  await serveLibraryInBrowser(page);
+
+  await page.context().setOffline(true);
+  await pager(page).getByRole("link", { name: "Next" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Library" })).toBeVisible();
+  const notice = page.getByRole("status");
+  await expect(notice).toContainText("You're offline.");
+  await expect(notice.getByRole("button", { name: "Retry" })).toBeVisible();
+  await expect(page).toHaveURL(/\/\?offset=20$/);
+  await expect(readings(page)).toHaveCount(0);
+  expect(recorded.lists).toEqual([]);
+
+  await page.context().setOffline(false);
+  await expect(readings(page).getByRole("link").first()).toHaveText(titleOf(SECOND_PAGE[0]!));
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await page.waitForLoadState("networkidle");
+  expect(recorded.lists).toEqual(["/api/readings?offset=20"]);
+});
+
+test("a server-rendered permission denied keeps the account menu", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!, LIBRARY_STATE_SESSIONS.forbidden);
+  const recorded = recordRequests(page);
+  await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "You don't have access to this." })).toBeVisible();
+  await expect(page.getByText(SESSION_EMAIL)).toBeAttached();
+  await page.waitForLoadState("networkidle");
+  // A value, dehydrated with the page: nothing to ask again.
+  expect(recorded.lists).toEqual([]);
 });

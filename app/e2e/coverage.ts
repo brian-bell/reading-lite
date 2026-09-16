@@ -10,7 +10,8 @@
 
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
-import { serveDiagnosticsInBrowser, serveReadingsInBrowser, serveSourceInBrowser } from "./test";
+import { LIBRARY_STATE_SESSIONS } from "./sessions";
+import { serveDiagnosticsInBrowser, serveLibraryInBrowser, serveReadingsInBrowser, serveSourceInBrowser } from "./test";
 
 export type SignedState = "signed-out" | "signed-in";
 
@@ -21,8 +22,16 @@ export interface EvidenceCase {
   state: SignedState;
   /** The `<h1>` that proves the page rendered before anything is measured. */
   heading: string;
+  /**
+   * A session cookie other than the default reader's, for a backend-stub
+   * scenario (#416). Signs the context in whatever `state` says the page
+   * then shows: an ended session renders the signed-out shell.
+   */
+  session?: string;
   /** Fixture-pack state this case reads, once routes read readings (#369+). */
   fixture?: string;
+  /** Routes the browser's own requests before the page loads, for a state the load itself must reach. */
+  stub?: (page: Page) => Promise<void>;
   /** Reaches the state under test after load: open a disclosure, follow a link. */
   prepare?: (page: Page) => Promise<void>;
 }
@@ -85,6 +94,61 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await page.locator("details.account-menu > summary").click();
       await page.locator("details.account-menu[open] .account-menu-panel").waitFor();
+    },
+  },
+  // The common states on the library (#416). The session-ended, forbidden,
+  // and account-changed pages are rendered on the server, from sessions whose
+  // list answers that state. A failed list is not dehydrated, so its page goes
+  // out busy and the browser's own request shows the error; offline is reached
+  // in the browser, by changing page with the network gone.
+  {
+    name: "library-session-ended",
+    path: "/",
+    state: "signed-out",
+    session: LIBRARY_STATE_SESSIONS["session-ended"],
+    heading: "Your session ended.",
+  },
+  {
+    name: "library-forbidden",
+    path: "/",
+    state: "signed-in",
+    session: LIBRARY_STATE_SESSIONS.forbidden,
+    heading: "You don't have access to this.",
+  },
+  {
+    name: "library-account-changed",
+    path: "/",
+    state: "signed-in",
+    session: LIBRARY_STATE_SESSIONS["account-changed"],
+    heading: "This tab is signed in to a different account than the page expects.",
+  },
+  {
+    name: "library-server-error",
+    path: "/",
+    state: "signed-in",
+    session: LIBRARY_STATE_SESSIONS["server-error"],
+    heading: "Something went wrong on our side.",
+    // The failed server read is not dehydrated, so the browser asks again on
+    // load; routed before the load, that request gets the backend's answer.
+    stub: async (page) => {
+      await serveLibraryInBrowser(page, [], () => ({ status: 503, body: { error: "backend unavailable" } }));
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("backend unavailable")).toBeVisible();
+    },
+  },
+  {
+    name: "library-offline",
+    path: "/",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await page.context().setOffline(true);
+      await page.getByRole("navigation", { name: "Pagination" }).getByRole("link", { name: "Next" }).click();
+      await expect(page.getByRole("status")).toContainText("You're offline.");
+      // The click leaves focus on Next, the page's last tab stop; start the
+      // keyboard walk from the heading, as a route change would.
+      await page.locator("#main h1").focus();
     },
   },
   { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Save reading" },

@@ -12,23 +12,43 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import pack from "./fixtures/fixture-pack.json";
 import { libraryItems, libraryPage } from "./library-page.js";
+import { LIST_SCENARIOS } from "./list-scenarios.js";
 
 // Sessions the suite signs in with. e2e/sessions.ts holds the cookie names the
 // browser sets; keep the two in step.
-const SESSIONS = {
-  "reader-a": {
-    tenant_id: "usr_aaaaaaaa",
-    user_id: "usr_aaaaaaaa",
-    principal: "session",
-    tenant_data_plane: true,
-    email: "reader-a@example.com",
-    csrf_token: "csrf-token-for-a",
-  },
+const READER_A = {
+  tenant_id: "usr_aaaaaaaa",
+  user_id: "usr_aaaaaaaa",
+  principal: "session",
+  tenant_data_plane: true,
+  email: "reader-a@example.com",
+  csrf_token: "csrf-token-for-a",
 };
 
-function sessionOf(cookie) {
+const SESSIONS = {
+  "reader-a": READER_A,
+};
+
+// Reader A again, but the library's list answers with one of the acceptance
+// matrix's common states (#416), so a server render of `/` shows that state:
+// the session ended between whoami and the list (401), an inactive account
+// (403), the expected-tenant pin missed (412), or the backend down (503).
+const SCENARIO_SESSIONS = {
+  "reader-expired": LIST_SCENARIOS.expired,
+  "reader-forbidden": LIST_SCENARIOS.forbidden,
+  "reader-mismatch": LIST_SCENARIOS.mismatch,
+  "reader-outage": LIST_SCENARIOS.outage,
+};
+
+function sessionKeyOf(cookie) {
   const match = /(?:^|;\s*)(?:__Host-session|e2e-session)=([^;]+)/.exec(cookie ?? "");
-  return match ? SESSIONS[match[1]] : undefined;
+  return match ? match[1] : undefined;
+}
+
+function sessionOf(cookie) {
+  const key = sessionKeyOf(cookie);
+  if (key === undefined) return undefined;
+  return SESSIONS[key] ?? (key in SCENARIO_SESSIONS ? READER_A : undefined);
 }
 
 const LIBRARY_ITEMS = libraryItems(pack.list_index.items);
@@ -41,6 +61,8 @@ export class FrontendReads extends WorkerEntrypoint {
 
   async list({ cookie, q, tag, offset }) {
     if (!sessionOf(cookie)) return { status: 401, body: { error: "unauthorized" } };
+    const scenario = SCENARIO_SESSIONS[sessionKeyOf(cookie)];
+    if (scenario) return scenario;
     return { status: 200, body: libraryPage(LIBRARY_ITEMS, { q, tag, offset }) };
   }
 
