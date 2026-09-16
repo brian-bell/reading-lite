@@ -7,13 +7,13 @@ import { BackTo } from "./ReturnTrail";
 // The states a page shows instead of its content (acceptance matrix, Common
 // states and Reading detail). Each is a real page with its own heading, so
 // focus after navigation lands on what happened, and the URL stays put. The
-// reading page and the library (#416) share them; the `Reading*` names keep
-// the reading page's own choices of action.
+// reading page and the library (#416) share them; ReadingForbidden and
+// ReadingLoading add the reading page's own action and heading.
 //
 // 401 is not here: a session that ended is the shell's page, at whatever URL
 // the request failed (AppFrame + SessionEnded).
 
-export function StatePage({ heading, children }: { heading: string; children?: ReactNode }) {
+function StatePage({ heading, children }: { heading: string; children?: ReactNode }) {
   return (
     <div className="page reading-state">
       <PageHeading>{heading}</PageHeading>
@@ -92,8 +92,6 @@ export function AccountChanged({ actingTenant }: { actingTenant?: string }) {
   );
 }
 
-export const ReadingAccountChanged = AccountChanged;
-
 /** 5xx, an unparseable body, or the binding being down: retryable. */
 export function ServerError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
@@ -107,8 +105,6 @@ export function ServerError({ message, onRetry }: { message: string; onRetry: ()
     </StatePage>
   );
 }
-
-export const ReadingServerError = ServerError;
 
 /**
  * Offline (acceptance matrix, Common states): a fetch could not run for want

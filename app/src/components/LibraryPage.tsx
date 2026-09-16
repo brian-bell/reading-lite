@@ -1,9 +1,9 @@
-import { onlineManager, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type FocusEvent, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type FocusEvent, type RefObject } from "react";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
-import type { LibraryPage as LibraryPageBody, LibraryRow } from "../library";
+import type { LibraryRow } from "../library";
 import { libraryBadge } from "../library-card";
 import { libraryQueryOptions } from "../library-query";
 import {
@@ -55,33 +55,37 @@ export function LibraryHome({ search }: { search: LibrarySearch }) {
   return <LibraryPage search={search} />;
 }
 
-const subscribeOnline = (listener: () => void) => onlineManager.subscribe(listener);
-const isOnline = () => onlineManager.isOnline();
-const isOnlineOnServer = () => true;
-
 export function LibraryPage({ search }: { search: LibrarySearch }) {
   const params = libraryParamsOf(search);
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  const { data, error, isPending, fetchStatus, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
-  // Re-rendered when the browser's connection comes and goes, so the offline
-  // notice follows it. TanStack Query listens to the same events to pause and
-  // continue the fetch.
-  const online = useSyncExternalStore(subscribeOnline, isOnline, isOnlineOnServer);
-  const view = libraryViewOf({ data, error, isPending, fetchStatus, online });
+  const { data, error, fetchStatus, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
+  const view = libraryViewOf({ data, error, fetchStatus });
   const retry = () => void refetch();
-  // A read that settles as one of the state pages replaces the library, and
-  // whatever had focus in it: the heading a route change just focused, or the
-  // pager step the reader pressed. The new page's heading takes it, so the
-  // state is announced rather than focus falling to the top of the document.
-  const focusWasInLibrary = useRef(false);
+  // A read that settles as a different page replaces the one on screen, and
+  // whatever had focus in it: the heading a route change just focused, the
+  // pager step the reader pressed, or the Retry they pressed on a state page.
+  // The new page's heading takes it, so the state (or the library, back
+  // again) is announced rather than focus falling to the top of the document.
+  // Only when focus was lost: a library that stays up through a read keeps
+  // the reader on the control they were on.
+  const focusWasInPage = useRef(false);
   useEffect(() => {
-    if (focusWasInLibrary.current) {
-      focusWasInLibrary.current = false;
-      focusPageHeading();
+    if (focusWasInPage.current) {
+      focusWasInPage.current = false;
+      if (document.activeElement?.closest(".page") == null) focusPageHeading();
     }
   }, [view.kind]);
 
+  return (
+    <>
+      <FocusWithin key={view.kind} flag={focusWasInPage} />
+      {pageFor(view, search, params.offset, retry)}
+    </>
+  );
+}
+
+function pageFor(view: LibraryView, search: LibrarySearch, offset: number, retry: () => void) {
   switch (view.kind) {
     case "forbidden":
       return <Forbidden />;
@@ -92,23 +96,23 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
     default:
       return (
         <div className="page library">
-          <FocusWithin flag={focusWasInLibrary} />
           <PageHeading>Library</PageHeading>
-          <LibraryContent view={view} search={search} offset={params.offset} onRetry={retry} />
+          <LibraryContent view={view} search={search} offset={offset} onRetry={retry} />
         </div>
       );
   }
 }
 
 /**
- * Records, as the library is unmounted, whether focus was inside it. Layout
- * cleanup runs before the DOM is removed, so the focused element is still
- * there to ask.
+ * Records, as the view changes, whether focus was inside the page then on
+ * screen. Keyed on the view, so it is replaced with the page; it comes first,
+ * so its layout cleanup runs before the page's DOM is removed and the focused
+ * element is still there to ask.
  */
 function FocusWithin({ flag }: { flag: RefObject<boolean> }) {
   useLayoutEffect(
     () => () => {
-      flag.current = document.activeElement?.closest(".page.library") !== null;
+      flag.current = document.activeElement?.closest(".page") != null;
     },
     [flag],
   );
@@ -121,8 +125,9 @@ function FocusWithin({ flag }: { flag: RefObject<boolean> }) {
  * read, with Next kept as it was: a page change from the keyboard leaves
  * focus on the step that was pressed, and only a step that turns out to be
  * unavailable on arrival loses its href and hands focus to the page number
- * (see Pager). Unmounting it would drop focus to the top of the document
- * without a blur.
+ * (see Pager). A page with no rows has no pager; if the step that led there
+ * still had focus, the heading takes it (see Pager), since unmounting a
+ * focused element drops focus to the top of the document without a blur.
  */
 function LibraryContent({
   view,
@@ -149,7 +154,9 @@ function LibraryContent({
       ) : (
         <LibraryRows rows={page.readings} />
       )}
-      {empty ? null : <Pager search={search} offset={offset} page={page} />}
+      {empty ? null : (
+        <Pager search={search} offset={offset} hasMore={page === undefined ? view.kind === "loading" : page.has_more} />
+      )}
     </>
   );
 }
@@ -171,10 +178,11 @@ const PAGE_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
 
 /**
  * Previous, the page number, and Next. The page number follows the snapped
- * offset asked for, and Next the backend's `has_more`; while the page is
- * still being read, Next is assumed to exist, so a reader stepping forward
- * keeps the control they are on. A step that cannot be followed stays in
- * place, disabled, so the pager never shifts.
+ * offset asked for, and Next `hasMore`: the backend's `has_more`, or, while
+ * the page is still being read, assumed, so a reader stepping forward keeps
+ * the control they are on. Offline with nothing loaded, nothing is assumed.
+ * A step that cannot be followed stays in place, disabled, so the pager
+ * never shifts.
  *
  * The step a reader just followed is usually the one that becomes unavailable
  * on arrival: Next into the last page, Previous back to the first. Losing its
@@ -183,25 +191,34 @@ const PAGE_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
  * they landed on and leaving Tab where they were. Only that blur: focus
  * leaving for somewhere else carries a relatedTarget, and a step a reader can
  * still follow is not disabled.
+ *
+ * When the page that arrives has no rows at all, the pager goes with them.
+ * If the step that led there still had focus, the heading takes it as the
+ * pager unmounts, for the same reason: the layout cleanup runs while the step
+ * is still in the document to ask.
  */
-function Pager({ search, offset, page }: { search: LibrarySearch; offset: number; page: LibraryPageBody | undefined }) {
+function Pager({ search, offset, hasMore }: { search: LibrarySearch; offset: number; hasMore: boolean }) {
+  const nav = useRef<HTMLElement>(null);
   const pageLabel = useRef<HTMLSpanElement>(null);
   const keepFocusInPager = (event: FocusEvent<HTMLElement>) => {
     if (event.relatedTarget === null && event.target.getAttribute("aria-disabled") === "true") {
       pageLabel.current?.focus();
     }
   };
+  useLayoutEffect(
+    () => () => {
+      if (nav.current?.contains(document.activeElement)) focusPageHeading();
+    },
+    [],
+  );
 
   return (
-    <nav className="library-pager" aria-label="Pagination" onBlur={keepFocusInPager}>
+    <nav className="library-pager" aria-label="Pagination" onBlur={keepFocusInPager} ref={nav}>
       <PagerStep label="Previous" search={offset > 0 ? searchForPage(search, offset - LIBRARY_PAGE_SIZE) : null} />
       <span className="library-pager-page" ref={pageLabel} tabIndex={-1}>
         Page {pageNumber(offset)}
       </span>
-      <PagerStep
-        label="Next"
-        search={page === undefined || page.has_more ? searchForPage(search, offset + LIBRARY_PAGE_SIZE) : null}
-      />
+      <PagerStep label="Next" search={hasMore ? searchForPage(search, offset + LIBRARY_PAGE_SIZE) : null} />
     </nav>
   );
 }

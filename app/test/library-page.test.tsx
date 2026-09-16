@@ -449,6 +449,39 @@ describe("the common states after a page change", () => {
     expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 20, 20]);
   });
 
+  // Retry unmounts the button under the reader's finger. The page that
+  // replaces the state page takes the focus, so the outcome is announced
+  // either way: the library back again, or the failure again.
+  it("moves focus to the heading after Retry, whether the read fails again or not", async () => {
+    // Each read past the first page waits to be answered, as a real one does,
+    // so the busy library renders between a Retry and its outcome.
+    let answer: (response: { status: number; body: unknown }) => void = () => {};
+    backendServesFirstPageThen(many, () => new Promise((resolve) => (answer = resolve)));
+    const failure = { status: 502, body: { error: "upstream exploded" } };
+    const success = { status: 200, body: { readings: many.slice(20, 40), limit: 20, offset: 20, has_more: true } };
+    await openBrowserTab("/");
+    await pressNext();
+    answer(failure);
+    await headingSettles("Something went wrong on our side.");
+
+    async function retry(): Promise<void> {
+      screen.getByRole("button", { name: "Retry" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await headingSettles("Library");
+      expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+    }
+
+    await retry();
+    answer(failure);
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+
+    await retry();
+    answer(success);
+    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
+    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toHaveFocus();
+  });
+
   // The state page takes the focus the library held: the pager step the
   // reader pressed, or the heading a route change had just focused.
   it("moves focus to the state page's heading from the step that was pressed", async () => {
@@ -517,6 +550,22 @@ describe("loading", () => {
     expect(next).toHaveFocus();
   });
 
+  // A page with no rows has no pager, so the step that led there cannot keep
+  // the focus; the heading takes it rather than the top of the document.
+  it("moves focus to the heading when Next lands on a page that has no rows", async () => {
+    backendServesFirstPageThen(many, async () => ({
+      status: 200,
+      body: { readings: [], limit: 20, offset: 20, has_more: false },
+    }));
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    await pressNext();
+    await screen.findByText("No readings on page 2.");
+    expect(screen.queryByRole("navigation", { name: "Pagination" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toHaveFocus();
+  });
+
   it("does not stay busy once the rows arrive", async () => {
     backendServesPages(many);
     await openBrowserTab("/");
@@ -553,6 +602,11 @@ describe("offline", () => {
     expect(router.state.location.href).toBe("/?offset=20");
     expect(within(notice()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Readings" })).toBeNull();
+    // Nothing is known about the page, so nothing is assumed: Next is not a
+    // way to walk further from a page that never arrived.
+    const pager = screen.getByRole("navigation", { name: "Pagination" });
+    expect(within(pager).getByRole("link", { name: "Next" })).not.toHaveAttribute("href");
+    expect(within(pager).getByRole("link", { name: "Previous" })).toHaveAttribute("href", "/");
     // The read never left: TanStack pauses a fetch it cannot make.
     expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0]);
 

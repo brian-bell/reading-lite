@@ -1,6 +1,7 @@
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, onlineManager } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER, apiFetch, fetchIdentity } from "../src/api/client";
+import { NetworkError } from "../src/api/errors";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 
 function identity(csrf: string): Identity {
@@ -59,6 +60,21 @@ describe("apiFetch", () => {
     await apiFetch(b, "/api/auth/logout", { method: "POST" });
     await apiFetch(new QueryClient(), "/api/auth/logout", { method: "POST" });
     expect(calls.map((call) => call.headers.get(CSRF_HEADER))).toEqual(["csrf-b", null]);
+  });
+
+  // A fetch that never got a response says whether the browser was offline
+  // when it failed, so a page can show offline for it after the browser is
+  // back and the query is still carrying the error (#416).
+  it.each([true, false])("names a failed fetch a NetworkError, recording offline=%s at the time", async (offline) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("Failed to fetch"))));
+    onlineManager.setOnline(!offline);
+    try {
+      const failure = await apiFetch(new QueryClient(), "/api/readings").catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(NetworkError);
+      expect(failure).toMatchObject({ message: "Failed to fetch", offline });
+    } finally {
+      onlineManager.setOnline(true);
+    }
   });
 
   it.each(["https://evil.example/api/whoami", "//evil.example/api/whoami", "/health", "api/whoami"])(

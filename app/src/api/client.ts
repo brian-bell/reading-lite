@@ -1,5 +1,6 @@
-import type { QueryClient } from "@tanstack/react-query";
+import { onlineManager, type QueryClient } from "@tanstack/react-query";
 import { identityFromResponse, whoamiQueryKey, type Identity } from "../identity";
+import { NetworkError } from "./errors";
 
 // Browser requests (ADR 0003): same-origin /api/* with the session cookie, and
 // the CSRF token from /api/whoami on writes, as web/src/api.ts does. The token
@@ -19,7 +20,13 @@ export async function apiFetch(queryClient: QueryClient, path: string, init: Req
     const token = queryClient.getQueryData<Identity | null>(whoamiQueryKey)?.csrf_token;
     if (token) headers.set(CSRF_HEADER, token);
   }
-  return fetch(new Request(new URL(path, window.location.origin), { ...init, headers, credentials: "include" }));
+  try {
+    return await fetch(new Request(new URL(path, window.location.origin), { ...init, headers, credentials: "include" }));
+  } catch (err) {
+    // No response at all. The same events TanStack Query pauses on decide
+    // whether this was the network being away.
+    throw new NetworkError(err, !onlineManager.isOnline());
+  }
 }
 
 /** Browser path for the whoami query. */

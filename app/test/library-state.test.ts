@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ApiError } from "../src/api/errors";
+import { ApiError, NetworkError } from "../src/api/errors";
 import { libraryViewOf, type LibraryQueryState } from "../src/library-state";
 
 // State selection for the library page (#416): which of the acceptance
@@ -7,8 +7,13 @@ import { libraryViewOf, type LibraryQueryState } from "../src/library-state";
 
 const PAGE = { readings: [], limit: 20, offset: 0, has_more: false };
 
+/** What apiFetch throws when fetch itself failed, with the browser offline or not. */
+function failedToFetch(offline: boolean): NetworkError {
+  return new NetworkError(new TypeError("Failed to fetch"), offline);
+}
+
 function settled(over: Partial<LibraryQueryState>): LibraryQueryState {
-  return { data: undefined, error: null, isPending: false, fetchStatus: "idle", online: true, ...over };
+  return { data: undefined, error: null, fetchStatus: "idle", ...over };
 }
 
 describe("libraryViewOf", () => {
@@ -17,7 +22,7 @@ describe("libraryViewOf", () => {
   });
 
   it("is loading while the first request is in flight", () => {
-    expect(libraryViewOf(settled({ isPending: true, fetchStatus: "fetching" }))).toEqual({ kind: "loading" });
+    expect(libraryViewOf(settled({ fetchStatus: "fetching" }))).toEqual({ kind: "loading" });
   });
 
   it("names permission denied and the account change from the result", () => {
@@ -45,35 +50,42 @@ describe("libraryViewOf", () => {
   });
 
   it("is offline when the fetch is paused for lack of a network", () => {
-    expect(libraryViewOf(settled({ isPending: true, fetchStatus: "paused", online: false }))).toEqual({
+    expect(libraryViewOf(settled({ fetchStatus: "paused" }))).toEqual({
       kind: "offline",
     });
   });
 
-  it("is offline when the fetch threw while the browser was offline", () => {
-    const error = new TypeError("Failed to fetch");
-    expect(libraryViewOf(settled({ error, online: false }))).toEqual({ kind: "offline" });
+  it("is offline when the fetch threw while the browser was offline, whatever it says now", () => {
+    // The browser coming back does not change what the error was: the view
+    // holds until the reconnect refetch answers.
+    expect(libraryViewOf(settled({ error: failedToFetch(true) }))).toEqual({ kind: "offline" });
+    expect(libraryViewOf(settled({ error: failedToFetch(true), fetchStatus: "fetching" }))).toEqual({ kind: "offline" });
   });
 
   it("keeps a settled permission or account state through an offline refetch", () => {
-    expect(libraryViewOf(settled({ data: { state: "forbidden" }, fetchStatus: "paused", online: false }))).toEqual({
+    expect(libraryViewOf(settled({ data: { state: "forbidden" }, fetchStatus: "paused" }))).toEqual({
       kind: "forbidden",
     });
     expect(
-      libraryViewOf(settled({ data: { state: "account-changed", acting_tenant: "usr_b" }, error: new TypeError("Failed to fetch"), online: false })),
+      libraryViewOf(settled({ data: { state: "account-changed", acting_tenant: "usr_b" }, error: failedToFetch(true) })),
     ).toEqual({ kind: "account-changed", actingTenant: "usr_b" });
   });
 
   it("keeps the loaded page through an offline refetch", () => {
     const data = { state: "ready" as const, page: PAGE };
-    expect(libraryViewOf(settled({ data, fetchStatus: "paused", online: false }))).toEqual({ kind: "offline", page: PAGE });
-    expect(libraryViewOf(settled({ data, error: new TypeError("Failed to fetch"), online: false }))).toEqual({
+    expect(libraryViewOf(settled({ data, fetchStatus: "paused" }))).toEqual({ kind: "offline", page: PAGE });
+    expect(libraryViewOf(settled({ data, error: failedToFetch(true) }))).toEqual({
       kind: "offline",
       page: PAGE,
     });
   });
 
   it("is a server error when the fetch threw with the browser online", () => {
+    expect(libraryViewOf(settled({ error: failedToFetch(false) }))).toEqual({
+      kind: "server-error",
+      message: "Failed to fetch",
+    });
+    // Thrown by something other than apiFetch: not the network's word.
     const error = new TypeError("Failed to fetch");
     expect(libraryViewOf(settled({ error }))).toEqual({ kind: "server-error", message: "Failed to fetch" });
   });

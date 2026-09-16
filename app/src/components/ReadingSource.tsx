@@ -57,7 +57,7 @@ function SourceForbidden() {
   );
 }
 
-/** 412: another tab signed this browser into a different account (ReadingAccountChanged). */
+/** 412: another tab signed this browser into a different account (AccountChanged). */
 function SourceAccountChanged({ actingTenant }: { actingTenant?: string }) {
   return (
     <div className="source-failed">

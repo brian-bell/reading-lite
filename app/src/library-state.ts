@@ -1,10 +1,9 @@
-import { ApiError } from "./api/errors";
+import { NetworkError } from "./api/errors";
 import type { LibraryPage, LibraryResult } from "./library";
 
 // What the library shows for one page's query (#416): the acceptance matrix's
-// common states chosen from the query observer's fields and whether the
-// browser is online. Pure, so the choice is tested on its own; LibraryPage
-// renders whatever comes out.
+// common states chosen from the query observer's fields. Pure, so the choice
+// is tested on its own; LibraryPage renders whatever comes out.
 //
 // The result values (ready, forbidden, account-changed) come from
 // libraryFromResponse; anything unexpected reaches here as an error. A 401
@@ -14,17 +13,17 @@ import type { LibraryPage, LibraryResult } from "./library";
 // offline, so they come before the network's own states.
 // Offline has two shapes in TanStack Query's default network mode: a fetch
 // started while offline never runs and the query sits `paused`, and a fetch
-// that fails after the browser went offline rejects with the fetch's own
-// TypeError (retries are off). Both are the offline state, which keeps a
-// page already loaded. Anything else thrown, the binding being down (status
-// 0) included, is the retryable server-error state.
+// that fails after the browser went offline rejects (retries are off) with a
+// NetworkError that recorded the browser was offline when it threw. Both are
+// the offline state, which keeps a page already loaded, and the second stays
+// so until the reconnect refetch answers: the browser being back does not
+// change what the error was. Anything else thrown, the binding being down
+// (status 0) included, is the retryable server-error state.
 
 export interface LibraryQueryState {
   data: LibraryResult | undefined;
   error: unknown;
-  isPending: boolean;
   fetchStatus: "fetching" | "paused" | "idle";
-  online: boolean;
 }
 
 export type LibraryView =
@@ -46,10 +45,11 @@ export function libraryViewOf(state: LibraryQueryState): LibraryView {
   const page = state.data?.page;
   if (state.fetchStatus === "paused") return { kind: "offline", ...(page ? { page } : {}) };
   if (state.error !== undefined && state.error !== null) {
-    if (!(state.error instanceof ApiError) && !state.online) return { kind: "offline", ...(page ? { page } : {}) };
+    if (state.error instanceof NetworkError && state.error.offline) return { kind: "offline", ...(page ? { page } : {}) };
     return { kind: "server-error", message: messageOfError(state.error) };
   }
-  if (state.isPending || state.data === undefined) return { kind: "loading" };
+  // Without placeholder data, pending is exactly having no data yet.
+  if (state.data === undefined) return { kind: "loading" };
   return { kind: "ready", page: state.data.page };
 }
 

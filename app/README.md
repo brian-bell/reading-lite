@@ -110,11 +110,13 @@ return path is per origin.
   and 403 offers nothing, since the matrix's "Back to library" has nowhere to
   go from the library itself and a 403 never ends the session. A 401 is the
   shell's expired-session page at the library's URL, and any other failure is
-  the retryable server error. A state page that replaces the library takes
-  the focus the library held, so it is announced. Offline is a notice with Retry above
+  the retryable server error. A page that replaces the one on screen takes
+  the focus it held (a state page for the library's, the library for a state
+  page's Retry), so it is announced. Offline is a notice with Retry above
   whatever was loaded: React Query pauses a fetch started without a network
   (`fetchStatus: "paused"`) and continues it on `online`, and a fetch that
-  threw while offline reads the same way. Loading keeps the "Library" heading
+  threw while offline (`NetworkError.offline`, recorded by `apiFetch` when it
+  threw) reads the same way until the reconnect refetch answers. Loading keeps the "Library" heading
   with `aria-busy` on the content region and "Loading…" after 300 ms. The
   route's loader waits for the page on the server and only starts it in the
   browser (`loadLibraryPage`), so a page change mounts the busy page at once
