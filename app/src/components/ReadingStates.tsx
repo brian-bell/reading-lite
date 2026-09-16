@@ -1,8 +1,8 @@
-import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { previousHop, type TrailHop } from "../reading-trail";
 import { PageHeading } from "./PageHeading";
 import { BackTo } from "./ReturnTrail";
+import { BackToLibrary } from "./BackToLibrary";
 
 // The states a page shows instead of its content (acceptance matrix, Common
 // states and Reading detail). Each is a real page with its own heading, so
@@ -18,16 +18,6 @@ function StatePage({ heading, children }: { heading: string; children?: ReactNod
     <div className="page reading-state">
       <PageHeading>{heading}</PageHeading>
       {children}
-    </div>
-  );
-}
-
-function BackToLibrary() {
-  return (
-    <div className="form-actions">
-      <Link className="button" to="/">
-        Back to library
-      </Link>
     </div>
   );
 }
@@ -49,9 +39,7 @@ export function ReadingNotFound({ trail = [] }: { trail?: readonly TrailHop[] })
       ) : null}
       <div className="form-actions">
         {previous ? <BackTo hops={trail} previous={previous} className="button button-primary" /> : null}
-        <Link className="button" to="/">
-          Back to library
-        </Link>
+        <BackToLibrary className="button" />
       </div>
     </StatePage>
   );
@@ -68,7 +56,9 @@ export function Forbidden({ children }: { children?: ReactNode }) {
 export function ReadingForbidden() {
   return (
     <Forbidden>
-      <BackToLibrary />
+      <div className="form-actions">
+        <BackToLibrary className="button" />
+      </div>
     </Forbidden>
   );
 }

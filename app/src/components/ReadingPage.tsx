@@ -14,6 +14,7 @@ import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
 import { ReadingSource, type LoadedImages } from "./ReadingSource";
+import { BackToLibrary } from "./BackToLibrary";
 import { AccountChanged, ReadingForbidden, ReadingLoading, ReadingNotFound, ServerError } from "./ReadingStates";
 import { ReadingStatusCard } from "./ReadingStatusCard";
 import { ReadingNovelty, ReadingSummary } from "./ReadingSummary";
@@ -25,8 +26,8 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 // through the backend entrypoint, dehydrated into the page, and rendered here
 // without a second request.
 //
-// The order of the reading column is the design spec's (Reading surface):
-// the return trail when the reader followed a relationship here, the one-time
+// The order of the reading column is the design spec's (Reading surface),
+// after "Back to library" (#407): the return trail when the reader followed a relationship here, the one-time
 // notice a save left when the URL was already in the library (#432), title,
 // metadata line, tags, the phone jump to the context column, status card when
 // active or failed, the Summary/Source tabs (#372), the selected view's
@@ -62,6 +63,7 @@ function ReadingSurface({ reading, view, trail }: { reading: Reading; view: Read
   return (
     <div className={context ? "page reading reading-layout" : "page reading"}>
       <article className="reading-column">
+        <BackToLibrary className="reading-back" />
         <ReturnTrail hops={trail} />
         <SaveNoticeBanner />
         <PageHeading>{reading.title ?? reading.url}</PageHeading>
@@ -167,9 +169,8 @@ function ReadingViews({ reading, view }: { reading: Reading; view: ReadingView }
 
 /**
  * Tags open the library filtered by that tag (design spec, Data mapping). They
- * are links, not buttons, because they are a navigation to the library URL the
- * spec fixes as `/?q=&tag=&offset=` — the library reads `tag` when its filters
- * land in Phase 4 (#339); the URL it lands on is already settled.
+ * are links, not buttons, because they are a fresh navigation to the library
+ * URL `/?tag=T`: its first page, at the top.
  */
 function ReadingTags({ tags }: { tags: string[] | undefined }) {
   if (!tags || tags.length === 0) return null;

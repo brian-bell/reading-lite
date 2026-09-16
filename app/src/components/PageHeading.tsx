@@ -14,8 +14,8 @@ export function PageHeading({ children }: { children: ReactNode }) {
   );
 }
 
-export function focusPageHeading(): void {
-  document.querySelector<HTMLElement>("#main h1")?.focus();
+export function focusPageHeading(options?: FocusOptions): void {
+  document.querySelector<HTMLElement>("#main h1")?.focus(options);
 }
 
 export function useFocusHeadingOnNavigation(): void {
@@ -23,7 +23,11 @@ export function useFocusHeadingOnNavigation(): void {
   useEffect(
     () =>
       router.subscribe("onRendered", (event) => {
-        if (event.fromLocation && event.pathChanged) focusPageHeading();
+        // Without scrolling: scroll restoration has already put the page where
+        // it belongs — the top for a new page, the reader's place for Back or
+        // "Back to library" (#407) — and focusing would scroll the heading
+        // back into view.
+        if (event.fromLocation && event.pathChanged) focusPageHeading({ preventScroll: true });
       }),
     [router],
   );

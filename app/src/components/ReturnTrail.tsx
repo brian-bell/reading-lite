@@ -9,7 +9,8 @@ import { useRenderedLocation } from "./rendered-location";
 // through, so the previous reading comes back with its own trail and scroll
 // position, exactly as the Back button would. Without that history (the
 // reader arrived here by a link whose state was set elsewhere) it is a link to
-// the previous reading carrying the trail popped by one hop.
+// the previous reading carrying the trail popped by one hop, and the way back
+// to the library (library-return.ts) unchanged.
 
 /**
  * The trail of the page on screen (useRenderedLocation): while a followed
@@ -46,7 +47,12 @@ export function BackTo({ hops, previous, className }: { hops: readonly TrailHop[
     );
   }
   return (
-    <Link className={className} to="/readings/$id" params={{ id: previous.id }} state={{ trail: trailAfterReturning(hops) }}>
+    <Link
+      className={className}
+      to="/readings/$id"
+      params={{ id: previous.id }}
+      state={(prev) => ({ libraryReturn: prev?.libraryReturn, trail: trailAfterReturning(hops) })}
+    >
       {label}
     </Link>
   );

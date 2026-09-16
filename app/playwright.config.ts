@@ -70,6 +70,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // The way back to the library (#407): the library URL and its scroll
+    // position after opening a reading, by "Back to library" and by browser
+    // Back, at both widths (the spec sets each viewport itself).
+    name: "library-return",
+    testMatch: /library-return\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // The Source view (#372): URL and history behaviour, request timing, the
     // no-referrer image load, the policy header, and rich content at 390 px.
     // The matrix screenshots the view's states in every project.
