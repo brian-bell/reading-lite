@@ -6,9 +6,12 @@ on:
   push:
     branches: [main]
     # No CI run means no workflow_run production deployment for these pushes.
-    # Keep this list to paths that scripts/ci-lib/changed-jobs.ts selects no
-    # jobs for. PRs must still emit the existing job checks so required checks
-    # do not remain pending.
+    # Documentation pushes neither test nor deploy. README.md, AGENTS.md,
+    # docs/operations.md, and docs/openapi.yaml are pinned by Worker tests, so
+    # scripts/ci-lib/changed-jobs.ts runs the Worker job for them on PRs; a
+    # direct push of only those files is checked by the next code change.
+    # PRs must still emit the existing job checks so required checks do not
+    # remain pending.
     paths-ignore:
       - '*.md'
       - 'docs/**'
@@ -63,7 +66,14 @@ jobs:
             exit 0
           fi
           git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" \
-            | node scripts/ci-lib/changed-jobs.ts | tee -a "$GITHUB_OUTPUT"
+            | node scripts/ci-lib/changed-jobs.ts > "$RUNNER_TEMP/jobs"
+          cat "$RUNNER_TEMP/jobs"
+          # Empty outputs would skip every job and still pass required checks.
+          test "$(grep -cE '^(worker|ops|web|app|appBrowser)=(true|false)$' "$RUNNER_TEMP/jobs")" -eq 5 || {
+            echo "classifier did not select all five jobs"
+            exit 1
+          }
+          cat "$RUNNER_TEMP/jobs" >> "$GITHUB_OUTPUT"
 
   worker:
     name: Worker (typecheck + test)

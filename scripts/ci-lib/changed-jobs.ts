@@ -11,6 +11,9 @@
 // Runs directly under Node 22's type stripping: keep it free of imports that
 // need a build step and of non-erasable TypeScript syntax.
 
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
 export const CI_JOBS = ["worker", "ops", "web", "app", "appBrowser"] as const;
 export type CiJob = (typeof CI_JOBS)[number];
 export type CiJobSelection = Record<CiJob, boolean>;
@@ -85,7 +88,7 @@ export function formatOutputs(selection: CiJobSelection): string {
 
 // CLI: NUL-separated paths (`git diff --name-only -z`) on stdin, GitHub
 // Actions `key=value` outputs on stdout.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   const paths = Buffer.concat(chunks).toString("utf8").split("\0").filter(Boolean);

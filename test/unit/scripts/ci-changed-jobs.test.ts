@@ -32,7 +32,9 @@ describe("CI job selection for pull requests", () => {
     expect(selectJobs(paths)).toEqual(expected);
   });
 
-  it("reads NUL-separated paths and writes step outputs", () => {
+  // Spawning the .ts entry needs Node's built-in type stripping (22.18+), as CI has.
+  const stripsTypes = Boolean((process.features as { typescript?: unknown }).typescript);
+  it.skipIf(!stripsTypes)("reads NUL-separated paths and writes step outputs", () => {
     const output = execFileSync(process.execPath, ["scripts/ci-lib/changed-jobs.ts"], {
       input: "web/src/App.tsx\0app/test/a.test.ts\0",
       encoding: "utf8",
