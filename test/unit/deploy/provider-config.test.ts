@@ -5,15 +5,45 @@ function read(path: string): string {
   return readFileSync(path, "utf8");
 }
 
+// Reads `key` from exactly one TOML table. The lookup is bounded to that
+// table's body (up to the next `[...]` header) so a key missing from staging
+// cannot fall through to production's value and pass the comparison below.
 function envVar(
   wrangler: string,
   env: "local" | "staging" | "production",
   key: string,
 ): string | undefined {
   const table = env === "local" ? "vars" : `env\\.${env}\\.vars`;
-  const re = new RegExp(`^\\[${table}\\][\\s\\S]*?^${key} = "([^"]*)"$`, "m");
-  return wrangler.match(re)?.[1];
+  const body = wrangler.match(
+    new RegExp(`^\\[${table}\\]\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m"),
+  )?.[1];
+  return body?.match(new RegExp(`^${key} = "([^"]*)"$`, "m"))?.[1];
 }
+
+describe("envVar", () => {
+  it("does not fall through to a later table when the key is absent", () => {
+    const toml = [
+      "[vars]",
+      'A = "local"',
+      "",
+      "[env.staging.vars]",
+      'B = "staging"',
+      "",
+      "[[env.staging.routes]]",
+      'pattern = "x"',
+      "",
+      "[env.production.vars]",
+      'A = "production"',
+      'B = "production"',
+      "",
+    ].join("\n");
+    expect(envVar(toml, "local", "A")).toBe("local");
+    expect(envVar(toml, "local", "B")).toBeUndefined();
+    expect(envVar(toml, "staging", "A")).toBeUndefined();
+    expect(envVar(toml, "staging", "B")).toBe("staging");
+    expect(envVar(toml, "production", "A")).toBe("production");
+  });
+});
 
 describe("checked-in summarizer provider configuration", () => {
   it("keeps local (top-level [vars]) on low effort for both providers", () => {
