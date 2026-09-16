@@ -101,8 +101,25 @@ return path is per origin.
   reading that is not simply ready carries a text badge above the title
   (`src/library-card.ts`, #415): "Processing" for pending rows and running
   attempts, "Failed" with the failure category's headline, and "Reprocess
-  failed" on a ready row whose last attempt was a failed reprocess. Filters
-  are a later slice of #404.
+  failed" on a ready row whose last attempt was a failed reprocess. A row's
+  tags are links under the hostname, raised above the stretched title link,
+  each to the library filtered by that tag.
+- **Library filters.** `q` and `tag` (#417) are passed to the backend as the
+  URL spells them (it trims and lowercases); an empty one is left out of the
+  URL. The filter bar's form navigates to the trimmed draft, and each active
+  filter is a chip whose link removes it; every filter change drops `offset`
+    (`searchForFilters`), keeping any other parameter in place. The library
+  stays mounted through a filter change, but the control used is gone once
+  it lands (a chip, an empty page's link, a tag with the rows), so it records
+  where focus goes: the field after a search or a clear, the chip after a
+  tag. The request names the filters it navigates to and is dropped unless
+  those are the filters that arrive. Tag links and chips are not preloaded;
+  the tag a page is filtered by is text on its cards. An empty
+  page names the filters (`libraryEmptyOf`, `libraryEmptyCopy`): "No readings
+  yet." with Save a reading, "No readings match “q”" and/or "tagged T" with
+  Clear search and Clear tag, and a page past the end with its number and
+  First page. The browser-evidence stub answers the `reader-empty` session
+  with no rows for the empty state.
 - **Library states.** `src/library-state.ts` picks the acceptance matrix's
   common state from the list query (#416), and the page renders the same
   state components as reading detail (`src/components/ReadingStates.tsx`):
