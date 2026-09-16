@@ -52,8 +52,10 @@ const RULES: Rule[] = [
   // library-page.js, library-search.ts.
   [/^app\/.*\.md$|^app\/(Dockerfile|\.dockerignore)$/, NONE],
   [/^app\/(e2e\/fixtures\/|e2e\/[^/]+\.js$|src\/library-search\.ts$)/, ["worker", "app", "appBrowser"]],
-  // Unit tests, the smoke suite, and deploy routes: the app job builds and
-  // smoke-tests the Worker, but nothing here changes what a browser renders.
+  // Unit tests, the smoke suite, and Worker config. wrangler.jsonc is mostly
+  // routes and bindings; its compatibility and assets settings shape the built
+  // Worker, which the app job's smoke suite serves (backend 404s, cache
+  // headers, themed SSR), so browser evidence waits for a rendering change.
   [/^app\/(test|smoke|scripts)\/|^app\/(wrangler\.jsonc|vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
   [/^app\//, ["app", "appBrowser"]],
 
