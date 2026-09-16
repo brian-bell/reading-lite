@@ -3,10 +3,10 @@
 // reading page (#406) and the library's active-row refresh (#409) read one
 // definition of the schedule, the cap, and the failure stop.
 //
-// A watch belongs to one key — the attempt id on the reading page — and its
-// elapsed time runs from when the page started watching that key. Hidden-tab
-// time counts, because elapsed is wall-clock time; pausing while hidden is the
-// caller's (TanStack Query's `refetchIntervalInBackground: false`).
+// A watch belongs to one key — the attempt id on the reading page, the page's
+// query on the library — and its elapsed time runs from when the page started
+// watching that key. Hidden-tab time counts, because elapsed is wall-clock
+// time; pausing while hidden is the caller's (TanStack Query's `refetchIntervalInBackground: false`).
 
 /** No automatic check at or after this much elapsed time. */
 export const REFRESH_CAP_MS = 16 * 60_000;
@@ -20,6 +20,9 @@ export type Schedule = (elapsedMs: number) => number;
 
 /** The reading page's schedule: 3 s for 30 s, 5 s until 2 min, then 15 s. */
 export const readingSchedule: Schedule = (elapsed) => (elapsed < 30_000 ? 3_000 : elapsed < 120_000 ? 5_000 : 15_000);
+
+/** The library's schedule: the visible page every 15 s while it has an active row. */
+export const librarySchedule: Schedule = () => 15_000;
 
 /** Why a watch stopped checking on its own. The manual check still works. */
 export type WatchStop = "cap" | "failures";

@@ -82,6 +82,9 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     path: "/",
     state: "signed-in",
     heading: "Library",
+    // The pending row makes the page check itself every 15 s in the browser
+    // (#409), and the frontend Worker answers /api/* with 404 by design.
+    stub: (page) => serveLibraryInBrowser(page),
     prepare: async (page) => {
       const list = page.getByRole("list", { name: "Readings" });
       await expect(list.getByRole("listitem").first()).toBeVisible();
@@ -189,6 +192,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     path: "/",
     state: "signed-in",
     heading: "Library",
+    stub: (page) => serveLibraryInBrowser(page),
     prepare: async (page) => {
       await page.locator("details.account-menu > summary").click();
       await page.locator("details.account-menu[open] .account-menu-panel").waitFor();

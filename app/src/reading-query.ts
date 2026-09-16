@@ -1,9 +1,10 @@
-import { queryOptions, type QueryClient, type UseQueryOptions } from "@tanstack/react-query";
+import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { fetchReading } from "./api/readings";
 import { expectedLayoutOf, readReadingFromBackend, readingQueryKey, type ReadingResult } from "./reading";
 import type { Identity } from "./identity";
+import type { QueryRefresh } from "./components/use-status-watch";
 
 // The reading query, isomorphic like identity-query.ts: on the server it reads
 // the backend entrypoint with this request's cookie, in the browser it calls
@@ -21,17 +22,11 @@ const loadReading = createIsomorphicFn()
     fetchReading(queryClient, id, expectedTenant, signal),
   );
 
-/** The status watch's options (components/use-status-watch.ts), for the page's own observer. */
-export type ReadingRefresh = Pick<
-  UseQueryOptions<ReadingResult, Error, ReadingResult, readonly unknown[]>,
-  "refetchInterval" | "refetchOnWindowFocus" | "refetchOnReconnect"
->;
-
 export function readingQueryOptions(
   queryClient: QueryClient,
   id: string,
   identity: Identity | null | undefined,
-  refresh: ReadingRefresh = {},
+  refresh: QueryRefresh<ReadingResult> = {},
 ) {
   const expectedTenant = expectedLayoutOf(identity);
   return queryOptions({

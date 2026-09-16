@@ -144,7 +144,18 @@ return path is per origin.
   and a read that fails or cannot run shows its state there. A list that
   fails during the server render is not dehydrated, so the HTML is the busy
   library and the browser's own request shows the outcome, as for a reading.
-  Nothing on the page polls or refetches on a timer.
+- **Library refresh.** A page with a row being processed (`isProcessing`) is
+  asked for again every 15 s (#409) on the same bounded watch as a reading
+  (`src/status-refresh.ts`, `src/components/use-status-watch.ts`): paused while
+  the tab is hidden, stopping at 16 minutes, after three failed checks, or once
+  no row on the page is active. The watch belongs to the page's query, so
+  another page or filter, or a reload, starts a new one, and a page with no
+  active row makes no timed requests. A finished row's badge changes in place,
+  with nothing announced and focus left where it was. A failed check keeps the
+  rows; after three, a quiet "Couldn't check status." note (not a live region,
+  no button) stays until another read of the page answers. A read that fails
+  offline is the offline state at once, and one with no check to blame (no
+  active row, or past the cap) is still the server-error state.
 - **Reading detail.** `/readings/:id` reads the reading during the server
   render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
   identity), so it is dehydrated into the page and the browser does not ask
