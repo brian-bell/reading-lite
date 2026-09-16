@@ -191,7 +191,7 @@ Placement: last section of the account page.
 ## Status refresh contract
 
 Approved September 10, 2026. Implemented with TanStack Query `refetchInterval`
-on the reading query. It reports backend state only and never invents progress.
+on the reading query and the library page's query. It reports backend state only and never invents progress.
 
 **Admission.** Watch a reading while `status = pending` or
 `active_attempt.status = running`. A watch belongs to one attempt id; a new
@@ -244,7 +244,12 @@ when present: Fetching (`queued` through `write_extracted`), Analyzing
 `send_email`). Otherwise "Processing". No percentages.
 
 **Library.** Refresh the visible page every 15 s only while it contains an
-active row, with the same cap, hidden-tab, failure, and stop rules.
+active row, with the same cap, hidden-tab, failure, and stop rules. A row
+reaching a terminal state updates its badge in place, with no announcement or
+focus movement. After the failure stop the page shows a quiet "Couldn't check
+status." note with no button: the manual fallback belongs to the reading page,
+and a manual check would not restart automatic refresh anyway. Another page or
+filter, or a reload, starts a new watch.
 
 ### Acceptance checks
 

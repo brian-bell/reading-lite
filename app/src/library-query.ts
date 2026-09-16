@@ -11,6 +11,7 @@ import {
 } from "./library";
 import { expectedLayoutOf } from "./reading";
 import type { Identity } from "./identity";
+import type { QueryRefresh } from "./components/use-status-watch";
 
 // The library query, isomorphic like reading-query.ts: on the server it reads
 // the backend entrypoint with this request's cookie, in the browser it calls
@@ -19,35 +20,45 @@ import type { Identity } from "./identity";
 // the client build.
 
 const loadLibrary = createIsomorphicFn()
-  .server(async (_queryClient: QueryClient, params: LibraryParams, expectedTenant: string | undefined) => {
-    const { env } = await import("cloudflare:workers");
-    return readLibraryFromBackend(env.BACKEND, getRequest(), params, expectedTenant);
-  })
-  .client((queryClient: QueryClient, params: LibraryParams, expectedTenant: string | undefined) =>
-    fetchLibrary(queryClient, params, expectedTenant),
+  .server(
+    async (
+      _queryClient: QueryClient,
+      params: LibraryParams,
+      expectedTenant: string | undefined,
+      _signal?: AbortSignal,
+    ) => {
+      const { env } = await import("cloudflare:workers");
+      return readLibraryFromBackend(env.BACKEND, getRequest(), params, expectedTenant);
+    },
+  )
+  .client((queryClient: QueryClient, params: LibraryParams, expectedTenant: string | undefined, signal?: AbortSignal) =>
+    fetchLibrary(queryClient, params, expectedTenant, signal),
   );
 
 export function libraryQueryOptions(
   queryClient: QueryClient,
   params: LibraryParams,
   identity: Identity | null | undefined,
+  refresh: QueryRefresh<LibraryResult> = {},
 ) {
   const expectedTenant = expectedLayoutOf(identity);
   return queryOptions({
     queryKey: libraryQueryKey(params),
-    queryFn: (): Promise<LibraryResult> => loadLibrary(queryClient, params, expectedTenant),
+    // Reading `signal` is what lets Query abort a check when the reader leaves.
+    queryFn: ({ signal }): Promise<LibraryResult> => loadLibrary(queryClient, params, expectedTenant, signal),
     // The server render's page is dehydrated, so hydration settles without a
-    // second list request (#413). Refreshing after writes and the bounded
-    // refresh of active rows are later slices; nothing here refetches on its
-    // own.
+    // second list request (#413). Writes invalidate the library; a page with
+    // a reading being processed is refreshed on the status contract's bounded
+    // schedule (#409), through `refresh` on the library page's observer.
     staleTime: Infinity,
     // Kept for 30 minutes rather than the default five, so a reader coming
     // back from a long read finds the page already rendered at the place they
-    // left (#407). Finite, because nothing else refreshes a page yet: a reader
-    // away longer than this gets the page read again, and LibraryPage puts the
-    // scroll back once its rows arrive.
+    // left (#407). Finite, because a page no one is watching is not refreshed:
+    // a reader away longer than this gets the page read again, and LibraryPage
+    // puts the scroll back once its rows arrive.
     gcTime: 30 * 60 * 1000,
     retry: false,
+    ...refresh,
   });
 }
 

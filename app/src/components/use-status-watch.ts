@@ -1,4 +1,4 @@
-import type { Query, QueryState } from "@tanstack/react-query";
+import type { Query, UseQueryOptions } from "@tanstack/react-query";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   REFRESH_CAP_MS,
@@ -13,8 +13,9 @@ import {
 
 // Bounded automatic refresh on a TanStack Query query (acceptance matrix,
 // Status refresh contract), in the terms of status-refresh.ts. The reading page
-// uses it for one reading; the library's active-row refresh (#409) is meant to
-// use it for a page of rows with its own `keyOf` and schedule.
+// uses it for one reading; the library's active-row refresh (#409) uses it for
+// the page on screen, keyed by the query's hash so another page or filter starts
+// a watch of its own.
 //
 // Query drives the requests and this decides when: `refetchInterval` is
 // re-evaluated on every change to the query, so it is also where each answer is
@@ -36,7 +37,14 @@ import {
 export type WatchStatus = "idle" | "watching" | WatchStopReason;
 type WatchStopReason = NonNullable<Watch["stopped"]>;
 
-type QueryLike<T> = Pick<Query<T, Error, T, readonly unknown[]>, "state" | "cancel">;
+/**
+ * What a watch follows, or `null` for nothing to watch. `queryHash` names the
+ * query the answer came from, for a page whose watch belongs to the query
+ * rather than to anything in its data.
+ */
+export type KeyOf<T> = (data: T | undefined, queryHash: string) => string | null;
+
+type QueryLike<T> = Pick<Query<T, Error, T, readonly unknown[]>, "state" | "cancel" | "queryHash">;
 
 interface Seen {
   data: number;
@@ -50,7 +58,7 @@ class WatchStore<T> {
   readonly #listeners = new Set<() => void>();
 
   constructor(
-    private readonly keyOf: (data: T | undefined) => string | null,
+    private readonly keyOf: KeyOf<T>,
     private readonly schedule: Schedule,
   ) {}
 
@@ -65,14 +73,15 @@ class WatchStore<T> {
   refetchInterval = (query: QueryLike<T>): number | false => {
     const now = Date.now();
     this.#query = query;
-    this.#observe(query.state, now);
+    this.#observe(query, now);
     return this.watch ? nextInterval(this.watch, now, this.schedule) : false;
   };
 
   /** Visible again: check at once while watching, never after a stop. */
   refetchOnWindowFocus = (query: QueryLike<T>): boolean | "always" => (this.#live(query) ? "always" : false);
 
-  refetchOnReconnect = (query: QueryLike<T>): boolean => this.#live(query) || this.keyOf(query.state.data) === null;
+  refetchOnReconnect = (query: QueryLike<T>): boolean =>
+    this.#live(query) || this.keyOf(query.state.data, query.queryHash) === null;
 
   /**
    * Re-reads the cap; called when it passes with no answer to trigger it. An
@@ -90,15 +99,15 @@ class WatchStore<T> {
 
   #live(query: QueryLike<T>): boolean {
     if (!this.watch) return false;
-    if (this.keyOf(query.state.data) !== this.watch.key) return false;
+    if (this.keyOf(query.state.data, query.queryHash) !== this.watch.key) return false;
     return withCap(this.watch, Date.now()).stopped === null;
   }
 
-  #observe(state: QueryState<T, Error>, now: number): void {
+  #observe({ state, queryHash }: Pick<QueryLike<T>, "state" | "queryHash">, now: number): void {
     const seen = { data: state.dataUpdateCount, error: state.errorUpdateCount };
     const answered = seen.data !== this.#seen.data || seen.error !== this.#seen.error;
     this.#seen = seen;
-    const key = this.keyOf(state.data);
+    const key = this.keyOf(state.data, queryHash);
 
     if (key === null) {
       this.#set(null);
@@ -121,6 +130,12 @@ class WatchStore<T> {
   }
 }
 
+/** The status watch's options, for the watching page's own query observer. */
+export type QueryRefresh<T> = Pick<
+  UseQueryOptions<T, Error, T, readonly unknown[]>,
+  "refetchInterval" | "refetchOnWindowFocus" | "refetchOnReconnect"
+>;
+
 export interface StatusWatch<T> {
   /** Spread into the query's options. */
   options: {
@@ -135,7 +150,7 @@ export function useStatusWatch<T>({
   keyOf,
   schedule,
 }: {
-  keyOf: (data: T | undefined) => string | null;
+  keyOf: KeyOf<T>;
   schedule: Schedule;
 }): StatusWatch<T> {
   const [store] = useState(() => new WatchStore<T>(keyOf, schedule));

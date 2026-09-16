@@ -13,6 +13,7 @@ export async function fetchLibrary(
   queryClient: QueryClient,
   params: LibraryParams,
   expectedTenant: string | undefined,
+  signal?: AbortSignal,
 ): Promise<LibraryResult> {
   const query = new URLSearchParams();
   if (params.q) query.set("q", params.q);
@@ -20,6 +21,7 @@ export async function fetchLibrary(
   query.set("offset", String(params.offset));
   const response = await apiFetch(queryClient, `/api/readings?${query.toString()}`, {
     headers: expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant },
+    ...(signal === undefined ? {} : { signal }),
   });
   let body: unknown = null;
   try {

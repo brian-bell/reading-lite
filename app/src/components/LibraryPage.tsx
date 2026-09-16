@@ -11,9 +11,10 @@ import {
   type FormEvent,
   type RefObject,
 } from "react";
+import { NetworkError } from "../api/errors";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
-import type { LibraryRow } from "../library";
+import type { LibraryResult, LibraryRow } from "../library";
 import { libraryBadge } from "../library-card";
 import { libraryQueryOptions } from "../library-query";
 import {
@@ -29,10 +30,13 @@ import {
 } from "../library-search";
 import { libraryReturnState } from "../library-return";
 import { libraryViewOf, type LibraryView } from "../library-state";
+import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
+import { librarySchedule } from "../status-refresh";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
-import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
+import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { SignInPage } from "./SignInPage";
+import { useStatusWatch } from "./use-status-watch";
 
 // The library (#413, first slice of #404). The page the URL names is read
 // during the server render through the backend entrypoint, dehydrated into the
@@ -57,6 +61,15 @@ import { SignInPage } from "./SignInPage";
 // through same-origin /api/readings, and a deep link or a reload renders the
 // same filtered page on the server. An empty page names the search and tag
 // it was filtered by, with the controls that clear them.
+//
+// A page with a reading being processed is refreshed every 15 s (#409; the
+// status refresh contract's Library rule), in the terms of use-status-watch.ts:
+// the watch belongs to the page's query, so another page or filter starts
+// again, and it ends once no row on the page is active. A row that finishes
+// changes its badge in place, with nothing announced and focus left alone. A
+// failed check leaves the rows on screen; after three, a quiet note says the
+// page stopped checking, until another page, filter, or a reload starts a new
+// watch. It has no button: a manual check would not restart the refresh.
 
 /** `/`: the sign-in form in place when signed out, the library when signed in. */
 export function LibraryHome({ search }: { search: LibrarySearch }) {
@@ -82,8 +95,18 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
   const params = libraryParamsOf(search);
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  const { data, error, fetchStatus, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
-  const view = libraryViewOf({ data, error, fetchStatus });
+  const watch = useStatusWatch<LibraryResult>({ keyOf: libraryWatchKeyOf, schedule: librarySchedule });
+  const { data, error, fetchStatus, refetch } = useQuery(
+    libraryQueryOptions(queryClient, params, identity, watch.options),
+  );
+  // An error while the page is checking itself, or after it stopped for
+  // failures, is a failed check, which keeps the rows. Any other keeps its own
+  // state: offline at once, and a failed read with no check to blame (none
+  // watching, or past the cap, as after a save) is the server error.
+  const checkFailed =
+    (watch.status === "watching" || watch.status === "failures") && !(error instanceof NetworkError && error.offline);
+  const view = libraryViewOf({ data, error: checkFailed ? null : error, fetchStatus });
+  const stoppedChecking = watch.status === "failures" && error !== null;
   const retry = () => void refetch();
   // A read that settles as a different page replaces the one on screen, and
   // whatever had focus in it; PageStateFocus hands the new heading that focus.
@@ -94,12 +117,24 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
 
   return (
     <PendingFilterFocus.Provider value={pendingFilterFocus}>
-      <PageStateFocus kind={view.kind}>{pageFor(view, search, params.offset, retry)}</PageStateFocus>
+      <PageStateFocus kind={view.kind}>{pageFor(view, search, params.offset, retry, stoppedChecking)}</PageStateFocus>
     </PendingFilterFocus.Provider>
   );
 }
 
-function pageFor(view: LibraryView, search: LibrarySearch, offset: number, retry: () => void) {
+/** What the library's status watch follows: the page's query, while any row on it is active. */
+function libraryWatchKeyOf(data: LibraryResult | undefined, queryHash: string): string | null {
+  if (data?.state !== "ready" || !data.page.readings.some(isProcessing)) return null;
+  return queryHash;
+}
+
+function pageFor(
+  view: LibraryView,
+  search: LibrarySearch,
+  offset: number,
+  retry: () => void,
+  stoppedChecking: boolean,
+) {
   switch (view.kind) {
     case "forbidden":
       return <Forbidden />;
@@ -112,7 +147,13 @@ function pageFor(view: LibraryView, search: LibrarySearch, offset: number, retry
         <div className="page library">
           <PageHeading>Library</PageHeading>
           <LibraryFilters search={search} />
-          <LibraryContent view={view} search={search} offset={offset} onRetry={retry} />
+          <LibraryContent
+            view={view}
+            search={search}
+            offset={offset}
+            onRetry={retry}
+            stoppedChecking={stoppedChecking}
+          />
         </div>
       );
   }
@@ -133,11 +174,13 @@ function LibraryContent({
   search,
   offset,
   onRetry,
+  stoppedChecking,
 }: {
   view: Extract<LibraryView, { kind: "loading" | "offline" | "ready" }>;
   search: LibrarySearch;
   offset: number;
   onRetry: () => void;
+  stoppedChecking: boolean;
 }) {
   const page = view.kind === "loading" ? undefined : view.page;
   const empty = page !== undefined && page.readings.length === 0;
@@ -145,6 +188,7 @@ function LibraryContent({
   return (
     <>
       {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
+      {view.kind === "ready" && stoppedChecking ? <InlineNotice message="Couldn't check status." live={false} /> : null}
       {view.kind === "loading" ? (
         <LoadingRegion className="library-message" />
       ) : page === undefined ? null : empty ? (
