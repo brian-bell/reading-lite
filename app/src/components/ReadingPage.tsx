@@ -15,7 +15,7 @@ import type { TrailHop } from "../reading-trail";
 import { saveNoticeOf } from "../save-notice";
 import type { SaveNotice } from "../save";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { PageHeading, PageStateFocus } from "./PageHeading";
+import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
 import { ReadingSource, type LoadedImages } from "./ReadingSource";
@@ -51,12 +51,21 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 // heading row (#410); Open original URL is still to come.
 
 export function ReadingPage({ id, view = "summary" }: { id: string; view?: ReadingView }) {
+  // The route component is reused when a connection or history leads to
+  // another reading. Keyed on the id, everything this page holds about one
+  // reading — its watch, its announcement, a reprocess answer or a request in
+  // flight, an open confirmation — starts over for the next, rather than being
+  // carried to it or shown again on coming back.
+  return <ReadingPageFor key={id} id={id} view={view} />;
+}
+
+function ReadingPageFor({ id, view }: { id: string; view: ReadingView }) {
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
   const watch = useStatusWatch<ReadingResult>({ keyOf: watchKeyOf, schedule: readingSchedule });
   const { data, error, isPending, refetch } = useQuery(readingQueryOptions(queryClient, id, identity, watch.options));
   const trail = useTrail();
-  const announcement = useOutcomeAnnouncement(id, data);
+  const announcement = useOutcomeAnnouncement(data);
   const reprocess = useReprocess(id);
 
   // A 401 never gets here: the shell shows the expired-session page at this URL.
@@ -67,29 +76,17 @@ export function ReadingPage({ id, view = "summary" }: { id: string; view?: Readi
   if (data.state === "not-found") return <ReadingNotFound trail={trail} />;
   if (data.state === "forbidden") return <ReadingForbidden />;
   if (data.state === "account-changed") return <AccountChanged actingTenant={data.acting_tenant} />;
-  // A reprocess the backend refused for the account (403, 412) replaces the
-  // reading with the shared state, as a refused save replaces its form, and
-  // that state takes the focus the pressed control held.
-  const replacement = reprocess.replacement;
   return (
-    <PageStateFocus kind={replacement?.kind ?? "reading"}>
-      {replacement?.kind === "forbidden" ? (
-        <ReadingForbidden />
-      ) : replacement?.kind === "account-changed" ? (
-        <AccountChanged actingTenant={replacement.actingTenant} />
-      ) : (
-        <ReadingSurface
-          reading={data.reading}
-          view={view}
-          trail={trail}
-          watch={watch.status}
-          checkFailed={error !== null}
-          onCheck={() => void refetch()}
-          announcement={announcement}
-          reprocess={reprocess}
-        />
-      )}
-    </PageStateFocus>
+    <ReadingSurface
+      reading={data.reading}
+      view={view}
+      trail={trail}
+      watch={watch.status}
+      checkFailed={error !== null}
+      onCheck={() => void refetch()}
+      announcement={announcement}
+      reprocess={reprocess}
+    />
   );
 }
 
@@ -103,6 +100,11 @@ function watchKeyOf(data: ReadingResult | undefined): string | null {
   return data.reading.active_attempt?.id ?? `pending:${data.reading.id}`;
 }
 
+/** Something said once in the polite region. A new object each time, so saying the same words again is a new event. */
+interface Said {
+  text: string;
+}
+
 /**
  * The outcome of a watched attempt, said once in the polite region (acceptance
  * matrix, Status refresh contract, Terminal): only when this page saw the
@@ -110,28 +112,21 @@ function watchKeyOf(data: ReadingResult | undefined): string | null {
  * already ready or failed announces nothing. The library's rows changed with
  * it, so their queries are invalidated. Focus stays where the reader left it.
  */
-function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): string | null {
+function useOutcomeAnnouncement(data: ReadingResult | undefined): Said | null {
   const queryClient = useQueryClient();
   const key = watchKeyOf(data);
-  const previous = useRef<{ id: string; key: string | null }>({ id, key });
-  const [announced, setAnnounced] = useState<{ id: string; text: string } | null>(null);
+  const previous = useRef<string | null>(key);
+  const [announced, setAnnounced] = useState<Said | null>(null);
 
   useEffect(() => {
     const was = previous.current;
-    previous.current = { id, key };
-    if (was.id !== id) {
-      // The route component is reused when a connection leads to another
-      // reading; what the last one said is not said again on coming back.
-      setAnnounced(null);
-      return;
-    }
-    if (was.key === null || key !== null) return;
+    previous.current = key;
+    if (was === null || key !== null) return;
     void queryClient.invalidateQueries({ queryKey: ["library"] });
-    if (data?.state === "ready") setAnnounced({ id, text: outcomeText(data.reading) });
-  }, [id, key, data, queryClient]);
+    if (data?.state === "ready") setAnnounced({ text: outcomeText(data.reading) });
+  }, [key, data, queryClient]);
 
-  // Until the effect clears it, a newly shown reading has said nothing yet.
-  return announced?.id === id ? announced.text : null;
+  return announced;
 }
 
 /**
@@ -169,7 +164,7 @@ function ReadingSurface({
   watch: WatchStatus;
   checkFailed: boolean;
   onCheck: () => void;
-  announcement: string | null;
+  announcement: Said | null;
   reprocess: Reprocess;
 }) {
   const saved = savedOn(reading.created_at);
@@ -177,13 +172,27 @@ function ReadingSurface({
   const context = hasRelationships(reading);
   const [confirming, setConfirming] = useState(false);
   const reprocessRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const notice = reprocess.notice;
-  const said = useSaid(notice ? reprocessNoticeSentence(notice) : null, announcement);
-  function tryAgain() {
-    // A ready reading's run is confirmed every time it is asked for.
-    if (reprocess.trigger === "reprocess") setConfirming(true);
-    else reprocess.send("retry");
+  const said = useSaid(notice, announcement);
+  // Nothing is asked for while a request is in flight or an attempt runs:
+  // the backend would refuse it (409), and a ready reading's confirmation
+  // would ask the reader to agree to a paid run that cannot start.
+  const busy = reprocess.sending || isProcessing(reading);
+
+  /** A ready reading's run is confirmed every time it is asked for, from whichever control asked. */
+  function confirmReprocess() {
+    if (busy) return;
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : reprocessRef.current;
+    setConfirming(true);
   }
+
+  function tryAgain() {
+    if (reading.status === "ready") confirmReprocess();
+    else if (!busy) reprocess.send();
+  }
+
   return (
     <div className={context ? "page reading reading-layout" : "page reading"}>
       <article className="reading-column">
@@ -207,10 +216,8 @@ function ReadingSurface({
                 type="button"
                 className="button"
                 ref={reprocessRef}
-                aria-disabled={reprocess.sending || isProcessing(reading) || undefined}
-                onClick={() => {
-                  if (!reprocess.sending && !isProcessing(reading)) setConfirming(true);
-                }}
+                aria-disabled={busy || undefined}
+                onClick={confirmReprocess}
               >
                 Reprocess
               </button>
@@ -228,9 +235,10 @@ function ReadingSurface({
           watch={watch}
           checkFailed={checkFailed}
           onCheck={onCheck}
-          onRetry={() => reprocess.send("retry")}
+          onRetry={() => {
+            if (!busy) reprocess.send();
+          }}
           sending={reprocess.sending}
-          retryStarted={reprocess.retryStarted}
         />
         {notice ? <ReprocessNoticeBanner notice={notice} onCheck={onCheck} onTryAgain={tryAgain} /> : null}
         <ReadingViews key={reading.id} reading={reading} view={view} />
@@ -242,9 +250,9 @@ function ReadingSurface({
         <ConfirmDialog
           title="Reprocess this reading?"
           confirmLabel="Reprocess"
-          returnFocus={reprocessRef}
+          returnFocus={() => (openerRef.current?.isConnected ? openerRef.current : reprocessRef.current)}
           onClose={() => setConfirming(false)}
-          onConfirm={() => reprocess.send("reprocess")}
+          onConfirm={() => reprocess.send()}
         >
           <p>
             Reprocessing runs this reading through the paid pipeline again and replaces its captured content,
@@ -259,18 +267,22 @@ function ReadingSurface({
 
 /**
  * The page's one polite region says the latest of two things: a reprocess
- * notice or the watched attempt's outcome. A notice going away empties it
- * rather than handing it back to an outcome from earlier, which would be said
- * again.
+ * notice or the watched attempt's outcome. Each arrives as a new object, so
+ * this follows events rather than text: the same outcome said again after a
+ * notice (a retry refused, then one that failed the same way) is said again.
+ * A notice going away empties the region rather than handing it back to an
+ * earlier outcome, which would be said a second time.
  */
-function useSaid(noticeText: string | null, announcement: string | null): string | null {
-  const [said, setSaid] = useState<string | null>(announcement);
+function useSaid(notice: ReprocessNotice | null, announcement: Said | null): string | null {
+  const [said, setSaid] = useState<string | null>(null);
   useEffect(() => {
-    setSaid(noticeText);
-  }, [noticeText]);
-  useEffect(() => {
-    setSaid(announcement);
+    setSaid(announcement?.text ?? null);
   }, [announcement]);
+  // After the outcome's effect, so an answer to what the reader just pressed
+  // wins when both land in one render.
+  useEffect(() => {
+    setSaid(notice ? reprocessNoticeSentence(notice) : null);
+  }, [notice]);
   return said;
 }
 
@@ -283,6 +295,10 @@ function reprocessNoticeSentence(notice: ReprocessNotice): string {
       return "The Markdown this reading was imported from is no longer available.";
     case "invalid":
       return notice.message;
+    case "forbidden":
+      return "You don't have permission to reprocess this reading.";
+    case "account-changed":
+      return "This tab is signed in to a different account than the page expects.";
     case "limited":
     case "guard-unavailable":
       return limitSentence(notice);
@@ -299,6 +315,10 @@ function reprocessNoticeSentence(notice: ReprocessNotice): string {
  * What stays on the page after a reprocess that did not start (acceptance
  * matrix, Capture), with the way on when there is one. Not a live region of
  * its own: the page's standing region says the same sentence.
+ *
+ * A 403 or 412 is a notice here, not the page-replacing state /save shows:
+ * the refusal is of the write, and the reading's own refetch after every
+ * answer replaces the page when the reading itself is no longer the reader's.
  */
 function ReprocessNoticeBanner({
   notice,
@@ -314,8 +334,13 @@ function ReprocessNoticeBanner({
     case "already-processing":
       // The reader is on the reading already; opening it is reading it again.
       return <InlineNotice message={message} actionLabel="Open reading" onAction={onCheck} live={false} />;
+    case "account-changed":
+      return (
+        <InlineNotice message={message} actionLabel="Reload" onAction={() => window.location.reload()} live={false} />
+      );
     case "markdown-missing":
     case "invalid":
+    case "forbidden":
       return <InlineNotice message={message} live={false} />;
     default:
       return <InlineNotice message={message} actionLabel="Try again" onAction={onTryAgain} live={false} />;

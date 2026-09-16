@@ -195,11 +195,10 @@ describe("Retry on a failed reading", () => {
 
     expect(dialog()).toBeNull();
     expect(reprocessRequests).toHaveLength(1);
-    expect(new URL(reprocessRequests[0]!.url).pathname).toBe(`/api/readings/${reading.id}/reprocess`);
-    expect(await reprocessRequests[0]!.json()).toEqual({});
     expect(within(statusCard()).getByText("This reading is still being processed.")).toBeInTheDocument();
-    // The pressed button went with the failed card; focus lands on the new one's control.
-    expect(button("Check status")).toHaveFocus();
+    // The card's one control is the same button, now Check status, so focus stays on it.
+    expect(button("Check status")).toBe(retry);
+    expect(retry).toHaveFocus();
   });
 
   // Check 9: the watch that starts is the new attempt's, from the fast interval.
@@ -309,7 +308,6 @@ describe("Reprocess on a ready reading", () => {
     await settle();
 
     expect(reprocessRequests).toHaveLength(1);
-    expect(await reprocessRequests[0]!.json()).toEqual({});
     expect(within(statusCard()).getByText("This reading is being processed again.")).toBeInTheDocument();
     expect(screen.getByText(prior.tldr!)).toBeInTheDocument();
     // Kept, and not pressable, while the attempt runs.
@@ -376,14 +374,145 @@ describe("a reprocess that does not start", () => {
     expect(readRequests).toHaveLength(1);
   });
 
-  it("shows the forbidden state for a 403 from the same account", async () => {
+  // The refusal is of the write; the reading's own read, refetched after every
+  // answer, decides whether the page is still the reader's.
+  it("says a 403 on the write in a notice and keeps the reading", async () => {
     const failed = FAILED_FIXTURES[0]!.reading;
     await openReading(failed);
     reprocesses = [json({ error: "forbidden" }, 403)];
-    reads = [json(reader)];
+    // whoami for the 403's second read, then the reading.
+    reads = [json(reader), json(failed)];
 
     fireEvent.click(button("Retry"));
     await settle();
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("You don't have access to this.");
+    expect(
+      screen.getByText("You don't have permission to reprocess this reading.", { selector: ".offline-notice-text" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(failed.url);
+  });
+
+  it("keeps focus on the card's control when Retry finds an attempt already running", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    await openReading(failed);
+    reprocesses = [json({ error: "reading already has an active attempt" }, 409)];
+    reads = [json(runningOver(failed))];
+
+    const retry = button("Retry");
+    retry.focus();
+    fireEvent.click(retry);
+    await settle();
+    expect(button("Check status")).toHaveFocus();
+  });
+
+});
+
+describe("Try again after a refused Reprocess", () => {
+  async function refusedReprocess(readAfter: Reading = READY) {
+    await openReading(READY);
+    reprocesses = [json({ error: "queue unbound" }, 503)];
+    reads = [json(readAfter)];
+    fireEvent.click(button("Reprocess"));
+    await settle();
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Reprocess" }));
+    await settle();
+  }
+
+  it("asks again, and gives focus back to Try again when the reader cancels", async () => {
+    await refusedReprocess();
+    const tryAgain = button("Try again");
+    tryAgain.focus();
+    fireEvent.click(tryAgain);
+    await settle();
+    expect(dialog()).toHaveAttribute("open");
+    expect(reprocessRequests).toHaveLength(1);
+
+    fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(tryAgain).toHaveFocus();
+  });
+
+  it("asks nothing while an attempt started elsewhere is running", async () => {
+    await refusedReprocess(runningOver(READY));
+    fireEvent.click(button("Try again"));
+    await settle();
+    expect(dialog()).toBeNull();
+  });
+});
+
+describe("one reading at a time", () => {
+  const OTHER = readings.rd_FXGARDEN01!;
+
+  it("does not carry a refusal to another reading, or show it again on coming back", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    const { router } = await openReading(failed);
+    reprocesses = [json({ error: "queue unbound" }, 503)];
+    fireEvent.click(button("Retry"));
+    await settle();
+    expect(button("Try again")).toBeInTheDocument();
+
+    reads = [json(OTHER)];
+    await act(() => router.navigate({ to: "/readings/$id", params: { id: OTHER.id } }));
+    await settle();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(OTHER.title!);
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+
+    reads = [json(failed)];
+    await act(() => router.history.back());
+    await settle();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(failed.url);
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+  });
+
+  // Browser Back is outside the modal's inert page: the confirmation must not
+  // stay open over the next reading, where Confirm would start its paid run.
+  it("closes an open confirmation when the reader goes to another reading", async () => {
+    const { router } = await openReading(READY);
+    fireEvent.click(button("Reprocess"));
+    await settle();
+    expect(dialog()).toHaveAttribute("open");
+
+    reads = [json(OTHER)];
+    await act(() => router.navigate({ to: "/readings/$id", params: { id: OTHER.id } }));
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(reprocessRequests).toEqual([]);
+  });
+
+  it("gives focus to the page when a confirmation is removed while open", async () => {
+    const { queryClient } = await openReading(READY);
+    fireEvent.click(button("Reprocess"));
+    await settle();
+
+    reads = [json({ error: "not found" }, 404)];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["reading", READY.id] }));
+    await settle();
+    expect(dialog()).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+});
+
+describe("the polite region", () => {
+  // A retry refused, then one that fails the way the last attempt did: the
+  // second failure is a new outcome and is said, although its words are not new.
+  it("says an outcome again after a notice, even in the same words", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    const pending = runningOver(failed);
+    reads = [json(pending)];
+    await openReading(pending);
+    reads = [json(failed)];
+    await advance(3 * SECOND);
+    const outcome = politeRegion();
+    expect(outcome).toMatch(/^Processing failed\. /);
+
+    reprocesses = [json({ error: "queue unbound" }, 503), started(failed.id)];
+    fireEvent.click(button("Retry"));
+    await settle();
+    expect(politeRegion()).toContain("Reprocessing is unavailable right now.");
+
+    reads = [json({ ...pending, active_attempt: { ...pending.active_attempt!, id: "at_NEW02" } }), json(failed)];
+    fireEvent.click(button("Try again"));
+    await settle();
+    await advance(3 * SECOND);
+    expect(politeRegion()).toBe(outcome);
   });
 });

@@ -21,10 +21,12 @@ afterEach(() => {
 // the Playwright suite (e2e/specs/reprocess.spec.ts).
 if (typeof HTMLDialogElement !== "undefined" && typeof HTMLDialogElement.prototype.showModal !== "function") {
   HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+    this.returnValue = "";
     this.setAttribute("open", "");
   };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement, returnValue?: string) {
     if (!this.hasAttribute("open")) return;
+    if (returnValue !== undefined) this.returnValue = returnValue;
     this.removeAttribute("open");
     this.dispatchEvent(new Event("close"));
   };

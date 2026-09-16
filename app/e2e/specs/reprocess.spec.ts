@@ -1,8 +1,9 @@
-// Retry and Reprocess in a real browser (#410). The component tests own the
-// outcomes and the guards; this proves what only a browser can: the modal
-// `<dialog>` closes on Escape and on Cancel without a request, focus returns
-// to the button that opened it, and the requests the page sends carry an empty
-// body — never `force`.
+// Reprocess in a real browser (#410). The component tests
+// (test/reading-reprocess.test.tsx) own Retry, the outcomes, and the guards,
+// and test/reprocess-api.test.ts owns the request body (never `force`); this
+// proves what only a browser's modal `<dialog>` does: Escape closes it without
+// a request, the page behind it is out of reach, and focus comes back to the
+// button that opened it however it closed.
 //
 // Requests and focus only, so one viewport and theme; the matrix screenshots
 // the dialog and runs axe and the keyboard pass in every project.
@@ -19,7 +20,6 @@ const test = base.extend({
 });
 
 const READY = pack.readings.rd_FXATTENT01;
-const FAILED = pack.readings.rd_FXERR00001;
 
 /** The reading with a reprocess running over it, as the backend writes it. */
 function runningOver<T extends { status: string }>(reading: T) {
@@ -49,18 +49,6 @@ function dialog(page: Page) {
   return page.getByRole("dialog", { name: "Reprocess this reading?" });
 }
 
-test("Retry on a failed reading sends an empty reprocess at once and starts watching", async ({ page, baseURL }) => {
-  const reprocesses = await openWithReprocess(page, baseURL!, FAILED);
-
-  await page.getByRole("button", { name: "Retry" }).click();
-
-  await expect(page.getByLabel("Processing status")).toContainText("This reading is still being processed.");
-  await expect(page.getByRole("button", { name: "Check status" })).toBeFocused();
-  await expect(dialog(page)).toHaveCount(0);
-  expect(reprocesses).toHaveLength(1);
-  expect(reprocesses[0]!.postDataJSON()).toEqual({});
-});
-
 for (const close of ["Escape", "Cancel"] as const) {
   test(`${close} closes the confirmation without a request and returns focus to Reprocess`, async ({
     page,
@@ -80,7 +68,8 @@ for (const close of ["Escape", "Cancel"] as const) {
 
     await expect(dialog(page)).toHaveCount(0);
     await expect(reprocess).toBeFocused();
-    expect(reprocesses).toEqual([]);
+    // Cancel's "sends nothing" is the component test's; Escape is the browser's.
+    if (close === "Escape") expect(reprocesses).toEqual([]);
   });
 }
 
@@ -91,24 +80,22 @@ test("the page behind the confirmation cannot be reached while it is open", asyn
 
   for (let i = 0; i < 4; i += 1) {
     await page.keyboard.press("Tab");
-    const inDialog = await page.evaluate(() => document.activeElement?.closest("dialog") !== null);
-    const onPage = await page.evaluate(() => document.activeElement !== document.body && document.activeElement !== null);
+    const { inDialog, onPage } = await page.evaluate(() => ({
+      inDialog: document.activeElement?.closest("dialog") !== null,
+      onPage: document.activeElement !== document.body && document.activeElement !== null,
+    }));
     // Focus stays in the dialog, or leaves for the browser's own chrome.
     expect(inDialog || !onPage).toBe(true);
   }
 });
 
-test("confirming sends an empty reprocess, keeps the summary, and returns focus", async ({ page, baseURL }) => {
-  const reprocesses = await openWithReprocess(page, baseURL!, READY);
+test("confirming returns focus to Reprocess, which stays while the attempt runs", async ({ page, baseURL }) => {
+  await openWithReprocess(page, baseURL!, READY);
   const reprocess = page.getByRole("button", { name: "Reprocess" });
 
   await reprocess.click();
   await dialog(page).getByRole("button", { name: "Reprocess" }).click();
 
-  await expect(page.getByLabel("Processing status")).toContainText("This reading is being processed again.");
-  await expect(page.getByText(READY.tldr!)).toBeVisible();
+  await expect(page.getByLabel("Processing status")).toBeVisible();
   await expect(reprocess).toBeFocused();
-  await expect(reprocess).toHaveAttribute("aria-disabled", "true");
-  expect(reprocesses).toHaveLength(1);
-  expect(reprocesses[0]!.postDataJSON()).toEqual({});
 });

@@ -1,12 +1,14 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../src/api/errors";
 import { CSRF_HEADER } from "../src/api/client";
 import { EXPECTED_TENANT_HEADER } from "../src/api/readings";
 import { reprocessReading } from "../src/api/reprocess";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 
-// The browser path for Retry and Reprocess (#410). A 403's second read is
-// forbiddenOrSwitched's, owned by test/save-api.test.ts.
+// The browser path for Retry and Reprocess (#410). How forbiddenOrSwitched
+// reads every identity is owned by test/save-api.test.ts; here, that a
+// reprocess's 403 goes through it.
 
 const reader: Identity = {
   tenant_id: "usr_a",
@@ -38,5 +40,32 @@ describe("reprocessReading", () => {
     expect(request.headers.get(EXPECTED_TENANT_HEADER)).toBe("usr_a");
     expect(request.headers.get("content-type")).toBe("application/json");
     expect(await request.json()).toEqual({});
+  });
+
+  describe("on a 403", () => {
+    function answering(whoami: Response) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (request: Request) =>
+          new URL(request.url).pathname === "/api/whoami" ? whoami : Response.json({ error: "forbidden" }, { status: 403 }),
+        ),
+      );
+      const queryClient = new QueryClient();
+      queryClient.setQueryData(whoamiQueryKey, reader);
+      return queryClient;
+    }
+
+    it("is the account-changed refusal when another account is signed in now", async () => {
+      const queryClient = answering(Response.json({ ...reader, tenant_id: "usr_b", user_id: "usr_b" }));
+      await expect(reprocessReading(queryClient, "rd_1", "usr_a")).resolves.toEqual({
+        kind: "account-changed",
+        actingTenant: "usr_b",
+      });
+    });
+
+    it("is the ended session when nobody is signed in now", async () => {
+      const queryClient = answering(Response.json({ error: "unauthorized" }, { status: 401 }));
+      await expect(reprocessReading(queryClient, "rd_1", "usr_a")).rejects.toEqual(expect.objectContaining({ status: 401 }) as ApiError);
+    });
   });
 });

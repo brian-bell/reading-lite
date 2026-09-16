@@ -7,7 +7,9 @@ import { expectedLayoutOf, readingQueryKey } from "../reading";
 import type { ReprocessOutcome } from "../reprocess";
 
 // Retry on a failed reading and Reprocess on a ready one (#410): one request,
-// POST /api/readings/:id/reprocess, sent only when the reader asks.
+// POST /api/readings/:id/reprocess, sent only when the reader asks. The page
+// that uses this is keyed on the reading id (ReadingPage.tsx), so an answer or
+// a request in flight belongs to one reading and is gone with it.
 //
 // - Never twice at once. The backend checks for a running attempt and then
 //   writes the manifest without a condition (src/intake/activation.ts), so two
@@ -25,72 +27,56 @@ import type { ReprocessOutcome } from "../reprocess";
 //   from before the request and no watch. The refetch is also what starts the
 //   watch: it shows the new attempt, whose id is the watch's key (contract
 //   check 9), and after a 409 it shows the attempt that was already running.
-
-/** Which control asked: Retry sends at once; Reprocess has already been confirmed. */
-export type ReprocessTrigger = "retry" | "reprocess";
+//   It is also what shows a reading the reader has lost access to: a 403 or
+//   412 on the write is a notice, and the reading's own read decides whether
+//   the page is still theirs.
 
 /** What stays on the page after an answer that did not start an attempt. */
 export type ReprocessNotice =
-  | Exclude<ReprocessOutcome, { kind: "started" | "not-found" | "forbidden" | "account-changed" }>
+  | Exclude<ReprocessOutcome, { kind: "started" | "not-found" }>
   | { kind: "offline" }
   | { kind: "server-error"; message: string };
 
-/** What replaces the page: the shared 403 and 412 states. */
-export type ReprocessReplacement = Extract<ReprocessOutcome, { kind: "forbidden" | "account-changed" }>;
-
-interface Answer {
-  /** The reading it belongs to: the route component is reused across readings. */
-  id: string;
-  trigger: ReprocessTrigger;
-  notice: ReprocessNotice | null;
-  replacement: ReprocessReplacement | null;
-  started: boolean;
-}
-
 export interface Reprocess {
-  send: (trigger: ReprocessTrigger) => void;
+  send: () => void;
   /** Whether a request is in flight; its controls are `aria-disabled`. */
   sending: boolean;
-  /** The control that asked last, for "Try again". */
-  trigger: ReprocessTrigger | null;
+  /** The last answer's notice: a new object for each answer, so the same words said twice are two events. */
   notice: ReprocessNotice | null;
-  replacement: ReprocessReplacement | null;
-  /** A Retry started an attempt: the card that replaced the pressed button takes focus. */
-  retryStarted: boolean;
 }
 
 export function useReprocess(id: string): Reprocess {
   const queryClient = useQueryClient();
   const sendingRef = useRef(false);
-  const [answer, setAnswer] = useState<Answer | null>(null);
+  const [notice, setNotice] = useState<ReprocessNotice | null>(null);
   const mutation = useMutation({
-    mutationFn: (readingId: string) =>
-      reprocessReading(
-        queryClient,
-        readingId,
-        expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey)),
-      ),
+    mutationFn: () =>
+      reprocessReading(queryClient, id, expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey))),
     networkMode: "always",
     retry: 0,
-    onSettled: (_outcome, _error, readingId) =>
+    onSettled: () =>
       Promise.all([
-        queryClient.invalidateQueries({ queryKey: readingQueryKey(readingId) }),
+        queryClient.invalidateQueries({ queryKey: readingQueryKey(id) }),
         queryClient.invalidateQueries({ queryKey: ["library"] }),
       ]),
   });
 
-  function send(trigger: ReprocessTrigger) {
+  function send() {
     if (sendingRef.current) return;
     sendingRef.current = true;
-    setAnswer(null);
+    setNotice(null);
     mutation
-      .mutateAsync(id)
+      .mutateAsync()
       .then(
-        (outcome) => setAnswer({ id, trigger, ...answerOf(outcome) }),
-        // A 401 is the mutation cache's (auth/session.ts): the shell replaces
-        // the page, and nothing here needs saying.
+        (outcome) => {
+          // A started attempt shows itself through the refetch; a 404 renders
+          // the not-found state the same way.
+          if (outcome.kind !== "started" && outcome.kind !== "not-found") setNotice(outcome);
+        },
         (error: unknown) => {
-          if (!isUnauthorized(error)) setAnswer({ id, trigger, started: false, replacement: null, notice: noticeOfError(error) });
+          // A 401 is the mutation cache's (auth/session.ts): the shell
+          // replaces the page, and nothing here needs saying.
+          if (!isUnauthorized(error)) setNotice(noticeOfError(error));
         },
       )
       .finally(() => {
@@ -98,30 +84,7 @@ export function useReprocess(id: string): Reprocess {
       });
   }
 
-  const current = answer?.id === id ? answer : null;
-  return {
-    send,
-    sending: mutation.isPending,
-    trigger: current?.trigger ?? null,
-    notice: current?.notice ?? null,
-    replacement: current?.replacement ?? null,
-    retryStarted: current?.started === true && current.trigger === "retry",
-  };
-}
-
-function answerOf(outcome: ReprocessOutcome): Omit<Answer, "id" | "trigger"> {
-  switch (outcome.kind) {
-    case "started":
-      return { started: true, notice: null, replacement: null };
-    // The refetch renders the not-found state.
-    case "not-found":
-      return { started: false, notice: null, replacement: null };
-    case "forbidden":
-    case "account-changed":
-      return { started: false, notice: null, replacement: outcome };
-    default:
-      return { started: false, notice: outcome, replacement: null };
-  }
+  return { send, sending: mutation.isPending, notice };
 }
 
 function noticeOfError(error: unknown): ReprocessNotice {
