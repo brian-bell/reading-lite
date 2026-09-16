@@ -422,6 +422,74 @@ textarea {
   min-height: 2rem;
 }
 
+/* The filter bar (#417): the search field and its button on one row, the
+   active tag's chip below. The field takes the row's width and the controls
+   wrap under it at phone width. Shared width with the cards. */
+.library-filters {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: 68ch;
+  margin: 0 0 var(--space-5);
+}
+
+.library-search-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.library-search-row .text-input {
+  flex: 1 1 16ch;
+  width: auto;
+  min-width: 0;
+}
+
+.library-search-row .button {
+  min-height: 44px;
+}
+
+.library-active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-1) 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* The active tag as a chip: the tag's own look, outlined, with the × that
+   says its link clears it. */
+.tag-active {
+  border: 1px solid var(--control-border);
+  color: var(--ink);
+}
+
+/* Tags on a card (#417): each link its own target, raised above the
+   stretched title link so the pointer reaches it. Only the links: the row
+   itself lets the pointer through, so the space beside and between them is
+   still the card. */
+.library-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  pointer-events: none;
+}
+
+.library-card-tags .tag {
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+/* The tag the library is filtered by, on a card: text, not a target. */
+.library-card-tags .tag-current {
+  color: var(--ink);
+  pointer-events: none;
+}
+
 /* Offline (acceptance matrix, Common states; #416): a notice above whatever
    was loaded, not a page, so the rows stay usable beneath it. The same
    quiet rule as .reading-notice, with the retry beside the sentence. */

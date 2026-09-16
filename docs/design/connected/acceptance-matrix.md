@@ -113,7 +113,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | --- | --- | --- | --- |
 | No readings | Empty result, no `q` or `tag` | "No readings yet." | Save a reading |
 | No results | Empty result with filters | "No readings match “q”" and/or "tagged T" | Clear search, clear tag |
-| Offset past end | Empty result, `offset > 0` | As no results, with page number | First page |
+| Offset past end | Empty result, `offset > 0` | As no results, with page number | First page; clear search, clear tag when filtered |
 | Pending or failed row | `status`, `active_attempt`, `last_attempt` | Status badge with text; failed shows the error message | Open reading |
 | Reprocess failed on a ready reading | `last_attempt.trigger = reprocess`, `failed` | Ready card with "Reprocess failed" badge | Open reading |
 | Long title | Any | Wraps; never truncated in the title; summary clamps at three lines | — |

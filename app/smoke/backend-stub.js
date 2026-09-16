@@ -7,6 +7,7 @@
 // Only the forwarded host the tests use is accepted, proving the frontend
 // passes the request host through.
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { libraryPage } from "../e2e/library-page.js";
 import { LIST_SCENARIOS } from "../e2e/list-scenarios.js";
 
 const SMOKE_HOST = "next.readinglite.test";
@@ -105,11 +106,12 @@ export class FrontendReads extends WorkerEntrypoint {
   // other id is a reading this tenant does not have. The pin is echoed back in
   // the identity check above, not here: an expected-tenant mismatch is the
   // backend's own middleware in production.
-  // Pages by offset, sliced and `has_more` derived as the list handler does,
-  // answered after the tenant's delay so concurrent renders overlap. Filters
-  // and snapping are not applied here: the frontend forwards the offset it
-  // snapped, and anything past a tenant's rows is empty.
-  async list({ cookie, host, offset }) {
+  // Filtered and paged as the list handler does (e2e/library-page.js, #414,
+  // #417), answered after the tenant's delay so concurrent renders overlap.
+  // No row here has tags, so any tag matches nothing. Snapping is not
+  // applied: the frontend forwards the offset it snapped, and anything past a
+  // tenant's rows is empty.
+  async list({ cookie, host, q, tag, offset }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
     if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
     const session = sessionOf(cookie);
@@ -118,10 +120,7 @@ export class FrontendReads extends WorkerEntrypoint {
     const name = sessionKeyOf(cookie);
     const scenario = SCENARIO_SESSIONS[name];
     if (scenario) return scenario;
-    const start = offset ?? 0;
-    const all = LIBRARIES[name];
-    const rows = all.slice(start, start + PAGE_SIZE);
-    return { status: 200, body: { readings: rows, limit: PAGE_SIZE, offset: start, has_more: start + rows.length < all.length } };
+    return { status: 200, body: libraryPage(LIBRARIES[name], { q, tag, offset }) };
   }
 
   async reading({ cookie, host, id }) {

@@ -43,7 +43,7 @@ const FOCUSABLE =
  * sequential-navigation starting point that blur() does not clear, so a walk
  * only starts at the top of a freshly loaded page.
  */
-export async function walkTabStops(page: Page, limit = 40): Promise<TabStop[]> {
+export async function walkTabStops(page: Page, limit = 100): Promise<TabStop[]> {
   await installFocusProbe(page);
   const probed: ProbedStop[] = [];
   for (let i = 0; i < limit; i += 1) {

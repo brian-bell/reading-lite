@@ -21,6 +21,7 @@ import { DelayedText } from "../src/components/ReadingStates";
 import { libraryQueryKey } from "../src/library";
 import { libraryQueryOptions, prefetchLibraryPage, startLibraryPage } from "../src/library-query";
 import { LIBRARY_PAGE_SIZE, libraryParamsOf, validateLibrarySearch } from "../src/library-search";
+import { libraryPage } from "../e2e/library-page.js";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 
@@ -63,6 +64,14 @@ function backendAnswers(status: number, body: unknown) {
 
 function backendServesPack() {
   backendServesPages(rows);
+}
+
+/** The pack's rows filtered and paged as the list handler does (e2e/library-page.js). */
+function backendServesFilteredPack() {
+  backend.list.mockImplementation(async ({ q, tag, offset }: { q?: string; tag?: string; offset?: number }) => ({
+    status: 200,
+    body: libraryPage(pack.list_index.items, { q, tag, offset }),
+  }));
 }
 
 /** Pages of `all` by the offset asked for, as the list handler slices them. */
@@ -201,6 +210,10 @@ function cards(): HTMLElement[] {
   return within(screen.getByRole("list", { name: "Readings" })).getAllByRole("listitem");
 }
 
+function titleLink(card: HTMLElement): HTMLElement {
+  return within(within(card).getByRole("heading", { level: 2 })).getByRole("link");
+}
+
 beforeEach(() => {
   backend.list.mockReset();
   request.current = new Request("https://app.example/", { headers: { cookie: "__Host-session=abc" } });
@@ -241,7 +254,7 @@ describe("the first page", () => {
     await openTab("/");
 
     for (const [index, card] of cards().entries()) {
-      expect(within(card).getByRole("link")).toHaveAttribute("href", `/readings/${rows[index]!.id}`);
+      expect(titleLink(card)).toHaveAttribute("href", `/readings/${rows[index]!.id}`);
     }
   });
 
@@ -309,7 +322,8 @@ describe("the first page", () => {
     expect(within(card!).getByText("Reprocess failed")).toBeInTheDocument();
     expect(within(card!).getByRole("link", { name: row.title })).toBeInTheDocument();
     expect(within(card!).getByText(row.tldr!)).toBeInTheDocument();
-    expect(within(card!).getAllByRole("link")).toHaveLength(1);
+    // The title and the row's one tag (#417): the badge is not a link.
+    expect(within(card!).getAllByRole("link").map((link) => link.textContent)).toEqual([row.title, ...row.tags!]);
   });
 
   it("shows a ready row's summary and no badge", async () => {
@@ -815,5 +829,230 @@ describe("hydration", () => {
     expect(JSON.stringify(dehydrate(a))).not.toContain("rd_usr_b");
     expect(JSON.stringify(dehydrate(b))).toContain("rd_usr_b");
     expect(JSON.stringify(dehydrate(b))).not.toContain("rd_usr_a");
+  });
+});
+
+// Search and tags (#417): `q` and `tag` in the URL, written as the current SPA
+// writes them, read on the server for a deep link and through the browser's
+// loader on a change. The pack has four rows tagged "design" and one titled
+// "A quieter internet is a choice we can make".
+describe("search and tags", () => {
+  function searchField(): HTMLInputElement {
+    return screen.getByRole("searchbox", { name: "Search" });
+  }
+
+  /** The filter bar, as against the same controls an empty page offers. */
+  function bar() {
+    return within(screen.getByRole("search", { name: "Filter readings" }));
+  }
+
+  function titles(): string[] {
+    return cards().map((card) => within(card).getByRole("heading", { level: 2 }).textContent ?? "");
+  }
+
+  it("renders a deep link's filtered page on the server, asking for the filters as spelled", async () => {
+    backendServesFilteredPack();
+    const { router } = await openTab("/?q=Quiet&tag=design&offset=25");
+
+    expect(backend.list).toHaveBeenCalledTimes(1);
+    expect(backend.list).toHaveBeenCalledWith(expect.objectContaining({ q: "Quiet", tag: "design", offset: 20 }));
+    expect(router.state.location.href).toBe("/?q=Quiet&tag=design&offset=25");
+    expect(searchField()).toHaveValue("Quiet");
+    expect(bar().getByRole("link", { name: "Clear tag design" })).toHaveAttribute("href", "/?q=Quiet");
+    expect(bar().getByRole("link", { name: "Clear search “Quiet”" })).toHaveAttribute("href", "/?tag=design");
+    expect(bar().getAllByRole("link").map((link) => link.textContent)).toEqual(["“Quiet” ×", "design ×"]);
+  });
+
+  it("shows no chips without filters", async () => {
+    backendServesFilteredPack();
+    await openTab("/");
+
+    expect(searchField()).toHaveValue("");
+    expect(bar().queryByRole("link")).toBeNull();
+  });
+
+  it("searches on submit: the draft trimmed, the offset dropped, the field keeping focus", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?offset=20");
+
+    await userEvent.type(searchField(), "  quiet {Enter}");
+    await waitFor(() => expect(router.state.location.href).toBe("/?q=quiet"));
+    const matching = libraryPage(pack.list_index.items, { q: "quiet" }).readings.map((row) => row.title ?? row.url);
+    expect(matching.length).toBeGreaterThan(0);
+    expect(matching.length).toBeLessThan(rows.length);
+    await waitFor(() => expect(titles()).toEqual(matching));
+    expect(backend.list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "quiet", offset: 0 }));
+    expect(backend.list).not.toHaveBeenLastCalledWith(expect.objectContaining({ tag: expect.anything() }));
+    expect(searchField()).toHaveValue("quiet");
+    expect(searchField()).toHaveFocus();
+    expect(bar().getByRole("link", { name: "Clear search “quiet”" })).toHaveAttribute("href", "/");
+  });
+
+  it("removes the search when an empty draft is submitted", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=quiet&tag=design");
+
+    await userEvent.clear(searchField());
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/?tag=design"));
+    expect(backend.list).toHaveBeenLastCalledWith(expect.objectContaining({ tag: "design", offset: 0 }));
+  });
+
+  it("filters by a card's tag, keeping the search, and hands focus to the chip", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=a&offset=0");
+
+    const attention = cards().find((card) => within(card).queryByRole("link", { name: "A quieter internet is a choice we can make" }))!;
+    expect(within(attention).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "A quieter internet is a choice we can make",
+      "attention",
+      "design",
+    ]);
+    const design = within(attention).getByRole("link", { name: "design" });
+    expect(design).toHaveAttribute("href", "/?q=a&tag=design");
+
+    await userEvent.click(design);
+    await waitFor(() => expect(router.state.location.href).toBe("/?q=a&tag=design"));
+    expect(backend.list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "a", tag: "design", offset: 0 }));
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    const chip = screen.getByRole("link", { name: "Clear tag design" });
+    expect(chip).toHaveTextContent("design");
+    expect(chip).toHaveFocus();
+    // The tag every card now carries is text, not a link to the page on screen.
+    for (const card of cards()) {
+      expect(within(card).queryByRole("link", { name: "design" })).toBeNull();
+      expect(within(card).getByText("design")).toBeInTheDocument();
+    }
+    expect(within(screen.getByRole("list", { name: "Readings" })).queryAllByRole("link", { current: "page" })).toEqual([]);
+  });
+
+  // The backend trims and lowercases the tag, so a deep link spelled
+  // differently filters the same rows; their tag is the active one all the same.
+  it.each(["/?tag=Design", "/?tag=%20design%20"])("marks the active tag on cards as the backend matches it (%s)", async (path) => {
+    backendServesFilteredPack();
+    await openTab(path);
+
+    expect(cards()).toHaveLength(4);
+    for (const card of cards()) {
+      expect(within(card).queryByRole("link", { name: "design" })).toBeNull();
+      expect(within(card).getByText("design")).toHaveClass("tag-current");
+    }
+  });
+
+  it("shows the trimmed search in the field even when the URL does not change", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=quiet");
+
+    await userEvent.type(searchField(), "   {Enter}");
+    expect(router.state.location.href).toBe("/?q=quiet");
+    expect(searchField()).toHaveValue("quiet");
+    expect(backend.list).toHaveBeenCalledTimes(1);
+  });
+
+  // A request to move focus that never lands as a filter change must not be
+  // carried over to a later navigation the reader made some other way.
+  it("does not move focus on a later navigation after a search that changed nothing", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=quiet");
+
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(router.state.location.href).toBe("/?q=quiet");
+    screen.getByRole("heading", { level: 1 }).focus();
+
+    await act(async () => {
+      await router.navigate({ to: "/", search: {} });
+    });
+    await waitFor(() => expect(router.state.location.href).toBe("/"));
+    await waitFor(() => expect(cards().length).toBeGreaterThan(4));
+    expect(searchField()).toHaveValue("");
+    expect(searchField()).not.toHaveFocus();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  it("clears the tag from its chip, keeping the search and returning focus to the field", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=a&tag=design&offset=20");
+
+    await userEvent.click(screen.getByRole("link", { name: "Clear tag design" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/?q=a"));
+    expect(backend.list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "a", offset: 0 }));
+    expect(screen.queryByRole("link", { name: /^Clear tag/ })).toBeNull();
+    expect(searchField()).toHaveValue("a");
+    expect(searchField()).toHaveFocus();
+  });
+
+  it("clears the search from its chip, keeping the tag", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=a&tag=design&utm_source=feed");
+
+    await userEvent.click(bar().getByRole("link", { name: "Clear search “a”" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/?tag=design&utm_source=feed"));
+    expect(searchField()).toHaveValue("");
+    expect(searchField()).toHaveFocus();
+  });
+
+  it("keeps the filters across a page change", async () => {
+    backend.list.mockImplementation(async ({ q, tag, offset = 0 }: { q?: string; tag?: string; offset?: number }) => ({
+      status: 200,
+      body: { readings: many.slice(offset, offset + 20), limit: 20, offset, has_more: offset + 20 < many.length, q, tag },
+    }));
+    const { router } = await openBrowserTab("/?q=reading&tag=ai");
+
+    await clickNext();
+    await waitFor(() => expect(router.state.location.href).toBe("/?q=reading&tag=ai&offset=20"));
+    expect(backend.list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "reading", tag: "ai", offset: 20 }));
+  });
+
+  it("offers to save a reading when the library is empty", async () => {
+    backendAnswers(200, { readings: [], limit: 20, offset: 0, has_more: false });
+    await openTab("/");
+
+    expect(screen.getByText("No readings yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Save a reading" })).toHaveAttribute("href", "/save");
+    expect(screen.queryByRole("link", { name: /^Clear/ })).toBeNull();
+  });
+
+  it.each([
+    ["/?q=zzz", "No readings match “zzz”.", ["Clear search"], { "Clear search": "/" }],
+    ["/?tag=none", "No readings tagged none.", ["Clear tag"], { "Clear tag": "/" }],
+    [
+      "/?q=zzz&tag=none",
+      "No readings match “zzz” tagged none.",
+      ["Clear search", "Clear tag"],
+      { "Clear search": "/?tag=none", "Clear tag": "/?q=zzz" },
+    ],
+  ])("names the filters behind an empty %s, with the controls that clear them", async (path, copy, actions, hrefs) => {
+    backendServesFilteredPack();
+    await openTab(path);
+
+    expect(screen.getByText(copy)).toBeInTheDocument();
+    expect(screen.queryByText("No readings yet.")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Save a reading" })).toBeNull();
+    const message = screen.getByText(copy).parentElement!;
+    expect(within(message).getAllByRole("link").map((link) => link.textContent)).toEqual(actions);
+    for (const [name, href] of Object.entries(hrefs)) {
+      expect(within(message).getByRole("link", { name })).toHaveAttribute("href", href);
+    }
+  });
+
+  it("names the filters on a page past their end, with the first page of the same filters", async () => {
+    backendServesFilteredPack();
+    await openTab("/?q=quiet&offset=20");
+
+    const message = within(screen.getByText("No readings match “quiet” on page 2.").parentElement!);
+    expect(message.getByRole("link", { name: "First page" })).toHaveAttribute("href", "/?q=quiet");
+    expect(message.getByRole("link", { name: "Clear search" })).toHaveAttribute("href", "/");
+    expect(screen.queryByRole("navigation", { name: "Pagination" })).toBeNull();
+  });
+
+  it("clears a filter from the empty page and lands the reader in the field", async () => {
+    backendServesFilteredPack();
+    const { router } = await openBrowserTab("/?q=zzz&tag=design");
+
+    const message = screen.getByText("No readings match “zzz” tagged design.").parentElement!;
+    await userEvent.click(within(message).getByRole("link", { name: "Clear search" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/?tag=design"));
+    await waitFor(() => expect(cards()).toHaveLength(4));
+    expect(searchField()).toHaveFocus();
   });
 });

@@ -86,6 +86,69 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
       await expect(page.getByText("No readings on page 6.")).toBeVisible();
     },
   },
+  // Search and tags (#417). Each is a deep link rendered on the server: a
+  // search that matches some of the pack, the tag four of its rows carry, and
+  // the no-results states for a search, a tag, and both. "No readings yet."
+  // needs a session with nothing saved.
+  {
+    name: "library-search",
+    path: "/?q=quiet",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByRole("searchbox", { name: "Search" })).toHaveValue("quiet");
+      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
+      await expect(page.getByRole("search").getByRole("link", { name: "Clear search “quiet”" })).toBeVisible();
+    },
+  },
+  {
+    name: "library-tag",
+    path: "/?tag=design",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByRole("search").getByRole("link", { name: "Clear tag design" })).toBeVisible();
+      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem")).toHaveCount(4);
+    },
+  },
+  {
+    name: "library-no-results-search",
+    path: "/?q=zzzz",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings match “zzzz”.")).toBeVisible();
+    },
+  },
+  {
+    name: "library-no-results-tag",
+    path: "/?tag=nothing",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings tagged nothing.")).toBeVisible();
+    },
+  },
+  {
+    name: "library-no-results-both",
+    path: "/?q=zzzz&tag=design",
+    state: "signed-in",
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings match “zzzz” tagged design.")).toBeVisible();
+    },
+  },
+  {
+    name: "library-empty",
+    path: "/",
+    state: "signed-in",
+    session: LIBRARY_STATE_SESSIONS.empty,
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings yet.")).toBeVisible();
+      await expect(page.getByRole("link", { name: "Save a reading" })).toBeVisible();
+    },
+  },
   {
     name: "library-account-menu-open",
     path: "/",

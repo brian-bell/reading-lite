@@ -32,8 +32,10 @@ const SESSIONS = {
 // Reader A again, but the library's list answers with one of the acceptance
 // matrix's common states (#416), so a server render of `/` shows that state:
 // the session ended between whoami and the list (401), an inactive account
-// (403), the expected-tenant pin missed (412), or the backend down (503).
+// (403), the expected-tenant pin missed (412), or the backend down (503); or
+// with no rows at all (#417), for "No readings yet.".
 const SCENARIO_SESSIONS = {
+  "reader-empty": LIST_SCENARIOS.empty,
   "reader-expired": LIST_SCENARIOS.expired,
   "reader-forbidden": LIST_SCENARIOS.forbidden,
   "reader-mismatch": LIST_SCENARIOS.mismatch,
