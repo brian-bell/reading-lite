@@ -128,12 +128,18 @@ function RelationshipCardView({ card, from }: { card: RelationshipCard; from: { 
 /**
  * Following a relationship pushes a hop onto the trail the current location
  * carries, so the destination can say where the reader came from and why.
+ * The way back to the library (library-return.ts) is carried on as it is, and
+ * nothing else: a save notice belongs to the reading it was left on.
  */
 function FollowLink({ card, from }: { card: RelationshipCard; from: { id: string; title: string } }) {
   const current = useTrail();
   const hop: TrailHop = { id: from.id, title: from.title, kind: card.kind, reason: card.reason };
   return (
-    <Link to="/readings/$id" params={{ id: card.id }} state={{ trail: trailAfterFollowing(current, hop) }}>
+    <Link
+      to="/readings/$id"
+      params={{ id: card.id }}
+      state={(prev) => ({ libraryReturn: prev?.libraryReturn, trail: trailAfterFollowing(current, hop) })}
+    >
       {card.target!.title}
     </Link>
   );

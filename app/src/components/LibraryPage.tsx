@@ -27,6 +27,7 @@ import {
   type LibraryEmpty,
   type LibrarySearch,
 } from "../library-search";
+import { libraryReturnState } from "../library-return";
 import { libraryViewOf, type LibraryView } from "../library-state";
 import { hostnameOf } from "../reading-presentation";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
@@ -448,7 +449,8 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
         </p>
       ) : null}
       <h2 className="library-card-title">
-        <Link to="/readings/$id" params={{ id: row.id }}>
+        {/* Records this library entry, so the reading's "Back to library" returns here, scrolled as it was (#407). */}
+        <Link to="/readings/$id" params={{ id: row.id }} state={libraryReturnState}>
           {row.title ?? row.url}
         </Link>
       </h2>

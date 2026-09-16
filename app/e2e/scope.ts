@@ -18,6 +18,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "checks",
   "reading-cache",
   "library",
+  "library-return",
   "reading-trail",
   "reading-source",
   "reading-details",

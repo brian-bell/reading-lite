@@ -19,6 +19,7 @@ import { PageHeading } from "../src/components/PageHeading";
 import { ReadingPage } from "../src/components/ReadingPage";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 import { readingQueryKey, type ProcessingStage, type Reading } from "../src/reading";
+import { libraryReturnState } from "../src/library-return";
 import { readingQueryOptions } from "../src/reading-query";
 import { readingViewOf, validateReadingSearch } from "../src/reading-view";
 import { saveNoticeState } from "../src/save-notice";
@@ -77,10 +78,11 @@ const rootRoute = createRootRouteWithContext<RouterContext>()({
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
+  // A stand-in for a library card, recording the way back as a card does.
   component: () => (
     <div className="page">
       <PageHeading>Library</PageHeading>
-      <Link to="/readings/$id" params={{ id: ATTENTION }}>
+      <Link to="/readings/$id" params={{ id: ATTENTION }} state={libraryReturnState}>
         Open the reading
       </Link>
     </div>
@@ -832,6 +834,66 @@ describe("the return trail", () => {
 
     expect(screen.queryByText(/You followed/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Back to / })).not.toBeInTheDocument();
+  });
+});
+
+// The way back to the library (#407; design spec, Routes and navigation
+// state): to the library URL the reader came from, back through history so its
+// scroll position returns with it, else `/`.
+describe("back to library", () => {
+  const GARDENS = "rd_FXGARDEN01";
+  const GARDENS_TITLE = "Libraries are gardens, not warehouses";
+  const ATTENTION_TITLE = "A quieter internet is a choice we can make";
+  const LIBRARY = "/?tag=attention&offset=40";
+
+  beforeEach(() => {
+    backendServes({ [ATTENTION]: readings[ATTENTION], [GARDENS]: readings[GARDENS] });
+  });
+
+  async function openFromLibrary() {
+    const tab = await openTab(LIBRARY);
+    await userEvent.click(screen.getByRole("link", { name: "Open the reading" }));
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+    return tab;
+  }
+
+  /** Back at the library entry the reader left, not a new entry with its URL. */
+  async function expectBackAtLibrary(router: Awaited<ReturnType<typeof openTab>>["router"]) {
+    await screen.findByRole("heading", { level: 1, name: "Library" });
+    expect(router.state.location.href).toBe(LIBRARY);
+    expect(router.history.location.state.__TSR_index).toBe(0);
+  }
+
+  it("points at `/` on a reading reached directly", async () => {
+    await openTab(`/readings/${ATTENTION}`);
+    expect(screen.getByRole("link", { name: "Back to library" })).toHaveAttribute("href", "/");
+  });
+
+  it("returns to the library entry the reading was opened from", async () => {
+    const { router } = await openFromLibrary();
+    await userEvent.click(screen.getByRole("button", { name: "Back to library" }));
+    await expectBackAtLibrary(router);
+  });
+
+  it("returns to the originating library after two connection hops", async () => {
+    const { router } = await openFromLibrary();
+    await userEvent.click(screen.getByRole("link", { name: GARDENS_TITLE }));
+    await screen.findByRole("heading", { level: 1, name: GARDENS_TITLE });
+    await userEvent.click(screen.getByRole("link", { name: ATTENTION_TITLE }));
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to library" }));
+    await expectBackAtLibrary(router);
+  });
+
+  it("returns from a reading that is gone on arrival", async () => {
+    backendServes({});
+    const { router } = await openTab(LIBRARY);
+    await userEvent.click(screen.getByRole("link", { name: "Open the reading" }));
+    await screen.findByRole("heading", { level: 1, name: "This reading isn't in your library." });
+
+    await userEvent.click(screen.getByRole("button", { name: "Back to library" }));
+    await expectBackAtLibrary(router);
   });
 });
 

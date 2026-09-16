@@ -22,6 +22,7 @@ import { libraryQueryKey } from "../src/library";
 import { libraryQueryOptions, prefetchLibraryPage, startLibraryPage } from "../src/library-query";
 import { LIBRARY_PAGE_SIZE, libraryParamsOf, validateLibrarySearch } from "../src/library-search";
 import { libraryPage } from "../e2e/library-page.js";
+import { currentLoadId } from "../src/reading-trail";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 
@@ -335,12 +336,15 @@ describe("the first page", () => {
     expect(attention.querySelector(".status-badge")).toBeNull();
   });
 
-  it("opens the reading from its card", async () => {
-    backendServesPack();
-    await openTab("/");
+  // The reading's "Back to library" goes back to this entry (#407), so the
+  // card records where this page sits in history.
+  it("opens the reading from its card, recording the way back to this page", async () => {
+    backendServesPages(many);
+    const { router } = await openTab("/?offset=20");
 
     await userEvent.click(within(cards()[0]!).getByRole("link"));
-    expect(await screen.findByRole("heading", { level: 1, name: `Reading ${rows[0]!.id}` })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: `Reading ${many[20]!.id}` })).toBeInTheDocument();
+    expect(router.state.location.state.libraryReturn).toEqual({ load: currentLoadId(), index: 0 });
   });
 });
 

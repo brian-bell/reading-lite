@@ -41,6 +41,12 @@ export function libraryQueryOptions(
     // refresh of active rows are later slices; nothing here refetches on its
     // own.
     staleTime: Infinity,
+    // Kept for 30 minutes rather than the default five, so a reader coming
+    // back from a long read finds the page already rendered and scroll
+    // restoration has the full page to scroll (#407). Finite, because nothing
+    // else refreshes a page yet: a reader away longer than this gets the page
+    // read again, at the cost of landing at the top of it.
+    gcTime: 30 * 60 * 1000,
     retry: false,
   });
 }

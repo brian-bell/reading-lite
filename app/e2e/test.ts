@@ -72,18 +72,18 @@ export async function serveReadingsInBrowser(
  * list request the browser made. `answer`, when given, replaces the page with
  * one canned answer (#416): what a page change, or the request after a
  * server render that could not read the list, gets back. It may change
- * between calls.
+ * between calls, and it is given the request's URL to page by.
  */
 export async function serveLibraryInBrowser(
   page: Page,
   requests: string[] = [],
-  answer?: () => { status: number; body: unknown },
+  answer?: (url: URL) => { status: number; body: unknown },
 ): Promise<void> {
   await page.route(/\/api\/readings(\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     requests.push(`${url.pathname}${url.search}`);
     if (answer) {
-      const { status, body } = answer();
+      const { status, body } = answer(url);
       await route.fulfill({ status, json: body });
       return;
     }
