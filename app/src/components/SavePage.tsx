@@ -4,7 +4,7 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import { NetworkError } from "../api/errors";
 import { submitReading } from "../api/save";
 import { whoamiQueryKey, type Identity } from "../identity";
-import { expectedLayoutOf } from "../reading";
+import { expectedLayoutOf, readingQueryKey } from "../reading";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, OfflineNotice, ServerError } from "./ReadingStates";
@@ -121,6 +121,11 @@ export function SavePage() {
         setAnnouncement(outcome.kind === "accepted" ? "Saved. Opening the reading…" : "Opening the reading…");
         // The new reading belongs on every page of the library, filtered or not.
         await queryClient.invalidateQueries({ queryKey: ["library"] });
+        // A failed owner is reprocessed in place under the same id, and the
+        // reading query never goes stale on its own, so an answer this tab read
+        // earlier would be what the reader lands on. Dropped rather than marked
+        // stale: a stale failure would still show until the fresh read arrived.
+        queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
         await navigate({ to: "/readings/$id", params: { id: outcome.id } });
       },
       onSettled: () => {

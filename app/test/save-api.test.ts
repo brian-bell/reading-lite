@@ -94,6 +94,58 @@ describe("submitReading", () => {
     });
   });
 
+  // The CSRF check runs before the tenant pin (src/middleware.ts), so the
+  // cross-tab account switch answers 403, never the 412 the pin would give.
+  // Only whoever is signed in now tells the two apart.
+  describe("on a 403", () => {
+    const readerB: Identity = { ...reader, tenant_id: "usr_b", user_id: "usr_b", email: "b@example.com" };
+
+    function stubByPath(whoami: Response) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (request: Request) =>
+          new URL(request.url).pathname === "/api/whoami"
+            ? whoami
+            : Response.json({ error: "forbidden" }, { status: 403 }),
+        ),
+      );
+    }
+
+    it("is the account-changed state when another account is signed in now", async () => {
+      stubByPath(Response.json(readerB));
+
+      await expect(submitReading(signedIn(), "https://example.com/a", "usr_a")).resolves.toEqual({
+        kind: "account-changed",
+        actingTenant: "usr_b",
+      });
+    });
+
+    it("stays forbidden when the same account is signed in", async () => {
+      stubByPath(Response.json(reader));
+
+      await expect(submitReading(signedIn(), "https://example.com/a", "usr_a")).resolves.toEqual({
+        kind: "forbidden",
+      });
+    });
+
+    it("stays forbidden when identity cannot be read", async () => {
+      stubByPath(new Response("<html>gateway</html>", { status: 502 }));
+
+      await expect(submitReading(signedIn(), "https://example.com/a", "usr_a")).resolves.toEqual({
+        kind: "forbidden",
+      });
+    });
+
+    it("is the ended session when nobody is signed in now", async () => {
+      stubByPath(Response.json({ error: "unauthorized" }, { status: 401 }));
+
+      await expect(submitReading(signedIn(), "https://example.com/a", "usr_a")).rejects.toMatchObject({
+        name: "ApiError",
+        status: 401,
+      });
+    });
+  });
+
   it("decides from the status when the body is not JSON", async () => {
     stubFetch(new Response("<html>gateway</html>", { status: 502 }));
 

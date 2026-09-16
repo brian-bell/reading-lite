@@ -20,7 +20,7 @@ import { SavePage } from "../src/components/SavePage";
 import { SignInPage } from "../src/components/SignInPage";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 import { libraryQueryKey } from "../src/library";
-import type { Reading } from "../src/reading";
+import { readingQueryKey, type Reading } from "../src/reading";
 import { readingQueryOptions } from "../src/reading-query";
 import { readingViewOf, validateReadingSearch } from "../src/reading-view";
 import type { RouterContext } from "../src/router";
@@ -220,6 +220,25 @@ describe("the save page", () => {
     });
   });
 
+  // A failed owner is reprocessed in place under the same id (AGENTS.md), and
+  // the reading query never goes stale on its own. A failed answer this tab
+  // read earlier must not be what the reader lands on.
+  it("does not show a reading's earlier failure over the attempt a save just started", async () => {
+    stubFetch(() => Response.json(ACCEPTED, { status: 202 }));
+    const { router, queryClient } = await openSave();
+    queryClient.setQueryData(readingQueryKey(PENDING), {
+      state: "ready",
+      reading: { ...readings.rd_FXERR00001, id: PENDING },
+    });
+
+    await userEvent.type(urlField(), "https://fieldnotes.example/making-room-for-slow-work");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    await waitFor(() => expect(screen.getByText("This reading is still being processed.")).toBeVisible());
+    expect(screen.queryByText(/failed/i)).not.toBeInTheDocument();
+  });
+
   it("says a save landed before it leaves the page", async () => {
     stubFetch(() => Response.json(ACCEPTED, { status: 202 }));
     // The reading never answers, so the navigation stays pending and this page
@@ -291,6 +310,31 @@ describe("the save page", () => {
       expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("You don't have access to this."),
     );
     expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  // Another tab signing in as someone else replaces the shared cookie, so this
+  // tab's CSRF token no longer matches and the backend answers 403 before the
+  // tenant pin can say 412. The page still has to be the account-changed one.
+  it("shows the account-changed state for a 403 when another account is signed in now", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) =>
+        new URL(request.url).pathname === "/api/whoami"
+          ? Response.json({ ...reader, tenant_id: "usr_b", user_id: "usr_b", email: "b@example.com" })
+          : Response.json({ error: "forbidden" }, { status: 403 }),
+      ),
+    );
+    await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "This tab is signed in to a different account than the page expects.",
+      ),
+    );
+    expect(screen.getByText("Signed in as usr_b.")).toBeVisible();
   });
 
   // A 401 is the shell's page at this URL, not the form's error.
