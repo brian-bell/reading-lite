@@ -2583,9 +2583,10 @@ before resuming a run interrupted by CPU terminations.
 Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
-`RELATIONSHIP_REFRESH=1` is configured in staging and production with a
-two-judgement nightly cap. The owner-authorized single actual staging run passed
-on 2026-09-08 before production enablement. See [staging evidence](relationship-refresh-staging.md).
+`RELATIONSHIP_REFRESH=1` is configured in staging and production. Staging uses
+`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=5`. The
+owner-authorized single actual staging run passed on 2026-09-08 before
+production enablement. See [staging evidence](relationship-refresh-staging.md).
 Gate-off queue deliveries acknowledge and discard without storage/provider
 access; the refresh cron also does nothing. DLQ deliveries log and acknowledge
 without changing manifests.
@@ -2655,6 +2656,6 @@ reprocessing, purged inputs, and tenant suppression stop publication; errors
 never create a failed reading. The checkpoint contains no article summary and
 is removed by reading purge and the guarded account-teardown D1 batch.
 
-The slice-4 single-night staging acceptance check passed on 2026-09-08. Both
-environments start with a two-judgement nightly cap. Apply the migration through the
+The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
+keeps a two-judgement nightly cap; production uses five. Apply the migration through the
 normal Worker release path before deploying the new consumer.
