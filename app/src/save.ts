@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ApiError } from "./api/errors";
+import { captureRefusalOf, type CaptureRefusal } from "./capture-refusal";
 import { actingTenantOf, isProcessing, messageOf } from "./reading";
 
 // Saving a URL (#431, #433, Phase 4 of #339): the rule the field applies
@@ -84,46 +85,8 @@ export type SubmitOutcome =
   | { kind: "forbidden" }
   /** 412: the tenant pin caught another tab signing in as someone else. */
   | { kind: "account-changed"; actingTenant?: string }
-  /** 429: a limit the tenant reached. `limit` is the window the backend named. */
-  | { kind: "limited"; limit: string; resetAt?: string }
-  /** 429 from the usage guard itself: the limits could not be checked. */
-  | { kind: "guard-unavailable" }
-  /** 503: the save could not be queued; `id` is the reading it got as far as. */
-  | { kind: "unavailable"; id?: string };
-
-/**
- * The 429 quota body (src/router.ts `quotaHttp`). `limit` is the window the
- * backend named, and naming one is what makes this body the quota shape: a
- * 429 without it is the guard's, or none of ours.
- *
- * `limit` is a string, not the enum of today's three windows, for the reason
- * reading.ts keeps the backend's enums open: a window added later would
- * otherwise drop the reader to the page-replacing server error and lose the
- * URL they typed, which is the regression this refusal exists to prevent. The
- * page has a sentence for a window it does not know.
- *
- * `reset_at` is read the same way round: a reset the page cannot format is
- * worth less than the limit's name, so it is dropped rather than thrown over.
- */
-const LimitedSchema = z.looseObject({
-  limit: z.string().min(1),
-  reset_at: z.string().min(1).optional().catch(undefined),
-});
-
-/**
- * The 503 body (src/router.ts, the `unavailable` outcome). Only `id` is
- * read, and only when it is there: a queue send that failed after the attempt
- * was written names the reading it got as far as, a missing binding names
- * nothing. An `id` of another shape reads as none rather than failing the
- * refusal it belongs to.
- */
-const UnavailableSchema = z.looseObject({ id: z.string().min(1).optional().catch(undefined) });
-
-/**
- * The usage guard's own 429 (`guard_unavailable` in src/router.ts's `toHttp`,
- * declared in src/schemas/api.ts), which names no limit at all.
- */
-const GUARD_UNAVAILABLE = "usage guard unavailable";
+  /** 429 and 503 (capture-refusal.ts). */
+  | CaptureRefusal;
 
 /** The fallback for a 400 whose body says nothing useful. */
 const REJECTED = "That URL can't be saved.";
@@ -145,21 +108,11 @@ export function submitFromResponse(status: number, body: unknown): SubmitOutcome
   if (status === 400) return { kind: "invalid", message: messageOf(body) ?? REJECTED };
   if (status === 403) return { kind: "forbidden" };
   if (status === 412) return { kind: "account-changed", actingTenant: actingTenantOf(body) };
-  if (status === 429) {
-    if (messageOf(body) === GUARD_UNAVAILABLE) return { kind: "guard-unavailable" };
-    const parsed = LimitedSchema.safeParse(body);
-    // A 429 that names neither a limit nor the guard is not a refusal this
-    // page can explain, so it stays the retryable server error.
-    if (parsed.success) {
-      return { kind: "limited", limit: parsed.data.limit, resetAt: parsed.data.reset_at };
-    }
-  }
-  // 503 is the queue: the attempt may already exist (`id`), and then the
-  // reading is worth opening even though nothing was enqueued for it.
-  if (status === 503) {
-    const parsed = UnavailableSchema.safeParse(body);
-    return { kind: "unavailable", id: parsed.success ? parsed.data.id : undefined };
-  }
+  // 429 and 503 are the refusals every capture write shares. A 503 is the
+  // queue: the attempt may already exist (`id`), and then the reading is worth
+  // opening even though nothing was enqueued for it.
+  const refused = captureRefusalOf(status, body);
+  if (refused) return refused;
   // 200 is the reading that already owns this URL (its manifest), and 409 is
   // the owner still initializing, which names the same id to poll. Either way
   // the reader asked for a reading that exists, so the page opens it.

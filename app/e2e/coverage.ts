@@ -19,6 +19,7 @@ import {
   serveDiagnosticsInBrowser,
   serveLibraryInBrowser,
   serveReadingsInBrowser,
+  serveReprocessInBrowser,
   serveSaveInBrowser,
   serveSourceInBrowser,
 } from "./test";
@@ -452,6 +453,46 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "https://registration-wall.example/members-only-report",
     fixture: "fail-source-unreachable",
+  },
+  // Retry and Reprocess (#410). The confirmation is a major state of a paid
+  // action, so it is in CI's scope; its keyboard walk stays inside the modal.
+  {
+    name: "reading-reprocess-confirm",
+    essential: true,
+    path: "/readings/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    fixture: "attention",
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Reprocess" }).click();
+      await expect(page.getByRole("dialog", { name: "Reprocess this reading?" })).toBeVisible();
+    },
+  },
+  {
+    name: "reading-reprocess-failed",
+    path: "/readings/rd_FXREPROC01",
+    state: "signed-in",
+    heading: "The tab that never closes",
+    fixture: "reprocess-failed",
+  },
+  {
+    name: "reading-retry-limited",
+    path: "/readings/rd_FXERR00001",
+    state: "signed-in",
+    heading: "https://registration-wall.example/members-only-report",
+    fixture: "fail-source-unreachable",
+    stub: async (page) => {
+      await serveReadingsInBrowser(page);
+      serveReprocessInBrowser(page, () => ({
+        status: 429,
+        json: { error: "hourly reading quota exceeded", code: "quota_exhausted", limit: "hourly", reset_at: "2026-09-11T11:00:00.000Z" },
+      }));
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Retry" }).click();
+      await expect(page.locator(".offline-notice-text")).toContainText("You've reached the hourly reading limit.");
+      await page.locator("#main h1").focus();
+    },
   },
   // The pack's removed target: referenced by `attention` but never written, so
   // the route 404s (docs/design/connected/fixture-pack.md).

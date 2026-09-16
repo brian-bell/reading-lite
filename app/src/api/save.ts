@@ -1,8 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { whoamiQueryKey, type Identity } from "../identity";
 import { submitFromResponse, type SubmitOutcome } from "../save";
-import { apiFetch, fetchIdentity } from "./client";
-import { ApiError } from "./errors";
+import { apiFetch, forbiddenOrSwitched } from "./client";
 import { EXPECTED_TENANT_HEADER } from "./readings";
 
 // Browser path for saving a URL (#431): same-origin POST /api/readings with
@@ -38,16 +36,4 @@ export async function submitReading(
   }
   const outcome = submitFromResponse(response.status, body);
   return outcome.kind === "forbidden" ? forbiddenOrSwitched(queryClient) : outcome;
-}
-
-/** A 403 is whoever is signed in now: another account, nobody, or still this one. */
-async function forbiddenOrSwitched(queryClient: QueryClient): Promise<SubmitOutcome> {
-  const previous = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  // Unreadable identity is never a sign-out (identity.ts); the refusal stands.
-  const identity = await fetchIdentity().catch(() => undefined);
-  if (identity === null) throw new ApiError(401, "session ended");
-  if (identity && identity.user_id !== previous?.user_id) {
-    return { kind: "account-changed", actingTenant: identity.tenant_id };
-  }
-  return { kind: "forbidden" };
 }

@@ -5,7 +5,7 @@ import { NetworkError } from "../api/errors";
 import { submitReading } from "../api/save";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
-import { dateTimeOn } from "../reading-presentation";
+import { limitSentence } from "../capture-refusal";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
 import { PageHeading, PageStateFocus } from "./PageHeading";
@@ -280,16 +280,6 @@ function viewOf(refused: Refusal | null, paused: boolean, error: unknown): SaveV
   return { kind: "form", notice: { kind: "none" } };
 }
 
-/** Which limit was reached (acceptance matrix, Save), in the reader's terms. */
-const LIMIT_REACHED: Record<string, string> = {
-  request_rate: "You've reached the request rate limit.",
-  hourly: "You've reached the hourly reading limit.",
-  monthly: "You've reached the monthly reading limit.",
-};
-
-/** A window the backend named that this page has never heard of (save.ts). */
-const LIMIT_REACHED_UNKNOWN = "You've reached a limit.";
-
 /**
  * What a notice says, in one place: the banner renders it, and the page's
  * live region announces it, and the reader must not be given two wordings of
@@ -297,13 +287,9 @@ const LIMIT_REACHED_UNKNOWN = "You've reached a limit.";
  */
 function noticeSentence(notice: SaveNotice | Refusal): string | undefined {
   switch (notice.kind) {
-    case "limited": {
-      const reached = LIMIT_REACHED[notice.limit] ?? LIMIT_REACHED_UNKNOWN;
-      const resets = dateTimeOn(notice.resetAt);
-      return resets ? `${reached} It resets at ${resets}.` : reached;
-    }
+    case "limited":
     case "guard-unavailable":
-      return "Limits can't be checked right now.";
+      return limitSentence(notice);
     case "unavailable":
       return "Saving is unavailable right now.";
     default:
