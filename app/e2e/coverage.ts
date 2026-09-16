@@ -437,6 +437,9 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "https://fieldnotes.example/making-room-for-slow-work",
     fixture: "pending",
+    // A pending reading checks its status in the browser (#406), and the
+    // frontend Worker answers /api/* with 404 by design.
+    stub: (page) => serveReadingsInBrowser(page),
   },
   {
     name: "reading-failed",

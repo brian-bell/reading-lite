@@ -13,9 +13,11 @@ export async function fetchReading(
   queryClient: QueryClient,
   id: string,
   expectedTenant: string | undefined,
+  signal?: AbortSignal,
 ): Promise<ReadingResult> {
   const response = await apiFetch(queryClient, `/api/readings/${encodeURIComponent(id)}`, {
     headers: expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant },
+    ...(signal === undefined ? {} : { signal }),
   });
   let body: unknown = null;
   try {

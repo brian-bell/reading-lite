@@ -350,7 +350,7 @@ describe("pending and failed readings", () => {
     await openTab("/readings/rd_FXPENDNG01");
 
     expect(screen.getByText("This reading is still being processed.")).toBeInTheDocument();
-    expect(screen.getByText("Queued.")).toBeInTheDocument();
+    expect(screen.getByText("Fetching.")).toBeInTheDocument();
   });
 
   it("shows the failure category, the backend's message, and the stage", async () => {
@@ -360,7 +360,7 @@ describe("pending and failed readings", () => {
 
     expect(screen.getByText("The page couldn't be fetched.")).toBeInTheDocument();
     expect(screen.getByText(failed.error!.message)).toBeInTheDocument();
-    expect(screen.getByText("Stopped at: Fetching the page.")).toBeInTheDocument();
+    expect(screen.getByText("Stopped at: Fetching.")).toBeInTheDocument();
   });
 
   it("shows an unknown failure's message once, as its own headline", async () => {
@@ -410,7 +410,6 @@ describe("a ready reading being reprocessed", () => {
     await openTab(`/readings/${ATTENTION}`);
 
     expect(screen.getByLabelText("Processing status")).toBeInTheDocument();
-    expect(screen.getByText("Summarizing.")).toBeInTheDocument();
   });
 
   // The reader is looking at the previous summary while this runs, so "still

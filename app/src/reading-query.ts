@@ -1,4 +1,4 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions, type QueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import { createIsomorphicFn } from "@tanstack/react-start";
 import { getRequest } from "@tanstack/react-start/server";
 import { fetchReading } from "./api/readings";
@@ -13,27 +13,41 @@ import type { Identity } from "./identity";
 // build.
 
 const loadReading = createIsomorphicFn()
-  .server(async (_queryClient: QueryClient, id: string, expectedTenant: string | undefined) => {
+  .server(async (_queryClient: QueryClient, id: string, expectedTenant: string | undefined, _signal?: AbortSignal) => {
     const { env } = await import("cloudflare:workers");
     return readReadingFromBackend(env.BACKEND, getRequest(), id, expectedTenant);
   })
-  .client((queryClient: QueryClient, id: string, expectedTenant: string | undefined) =>
-    fetchReading(queryClient, id, expectedTenant),
+  .client((queryClient: QueryClient, id: string, expectedTenant: string | undefined, signal?: AbortSignal) =>
+    fetchReading(queryClient, id, expectedTenant, signal),
   );
 
-export function readingQueryOptions(queryClient: QueryClient, id: string, identity: Identity | null | undefined) {
+/** The status watch's options (components/use-status-watch.ts), for the page's own observer. */
+export type ReadingRefresh = Pick<
+  UseQueryOptions<ReadingResult, Error, ReadingResult, readonly unknown[]>,
+  "refetchInterval" | "refetchOnWindowFocus" | "refetchOnReconnect"
+>;
+
+export function readingQueryOptions(
+  queryClient: QueryClient,
+  id: string,
+  identity: Identity | null | undefined,
+  refresh: ReadingRefresh = {},
+) {
   const expectedTenant = expectedLayoutOf(identity);
   return queryOptions({
     queryKey: readingQueryKey(id),
-    queryFn: (): Promise<ReadingResult> => loadReading(queryClient, id, expectedTenant),
+    // Reading `signal` is what lets Query abort the request when the page
+    // unmounts mid-check.
+    queryFn: ({ signal }): Promise<ReadingResult> => loadReading(queryClient, id, expectedTenant, signal),
     // The server render's answer is dehydrated into the page, so hydration
     // settles without asking again and client navigation back to a reading
-    // reuses it (#370, "not refetched after hydration"). Pending readings get
-    // their bounded refresh with the status contract in Phase 4 (#339); until
-    // then nothing on this page refetches on its own.
+    // reuses it (#370, "not refetched after hydration"). A reading being
+    // processed is refreshed on the status contract's bounded schedule instead
+    // (#406), through `refresh` on the reading page's observer.
     staleTime: Infinity,
     // An unavailable backend renders the server-error state instead of stalling
     // the server render, as whoami does.
     retry: false,
+    ...refresh,
   });
 }

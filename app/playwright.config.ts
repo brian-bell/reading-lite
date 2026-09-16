@@ -94,6 +94,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // The status refresh (#406): a pending reading checks its status in the
+    // browser and says when it finished, and a 401 from a check reaches the
+    // shell. The component tests own the schedule with fake timers.
+    name: "reading-refresh",
+    testMatch: /reading-refresh\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,

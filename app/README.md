@@ -148,7 +148,15 @@ return path is per origin.
 - **Reading detail.** `/readings/:id` reads the reading during the server
   render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
   identity), so it is dehydrated into the page and the browser does not ask
-  again. `src/reading.ts` maps the response for both paths: the statuses with a
+  again — except while the reading is being processed. Then the page checks
+  its status on the bounded schedule of the [status refresh
+  contract](../docs/design/connected/acceptance-matrix.md#status-refresh-contract)
+  (`src/status-refresh.ts`, `src/components/use-status-watch.ts`): 3 s, then
+  5 s, then 15 s, paused while the tab is hidden, stopping at 16 minutes or
+  after three failed checks, with "Check status" for one more at any time. A
+  failed check keeps the reading on screen and the card says so. When the
+  attempt finishes, a polite live region says how, and the library's queries
+  are invalidated. `src/reading.ts` maps the response for both paths: the statuses with a
   page of their own — 404, 403, and the 412 expected-tenant mismatch — are
   values, so they travel in the dehydrated cache, while 401 and anything
   unexpected throw, the first into the expired-session page and the second into

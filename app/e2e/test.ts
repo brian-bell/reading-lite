@@ -47,14 +47,25 @@ export { expect };
  * Worker under test answers `/api/*` with 404 by design (ADR 0003: the backend
  * owns those routes), and the harness binds the stub only as the server
  * render's service binding. `overrides` replaces a body, and an id absent from
- * both is a 404 — the removed target.
+ * both is a 404 — the removed target. `requests` records the id of each
+ * reading the browser asked for, and `answer`, when given, replaces the answer
+ * for a request with a canned one (#406): a reading's status checks. It may
+ * change between calls.
  */
 export async function serveReadingsInBrowser(
   page: Page,
   overrides: Record<string, unknown> = {},
+  requests: string[] = [],
+  answer?: (id: string) => { status: number; body: unknown } | undefined,
 ): Promise<void> {
   await page.route("**/api/readings/*", async (route) => {
     const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    requests.push(id);
+    const canned = answer?.(id);
+    if (canned) {
+      await route.fulfill({ status: canned.status, json: canned.body });
+      return;
+    }
     const body = overrides[id] ?? pack.readings[id as keyof typeof pack.readings];
     if (!body) {
       await route.fulfill({ status: 404, json: { error: "not found" } });

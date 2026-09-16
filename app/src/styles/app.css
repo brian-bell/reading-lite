@@ -742,6 +742,10 @@ textarea {
   margin: var(--space-2) 0 0;
 }
 
+.status-card-actions {
+  margin: var(--space-3) 0 0;
+}
+
 .reading-state {
   max-width: 34rem;
 }

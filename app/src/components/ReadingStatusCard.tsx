@@ -1,48 +1,80 @@
 import { categorize } from "../reading-failure";
-import { isProcessing, type Reading } from "../reading";
+import { isProcessing, type ProcessingStage, type Reading } from "../reading";
+import type { WatchStatus } from "./use-status-watch";
 
 // The status card at the top of a reading that is not ready, or that is ready
 // with an attempt running over it (design spec, Reading surface; acceptance
 // matrix, Reading detail).
 //
-// Read-only in this slice: it reports what the backend last wrote and nothing
-// more. The bounded status refresh and its "Check status" control arrive with
-// the refresh contract in Phase 4 (#339), and Retry / Import a copy arrive with
-// capture in the same phase. Inventing step-level progress here is exactly what
-// the contract forbids, so a pending reading names its stage and stops.
+// It reports what the backend last wrote and nothing more (acceptance matrix,
+// Status refresh contract): a coarse stage, never a percentage. The page keeps
+// it current on the contract's bounded schedule (use-status-watch.ts); once
+// that stops, at the cap or after failed checks, the card says so and "Check
+// status" is the way on. Retry and Import a copy arrive with capture (#410,
+// #411).
+
+type StageLabel = "Fetching" | "Analyzing" | "Publishing";
 
 /** ProcessingStage → the coarse label the refresh contract allows. */
-const STAGE_LABELS: Record<string, string> = {
-  queued: "Queued",
-  fetch_source: "Fetching the page",
-  prepare_markdown: "Preparing the text",
-  write_raw: "Saving the capture",
-  write_extracted: "Saving the text",
-  embed_source: "Reading the text",
-  query_similar: "Looking for related readings",
-  summarize: "Summarizing",
-  embed_summary: "Filing the summary",
-  upsert_vector: "Filing the summary",
-  write_manifest: "Finishing",
-  write_indexes: "Finishing",
-  send_email: "Finishing",
+const STAGE_LABELS: Record<ProcessingStage, StageLabel> = {
+  queued: "Fetching",
+  fetch_source: "Fetching",
+  prepare_markdown: "Fetching",
+  write_raw: "Fetching",
+  write_extracted: "Fetching",
+  embed_source: "Analyzing",
+  query_similar: "Analyzing",
+  summarize: "Analyzing",
+  embed_summary: "Analyzing",
+  upsert_vector: "Publishing",
+  write_manifest: "Publishing",
+  write_indexes: "Publishing",
+  send_email: "Publishing",
 };
 
-export function ReadingStatusCard({ reading }: { reading: Reading }) {
+/** The contract's label for a stage, or "Processing" for none or one this app does not know. */
+export function stageLabel(stage: string | undefined): StageLabel | "Processing" {
+  return (stage !== undefined && STAGE_LABELS[stage as ProcessingStage]) || "Processing";
+}
+
+/**
+ * What the card adds once automatic checks are not the whole story: the last
+ * check failed (automatic or "Check status"), the three-failure stop, or the
+ * cap. A failed check outranks the cap, so a manual check after it that fails
+ * does not pass silently.
+ */
+function checkText(watch: WatchStatus, checkFailed: boolean): string | undefined {
+  if (checkFailed || watch === "failures") return "Couldn't check status";
+  if (watch === "cap") return "Still processing";
+  return undefined;
+}
+
+export function ReadingStatusCard({
+  reading,
+  watch,
+  checkFailed,
+  onCheck,
+}: {
+  reading: Reading;
+  watch: WatchStatus;
+  /** Whether the latest check failed while the reading stayed on screen. */
+  checkFailed: boolean;
+  onCheck: () => void;
+}) {
   // `isProcessing` (reading.ts) is the shared rule: a running attempt decides
   // before the manifest status does, because reprocessing a ready reading
   // keeps `status: "ready"` and adds the attempt (backend `reprocessPending`),
   // so status alone would hide the card for the whole reprocess — the
   // acceptance matrix puts that reading in the Pending row, with the prior
   // content still below.
-  if (isProcessing(reading)) return <PendingCard reading={reading} />;
+  if (isProcessing(reading)) {
+    return <PendingCard reading={reading} text={checkText(watch, checkFailed)} onCheck={onCheck} />;
+  }
   if (reading.status === "failed") return <FailedCard reading={reading} />;
   return null;
 }
 
-function PendingCard({ reading }: { reading: Reading }) {
-  const stage = reading.active_attempt?.stage;
-  const label = stage ? STAGE_LABELS[stage] : undefined;
+function PendingCard({ reading, text, onCheck }: { reading: Reading; text: string | undefined; onCheck: () => void }) {
   // A reprocess of a ready reading leaves the previous summary on the page, so
   // "still being processed" would misdescribe what the reader is looking at.
   const again = reading.status === "ready";
@@ -51,8 +83,13 @@ function PendingCard({ reading }: { reading: Reading }) {
       <p className="status-card-headline">
         {again ? "This reading is being processed again." : "This reading is still being processed."}
       </p>
-      {label ? <p className="status-card-detail">{label}.</p> : null}
-      <p className="form-hint">Reload the page to see where it has got to.</p>
+      <p className="status-card-detail">{stageLabel(reading.active_attempt?.stage)}.</p>
+      {text ? <p className="form-hint">{text}.</p> : null}
+      <div className="status-card-actions">
+        <button type="button" className="button" onClick={onCheck}>
+          Check status
+        </button>
+      </div>
     </section>
   );
 }
@@ -75,7 +112,7 @@ function FailedCard({ reading }: { reading: Reading }) {
       {failure.headline === failure.message ? null : (
         <p className="status-card-detail">{failure.message}</p>
       )}
-      {failure.stage ? <p className="form-hint">Stopped at: {STAGE_LABELS[failure.stage] ?? failure.stage}.</p> : null}
+      {failure.stage ? <p className="form-hint">Stopped at: {stageLabel(failure.stage)}.</p> : null}
     </section>
   );
 }
