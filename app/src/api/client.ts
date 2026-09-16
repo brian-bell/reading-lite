@@ -1,6 +1,6 @@
 import { onlineManager, type QueryClient } from "@tanstack/react-query";
 import { identityFromResponse, whoamiQueryKey, type Identity } from "../identity";
-import { NetworkError } from "./errors";
+import { ApiError, NetworkError } from "./errors";
 
 // Browser requests (ADR 0003): same-origin /api/* with the session cookie, and
 // the CSRF token from /api/whoami on writes, as web/src/api.ts does. The token
@@ -41,4 +41,24 @@ export async function fetchIdentity(): Promise<Identity | null> {
     // Non-JSON: identityFromResponse decides from the status.
   }
   return identityFromResponse(response.status, body);
+}
+
+/**
+ * What a 403 on a write is: whoever is signed in now — another account,
+ * nobody, or still this one. The backend checks the CSRF token before the
+ * tenant pin (src/middleware.ts), so when another tab has signed in as someone
+ * else the cached token no longer matches the cookie and the answer is 403,
+ * never the 412 the pin would have given a read.
+ */
+export async function forbiddenOrSwitched(
+  queryClient: QueryClient,
+): Promise<{ kind: "forbidden" } | { kind: "account-changed"; actingTenant?: string }> {
+  const previous = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+  // Unreadable identity is never a sign-out (identity.ts); the refusal stands.
+  const identity = await fetchIdentity().catch(() => undefined);
+  if (identity === null) throw new ApiError(401, "session ended");
+  if (identity && identity.user_id !== previous?.user_id) {
+    return { kind: "account-changed", actingTenant: identity.tenant_id };
+  }
+  return { kind: "forbidden" };
 }
