@@ -206,6 +206,11 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Library",
     prepare: async (page) => {
+      // Until hydration attaches the router, Next is a plain anchor and the
+      // click is a full navigation, which offline is a browser error page
+      // rather than this state. Network idle after the load is the same
+      // signal library.spec.ts uses before its page changes.
+      await page.waitForLoadState("networkidle");
       await page.context().setOffline(true);
       await page.getByRole("navigation", { name: "Pagination" }).getByRole("link", { name: "Next" }).click();
       await expect(page.getByRole("status")).toContainText("You're offline.");
