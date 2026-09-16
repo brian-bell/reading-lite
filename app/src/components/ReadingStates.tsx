@@ -111,14 +111,27 @@ export function ServerError({ message, onRetry }: { message: string; onRetry: ()
  * of a network. An inline notice rather than a page, so whatever was loaded
  * stays on screen beneath it. Retry asks again by hand; the query also
  * continues on its own when the browser comes back online.
+ *
+ * `onRetry` is optional because a save held paused offline (#431) has nothing
+ * to retry — React Query sends it when the browser is back, and a second one
+ * would claim the URL twice — so that notice says so in `message` instead of
+ * offering a control that does nothing. Every read passes both defaults.
  */
-export function OfflineNotice({ onRetry }: { onRetry: () => void }) {
+export function OfflineNotice({
+  message = "You're offline. Check your connection and try again.",
+  onRetry,
+}: {
+  message?: string;
+  onRetry?: () => void;
+}) {
   return (
     <div className="offline-notice" role="status">
-      <p className="offline-notice-text">You're offline. Check your connection and try again.</p>
-      <button type="button" className="button" onClick={onRetry}>
-        Retry
-      </button>
+      <p className="offline-notice-text">{message}</p>
+      {onRetry ? (
+        <button type="button" className="button" onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -13,7 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as SplatRouteImport } from './routes/$'
 import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as SaveRouteImport } from './routes/save'
+import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
 import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
@@ -38,10 +38,10 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SaveRoute = SaveRouteImport.update({
+const AuthedSaveRoute = AuthedSaveRouteImport.update({
   id: '/save',
   path: '/save',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => AuthedRoute,
 } as any)
 const AuthVerifyRoute = AuthVerifyRouteImport.update({
   id: '/auth/verify',
@@ -68,7 +68,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
   '/login': typeof LoginRoute
-  '/save': typeof SaveRoute
+  '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/account/security': typeof AuthedAccountSecurityRoute
@@ -78,7 +78,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
   '/login': typeof LoginRoute
-  '/save': typeof SaveRoute
+  '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/account/security': typeof AuthedAccountSecurityRoute
@@ -90,7 +90,7 @@ export interface FileRoutesById {
   '/$': typeof SplatRoute
   '/_authed': typeof AuthedRouteWithChildren
   '/login': typeof LoginRoute
-  '/save': typeof SaveRoute
+  '/_authed/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
   '/_authed/account/security': typeof AuthedAccountSecurityRoute
@@ -123,7 +123,7 @@ export interface FileRouteTypes {
     | '/$'
     | '/_authed'
     | '/login'
-    | '/save'
+    | '/_authed/save'
     | '/auth/verify'
     | '/login_/verify'
     | '/_authed/account/security'
@@ -135,7 +135,6 @@ export interface RootRouteChildren {
   SplatRoute: typeof SplatRoute
   AuthedRoute: typeof AuthedRouteWithChildren
   LoginRoute: typeof LoginRoute
-  SaveRoute: typeof SaveRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
   LoginVerifyRoute: typeof LoginVerifyRoute
 }
@@ -170,12 +169,12 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/save': {
-      id: '/save'
+    '/_authed/save': {
+      id: '/_authed/save'
       path: '/save'
       fullPath: '/save'
-      preLoaderRoute: typeof SaveRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof AuthedSaveRouteImport
+      parentRoute: typeof AuthedRoute
     }
     '/auth/verify': {
       id: '/auth/verify'
@@ -209,11 +208,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthedRouteChildren {
+  AuthedSaveRoute: typeof AuthedSaveRoute
   AuthedAccountSecurityRoute: typeof AuthedAccountSecurityRoute
   AuthedReadingsIdRoute: typeof AuthedReadingsIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedSaveRoute: AuthedSaveRoute,
   AuthedAccountSecurityRoute: AuthedAccountSecurityRoute,
   AuthedReadingsIdRoute: AuthedReadingsIdRoute,
 }
@@ -226,7 +227,6 @@ const rootRouteChildren: RootRouteChildren = {
   SplatRoute: SplatRoute,
   AuthedRoute: AuthedRouteWithChildren,
   LoginRoute: LoginRoute,
-  SaveRoute: SaveRoute,
   AuthVerifyRoute: AuthVerifyRoute,
   LoginVerifyRoute: LoginVerifyRoute,
 }

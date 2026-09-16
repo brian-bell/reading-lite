@@ -36,6 +36,11 @@ export interface EvidenceCase {
   prepare?: (page: Page) => Promise<void>;
 }
 
+/** The save page's URL field. The tab beside it carries the same name. */
+function saveField(page: Page) {
+  return page.getByRole("textbox", { name: "URL" });
+}
+
 export const EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
@@ -219,8 +224,53 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
       await page.locator("#main h1").focus();
     },
   },
-  { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Save reading" },
+  // Saving a URL (#431). /save is under the signed-in guard, so signed out it
+  // never renders: the reader lands on the sign-in page with the way back.
+  { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Sign in" },
+  // No `prepare`: the heading already proves the page rendered, and a case
+  // without one is also in the shell's reduced-motion, zoom, and reflow set
+  // (shell-extras.spec.ts filters on exactly that).
   { name: "save-signed-in", path: "/save", state: "signed-in", heading: "Save reading" },
+  // The two ways a URL is refused, which render identically: the rule this
+  // page applies before it asks, and the backend's own 400.
+  {
+    name: "save-invalid-url",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    prepare: async (page) => {
+      await saveField(page).fill("not a url");
+      await page.getByRole("button", { name: "Save" }).click();
+      await expect(page.getByText("Enter a full URL, like https://example.com/article.")).toBeVisible();
+      await expect(saveField(page)).toBeFocused();
+    },
+  },
+  {
+    name: "save-rejected-url",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      // GET-safe: the page and its reads go to the Worker, only the save is
+      // answered here.
+      await page.route("**/api/readings", async (route) => {
+        if (route.request().method() !== "POST") {
+          await route.fallback();
+          return;
+        }
+        await route.fulfill({
+          status: 400,
+          json: { error: "url rejected: host is not allowed", code: "unsupported_url" },
+        });
+      });
+    },
+    prepare: async (page) => {
+      await saveField(page).fill("https://blocked.example/a");
+      await page.getByRole("button", { name: "Save" }).click();
+      await expect(page.getByText("url rejected: host is not allowed")).toBeVisible();
+      await expect(saveField(page)).toBeFocused();
+    },
+  },
   { name: "login", path: "/login", state: "signed-out", heading: "Sign in" },
 
   // Reading detail (#370). Each heading is the page's own <h1>: the title for a

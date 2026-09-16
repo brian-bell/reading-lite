@@ -129,7 +129,10 @@ return path is per origin.
   shell's expired-session page at the library's URL, and any other failure is
   the retryable server error. A page that replaces the one on screen takes
   the focus it held (a state page for the library's, the library for a state
-  page's Retry), so it is announced. Offline is a notice with Retry above
+  page's Retry), so it is announced; `PageStateFocus` in
+  `src/components/PageHeading.tsx` is that mechanism, shared with the save
+  page, and the marker it renders must stay the page's immediate sibling for
+  its cleanup to see the focused element. Offline is a notice with Retry above
   whatever was loaded: React Query pauses a fetch started without a network
   (`fetchStatus: "paused"`) and continues it on `online`, and a fetch that
   threw while offline (`NetworkError.offline`, recorded by `apiFetch` when it
@@ -207,6 +210,39 @@ return path is per origin.
   link carrying the trail popped by one hop. On phones the "Connections &
   tensions" jump and "Back to the reading" move focus without touching the URL,
   scrolling smoothly only under `prefers-reduced-motion: no-preference`.
+- **Save.** `/save` is under `src/routes/_authed` (#431), so signed out it
+  redirects to `/login?next=%2Fsave` rather than rendering. The page
+  (`src/components/SavePage.tsx`) is the ARIA tabs component with one tab,
+  URL, selected in local state rather than the URL, so Markdown can join it
+  later without a deep link to maintain. `src/save.ts` holds both pure halves:
+  `saveUrlProblem` mirrors the backend's `webUrl()` in `src/schemas/api.ts`
+  (parseable, http(s) only) so an obvious typo costs no round trip, and
+  `submitFromResponse` maps what `POST /api/readings` answered — 202 to the
+  accepted reading (only `id` is read; the reading's own page reads its
+  status), 400 to a field error in the backend's own words, a 200 manifest or
+  a 409 that names an id to the reading that already owns the URL, and 403 and
+  412 to the shared states as values, so a 412 keeps its `acting_tenant` as
+  the reads do. A rejection from either side renders in the same place: a
+  paragraph under the field, linked by `aria-describedby` with `aria-invalid`
+  on the input, with focus moved back to it. Anything left throws an
+  `ApiError`, so a 401 is the shell's expired-session page and the rest is the
+  retryable server error. The form's submit and the offline notice's Retry are
+  the same call, so a retry cannot slip past the field's rule, and Save is
+  `aria-disabled` rather than `disabled` while a save runs: a disabled button
+  is blurred, and the reader would lose the place the next state page is meant
+  to take. A save that lands sets a polite `role="status"` message — "Saved."
+  only when something was saved, "Opening the reading…" for one already in the
+  library — invalidates every `["library", …]` query, and navigates to
+  `/readings/:id`; the form moves no focus itself, so the route change's
+  heading focus stands. Those steps run in `mutate`'s own callbacks, not the
+  mutation's: query-core keeps a paused mutation after the page is gone and
+  resumes it later, and a mutation-level callback would then navigate a reader
+  who has moved on. Offline has the library's two shapes and they differ here:
+  a save held paused is sent when the connection returns, so its notice says
+  so and offers no Retry (a second submit would claim the URL twice), while a
+  save that failed with the network already gone offers the Retry.
+  `src/api/save.ts` is the browser's POST, with the CSRF token and the tenant
+  pin as the library's reads have.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -256,6 +292,12 @@ Extending it:
   `/api/*` with 404 by design, so the browser's own reading requests are served
   from the fixture pack by a Playwright route. `e2e/specs/reading-trail.spec.ts`
   (the `reading-trail` project) covers Back, reload, and the phone jump (#371).
+  A case whose state needs an answer to a write routes it in `stub`, fulfilling
+  only that method and calling `route.fallback()` for the rest, so the page's
+  own reads still reach the Worker (`save-rejected-url`).
+- **A behaviour only a browser shows:** add a spec under `e2e/specs/` and a
+  project in `playwright.config.ts` that matches it, as `save` does for the
+  request the save form makes and its client-side navigation (#431).
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
   `e2e/fixtures/fixture-pack.json`. `test/unit/fixtures/app-fixture-pack.test.ts`
