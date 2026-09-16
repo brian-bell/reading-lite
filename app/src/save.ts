@@ -111,6 +111,15 @@ const LimitedSchema = z.looseObject({
 });
 
 /**
+ * The 503 body (src/router.ts, the `unavailable` outcome). Only `id` is
+ * read, and only when it is there: a queue send that failed after the attempt
+ * was written names the reading it got as far as, a missing binding names
+ * nothing. An `id` of another shape reads as none rather than failing the
+ * refusal it belongs to.
+ */
+const UnavailableSchema = z.looseObject({ id: z.string().min(1).optional().catch(undefined) });
+
+/**
  * The usage guard's own 429 (`guard_unavailable` in src/router.ts's `toHttp`,
  * declared in src/schemas/api.ts), which names no limit at all.
  */
@@ -147,7 +156,10 @@ export function submitFromResponse(status: number, body: unknown): SubmitOutcome
   }
   // 503 is the queue: the attempt may already exist (`id`), and then the
   // reading is worth opening even though nothing was enqueued for it.
-  if (status === 503) return { kind: "unavailable", id: idOf(body) };
+  if (status === 503) {
+    const parsed = UnavailableSchema.safeParse(body);
+    return { kind: "unavailable", id: parsed.success ? parsed.data.id : undefined };
+  }
   // 200 is the reading that already owns this URL (its manifest), and 409 is
   // the owner still initializing, which names the same id to poll. Either way
   // the reader asked for a reading that exists, so the page opens it.
