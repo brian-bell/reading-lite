@@ -121,8 +121,10 @@ guarantee. See [operator Node](docs/operations.md#operator-node).
 
 ## Tests and local limits
 
-`vitest.workspace.ts` separates Workers and Node pools. Tests importing Node
-built-ins belong under the Node globs. `test/env.d.ts` supplies required
+`vitest.workspace.ts` separates Workers and Node pools. Integration tests run
+on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
+`cloudflare:workers`, or workerd semantics, in which case list them in
+`WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue/Vectorize;
 integration tests inject `installQueueStub()` and `installVectorizeStub()`.
 Do not drain a queue before asserting an active pending state.
