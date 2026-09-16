@@ -36,6 +36,12 @@ function request(path: string, init: { method?: string; headers?: Record<string,
   return server.fetch(new URL(path, origin), { redirect: "manual", ...init });
 }
 
+/** Where a redirect points, as a path and query. */
+function location(response: { headers: { get(name: string): string | null } }): string {
+  const url = new URL(response.headers.get("Location") ?? "", origin);
+  return `${url.pathname}${url.search}`;
+}
+
 function heading(text: string): string {
   return `<h1 class="page-title" tabindex="-1">${text}</h1>`;
 }
@@ -89,13 +95,6 @@ describe("rendered pages", () => {
     const html = await (await request("/", { headers: cookie ? { Cookie: cookie } : {} })).text();
     expect(html).toContain('<html lang="en">');
     expect(checkedTheme(html)).toBe("system");
-  });
-
-  it("renders the Save reading placeholder", async () => {
-    const response = await request("/save");
-    expect(response.status).toBe(200);
-    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(await response.text()).toContain(heading("Save reading"));
   });
 
   it("redirects any other path to the library", async () => {
@@ -223,15 +222,29 @@ describe("signed-in identity", () => {
     expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":100}]');
   });
 
-  it("renders a sign-in link back to the current URL without a session", async () => {
+  // /save is a write, so it is under the signed-in guard (#431): without a
+  // session it never renders, it sends the reader to sign in and back.
+  it("sends /save to sign-in and back without a session", async () => {
     for (const cookie of ["", "theme=light", "__Host-session=unknown"]) {
       const response = await request("/save", { headers: cookie ? { Cookie: cookie } : {} });
+      expect([302, 307], cookie).toContain(response.status);
+      expect(location(response), cookie).toBe("/login?next=%2Fsave");
       expect(response.headers.get("Cache-Control")).toBe("private, no-store");
       const html = await response.text();
-      expect(html, cookie).toContain('href="/login?next=%2Fsave"');
       expect(html, cookie).not.toContain("Account menu");
       expect(html, cookie).not.toMatch(/reader-[ab]@example\.com|csrf-token-for/);
     }
+  });
+
+  it("server-renders the save form for a session", async () => {
+    const response = await request("/save", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("Save reading"));
+    expect(html).toContain('role="tab"');
+    expect(html).toContain('<button type="submit" class="button button-primary">Save</button>');
+    expect(html).toContain('name="url"');
   });
 
   // The common states on the library (#416), in the HTML before any script
@@ -298,11 +311,6 @@ describe("signed-in identity", () => {
 
 describe("sign-in routes", () => {
   const A = { cookie: "__Host-session=session-a", email: "reader-a@example.com" };
-
-  function location(response: { headers: { get(name: string): string | null } }): string {
-    const url = new URL(response.headers.get("Location") ?? "", origin);
-    return `${url.pathname}${url.search}`;
-  }
 
   it("renders the sign-in form on /login, with submit held until the browser loads options", async () => {
     const response = await request("/login?next=%2Freadings%2Frd_0123456789");

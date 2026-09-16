@@ -565,7 +565,8 @@ textarea {
   color: var(--bg);
 }
 
-.button:disabled {
+.button:disabled,
+.button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -596,6 +597,19 @@ textarea {
 .text-input[readonly] {
   background: var(--soft);
   color: var(--muted);
+}
+
+/* A rejected field carries the reason under it and the colour is not the only
+   sign: aria-invalid and the linked message say it too (#431). */
+.text-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.field-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .form-actions {

@@ -21,6 +21,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "reading-trail",
   "reading-source",
   "reading-details",
+  "save",
 ]);
 
 export function inScope(project: { name?: string }): boolean {

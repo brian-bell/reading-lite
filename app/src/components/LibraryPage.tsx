@@ -29,7 +29,7 @@ import {
 } from "../library-search";
 import { libraryViewOf, type LibraryView } from "../library-state";
 import { hostnameOf } from "../reading-presentation";
-import { PageHeading, focusPageHeading } from "./PageHeading";
+import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { SignInPage } from "./SignInPage";
 
@@ -85,19 +85,7 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
   const view = libraryViewOf({ data, error, fetchStatus });
   const retry = () => void refetch();
   // A read that settles as a different page replaces the one on screen, and
-  // whatever had focus in it: the heading a route change just focused, the
-  // pager step the reader pressed, or the Retry they pressed on a state page.
-  // The new page's heading takes it, so the state (or the library, back
-  // again) is announced rather than focus falling to the top of the document.
-  // Only when focus was lost: a library that stays up through a read keeps
-  // the reader on the control they were on.
-  const focusWasInPage = useRef(false);
-  useEffect(() => {
-    if (focusWasInPage.current) {
-      focusWasInPage.current = false;
-      if (document.activeElement?.closest(".page") == null) focusPageHeading();
-    }
-  }, [view.kind]);
+  // whatever had focus in it; PageStateFocus hands the new heading that focus.
   // The filter change last asked for, and where focus goes once it lands
   // (see FilterFocus). Owned here, above the controls that set it and the bar
   // that consumes it, and dropped with the page.
@@ -105,8 +93,7 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
 
   return (
     <PendingFilterFocus.Provider value={pendingFilterFocus}>
-      <FocusWithin key={view.kind} flag={focusWasInPage} />
-      {pageFor(view, search, params.offset, retry)}
+      <PageStateFocus kind={view.kind}>{pageFor(view, search, params.offset, retry)}</PageStateFocus>
     </PendingFilterFocus.Provider>
   );
 }
@@ -128,22 +115,6 @@ function pageFor(view: LibraryView, search: LibrarySearch, offset: number, retry
         </div>
       );
   }
-}
-
-/**
- * Records, as the view changes, whether focus was inside the page then on
- * screen. Keyed on the view, so it is replaced with the page; it comes first,
- * so its layout cleanup runs before the page's DOM is removed and the focused
- * element is still there to ask.
- */
-function FocusWithin({ flag }: { flag: RefObject<boolean> }) {
-  useLayoutEffect(
-    () => () => {
-      flag.current = document.activeElement?.closest(".page") != null;
-    },
-    [flag],
-  );
-  return null;
 }
 
 /**
