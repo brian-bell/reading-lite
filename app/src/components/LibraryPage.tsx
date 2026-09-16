@@ -440,6 +440,11 @@ function PagerStep({ label, search }: { label: string; search: LibrarySearch | n
   );
 }
 
+/** A tag as the backend compares it (src/modules/stores/list-index.ts): trimmed, case-insensitive. */
+function normalizeTag(tag: string): string {
+  return tag.trim().toLowerCase();
+}
+
 /**
  * One card: the state badge when the reading is not simply ready (#415), the
  * title, the summary lead clamped at three lines (the stylesheet's job), the
@@ -451,7 +456,9 @@ function PagerStep({ label, search }: { label: string; search: LibrarySearch | n
  * above the stretched link (the stylesheet's job) and a tab stop of its own,
  * and not preloaded, since a pointer or Tab passing over a page of them is
  * not intent to read every one. The tag the library is already filtered by
- * is plain text, so no card claims to be the current page. They are inline
+ * is plain text, so no card claims to be the current page; it is matched as
+ * the backend matches it, trimmed and case-insensitive, so `?tag=Design` and
+ * `?tag=%20design%20` mark the same rows. They are inline
  * links rather than a list, so the card stays the one list item the page's
  * list counts.
  * A reading with no title yet (pending, failed) is named by its URL. Long
@@ -460,6 +467,7 @@ function PagerStep({ label, search }: { label: string; search: LibrarySearch | n
 function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }) {
   const badge = libraryBadge(row);
   const focusAfterFilterChange = useFocusAfterFilterChange();
+  const activeTag = search.tag === undefined ? undefined : normalizeTag(search.tag);
   return (
     <li className="library-card">
       {badge ? (
@@ -478,7 +486,7 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
       {row.tags && row.tags.length > 0 ? (
         <p className="library-card-tags">
           {row.tags.map((tag) =>
-            tag === search.tag ? (
+            normalizeTag(tag) === activeTag ? (
               <span key={tag} className="tag tag-current">
                 {tag}
               </span>

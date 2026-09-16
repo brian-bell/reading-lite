@@ -926,6 +926,19 @@ describe("search and tags", () => {
     expect(within(screen.getByRole("list", { name: "Readings" })).queryAllByRole("link", { current: "page" })).toEqual([]);
   });
 
+  // The backend trims and lowercases the tag, so a deep link spelled
+  // differently filters the same rows; their tag is the active one all the same.
+  it.each(["/?tag=Design", "/?tag=%20design%20"])("marks the active tag on cards as the backend matches it (%s)", async (path) => {
+    backendServesFilteredPack();
+    await openTab(path);
+
+    expect(cards()).toHaveLength(4);
+    for (const card of cards()) {
+      expect(within(card).queryByRole("link", { name: "design" })).toBeNull();
+      expect(within(card).getByText("design")).toHaveClass("tag-current");
+    }
+  });
+
   it("shows the trimmed search in the field even when the URL does not change", async () => {
     backendServesFilteredPack();
     const { router } = await openBrowserTab("/?q=quiet");
