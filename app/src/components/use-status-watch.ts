@@ -36,7 +36,7 @@ import {
 export type WatchStatus = "idle" | "watching" | WatchStopReason;
 type WatchStopReason = NonNullable<Watch["stopped"]>;
 
-type QueryLike<T> = Pick<Query<T, Error, T, readonly unknown[]>, "state">;
+type QueryLike<T> = Pick<Query<T, Error, T, readonly unknown[]>, "state" | "cancel">;
 
 interface Seen {
   data: number;
@@ -45,6 +45,7 @@ interface Seen {
 
 class WatchStore<T> {
   watch: Watch | null = null;
+  #query: QueryLike<T> | null = null;
   #seen: Seen = { data: 0, error: 0 };
   readonly #listeners = new Set<() => void>();
 
@@ -63,6 +64,7 @@ class WatchStore<T> {
   /** Counts any answer not seen yet, then the wait before the next check. */
   refetchInterval = (query: QueryLike<T>): number | false => {
     const now = Date.now();
+    this.#query = query;
     this.#observe(query.state, now);
     return this.watch ? nextInterval(this.watch, now, this.schedule) : false;
   };
@@ -72,9 +74,18 @@ class WatchStore<T> {
 
   refetchOnReconnect = (query: QueryLike<T>): boolean => this.#live(query) || this.keyOf(query.state.data) === null;
 
-  /** Re-reads the cap; called when it passes with no answer to trigger it. */
+  /**
+   * Re-reads the cap; called when it passes with no answer to trigger it. An
+   * automatic check that came due offline is held paused by Query and resumed
+   * on reconnect regardless of `refetchOnReconnect`, so past the cap it is
+   * dropped, and the query goes back to the answer it had.
+   */
   checkCap = () => {
-    if (this.watch) this.#set(withCap(this.watch, Date.now()));
+    if (!this.watch) return;
+    this.#set(withCap(this.watch, Date.now()));
+    if (this.watch?.stopped === "cap" && this.#query?.state.fetchStatus === "paused") {
+      void this.#query.cancel({ revert: true });
+    }
   };
 
   #live(query: QueryLike<T>): boolean {

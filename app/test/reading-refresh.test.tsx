@@ -1,4 +1,4 @@
-import { QueryClientProvider, focusManager } from "@tanstack/react-query";
+import { QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
 import {
   Outlet,
   RouterProvider,
@@ -164,6 +164,7 @@ beforeEach(() => {
 
 afterEach(() => {
   focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -233,6 +234,31 @@ describe("stopping", () => {
     await advance(5 * MINUTE);
     expect(requestTimes).toEqual([3 * SECOND, 6 * SECOND]);
     expect(announcement()).toBe("Processing finished. This reading is ready.");
+  });
+
+  // The route component is reused across readings, so an outcome said on one
+  // visit must not be said again by coming back to the same reading.
+  it("does not announce a finished reading again after leaving and coming back", async () => {
+    const { router } = await openReading(PENDING);
+    const done = { ...PENDING, status: "ready", active_attempt: null, title: "Done" };
+    answerWith(json(done));
+    await advance(3 * SECOND);
+    expect(announcement()).toBe("Processing finished. This reading is ready.");
+
+    answerWith(json(READY));
+    await act(async () => {
+      await router.navigate({ to: "/readings/$id", params: { id: READY.id } });
+    });
+    for (let i = 0; i < 3; i++) await settle();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(READY.title!);
+    answerWith(json(done));
+    await act(async () => {
+      await router.navigate({ to: "/readings/$id", params: { id: PENDING_ID } });
+    });
+    for (let i = 0; i < 3; i++) await settle();
+
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Done");
+    expect(announcement()).toBe("");
   });
 
   // Check 4.
@@ -321,6 +347,23 @@ describe("a hidden tab", () => {
     expect(requestTimes).toEqual([40 * SECOND]);
     await advance(5 * SECOND);
     expect(requestTimes).toEqual([40 * SECOND, 45 * SECOND]);
+  });
+
+  // Offline, Query pauses the automatic check it was due to make and resumes
+  // it on reconnect whatever `refetchOnReconnect` says; past the cap it must
+  // not go out.
+  it("drops an automatic check held offline once the cap passes", async () => {
+    await openReading(PENDING);
+    await advance(15 * MINUTE + 40 * SECOND);
+    const before = requestTimes.length;
+    act(() => onlineManager.setOnline(false));
+    await advance(10 * MINUTE);
+    expect(requestTimes).toHaveLength(before);
+    expect(screen.getByText("Still processing.")).toBeInTheDocument();
+
+    act(() => onlineManager.setOnline(true));
+    await advance(MINUTE);
+    expect(requestTimes).toHaveLength(before);
   });
 
   // Hidden time counts toward the cap, and a stopped watch stays stopped.

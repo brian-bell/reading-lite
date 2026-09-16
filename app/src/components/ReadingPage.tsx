@@ -93,13 +93,18 @@ function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): st
   useEffect(() => {
     const was = previous.current;
     previous.current = { id, key };
-    if (was.id !== id || was.key === null || key !== null) return;
+    if (was.id !== id) {
+      // The route component is reused when a connection leads to another
+      // reading; what the last one said is not said again on coming back.
+      setAnnounced(null);
+      return;
+    }
+    if (was.key === null || key !== null) return;
     void queryClient.invalidateQueries({ queryKey: ["library"] });
     if (data?.state === "ready") setAnnounced({ id, text: outcomeText(data.reading) });
   }, [id, key, data, queryClient]);
 
-  // The route component is reused when a connection leads to another reading;
-  // that reading has said nothing yet.
+  // Until the effect clears it, a newly shown reading has said nothing yet.
   return announced?.id === id ? announced.text : null;
 }
 
