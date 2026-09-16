@@ -66,15 +66,27 @@ export async function serveReadingsInBrowser(
 
 /**
  * Serves `GET /api/readings` in the browser from the pack's list index (#413)
- * and the generated rows past it (#414),
- * the same page the stub entrypoint gives the server render. The library reads
- * its first page on the server, so only a client-side navigation to it asks
- * here. `requests` records each list request the browser made.
+ * and the generated rows past it (#414), the same page the stub entrypoint
+ * gives the server render. The library reads its first page on the server,
+ * so only a client-side navigation to it asks here. `requests` records each
+ * list request the browser made. `answer`, when given, replaces the page with
+ * one canned answer (#416): what a page change, or the request after a
+ * server render that could not read the list, gets back. It may change
+ * between calls.
  */
-export async function serveLibraryInBrowser(page: Page, requests: string[] = []): Promise<void> {
+export async function serveLibraryInBrowser(
+  page: Page,
+  requests: string[] = [],
+  answer?: () => { status: number; body: unknown },
+): Promise<void> {
   await page.route(/\/api\/readings(\?.*)?$/, async (route) => {
     const url = new URL(route.request().url());
     requests.push(`${url.pathname}${url.search}`);
+    if (answer) {
+      const { status, body } = answer();
+      await route.fulfill({ status, json: body });
+      return;
+    }
     const offset = url.searchParams.get("offset");
     const body = libraryPage(libraryItems(pack.list_index.items), {
       q: url.searchParams.get("q") ?? undefined,
@@ -150,24 +162,34 @@ export async function serveFilesInBrowser(page: Page): Promise<void> {
   });
 }
 
-export async function signIn(context: BrowserContext, baseURL: string): Promise<void> {
-  await context.addCookies([
-    { name: sessionCookieName(baseURL), value: SESSION_COOKIE_VALUE, url: baseURL },
-  ]);
+export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {
+  await context.addCookies([{ name: sessionCookieName(baseURL), value: session, url: baseURL }]);
 }
 
-/** Applies the case's state, loads it, and waits for its heading. */
+/**
+ * Applies the case's state, installs its `stub` routes, loads it, and waits
+ * for its heading. A case's `prepare` may take the browser offline (#416);
+ * the next load puts it back.
+ */
 export async function openCase(
   page: Page,
   baseURL: string,
-  evidence: Pick<EvidenceCase, "path" | "state" | "heading" | "prepare">,
+  evidence: Pick<EvidenceCase, "path" | "state" | "heading" | "prepare" | "session" | "stub">,
 ): Promise<void> {
-  await applyState(page.context(), baseURL, evidence.state);
+  await page.context().setOffline(false);
+  await applyState(page.context(), baseURL, evidence.state, evidence.session);
+  await evidence.stub?.(page);
   await page.goto(evidence.path);
   await expect(page.getByRole("heading", { level: 1, name: evidence.heading })).toBeVisible();
   await evidence.prepare?.(page);
 }
 
-async function applyState(context: BrowserContext, baseURL: string, state: SignedState): Promise<void> {
-  if (state === "signed-in") await signIn(context, baseURL);
+async function applyState(
+  context: BrowserContext,
+  baseURL: string,
+  state: SignedState,
+  session: string | undefined,
+): Promise<void> {
+  if (session !== undefined) await signIn(context, baseURL, session);
+  else if (state === "signed-in") await signIn(context, baseURL);
 }

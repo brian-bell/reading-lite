@@ -8,6 +8,18 @@
 export const SESSION_COOKIE_VALUE = process.env.E2E_SESSION_COOKIE ?? "reader-a";
 
 /**
+ * The same reader, with the library's list answering one of the common
+ * states (#416). Only e2e/backend-stub.js knows these; against a real host
+ * they are ordinary unknown sessions.
+ */
+export const LIBRARY_STATE_SESSIONS = {
+  "session-ended": "reader-expired",
+  forbidden: "reader-forbidden",
+  "account-changed": "reader-mismatch",
+  "server-error": "reader-outage",
+} as const;
+
+/**
  * `__Host-` cookies must be Secure, and a browser refuses a Secure cookie on
  * an http origin, so the local harness uses the plain name the stub also
  * accepts. Against an https host the real name is set, unchanged.

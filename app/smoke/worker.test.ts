@@ -211,6 +211,36 @@ describe("signed-in identity", () => {
     }
   });
 
+  // The common states on the library (#416), in the HTML before any script
+  // runs: the state page with its own heading, the account menu still there.
+  // 403 and 412 are values and travel with the page.
+  it.each([
+    ["session-a-forbidden", "You don&#x27;t have access to this.", "forbidden"],
+    ["session-a-mismatch", "This tab is signed in to a different account than the page expects.", "usr_bbbbbbbb"],
+  ])("server-renders the library's state for %s", async (session, text, detail) => {
+    const response = await request("/", { headers: { Cookie: `__Host-session=${session}` } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(heading(text));
+    expect(html).toContain(detail);
+    expect(html).toContain(`aria-label="Account menu, signed in as ${A.email}"`);
+    expect(html).not.toContain('aria-label="Readings"');
+    expect(dehydratedQueryKeys(html)).toContain('["library",{"offset":0}]');
+  });
+
+  // A list that fails is the one state the server render does not settle, as
+  // for a reading: the failure is not dehydrated, the page goes out busy
+  // under its own heading, and the browser asks again and shows the outcome.
+  it("server-renders a failed list as the busy library, for the browser to ask again", async () => {
+    const response = await request("/", { headers: { Cookie: "__Host-session=session-a-outage" } });
+    expect(response.status).toBe(200);
+    const html = await response.text();
+    expect(html).toContain(heading("Library"));
+    expect(html).toContain('aria-busy="true"');
+    expect(html).toContain(`aria-label="Account menu, signed in as ${A.email}"`);
+    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["library"'))).toEqual([]);
+  });
+
   it("renders neither account state when the backend is unavailable", async () => {
     const response = await request("/", { headers: { Cookie: "__Host-session=backend-down" } });
     expect(response.status).toBe(200);

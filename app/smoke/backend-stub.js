@@ -7,6 +7,7 @@
 // Only the forwarded host the tests use is accepted, proving the frontend
 // passes the request host through.
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { LIST_SCENARIOS } from "../e2e/list-scenarios.js";
 
 const SMOKE_HOST = "next.readinglite.test";
 
@@ -70,9 +71,24 @@ const LIBRARIES = {
   ],
 };
 
-function sessionOf(cookie) {
+// Reader A again, with the list answering a common state (#416), so a server
+// render of `/` proves the state page is in the HTML.
+const SCENARIO_SESSIONS = {
+  "session-a-expired": LIST_SCENARIOS.expired,
+  "session-a-forbidden": LIST_SCENARIOS.forbidden,
+  "session-a-mismatch": LIST_SCENARIOS.mismatch,
+  "session-a-outage": LIST_SCENARIOS.outage,
+};
+
+function sessionKeyOf(cookie) {
   const match = /(?:^|;\s*)__Host-session=([^;]+)/.exec(cookie ?? "");
-  return match ? SESSIONS[match[1]] : undefined;
+  return match ? match[1] : undefined;
+}
+
+function sessionOf(cookie) {
+  const key = sessionKeyOf(cookie);
+  if (key === undefined) return undefined;
+  return SESSIONS[key] ?? (key in SCENARIO_SESSIONS ? SESSIONS["session-a"] : undefined);
 }
 
 export class FrontendReads extends WorkerEntrypoint {
@@ -99,7 +115,9 @@ export class FrontendReads extends WorkerEntrypoint {
     const session = sessionOf(cookie);
     if (!session) return { status: 401, body: { error: "unauthorized" } };
     await new Promise((resolve) => setTimeout(resolve, session.delayMs));
-    const name = /__Host-session=([^;]+)/.exec(cookie)[1];
+    const name = sessionKeyOf(cookie);
+    const scenario = SCENARIO_SESSIONS[name];
+    if (scenario) return scenario;
     const start = offset ?? 0;
     const all = LIBRARIES[name];
     const rows = all.slice(start, start + PAGE_SIZE);

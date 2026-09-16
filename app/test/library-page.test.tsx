@@ -1,5 +1,6 @@
-import { QueryClientProvider, dehydrate, hydrate } from "@tanstack/react-query";
+import { QueryClientProvider, dehydrate, hydrate, onlineManager } from "@tanstack/react-query";
 import {
+  type AnyRoute,
   Outlet,
   RouterProvider,
   createMemoryHistory,
@@ -7,7 +8,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
@@ -16,7 +17,9 @@ import { AppFrame } from "../src/components/AppFrame";
 import { LibraryHome } from "../src/components/LibraryPage";
 import { PageHeading } from "../src/components/PageHeading";
 import { whoamiQueryKey, type Identity } from "../src/identity";
-import { libraryQueryOptions, prefetchLibraryPage } from "../src/library-query";
+import { DelayedText } from "../src/components/ReadingStates";
+import { libraryQueryKey } from "../src/library";
+import { libraryQueryOptions, prefetchLibraryPage, startLibraryPage } from "../src/library-query";
 import { LIBRARY_PAGE_SIZE, libraryParamsOf, validateLibrarySearch } from "../src/library-search";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
@@ -29,6 +32,11 @@ import { plainSearch } from "../src/search";
 // through the same query the route's loader uses. The browser path has its own
 // test in test/library.test.ts. Rows come from the fixture pack's list index,
 // newest first, as the list handler orders them.
+//
+// The route tree waits for the page in its loader, as the server does. The
+// browser's loader only starts the read (#416), so the states a page change
+// shows while the read is still out — loading, offline — are driven through a
+// second tree with that loader.
 
 const { backend, request } = vi.hoisted(() => ({
   backend: { list: vi.fn(), reading: vi.fn(), whoami: vi.fn() },
@@ -105,11 +113,40 @@ const readingRoute = createRoute({
 });
 const routeTree = rootRoute.addChildren([indexRoute, readingRoute]);
 
-function newTab(path: string, identity: Identity | null | undefined = reader) {
+// The same pages behind the browser's loader, which starts the read and lets
+// the page mount at once.
+const browserRootRoute = createRootRouteWithContext<RouterContext>()({
+  component: () => (
+    <AppFrame theme="system" onThemeChange={() => undefined}>
+      <Outlet />
+    </AppFrame>
+  ),
+});
+const browserIndexRoute = createRoute({
+  getParentRoute: () => browserRootRoute,
+  path: "/",
+  validateSearch: validateLibrarySearch,
+  loaderDeps: ({ search }) => libraryParamsOf(search),
+  loader: ({ context, deps }) => startLibraryPage(context.queryClient, deps),
+  component: function LibraryRoute() {
+    return <LibraryHome search={browserIndexRoute.useSearch()} />;
+  },
+});
+const browserReadingRoute = createRoute({
+  getParentRoute: () => browserRootRoute,
+  path: "/readings/$id",
+  component: function ReadingProbe() {
+    const { id } = browserReadingRoute.useParams();
+    return <PageHeading>{`Reading ${id}`}</PageHeading>;
+  },
+});
+const browserRouteTree = browserRootRoute.addChildren([browserIndexRoute, browserReadingRoute]);
+
+function newTab(path: string, identity: Identity | null | undefined = reader, tree: AnyRoute = routeTree) {
   const queryClient = createQueryClient(() => hrefOnScreen(router));
   if (identity !== undefined) queryClient.setQueryData(whoamiQueryKey, identity);
   const router = createRouter({
-    routeTree,
+    routeTree: tree,
     context: { queryClient },
     ...plainSearch,
     history: createMemoryHistory({ initialEntries: [path] }),
@@ -118,12 +155,46 @@ function newTab(path: string, identity: Identity | null | undefined = reader) {
   return { router, queryClient };
 }
 
-async function openTab(path: string, identity: Identity | null = reader) {
-  const tab = newTab(path, identity);
+async function openTab(path: string, identity: Identity | null = reader, tree: AnyRoute = routeTree) {
+  const tab = newTab(path, identity, tree);
   render(<RouterProvider router={tab.router} />);
   await waitFor(() => expect(tab.router.state.status).toBe("idle"));
   await screen.findByRole("heading", { level: 1 });
   return tab;
+}
+
+/** A tab whose loader starts the read without waiting, as the browser's does. */
+function openBrowserTab(path: string) {
+  return openTab(path, reader, browserRouteTree);
+}
+
+async function pressNext(): Promise<void> {
+  const pager = await screen.findByRole("navigation", { name: "Pagination" });
+  const next = within(pager).getByRole("link", { name: "Next" });
+  next.focus();
+  await userEvent.keyboard("{Enter}");
+}
+
+/** Page 1 from `all`, and whatever `later` answers for any other offset. */
+function backendServesFirstPageThen(all: readonly (typeof many)[number][], later: () => Promise<{ status: number; body: unknown }>) {
+  backend.list.mockImplementation(async ({ offset = 0 }: { offset?: number }) =>
+    offset === 0
+      ? { status: 200, body: { readings: all.slice(0, LIBRARY_PAGE_SIZE), limit: LIBRARY_PAGE_SIZE, offset: 0, has_more: true } }
+      : later(),
+  );
+}
+
+function heading(): string {
+  return screen.getByRole("heading", { level: 1 }).textContent ?? "";
+}
+
+async function headingSettles(text: string): Promise<void> {
+  await waitFor(() => expect(heading()).toBe(text));
+}
+
+async function clickNext(): Promise<void> {
+  const pager = await screen.findByRole("navigation", { name: "Pagination" });
+  await userEvent.click(within(pager).getByRole("link", { name: "Next" }));
 }
 
 function cards(): HTMLElement[] {
@@ -137,6 +208,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  onlineManager.setOnline(true);
   localStorage.clear();
 });
 
@@ -263,35 +336,316 @@ describe("what the page says instead of rows", () => {
     await openTab("/");
     expect(screen.getByText("No readings yet.")).toBeInTheDocument();
   });
+});
 
-  it("keeps the Library heading and offers Retry when the backend fails", async () => {
+// The acceptance matrix's common states (#416), from the server render and
+// after a client-side page change. 403, 412, and a server error are the same
+// state pages the reading page shows, each with its own heading; a 401 is the
+// shell's expired-session page; offline is a notice on the library.
+describe("the common states from the server render", () => {
+  // A 403 is not a sign-out: the session and its cached identity stay put.
+  // On the library there is no library to go back to, so no action.
+  it("shows permission denied without ending the session, and offers no way back", async () => {
+    backendAnswers(403, { error: "forbidden" });
+    const { queryClient } = await openTab("/");
+
+    expect(heading()).toBe("You don't have access to this.");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+    expect(screen.queryByRole("heading", { name: "Your session ended." })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("main")).queryByRole("link", { name: "Back to library" })).toBeNull();
+    expect(within(screen.getByRole("main")).queryByRole("button")).toBeNull();
+  });
+
+  it("asks for a reload when the tab is signed in to a different account", async () => {
+    backendAnswers(412, { error: "expected tenant mismatch", acting_tenant: "usr_b" });
+    await openTab("/");
+
+    expect(heading()).toBe("This tab is signed in to a different account than the page expects.");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+    expect(screen.getByText("Signed in as usr_b.")).toBeInTheDocument();
+  });
+
+  // An errored query is not dehydrated, so on a real page it is asked for
+  // again on mount; here the backend keeps failing until Retry.
+  it("offers a retry after a server error, and takes the reader out of it", async () => {
     backendAnswers(503, { error: "backend unavailable" });
     await openTab("/");
 
-    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toBeInTheDocument();
-    expect(await screen.findByText(/backend unavailable/)).toBeInTheDocument();
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByText("backend unavailable")).toBeInTheDocument();
 
     backendServesPack();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await headingSettles("Library");
     await waitFor(() => expect(cards()).toHaveLength(Math.min(rows.length, 20)));
   });
 
-  it("says permission was denied", async () => {
-    backendAnswers(403, { error: "forbidden" });
+  it("shows the server-error state when the backend binding throws", async () => {
+    backend.list.mockImplementation(async () => {
+      throw new Error("binding is down");
+    });
     await openTab("/");
-    expect(screen.getByText("You don't have access to this.")).toBeInTheDocument();
+
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByText(/binding is down/)).toBeInTheDocument();
   });
 
-  it("says the tab is signed in to a different account", async () => {
-    backendAnswers(412, { error: "expected tenant mismatch", acting_tenant: "usr_b" });
-    await openTab("/");
-    expect(screen.getByText(/signed in to a different account/)).toBeInTheDocument();
-  });
-
-  it("shows the session-ended page on a 401", async () => {
+  it("hands a 401 to the shell's expired-session page, with sign-in back to the library", async () => {
     backendAnswers(401, { error: "unauthorized" });
-    await openTab("/");
-    expect(await screen.findByRole("heading", { level: 1, name: "Your session ended." })).toBeInTheDocument();
+    await openTab("/?offset=20");
+
+    await headingSettles("Your session ended.");
+    expect(within(screen.getByRole("main")).getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login?next=%2F%3Foffset%3D20",
+    );
+    expect(backend.list).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Through the browser's loader: the page mounts while the read is out, so
+// the state lands on the page the URL names, and useQuery joins the read
+// rather than starting another.
+describe("the common states after a page change", () => {
+  it("shows permission denied on the new page, keeping the session", async () => {
+    backendServesFirstPageThen(many, async () => ({ status: 403, body: { error: "forbidden" } }));
+    const { router, queryClient } = await openBrowserTab("/");
+
+    await clickNext();
+    await headingSettles("You don't have access to this.");
+    expect(router.state.location.href).toBe("/?offset=20");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+
+  it("shows the account change on the new page", async () => {
+    backendServesFirstPageThen(many, async () => ({
+      status: 412,
+      body: { error: "expected tenant mismatch", acting_tenant: "usr_b" },
+    }));
+    await openBrowserTab("/");
+
+    await clickNext();
+    await headingSettles("This tab is signed in to a different account than the page expects.");
+    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
+  });
+
+  it("shows the server error on the new page, and Retry reads that page again", async () => {
+    let failing = true;
+    backendServesFirstPageThen(many, async () =>
+      failing
+        ? { status: 502, body: { error: "upstream exploded" } }
+        : { status: 200, body: { readings: many.slice(20, 40), limit: 20, offset: 20, has_more: true } },
+    );
+    await openBrowserTab("/");
+
+    await clickNext();
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByText("upstream exploded")).toBeInTheDocument();
+
+    failing = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await headingSettles("Library");
+    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 20, 20]);
+  });
+
+  // Retry unmounts the button under the reader's finger. The page that
+  // replaces the state page takes the focus, so the outcome is announced
+  // either way: the library back again, or the failure again.
+  it("moves focus to the heading after Retry, whether the read fails again or not", async () => {
+    // Each read past the first page waits to be answered, as a real one does,
+    // so the busy library renders between a Retry and its outcome.
+    let answer: (response: { status: number; body: unknown }) => void = () => {};
+    backendServesFirstPageThen(many, () => new Promise((resolve) => (answer = resolve)));
+    const failure = { status: 502, body: { error: "upstream exploded" } };
+    const success = { status: 200, body: { readings: many.slice(20, 40), limit: 20, offset: 20, has_more: true } };
+    await openBrowserTab("/");
+    await pressNext();
+    answer(failure);
+    await headingSettles("Something went wrong on our side.");
+
+    async function retry(): Promise<void> {
+      screen.getByRole("button", { name: "Retry" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await headingSettles("Library");
+      expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+    }
+
+    await retry();
+    answer(failure);
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+
+    await retry();
+    answer(success);
+    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
+    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toHaveFocus();
+  });
+
+  // The state page takes the focus the library held: the pager step the
+  // reader pressed, or the heading a route change had just focused.
+  it("moves focus to the state page's heading from the step that was pressed", async () => {
+    backendServesFirstPageThen(many, async () => ({ status: 403, body: { error: "forbidden" } }));
+    await openBrowserTab("/");
+
+    await pressNext();
+    await headingSettles("You don't have access to this.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  it("moves focus to the state page's heading after a path change into the library", async () => {
+    backendAnswers(503, { error: "backend unavailable" });
+    await openBrowserTab("/readings/rd_1");
+
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Library" }));
+    await headingSettles("Something went wrong on our side.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  it("shows the expired-session page at the new page's URL", async () => {
+    backendServesFirstPageThen(many, async () => ({ status: 401, body: { error: "unauthorized" } }));
+    const { router } = await openBrowserTab("/");
+
+    await clickNext();
+    await headingSettles("Your session ended.");
+    expect(router.state.location.href).toBe("/?offset=20");
+    expect(within(screen.getByRole("main")).getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login?next=%2F%3Foffset%3D20",
+    );
+  });
+});
+
+describe("loading", () => {
+  function busyRegion(): HTMLElement | null {
+    return screen.getByRole("main").querySelector('[aria-busy="true"]');
+  }
+
+  it("marks the region busy at once and says so only after the wait is noticeable", async () => {
+    backendServesFirstPageThen(many, () => new Promise(() => undefined));
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    await clickNext();
+    await waitFor(() => expect(busyRegion()).not.toBeNull());
+    expect(heading()).toBe("Library");
+    expect(screen.queryByText("Loading…")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Readings" })).toBeNull();
+
+    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+    expect(busyRegion()).toContainElement(screen.getByText("Loading…"));
+  });
+
+  // Next is assumed to exist while the page is read, so a reader stepping
+  // forward from the keyboard keeps the control they are on (#414).
+  it("keeps focus on Next across a page change into a middle page", async () => {
+    backendServesPages(many);
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    await pressNext();
+    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
+    const next = within(screen.getByRole("navigation", { name: "Pagination" })).getByRole("link", { name: "Next" });
+    expect(next).toHaveAttribute("href", "/?offset=40");
+    expect(next).toHaveFocus();
+  });
+
+  // A page with no rows has no pager, so the step that led there cannot keep
+  // the focus; the heading takes it rather than the top of the document.
+  it("moves focus to the heading when Next lands on a page that has no rows", async () => {
+    backendServesFirstPageThen(many, async () => ({
+      status: 200,
+      body: { readings: [], limit: 20, offset: 20, has_more: false },
+    }));
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    await pressNext();
+    await screen.findByText("No readings on page 2.");
+    expect(screen.queryByRole("navigation", { name: "Pagination" })).toBeNull();
+    expect(screen.getByRole("heading", { level: 1, name: "Library" })).toHaveFocus();
+  });
+
+  it("does not stay busy once the rows arrive", async () => {
+    backendServesPages(many);
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+    expect(busyRegion()).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("holds the text for 300 ms exactly", () => {
+    vi.useFakeTimers();
+    render(<DelayedText delayMs={300}>Loading…</DelayedText>);
+
+    act(() => vi.advanceTimersByTime(299));
+    expect(screen.queryByText("Loading…")).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+});
+
+describe("offline", () => {
+  function notice(): HTMLElement {
+    return screen.getByRole("status");
+  }
+
+  it("says so on a page change that cannot be read, and reads it once the browser is back online", async () => {
+    backendServesPages(many);
+    const { router } = await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    act(() => onlineManager.setOnline(false));
+    await clickNext();
+    await waitFor(() => expect(notice()).toHaveTextContent("You're offline."));
+    expect(heading()).toBe("Library");
+    expect(router.state.location.href).toBe("/?offset=20");
+    expect(within(notice()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Readings" })).toBeNull();
+    // Nothing is known about the page, so nothing is assumed: Next is not a
+    // way to walk further from a page that never arrived.
+    const pager = screen.getByRole("navigation", { name: "Pagination" });
+    expect(within(pager).getByRole("link", { name: "Next" })).not.toHaveAttribute("href");
+    expect(within(pager).getByRole("link", { name: "Previous" })).toHaveAttribute("href", "/");
+    // The read never left: TanStack pauses a fetch it cannot make.
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0]);
+
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 20]);
+  });
+
+  it("keeps the loaded rows beneath the notice when a refresh cannot run", async () => {
+    backendServesPages(many);
+    const { queryClient } = await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    act(() => onlineManager.setOnline(false));
+    // As a later slice's invalidation after a write would.
+    await act(() => queryClient.invalidateQueries({ queryKey: libraryQueryKey({ offset: 0 }) }));
+    await waitFor(() => expect(notice()).toHaveTextContent("You're offline."));
+    expect(cards()).toHaveLength(20);
+
+    act(() => onlineManager.setOnline(true));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+    expect(cards()).toHaveLength(20);
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 0]);
+  });
+
+  it("Retry asks again by hand", async () => {
+    backendServesPages(many);
+    await openBrowserTab("/");
+    await waitFor(() => expect(cards()).toHaveLength(20));
+
+    act(() => onlineManager.setOnline(false));
+    await clickNext();
+    await waitFor(() => expect(notice()).toBeInTheDocument());
+
+    // Still offline: the retry pauses too, without a request.
+    await userEvent.click(within(notice()).getByRole("button", { name: "Retry" }));
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0]);
+    expect(notice()).toBeInTheDocument();
   });
 });
 

@@ -12,13 +12,7 @@ import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
 import { ReadingSource, type LoadedImages } from "./ReadingSource";
-import {
-  ReadingAccountChanged,
-  ReadingForbidden,
-  ReadingLoading,
-  ReadingNotFound,
-  ReadingServerError,
-} from "./ReadingStates";
+import { AccountChanged, ReadingForbidden, ReadingLoading, ReadingNotFound, ServerError } from "./ReadingStates";
 import { ReadingStatusCard } from "./ReadingStatusCard";
 import { ReadingNovelty, ReadingSummary } from "./ReadingSummary";
 import { ReturnTrail, useTrail } from "./ReturnTrail";
@@ -44,11 +38,11 @@ export function ReadingPage({ id, view = "summary" }: { id: string; view?: Readi
   const trail = useTrail();
 
   // A 401 never gets here: the shell shows the expired-session page at this URL.
-  if (error) return <ReadingServerError message={error.message} onRetry={() => void refetch()} />;
+  if (error) return <ServerError message={error.message} onRetry={() => void refetch()} />;
   if (isPending || !data) return <ReadingLoading />;
   if (data.state === "not-found") return <ReadingNotFound trail={trail} />;
   if (data.state === "forbidden") return <ReadingForbidden />;
-  if (data.state === "account-changed") return <ReadingAccountChanged actingTenant={data.acting_tenant} />;
+  if (data.state === "account-changed") return <AccountChanged actingTenant={data.acting_tenant} />;
   return <ReadingSurface reading={data.reading} view={view} trail={trail} />;
 }
 
