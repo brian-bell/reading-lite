@@ -2,7 +2,7 @@
 // baseURL, the fixture pack's clock pinned in the browser, and one helper that
 // loads a coverage case in its signed-in or signed-out state.
 
-import { test as base, expect, type BrowserContext, type Page, type Route } from "@playwright/test";
+import { test as base, expect, type BrowserContext, type Page, type Request, type Route } from "@playwright/test";
 import type { EvidenceCase, SignedState } from "./coverage";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "./harness";
@@ -95,6 +95,27 @@ export async function serveLibraryInBrowser(
     });
     await route.fulfill({ status: 200, json: body });
   });
+}
+
+/**
+ * Answers `POST /api/readings` in the browser with one canned response, and
+ * records the saves made (#431, #432).
+ *
+ * POST only: `GET /api/readings` is the library's own read, which has to fall
+ * through to the Worker (or to a `serveLibraryInBrowser` route), or a page's
+ * list would be answered by the save stub.
+ */
+export function serveSaveInBrowser(page: Page, answer: { status: number; json: unknown }): Request[] {
+  const saves: Request[] = [];
+  void page.route("**/api/readings", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    saves.push(route.request());
+    await route.fulfill(answer);
+  });
+  return saves;
 }
 
 /**

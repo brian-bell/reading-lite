@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter, useRouterState } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { dropLegacyBearerToken } from "../auth/legacy-storage";
 import { signOut, useSessionEndedAt } from "../auth/session";
@@ -7,6 +7,7 @@ import { whoamiQueryOptions } from "../identity-query";
 import type { ThemePreference } from "../theme";
 import { AppShell, type AccountState } from "./AppShell";
 import { focusPageHeading, useFocusHeadingOnNavigation } from "./PageHeading";
+import { useRenderedLocation } from "./rendered-location";
 import { SessionEnded } from "./SessionEnded";
 
 // The shell with its session behavior: account state from whoami, sign-out,
@@ -26,7 +27,7 @@ export function AppFrame({
   // The page on screen. While a navigation is pending the old page stays up,
   // so the expired-session page must too, or the old page remounts and
   // refetches.
-  const href = useRouterState({ select: (state) => (state.resolvedLocation ?? state.location).href });
+  const href = useRenderedLocation((location) => location.href);
   const { data: identity } = useQuery(whoamiQueryOptions());
   const sessionEndedAt = useSessionEndedAt();
   useFocusHeadingOnNavigation();

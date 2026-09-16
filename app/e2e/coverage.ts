@@ -15,7 +15,13 @@ import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { EVIDENCE_SCOPE } from "./scope";
 import { LIBRARY_STATE_SESSIONS } from "./sessions";
-import { serveDiagnosticsInBrowser, serveLibraryInBrowser, serveReadingsInBrowser, serveSourceInBrowser } from "./test";
+import {
+  serveDiagnosticsInBrowser,
+  serveLibraryInBrowser,
+  serveReadingsInBrowser,
+  serveSaveInBrowser,
+  serveSourceInBrowser,
+} from "./test";
 
 export type SignedState = "signed-out" | "signed-in";
 
@@ -264,15 +270,9 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     stub: async (page) => {
       // GET-safe: the page and its reads go to the Worker, only the save is
       // answered here.
-      await page.route("**/api/readings", async (route) => {
-        if (route.request().method() !== "POST") {
-          await route.fallback();
-          return;
-        }
-        await route.fulfill({
-          status: 400,
-          json: { error: "url rejected: host is not allowed", code: "unsupported_url" },
-        });
+      serveSaveInBrowser(page, {
+        status: 400,
+        json: { error: "url rejected: host is not allowed", code: "unsupported_url" },
       });
     },
     prepare: async (page) => {
@@ -280,6 +280,36 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await page.getByRole("button", { name: "Save" }).click();
       await expect(page.getByText("url rejected: host is not allowed")).toBeVisible();
       await expect(saveField(page)).toBeFocused();
+    },
+  },
+  // A URL the reader already owns (#432): the save opens the reading, and the
+  // notice at the top of its column is what this case is evidence for. The
+  // heading is the save page's, because `heading` is what proves `path`
+  // loaded; `prepare` is what reaches the reading and its notice.
+  {
+    name: "save-already-saved",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    fixture: "attention",
+    stub: async (page) => {
+      // The reading the save opens is read in the browser; only the POST is
+      // answered here, so the page's own reads still reach the Worker. 200 is
+      // the owning reading's manifest: this one is ready.
+      await serveReadingsInBrowser(page);
+      serveSaveInBrowser(page, { status: 200, json: pack.readings.rd_FXATTENT01 });
+    },
+    prepare: async (page) => {
+      await saveField(page).fill("https://quieter.example/a-quieter-internet");
+      await page.getByRole("button", { name: "Save" }).click();
+      // The save, the reading's own read, and the route change, on a machine
+      // running every project at once: longer than the default wait, which
+      // this is otherwise flaky against.
+      const opened = page.getByRole("heading", { level: 1, name: "A quieter internet is a choice we can make" });
+      await expect(opened).toBeVisible({ timeout: 30_000 });
+      // Exactly: the novelty sentence on this reading says "readings already
+      // in your library", which a substring match would find too.
+      await expect(page.getByText("Already in your library", { exact: true })).toBeVisible();
     },
   },
   { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },

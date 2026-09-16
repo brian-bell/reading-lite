@@ -1,5 +1,5 @@
 import { categorize } from "../reading-failure";
-import type { Reading } from "../reading";
+import { isProcessing, type Reading } from "../reading";
 
 // The status card at the top of a reading that is not ready, or that is ready
 // with an attempt running over it (design spec, Reading surface; acceptance
@@ -29,13 +29,13 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 export function ReadingStatusCard({ reading }: { reading: Reading }) {
-  // A running attempt decides before the manifest status does. Reprocessing a
-  // ready reading keeps `status: "ready"` and adds the running attempt
-  // (backend `reprocessPending`), so status alone would hide the card for the
-  // whole reprocess — the acceptance matrix puts that reading in the Pending
-  // row, with the prior content still below.
-  if (reading.active_attempt?.status === "running") return <PendingCard reading={reading} />;
-  if (reading.status === "pending") return <PendingCard reading={reading} />;
+  // `isProcessing` (reading.ts) is the shared rule: a running attempt decides
+  // before the manifest status does, because reprocessing a ready reading
+  // keeps `status: "ready"` and adds the attempt (backend `reprocessPending`),
+  // so status alone would hide the card for the whole reprocess — the
+  // acceptance matrix puts that reading in the Pending row, with the prior
+  // content still below.
+  if (isProcessing(reading)) return <PendingCard reading={reading} />;
   if (reading.status === "failed") return <FailedCard reading={reading} />;
   return null;
 }

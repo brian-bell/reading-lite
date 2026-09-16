@@ -21,6 +21,7 @@ import { whoamiQueryKey, type Identity } from "../src/identity";
 import { readingQueryKey, type ProcessingStage, type Reading } from "../src/reading";
 import { readingQueryOptions } from "../src/reading-query";
 import { readingViewOf, validateReadingSearch } from "../src/reading-view";
+import { saveNoticeState } from "../src/save-notice";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 
@@ -1491,5 +1492,115 @@ describe("the Details section", () => {
     await headingSettles("Libraries are gardens, not warehouses");
     expect(details().open).toBe(false);
     expect(requestsTo(fetchMock, "/diagnostics")).toHaveLength(1);
+  });
+});
+
+// The notice a save leaves on a reading the reader already owned (#432). It is
+// in the history entry, like the return trail, so the reading renders it only
+// for the entry the save wrote — never for a plain link, and never again after
+// a reload, whose state was written by another document load.
+describe("the save notice", () => {
+  const ATTENTION_TITLE = "A quieter internet is a choice we can make";
+
+  function notice(): HTMLElement | null {
+    return screen.queryByText("Already in your library");
+  }
+
+  /** The live region itself, which is on the page whether or not it says anything. */
+  function region(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('#main p.reading-notice[role="status"]');
+  }
+
+  // The region is always rendered, so what lands in it is announced: a
+  // role="status" that mounts with its text already in it is not.
+  it("shows nothing for a reading opened from a plain link, but keeps the region", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(notice()).toBeNull();
+    expect(region()).toBeInTheDocument();
+    expect(region()).toBeEmptyDOMElement();
+  });
+
+  it("shows the notice the entry a save wrote carries, once", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab("/");
+    await act(() =>
+      router.navigate({
+        to: "/readings/$id",
+        params: { id: ATTENTION },
+        state: { saveNotice: saveNoticeState("already-saved") },
+      }),
+    );
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    expect(screen.getAllByText("Already in your library")).toHaveLength(1);
+    // Above the reading, and announced politely rather than taking focus.
+    expect(notice()).toHaveAttribute("role", "status");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+    // Never in the URL: this link is shareable and says nothing about the save.
+    expect(router.state.location.href).toBe(`/readings/${ATTENTION}`);
+  });
+
+  // The Summary/Source switch replaces the entry and keeps its state, so the
+  // notice is still the same arrival.
+  it("survives the view switch, which replaces the same entry", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab("/");
+    await act(() =>
+      router.navigate({
+        to: "/readings/$id",
+        params: { id: ATTENTION },
+        state: { saveNotice: saveNoticeState("already-saved") },
+      }),
+    );
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    await userEvent.click(screen.getByRole("tab", { name: "Source" }));
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${ATTENTION}?view=source`));
+    expect(screen.getAllByText("Already in your library")).toHaveLength(1);
+  });
+
+  // The notice belongs to the entry, so browser Back to it is the same
+  // arrival and says so again. Deliberate, and the same semantics the trail
+  // has: what must not bring it back is a reload or a plain link.
+  it("comes back with browser Back to the entry the save wrote", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab("/");
+    await act(() =>
+      router.navigate({
+        to: "/readings/$id",
+        params: { id: ATTENTION },
+        state: { saveNotice: saveNoticeState("already-saved") },
+      }),
+    );
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    await act(() => router.navigate({ to: "/" }));
+    await screen.findByRole("heading", { level: 1, name: "Library" });
+    expect(notice()).toBeNull();
+
+    await act(async () => {
+      router.history.back();
+    });
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+    expect(notice()).toBeInTheDocument();
+  });
+
+  // A reload keeps window.history.state, so the notice would come back with
+  // the page; it was written by another document load, so it does not count.
+  it("drops a notice written by another document load, as a reload brings back", async () => {
+    backendAnswers(200, readings[ATTENTION]);
+    const { router } = await openTab("/");
+    await act(() =>
+      router.navigate({
+        to: "/readings/$id",
+        params: { id: ATTENTION },
+        state: { saveNotice: { load: "a previous document load", kind: "already-saved" } },
+      }),
+    );
+    await screen.findByRole("heading", { level: 1, name: ATTENTION_TITLE });
+
+    expect(notice()).toBeNull();
   });
 });

@@ -83,16 +83,86 @@ describe("submitFromResponse", () => {
     expect(submitFromResponse(400, null)).toEqual({ kind: "invalid", message: "That URL can't be saved." });
   });
 
-  // 200 is the manifest of the reading that already owns this URL.
-  it("opens the existing reading a 200 returns", () => {
+  // 200 is the manifest of the reading that already owns this URL, and what it
+  // says about itself is what the reading will tell the reader on arrival (#432).
+  it("opens a ready reading a 200 returns, saying it is already in the library", () => {
     expect(submitFromResponse(200, { id: "rd_1", url: "https://example.com/a", status: "ready" })).toEqual({
       kind: "existing",
       id: "rd_1",
+      notice: "already-saved",
     });
   });
 
-  // 409 `initializing` names the id to poll.
-  it("opens the reading a 409 names", () => {
+  it("says a pending owner is still processing", () => {
+    expect(
+      submitFromResponse(200, {
+        id: "rd_1",
+        url: "https://example.com/a",
+        status: "pending",
+        active_attempt: { attempt_id: "att_1", status: "running", stage: "summarize" },
+      }),
+    ).toEqual({ kind: "existing", id: "rd_1", notice: "still-processing" });
+  });
+
+  // A reprocess keeps `status: "ready"` and adds the running attempt, and the
+  // reading's own status card reads it the same way round.
+  it("says a ready owner with an attempt running over it is still processing", () => {
+    expect(
+      submitFromResponse(200, {
+        id: "rd_1",
+        url: "https://example.com/a",
+        status: "ready",
+        active_attempt: { attempt_id: "att_2", status: "running" },
+      }),
+    ).toEqual({ kind: "existing", id: "rd_1", notice: "still-processing" });
+  });
+
+  // An attempt that is not running is not what the reader is looking at.
+  it("ignores an attempt that is no longer running", () => {
+    expect(
+      submitFromResponse(200, {
+        id: "rd_1",
+        url: "https://example.com/a",
+        status: "ready",
+        active_attempt: null,
+      }),
+    ).toEqual({ kind: "existing", id: "rd_1", notice: "already-saved" });
+  });
+
+  it("says nothing about a 200 whose status it does not recognise", () => {
+    expect(submitFromResponse(200, { id: "rd_1", url: "https://example.com/a" })).toEqual({
+      kind: "existing",
+      id: "rd_1",
+      notice: undefined,
+    });
+    expect(submitFromResponse(200, { id: "rd_1", status: "archived" })).toEqual({
+      kind: "existing",
+      id: "rd_1",
+      notice: undefined,
+    });
+  });
+
+  // A body whose state is not the shape the manifest promises still names a
+  // reading to open; it just says nothing about it.
+  it("opens a 200 whose state is the wrong shape, without a notice", () => {
+    expect(submitFromResponse(200, { id: "rd_1", status: 7, active_attempt: "running" })).toEqual({
+      kind: "existing",
+      id: "rd_1",
+    });
+    expect(submitFromResponse(200, { id: "rd_1", status: "ready", active_attempt: { status: 7 } })).toEqual({
+      kind: "existing",
+      id: "rd_1",
+      notice: "already-saved",
+    });
+  });
+
+  it("throws when a 200 names no reading", () => {
+    expect(() => submitFromResponse(200, { status: "ready" })).toThrow(ApiError);
+  });
+
+  // 409 `initializing` names the id to poll and no state: the reading's own
+  // status card is what says it is being worked on, so there is no notice.
+  it("opens the reading a 409 names, with nothing to say about it", () => {
     expect(
       submitFromResponse(409, {
         error: "reading owner is still initializing",

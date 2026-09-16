@@ -213,22 +213,26 @@ return path is per origin.
   scrolling smoothly only under `prefers-reduced-motion: no-preference`.
 - **Save.** `/save` is under `src/routes/_authed` (#431), so signed out it
   redirects to `/login?next=%2Fsave` rather than rendering. The page
-  (`src/components/SavePage.tsx`) is the ARIA tabs component with one tab,
-  URL, selected in local state rather than the URL, so Markdown can join it
-  later without a deep link to maintain. `src/save.ts` holds both pure halves:
+  (`src/components/SavePage.tsx`) is the ARIA tabs component with one tab, URL,
+  selected in local state rather than the URL, so Markdown can join it later
+  without a deep link to maintain. `src/save.ts` holds both pure halves:
   `saveUrlProblem` mirrors the backend's `webUrl()` in `src/schemas/api.ts`
   (parseable, http(s) only) so an obvious typo costs no round trip, and
   `submitFromResponse` maps what `POST /api/readings` answered — 202 to the
   accepted reading (only `id` is read; the reading's own page reads its
-  status), 400 to a field error in the backend's own words, a 200 manifest or
-  a 409 that names an id to the reading that already owns the URL, and 403 and
-  412 to the shared states as values, so a 412 keeps its `acting_tenant` as
-  the reads do. A rejection from either side renders in the same place: a
+  status), 400 to a field error in the backend's own words, a 200 manifest or a
+  409 that names an id to the reading that already owns the URL, and 403 and
+  412 to the shared states as values, so a 412 keeps its `acting_tenant` as the
+  reads do. What a 200 says about that reading decides the notice it opens with
+  (#432): ready is "Already in your library", being processed — `isProcessing`
+  in `src/reading.ts`, shared with the status card and the library badge — is
+  "Already saved and still processing", and a 409 names an id and no state, so
+  it says nothing. A rejection from either side renders in the same place: a
   paragraph under the field, linked by `aria-describedby` with `aria-invalid`
-  on the input, with focus moved back to it. Anything left throws an
-  `ApiError`, so a 401 is the shell's expired-session page and the rest is the
-  retryable server error. The form's submit and the offline notice's Retry are
-  the same call, so a retry cannot slip past the field's rule, and Save is
+  on the input, and focus moved back to it. Anything left throws an `ApiError`,
+  so a 401 is the shell's expired-session page and the rest is the retryable
+  server error. The form's submit and the offline notice's Retry are the same
+  call, so a retry cannot slip past the field's rule, and Save is
   `aria-disabled` rather than `disabled` while a save runs: a disabled button
   is blurred, and the reader would lose the place the next state page is meant
   to take. A save that lands sets a polite `role="status"` message — "Saved."
@@ -238,12 +242,21 @@ return path is per origin.
   heading focus stands. Those steps run in `mutate`'s own callbacks, not the
   mutation's: query-core keeps a paused mutation after the page is gone and
   resumes it later, and a mutation-level callback would then navigate a reader
-  who has moved on. Offline has the library's two shapes and they differ here:
-  a save held paused is sent when the connection returns, so its notice says
-  so and offers no Retry (a second submit would claim the URL twice), while a
-  save that failed with the network already gone offers the Retry.
-  `src/api/save.ts` is the browser's POST, with the CSRF token and the tenant
-  pin as the library's reads have.
+  who has moved on. The save drops that reading from the cache too, which never
+  goes stale on its own, so the page cannot render a copy read before the save
+  under a notice taken from the manifest the backend just answered with. That notice
+  travels in router history state (`src/save-notice.ts`), never in the URL, and
+  renders at the top of the reading column above the status card, in a
+  `role="status"` paragraph that is always there so what lands in it is
+  announced. It belongs to the history entry like the return trail, and is
+  stamped with the document load the same way: Back to that entry shows it
+  again, while a reload or a plain link to the reading shows none, and the
+  server never renders one. Offline has the library's two shapes and they
+  differ here: a save held paused is sent when the connection returns, so its
+  notice says so and offers no Retry (a second submit would claim the URL
+  twice), while a save that failed with the network already gone offers the
+  Retry. `src/api/save.ts` is the browser's POST, with the CSRF token and the
+  tenant pin as the library's reads have.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -306,10 +319,11 @@ Extending it:
   (the `reading-trail` project) covers Back, reload, and the phone jump (#371).
   A case whose state needs an answer to a write routes it in `stub`, fulfilling
   only that method and calling `route.fallback()` for the rest, so the page's
-  own reads still reach the Worker (`save-rejected-url`).
+  own reads still reach the Worker (`save-rejected-url`, `save-already-saved`).
 - **A behaviour only a browser shows:** add a spec under `e2e/specs/` and a
   project in `playwright.config.ts` that matches it, as `save` does for the
-  request the save form makes and its client-side navigation (#431).
+  request the save form makes, its client-side navigation (#431), and the
+  one-time notice a reload drops (#432).
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
   `e2e/fixtures/fixture-pack.json`. `test/unit/fixtures/app-fixture-pack.test.ts`

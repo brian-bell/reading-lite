@@ -6,6 +6,7 @@ import { submitReading } from "../api/save";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
+import { saveNoticeState } from "../save-notice";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, OfflineNotice, ServerError } from "./ReadingStates";
 import { ViewTabs, type TabItem } from "./ViewTabs";
@@ -126,7 +127,15 @@ export function SavePage() {
         // earlier would be what the reader lands on. Dropped rather than marked
         // stale: a stale failure would still show until the fresh read arrived.
         queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
-        await navigate({ to: "/readings/$id", params: { id: outcome.id } });
+        // A URL that was already the reader's says so on the reading it opens
+        // (#432), in history state rather than the URL: the notice belongs to
+        // the history entry this save wrote, not to the reading.
+        const notice = outcome.kind === "existing" ? outcome.notice : undefined;
+        await navigate({
+          to: "/readings/$id",
+          params: { id: outcome.id },
+          state: notice ? { saveNotice: saveNoticeState(notice) } : undefined,
+        });
       },
       onSettled: () => {
         submittingRef.current = false;
