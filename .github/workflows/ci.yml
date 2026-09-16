@@ -53,14 +53,23 @@ jobs:
           # them; `app` still comes from the diff against the previous main
           # commit. Compare the entire PR, including deleted paths; disabling
           # rename detection also checks the old path.
-          if [[ "$EVENT_NAME" != pull_request ]] && ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            # No reachable previous commit (a force-push or a new branch):
-            # run everything rather than guess.
+          #
+          # A PR diffs from its merge base (`...`). A push diffs the two tips
+          # directly (`..`): after a force-push the old tip need not be an
+          # ancestor of the new one, and a merge-base diff would then miss
+          # whatever the old tip had that the new one lacks.
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            range="$BASE_SHA...$HEAD_SHA"
+          elif git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            range="$BASE_SHA..$HEAD_SHA"
+          else
+            # No reachable previous commit (a new branch, or a force-push that
+            # discarded it): run everything rather than guess.
             echo "code=true" >> "$GITHUB_OUTPUT"
             echo "app=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" > "$RUNNER_TEMP/changed-paths"
+          git diff --no-renames --name-only -z "$range" > "$RUNNER_TEMP/changed-paths"
           code=false
           app=false
           while IFS= read -r -d '' path; do
