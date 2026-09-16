@@ -1,14 +1,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { NetworkError } from "../api/errors";
 import { submitReading } from "../api/save";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
+import { dateTimeOn } from "../reading-presentation";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
 import { PageHeading, PageStateFocus } from "./PageHeading";
-import { AccountChanged, Forbidden, OfflineNotice, ServerError } from "./ReadingStates";
+import { AccountChanged, Forbidden, InlineNotice, OfflineNotice, ServerError } from "./ReadingStates";
 import { ViewTabs, type TabItem } from "./ViewTabs";
 
 // Saving a URL (#431, the accepted path of Phase 4). The page is under the
@@ -33,6 +34,11 @@ type SaveTab = "url";
 const SAVE_TABS: readonly TabItem<SaveTab>[] = [{ key: "url", label: "URL" }];
 
 /**
+ * What is said above the form without replacing it (#433). A save the backend
+ * refused for a reason that will pass — a limit, a guard that could not
+ * answer, a queue that is not there — leaves the form exactly as the reader
+ * left it, because the URL they typed is still the URL they want.
+ *
  * Offline has the same two shapes here as on the library (#416), and they are
  * not the same state. A save started without a network never runs: React Query
  * holds the mutation paused and continues it when the browser is back, so
@@ -40,17 +46,27 @@ const SAVE_TABS: readonly TabItem<SaveTab>[] = [{ key: "url", label: "URL" }];
  * does nothing. A save that failed after the network went away is over, and
  * asking again is the only way on.
  */
-type Offline = "none" | "paused" | "failed";
+type SaveNotice =
+  | { kind: "none" }
+  | { kind: "offline-paused" }
+  | { kind: "offline-failed" }
+  | Exclude<Refusal, { kind: "forbidden" | "account-changed" }>;
 
 /** What the page renders. Its name is also what the focus mechanism keys on. */
 type SaveView =
-  | { kind: "form"; offline: Offline }
+  | { kind: "form"; notice: SaveNotice }
   | { kind: "forbidden" }
   | { kind: "account-changed"; actingTenant?: string }
   | { kind: "server-error"; message: string };
 
-/** A refusal that is a value rather than a throw: 403 and 412 (save.ts). */
-type Refusal = Extract<SubmitOutcome, { kind: "forbidden" } | { kind: "account-changed" }>;
+/**
+ * A refusal that is a value rather than a throw (save.ts): everything the
+ * backend answered that is neither a reading to open nor the field's own
+ * error, derived so an outcome added there has to be handled here. 403 and
+ * 412 replace the form with the shared state; the rest are notices over a
+ * form that stays, and are shaped as `SaveNotice` already.
+ */
+type Refusal = Exclude<SubmitOutcome, { kind: "accepted" | "existing" | "invalid" }>;
 
 export function SavePage() {
   const queryClient = useQueryClient();
@@ -92,6 +108,17 @@ export function SavePage() {
    */
   function trySubmit(raw: string) {
     if (submittingRef.current) return;
+    // The notice that asked for this is about to go, and with it the button
+    // the reader pressed; focus goes back to the field, where the form's own
+    // rejection also puts it, rather than falling to the document.
+    if (document.activeElement?.closest(".offline-notice")) inputRef.current?.focus();
+    // What the last save answered is stale the moment another is asked for,
+    // including when this one never leaves: a field error beside a notice
+    // still offering to retry the URL it just refused says two things at once.
+    save.reset();
+    setProblem(null);
+    setRefused(null);
+    setAnnouncement(null);
     const value = raw.trim();
     const rejected = saveUrlProblem(value);
     if (rejected !== undefined) {
@@ -100,9 +127,6 @@ export function SavePage() {
       reject(rejected);
       return;
     }
-    save.reset();
-    setProblem(null);
-    setAnnouncement(null);
     submittingRef.current = true;
     save.mutate(value, {
       onSuccess: async (outcome) => {
@@ -112,8 +136,22 @@ export function SavePage() {
           reject(outcome.message);
           return;
         }
-        if (outcome.kind === "forbidden" || outcome.kind === "account-changed") {
+        if (outcome.kind !== "accepted" && outcome.kind !== "existing") {
+          // Everything else the backend decided: a state that replaces the
+          // form, or a notice over the one that stays. A notice says its
+          // sentence through the region that was already on the page, because
+          // one inserted with its text in it is not announced.
+          if (outcome.kind === "unavailable" && outcome.id !== undefined) {
+            // The reading a 503 names is a failed owner the backend just
+            // rewrote in place (its rollback manifest and list row), so what
+            // this tab read of it earlier is what "Open the reading" would
+            // show, and what the library would keep showing. Dropped and
+            // invalidated as the accepted path does, before the link exists.
+            queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
+            await queryClient.invalidateQueries({ queryKey: ["library"] });
+          }
           setRefused(outcome);
+          setAnnouncement(noticeSentence(outcome) ?? null);
           return;
         }
         // Politely, and without taking focus: the route change moves focus to
@@ -171,7 +209,7 @@ export function SavePage() {
         return (
           <div className="page save-page">
             <PageHeading>Save reading</PageHeading>
-            <SaveOffline offline={current.offline} onRetry={() => trySubmit(url)} />
+            <SaveNoticeBanner notice={current.notice} onRetry={() => trySubmit(url)} />
             <ViewTabs label="What to save" idPrefix="save" tabs={SAVE_TABS} selected={tab} onSelect={setTab}>
               {/* The browser's own URL check would replace our message with
                   its bubble, which is neither in the page nor linked to the
@@ -217,6 +255,10 @@ export function SavePage() {
                 </div>
               </form>
             </ViewTabs>
+            {/* The page's standing polite region: on screen before there is
+                anything to say, so what lands in it is announced. A refusal's
+                sentence comes through here too, which is why its notice is
+                not a second region. */}
             <p className="form-status" role="status">
               {announcement}
             </p>
@@ -228,18 +270,73 @@ export function SavePage() {
 
 /** A refusal outranks the request's own state: it is what the backend decided. */
 function viewOf(refused: Refusal | null, paused: boolean, error: unknown): SaveView {
-  if (refused) return refused;
-  if (paused) return { kind: "form", offline: "paused" };
-  if (error instanceof NetworkError && error.offline) return { kind: "form", offline: "failed" };
+  if (refused) {
+    if (refused.kind === "forbidden" || refused.kind === "account-changed") return refused;
+    return { kind: "form", notice: refused };
+  }
+  if (paused) return { kind: "form", notice: { kind: "offline-paused" } };
+  if (error instanceof NetworkError && error.offline) return { kind: "form", notice: { kind: "offline-failed" } };
   if (error) return { kind: "server-error", message: error instanceof Error ? error.message : String(error) };
-  return { kind: "form", offline: "none" };
+  return { kind: "form", notice: { kind: "none" } };
 }
 
-/** The notice above the form, with a Retry only when there is one to offer. */
-function SaveOffline({ offline, onRetry }: { offline: Offline; onRetry: () => void }) {
-  if (offline === "none") return null;
-  if (offline === "paused") {
+/** Which limit was reached (acceptance matrix, Save), in the reader's terms. */
+const LIMIT_REACHED: Record<string, string> = {
+  request_rate: "You've reached the request rate limit.",
+  hourly: "You've reached the hourly reading limit.",
+  monthly: "You've reached the monthly reading limit.",
+};
+
+/** A window the backend named that this page has never heard of (save.ts). */
+const LIMIT_REACHED_UNKNOWN = "You've reached a limit.";
+
+/**
+ * What a notice says, in one place: the banner renders it, and the page's
+ * live region announces it, and the reader must not be given two wordings of
+ * the same refusal. Offline keeps its own sentences in the shared notice.
+ */
+function noticeSentence(notice: SaveNotice | Refusal): string | undefined {
+  switch (notice.kind) {
+    case "limited": {
+      const reached = LIMIT_REACHED[notice.limit] ?? LIMIT_REACHED_UNKNOWN;
+      const resets = dateTimeOn(notice.resetAt);
+      return resets ? `${reached} It resets at ${resets}.` : reached;
+    }
+    case "guard-unavailable":
+      return "Limits can't be checked right now.";
+    case "unavailable":
+      return "Saving is unavailable right now.";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The notice above the form, with a way on only when there is one to offer.
+ *
+ * "Try again" is live from the moment the notice appears rather than counting
+ * down to the reset: the limit is the backend's to enforce, and a reader who
+ * asks again a moment early gets the same sentence back, which is a smaller
+ * cost than a control they cannot use. The 503's operator-facing error string
+ * is not shown; the reading it names, when it names one, is worth opening.
+ *
+ * A refusal's notice is not itself a live region (`live={false}`): the page's
+ * own `form-status` was already there to be announced, and this one was not.
+ * Offline keeps the shared default, as the library's does.
+ */
+function SaveNoticeBanner({ notice, onRetry }: { notice: SaveNotice; onRetry: () => void }) {
+  if (notice.kind === "none") return null;
+  if (notice.kind === "offline-paused") {
     return <OfflineNotice message="You're offline. This save will be sent when your connection returns." />;
   }
-  return <OfflineNotice onRetry={onRetry} />;
+  if (notice.kind === "offline-failed") return <OfflineNotice onRetry={onRetry} />;
+  return (
+    <InlineNotice message={noticeSentence(notice)!} actionLabel="Try again" onAction={onRetry} live={false}>
+      {notice.kind === "unavailable" && notice.id ? (
+        <Link className="notice-link" to="/readings/$id" params={{ id: notice.id }}>
+          Open the reading
+        </Link>
+      ) : null}
+    </InlineNotice>
+  );
 }

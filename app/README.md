@@ -251,12 +251,36 @@ return path is per origin.
   announced. It belongs to the history entry like the return trail, and is
   stamped with the document load the same way: Back to that entry shows it
   again, while a reload or a plain link to the reading shows none, and the
-  server never renders one. Offline has the library's two shapes and they
-  differ here: a save held paused is sent when the connection returns, so its
-  notice says so and offers no Retry (a second submit would claim the URL
-  twice), while a save that failed with the network already gone offers the
-  Retry. `src/api/save.ts` is the browser's POST, with the CSRF token and the
-  tenant pin as the library's reads have.
+  server never renders one. Offline has the library's two shapes and they differ here:
+  a save held paused is sent when the connection returns, so its notice says
+  so and offers no Retry (a second submit would claim the URL twice), while a
+  save that failed with the network already gone offers the Retry. A refusal
+  that will pass keeps the form too (#433): `submitFromResponse` reads a 429
+  that names a `limit` as `limited` (that window and the `reset_at` it can
+  format) or, for the usage guard's own body, `guard-unavailable`, and any 503
+  as `unavailable` with the `id` it may name. `limit` is a string, not an
+  enum, for the reason `reading.ts` keeps the backend's enums open: a window
+  added later gets the generic "You've reached a limit." rather than costing
+  the reader the URL they typed. Each renders as an inline `InlineNotice`
+  above the tabs — "You've reached the request rate limit."
+  ("hourly"/"monthly" reading limit for the quotas), plus " It resets at …"
+  when the reset parses; "Limits can't be checked right now."; "Saving is
+  unavailable right now." with an "Open the reading" link only when the 503
+  named one, and never the operator-facing error string. A 503 that names a
+  reading is a failed owner the backend rewrote in place, so that reading's
+  query is dropped and the library invalidated before the link is offered, as
+  a 202 does. Every one offers "Try
+  again", live immediately rather than counting down to a reset, which is the
+  same `trySubmit` the form and the offline Retry use. The sentence is also
+  set as the page's polite announcement, and the notice renders with
+  `live={false}`, because the `form-status` region was already on the page and
+  a region inserted with its text inside it is not announced. Pressing "Try
+  again" moves focus back to the field first, since the button it belongs to
+  goes with the notice, and a save the field itself refuses clears the notice
+  too, so a field error is never shown beside a retry for the URL just edited.
+  A 429 that names neither a limit nor the guard still throws. `src/api/save.ts` is
+  the browser's POST, with the CSRF token and the tenant pin as the library's
+  reads have.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

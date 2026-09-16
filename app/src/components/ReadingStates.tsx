@@ -107,15 +107,53 @@ export function ServerError({ message, onRetry }: { message: string; onRetry: ()
 }
 
 /**
- * Offline (acceptance matrix, Common states): a fetch could not run for want
- * of a network. An inline notice rather than a page, so whatever was loaded
- * stays on screen beneath it. Retry asks again by hand; the query also
- * continues on its own when the browser comes back online.
+ * A refusal that leaves the page standing (acceptance matrix, Common states):
+ * a sentence, optionally something to go to instead, and optionally the one
+ * control that gets past it. An inline notice rather than a page, so whatever
+ * was loaded — a library, a half-typed URL — stays on screen beneath it.
  *
- * `onRetry` is optional because a save held paused offline (#431) has nothing
- * to retry — React Query sends it when the browser is back, and a second one
- * would claim the URL twice — so that notice says so in `message` instead of
- * offering a control that does nothing. Every read passes both defaults.
+ * `live` is the polite region that announces it, and it is on by default
+ * because most notices appear with nothing else to say them. A page that
+ * already keeps a live region of its own passes `live={false}` and puts the
+ * sentence there instead: a region inserted with its text already in it is
+ * generally not announced at all, so the standing region is the one that
+ * works.
+ *
+ * `onAction` is optional because some refusals have no way on to offer — a
+ * save held paused offline (#431) is sent when the browser is back, and a
+ * second one would claim the URL twice — and a control that does nothing is
+ * worse than none.
+ */
+export function InlineNotice({
+  message,
+  actionLabel = "Retry",
+  onAction,
+  children,
+  live = true,
+}: {
+  message: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  children?: ReactNode;
+  live?: boolean;
+}) {
+  return (
+    <div className="offline-notice" role={live ? "status" : undefined}>
+      <p className="offline-notice-text">{message}</p>
+      {children}
+      {onAction ? (
+        <button type="button" className="button" onClick={onAction}>
+          {actionLabel}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Offline: a fetch could not run for want of a network. Retry asks again by
+ * hand; the query also continues on its own when the browser comes back
+ * online. Every read passes both defaults.
  */
 export function OfflineNotice({
   message = "You're offline. Check your connection and try again.",
@@ -124,16 +162,7 @@ export function OfflineNotice({
   message?: string;
   onRetry?: () => void;
 }) {
-  return (
-    <div className="offline-notice" role="status">
-      <p className="offline-notice-text">{message}</p>
-      {onRetry ? (
-        <button type="button" className="button" onClick={onRetry}>
-          Retry
-        </button>
-      ) : null}
-    </div>
-  );
+  return <InlineNotice message={message} onAction={onRetry} />;
 }
 
 /**

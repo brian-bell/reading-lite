@@ -126,6 +126,23 @@ async function openSave(identity: Identity | null = reader) {
   return { router, queryClient };
 }
 
+/**
+ * A save the backend refuses, and a second one it accepts: what the notice's
+ * own control does has to be a real way on, not just a rerender.
+ */
+function stubRefusedThenAccepted(refusal: () => Response) {
+  const fetchMock = vi.fn(async () =>
+    fetchMock.mock.calls.length === 1 ? refusal() : Response.json(ACCEPTED, { status: 202 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+/** The sentence the notice above the form shows, beside the region that says it. */
+function noticeText(): HTMLElement {
+  return screen.getByText(/./, { selector: ".offline-notice-text" });
+}
+
 function urlField(): HTMLInputElement {
   return screen.getByRole("textbox", { name: "URL" }) as HTMLInputElement;
 }
@@ -457,6 +474,225 @@ describe("the save page", () => {
     expect(screen.getByText("Enter the URL of the page you want to save.")).toBeVisible();
     expect(urlField()).toHaveFocus();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Refused, not broken (#433): a limit, a guard that could not answer, or a
+  // queue that is not there. Each keeps the form, the URL, and the focus, and
+  // says how to get on. The notice is the page's one polite region, so the
+  // reader hears it once.
+  it("keeps the form when a 429 names the request rate", async () => {
+    const fetchMock = stubRefusedThenAccepted(() =>
+      Response.json(
+        { error: "rate limited", code: "rate_limited", limit: "request_rate", reset_at: "2026-12-31T23:59:00Z" },
+        { status: 429 },
+      ),
+    );
+    const { router } = await openSave();
+    // The page's polite region is on screen before there is anything to say:
+    // a region inserted with its text in it is not announced.
+    const region = screen.getByRole("status");
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const message = "You've reached the request rate limit. It resets at 31 December 2026, 23:59 UTC.";
+    await waitFor(() => expect(noticeText()).toHaveTextContent(message));
+    // Said through the region that was already on the page, not a new one.
+    expect(screen.getByRole("status")).toHaveTextContent(message);
+    expect(screen.getByRole("status")).toBe(region);
+    expect(urlField()).toHaveValue("https://example.com/a");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Save reading");
+    expect(router.state.location.href).toBe("/save");
+
+    // Try again is offered at once, not after the reset: the reader decides.
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the form when a 429 names the hourly quota", async () => {
+    stubRefusedThenAccepted(() =>
+      Response.json(
+        { error: "quota exhausted", code: "quota_exhausted", limit: "hourly", reset_at: "2026-12-31T23:59:00Z" },
+        { status: 429 },
+      ),
+    );
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    const message = "You've reached the hourly reading limit. It resets at 31 December 2026, 23:59 UTC.";
+    await waitFor(() => expect(noticeText()).toHaveTextContent(message));
+    expect(screen.getByRole("status")).toHaveTextContent(message);
+    expect(urlField()).toHaveValue("https://example.com/a");
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // Without a reset it can read, the notice still names the limit.
+  it("keeps the form when a 429 names the monthly quota", async () => {
+    stubRefusedThenAccepted(() =>
+      Response.json({ error: "quota exhausted", code: "quota_exhausted", limit: "monthly" }, { status: 429 }),
+    );
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("You've reached the monthly reading limit."));
+    expect(screen.getByRole("status")).toHaveTextContent("You've reached the monthly reading limit.");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Save reading");
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  it("keeps the form when the usage guard cannot answer", async () => {
+    const fetchMock = stubRefusedThenAccepted(() =>
+      Response.json({ error: "usage guard unavailable" }, { status: 429 }),
+    );
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Limits can't be checked right now."));
+    expect(screen.getByRole("status")).toHaveTextContent("Limits can't be checked right now.");
+    expect(urlField()).toHaveValue("https://example.com/a");
+    expect(router.state.location.href).toBe("/save");
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // A 503 that names a reading got as far as writing it, so there is
+  // something to open even though nothing was enqueued.
+  it("offers the reading a 503 names, and keeps the form", async () => {
+    const fetchMock = stubRefusedThenAccepted(() =>
+      Response.json({ error: "queue unavailable", id: PENDING }, { status: 503 }),
+    );
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Saving is unavailable right now."));
+    expect(screen.getByRole("status")).toHaveTextContent("Saving is unavailable right now.");
+    expect(screen.getByRole("link", { name: "Open the reading" })).toHaveAttribute("href", `/readings/${PENDING}`);
+    // The operator's own words are not the reader's business.
+    expect(screen.queryByText("queue unavailable")).not.toBeInTheDocument();
+    expect(urlField()).toHaveValue("https://example.com/a");
+    expect(router.state.location.href).toBe("/save");
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // A 503 that names a reading is a failed owner the backend just rewrote
+  // (its rollback manifest and list row), and the reading and library queries
+  // never go stale on their own. What this tab read earlier must not be what
+  // "Open the reading" shows, nor what the library keeps showing.
+  it("drops what this tab knew about a reading a 503 names", async () => {
+    stubFetch(() => Response.json({ error: "reading setup failed", id: PENDING }, { status: 503 }));
+    const { queryClient } = await openSave();
+    const libraryKey = libraryQueryKey({ offset: 0 });
+    queryClient.setQueryData(libraryKey, { state: "ready", page: { readings: [], limit: 20, offset: 0, has_more: false } });
+    queryClient.setQueryData(readingQueryKey(PENDING), {
+      state: "ready",
+      reading: { ...readings.rd_FXERR00001, id: PENDING },
+    });
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("link", { name: "Open the reading" })).toBeVisible());
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(readingQueryKey(PENDING))).toBeUndefined();
+  });
+
+  // The local `wrangler dev` body: no queue binding, and so no reading.
+  it("offers no reading when the 503 names none", async () => {
+    stubRefusedThenAccepted(() =>
+      Response.json({ error: "queue binding READING_JOBS is not configured" }, { status: 503 }),
+    );
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Saving is unavailable right now."));
+    expect(screen.queryByRole("link", { name: "Open the reading" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // A second refusal replaces the first rather than stacking beside it, and
+  // the reader is not left with focus on a button that has just gone.
+  it("replaces one refusal with the next and keeps the reader in the form", async () => {
+    const refusal = () =>
+      Response.json({ error: "quota exhausted", code: "quota_exhausted", limit: "hourly" }, { status: 429 });
+    const fetchMock = vi.fn(async () => refusal());
+    vi.stubGlobal("fetch", fetchMock);
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(noticeText()).toHaveTextContent("You've reached the hourly reading limit."));
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(noticeText()).toHaveTextContent("You've reached the hourly reading limit."));
+    // The button the reader pressed is gone with the notice it belonged to,
+    // so focus goes back to the field rather than to the document.
+    expect(urlField()).toHaveFocus();
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // The other way a notice ends: an answer that replaces the whole form. The
+  // state page takes the focus, which it cannot do from a detached button.
+  it("hands a refused save's retry to the server-error page with the focus", async () => {
+    const fetchMock = vi.fn(async () =>
+      fetchMock.mock.calls.length === 1
+        ? Response.json({ error: "usage guard unavailable" }, { status: 429 })
+        : Response.json({ error: "upstream exploded" }, { status: 500 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Limits can't be checked right now."));
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Something went wrong on our side."),
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  // A save the field itself refuses still ends the last one's notice: a field
+  // error beside a Try again for the URL just edited says two things at once.
+  it("clears a refusal's notice when the next save never leaves the page", async () => {
+    const fetchMock = vi.fn(async () =>
+      Response.json({ error: "usage guard unavailable" }, { status: 429 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Limits can't be checked right now."));
+
+    await userEvent.clear(urlField());
+    await userEvent.type(urlField(), "not a url");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(screen.getByText("Enter a full URL, like https://example.com/article.")).toBeVisible();
+    expect(screen.queryByText("Limits can't be checked right now.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("offers a retry after a server error and takes the reader back to the form", async () => {

@@ -99,7 +99,8 @@ export async function serveLibraryInBrowser(
 
 /**
  * Answers `POST /api/readings` in the browser with one canned response, and
- * records the saves made (#431, #432).
+ * records the saves made (#431, #432, #433): an accepted save, an owner the
+ * reader already has, or a refusal the page renders, from a 400 to a 503.
  *
  * POST only: `GET /api/readings` is the library's own read, which has to fall
  * through to the Worker (or to a `serveLibraryInBrowser` route), or a page's
