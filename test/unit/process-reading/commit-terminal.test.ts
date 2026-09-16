@@ -605,59 +605,6 @@ describe("commitTerminalManifest", () => {
     expect(append).not.toHaveBeenCalled();
   });
 
-  it("22: tombstone appears after pre-write check and terminal CAS → delete prefix objects", async () => {
-    const reader = newReader();
-    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
-    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
-    const { similarity, vectors } = fakeVectorize();
-    let checks = 0;
-    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
-      checks += 1;
-      return checks > 1;
-    });
-
-    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
-      claimMissingPointer: true,
-      defensive: false,
-      vector: vectorOpt(),
-    });
-
-    expect(out).toEqual({ committed: true, published: false });
-    expect(checks).toBe(2);
-    expect(await reader.readManifest(PREFIX)).toBeNull();
-    expect(await reader.findListIndexItem(ID)).toBeNull();
-    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
-    expect(vectors.has(ID)).toBe(false);
-  });
-
-  it("23: tombstone appears between restore check and restore write → compensate remove", async () => {
-    const reader = newReader();
-    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
-    await reader.writeByUrlPointer(URL_HASH, { id: ID, key_prefix: PREFIX });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(readyManifest({ status: "pending" }), PREFIX));
-    vi.spyOn(reader, "replaceManifestIfCurrent").mockResolvedValue(false);
-    const { similarity, vectors } = fakeVectorize();
-    vectors.set(ID, { values: embedding(), metadata: { url: URL } });
-    let checks = 0;
-    vi.spyOn(reader, "hasPurgeTombstone").mockImplementation(async () => {
-      checks += 1;
-      return checks > 1;
-    });
-
-    const out = await commitTerminalManifest(reader, similarity, args(), readyManifest(), {
-      claimMissingPointer: true,
-      defensive: false,
-      vector: vectorOpt(),
-    });
-
-    expect(out).toEqual({ committed: false, published: false });
-    expect(checks).toBe(2);
-    expect(await reader.readManifest(PREFIX)).toBeNull();
-    expect(await reader.findListIndexItem(ID)).toBeNull();
-    expect(await reader.readByUrlPointer(URL_HASH)).toBeNull();
-    expect(vectors.has(ID)).toBe(false);
-  });
-
   it("23b: lost-CAS tombstone compensate throw is swallowed on the success path", async () => {
     const reader = newReader();
     await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));

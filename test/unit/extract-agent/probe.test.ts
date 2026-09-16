@@ -22,16 +22,10 @@ const TEXT_VERIFICATION_CASES = JSON.parse(
 const SUBSCRIPTION_WALL_CASES = JSON.parse(
   readFileSync(join(FIXTURES, "subscription-wall-manifest.json"), "utf-8"),
 ) as {
-  approval_status: "approved";
-  implementation_must_wait_for_approval: false;
   fixtures: Array<{
     file: string;
     expected: "challenge" | "extracted" | "no_article";
   }>;
-  proposed_long_body_policy: {
-    approval_status: "approved";
-    decisions: string[];
-  };
 };
 
 function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
@@ -49,17 +43,6 @@ function deps(overrides: Partial<ProbeDeps> = {}): ProbeDeps {
 }
 
 describe("runProbe", () => {
-  it("records the approved subscription-wall fixture and policy gate", () => {
-    expect(SUBSCRIPTION_WALL_CASES).toMatchObject({
-      approval_status: "approved",
-      implementation_must_wait_for_approval: false,
-      proposed_long_body_policy: {
-        approval_status: "approved",
-      },
-    });
-    expect(SUBSCRIPTION_WALL_CASES.proposed_long_body_policy.decisions).toHaveLength(5);
-  });
-
   it.each(SUBSCRIPTION_WALL_CASES.fixtures)(
     "classifies approved wall fixture $file as $expected through both extraction tiers",
     async ({ file, expected }) => {

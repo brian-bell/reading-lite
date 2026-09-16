@@ -4,7 +4,6 @@ import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { mintReadingId, type Services } from "../../src/services";
 import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
-import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
 
 function services(): Services {
   return {
@@ -111,6 +110,5 @@ describe("ingress submission quotas", () => {
   it("does not treat founder headroom as a 503", async () => {
     const res = await post("test-token", "https://quota.test/founder-ok");
     expect(res.status).toBe(202);
-    expect(FOUNDER_TENANT_ID).toMatch(/^usr_/);
   });
 });

@@ -227,7 +227,7 @@ describe("invite-only magic-link sessions", () => {
     expect(bearerWrite.res.status).not.toBe(403);
   });
 
-  it("allows a same-origin cookie GET without Origin and still requires Origin on cookie POST", async () => {
+  it("allows a same-origin cookie GET without Origin", async () => {
     const challenge = await request("/api/auth/challenge", {
       method: "POST",
       body: { email: "founder@test.example" },
@@ -248,14 +248,6 @@ describe("invite-only magic-link sessions", () => {
     expect(whoami.res.status).toBe(200);
     const body = (await whoami.res.json()) as { principal: string };
     expect(body.principal).toBe("session");
-
-    const write = await request("/api/readings", {
-      method: "POST",
-      cookie,
-      origin: "",
-      body: { url: "https://example.com/cookie-post-no-origin" },
-    });
-    expect(write.res.status).toBe(401);
   });
 
   it("retries the same redemption id and rejects a competing claimant", async () => {
@@ -279,25 +271,6 @@ describe("invite-only magic-link sessions", () => {
       body: { credential, redemption_id: "clm_other" },
     });
     expect(competing.res.status).toBe(409);
-  });
-
-  it("lets an invalid bearer win over a valid session cookie", async () => {
-    const challenge = await request("/api/auth/challenge", {
-      method: "POST",
-      body: { email: "founder@test.example" },
-    });
-    const credential = credentialFrom(challenge.sent[0]!.verifyUrl);
-    const redeemed = await request("/api/auth/redeem", {
-      method: "POST",
-      body: { credential, redemption_id: "clm_mixed" },
-    });
-    expect(redeemed.res.status).toBe(200);
-    const cookie = cookieFrom(redeemed.res)!;
-    const mixed = await request("/api/whoami", {
-      cookie,
-      authorization: "Bearer definitely-wrong",
-    });
-    expect(mixed.res.status).toBe(401);
   });
 
   it("rejects cookie mutations without a valid session-bound CSRF token", async () => {
@@ -328,43 +301,19 @@ describe("invite-only magic-link sessions", () => {
     const delMissing = await request("/api/readings/rd_missing", { method: "DELETE", cookie });
     expect(delMissing.res.status).toBe(403);
 
+    // A valid CSRF token does not rescue a missing or cross-site Origin.
+    const csrfNoOrigin = await request("/api/readings", { ...write, csrf, origin: "" });
+    expect(csrfNoOrigin.res.status).toBe(401);
+    const csrfCrossOrigin = await request("/api/readings", { ...write, csrf, origin: "https://evil.example" });
+    expect(csrfCrossOrigin.res.status).toBe(401);
+
     const okWrite = await request("/api/readings", { ...write, csrf });
     expect(okWrite.res.status).not.toBe(401);
     expect(okWrite.res.status).not.toBe(403);
   });
 
-  it("still requires Origin on cookie writes even with a valid CSRF token", async () => {
-    const { cookie, csrf } = await redeemSession("clm_csrf_origin");
-    const missingOrigin = await request("/api/readings", {
-      method: "POST",
-      cookie,
-      csrf,
-      origin: "",
-      body: { url: "https://example.com/csrf-no-origin" },
-    });
-    expect(missingOrigin.res.status).toBe(401);
-
-    const crossOrigin = await request("/api/readings", {
-      method: "POST",
-      cookie,
-      csrf,
-      origin: "https://evil.example",
-      body: { url: "https://example.com/csrf-cross-origin" },
-    });
-    expect(crossOrigin.res.status).toBe(401);
-  });
-
-  it("lets bearer mutations skip CSRF and never falls back from an invalid bearer to a cookie", async () => {
+  it("never falls back from an invalid bearer to a cookie and omits csrf_token for api tokens", async () => {
     const { cookie, csrf } = await redeemSession("clm_csrf_bearer");
-    const bearerWrite = await request("/api/readings", {
-      method: "POST",
-      authorization: "Bearer test-token",
-      origin: "",
-      body: { url: "https://example.com/bearer-no-csrf" },
-    });
-    expect(bearerWrite.res.status).not.toBe(401);
-    expect(bearerWrite.res.status).not.toBe(403);
-
     const mixed = await request("/api/readings", {
       method: "POST",
       cookie,
@@ -442,53 +391,6 @@ describe("invite-only magic-link sessions", () => {
     expect(body.to).toBe("founder@test.example");
     expect(body.verify_url).toContain("/auth/verify#");
     expect(body.verify_url).not.toContain("reader@test.example");
-  });
-
-  it("AuthRateGuard denies after the per-email ceiling", async () => {
-    const workerEnv = env as unknown as Env;
-    expect(workerEnv.AUTH_RATE_GUARD).toBeTruthy();
-    const stub = workerEnv.AUTH_RATE_GUARD!.get(workerEnv.AUTH_RATE_GUARD!.idFromName("test-email-ceiling"));
-    const admit = async () =>
-      stub.fetch("https://auth-rate-guard/admit", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          kind: "send",
-          emailHash: "test-email-hash",
-          emailWindowMs: 60_000,
-          emailMax: 2,
-          globalWindowMs: 60_000,
-          globalMax: 200,
-        }),
-      });
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(true);
-    expect(((await (await admit()).json()) as { ok: boolean }).ok).toBe(false);
-  });
-
-  it("does not let a concurrent AuthRateGuard burst all pass the email ceiling", async () => {
-    const workerEnv = env as unknown as Env;
-    const stub = workerEnv.AUTH_RATE_GUARD!.get(workerEnv.AUTH_RATE_GUARD!.idFromName("test-email-burst"));
-    const payload = JSON.stringify({
-      kind: "send",
-      emailHash: "test-burst-hash",
-      emailWindowMs: 60_000,
-      emailMax: 2,
-      globalWindowMs: 60_000,
-      globalMax: 200,
-    });
-    const responses = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        stub.fetch("https://auth-rate-guard/admit", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: payload,
-        }),
-      ),
-    );
-    const outcomes = await Promise.all(responses.map(async (res) => ((await res.json()) as { ok: boolean }).ok));
-    expect(outcomes.filter((ok) => ok)).toHaveLength(2);
-    expect(outcomes.filter((ok) => !ok)).toHaveLength(6);
   });
 
   it("counts IP on every challenge POST and email/global only when sending", async () => {

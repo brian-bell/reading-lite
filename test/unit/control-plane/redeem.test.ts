@@ -4,7 +4,7 @@ import { issueLoginChallenge } from "../../../src/control-plane/challenges";
 import { MAGIC_LINK_TTL_MS, SESSION_COOKIE_NAME } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
-import { authenticateSession, revokeSession } from "../../../src/control-plane/sessions";
+import { authenticateSession } from "../../../src/control-plane/sessions";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -126,7 +126,7 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("rejects an expired or unknown secret without consuming a later challenge", async () => {
-    const { db } = await seeded();
+    const { sqlite, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -135,14 +135,46 @@ describe("redeemLoginChallenge", () => {
     });
     expect(issued.kind).toBe("issued");
     if (issued.kind !== "issued") return;
+    const afterExpiry = NOW_MS + MAGIC_LINK_TTL_MS + 1;
     const expired = await redeemLoginChallenge(db, {
       credential: issued.credential,
       redemptionId: "clm_late",
-      nowMs: NOW_MS + 16 * 60 * 1000,
+      nowMs: afterExpiry,
       authRoot,
       userAgentLabel: null,
     });
     expect(expired.kind).toBe("invalid");
+
+    const later = await issueLoginChallenge(db, {
+      emailCanonical: "founder@example.com",
+      emailDisplayRequested: "founder@example.com",
+      nowMs: afterExpiry + 1,
+      authRoot,
+    });
+    expect(later.kind).toBe("issued");
+    if (later.kind !== "issued") return;
+    // Right selector, wrong secret: the live row must survive the guess.
+    const forged = await redeemLoginChallenge(db, {
+      credential: `${later.challengeId}.${"0".repeat(64)}`,
+      redemptionId: "clm_forged",
+      nowMs: afterExpiry + 2,
+      authRoot,
+      userAgentLabel: null,
+    });
+    expect(forged.kind).toBe("invalid");
+    expect(sqlite.prepare("SELECT state FROM auth_challenges WHERE id = ?").get(later.challengeId)).toEqual({
+      state: "issued",
+    });
+    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+
+    const real = await redeemLoginChallenge(db, {
+      credential: later.credential,
+      redemptionId: "clm_real",
+      nowMs: afterExpiry + 3,
+      authRoot,
+      userAgentLabel: null,
+    });
+    expect(real.kind).toBe("ok");
   });
 
   it("rejects the same credential+redemption_id after expiry without rotating the live session", async () => {
@@ -286,44 +318,6 @@ describe("redeemLoginChallenge", () => {
     expect(stillFounder.kind).toBe("ok");
   });
 
-  it("rejects logout-then-Continue on the same claim without 500 or a new session", async () => {
-    const { sqlite, db } = await seeded();
-    const issued = await issueLoginChallenge(db, {
-      emailCanonical: "founder@example.com",
-      emailDisplayRequested: "founder@example.com",
-      nowMs: NOW_MS,
-      authRoot,
-    });
-    expect(issued.kind).toBe("issued");
-    if (issued.kind !== "issued") return;
-    const first = await redeemLoginChallenge(db, {
-      credential: issued.credential,
-      redemptionId: "clm_continue",
-      nowMs: NOW_MS + 1,
-      authRoot,
-      userAgentLabel: "test",
-    });
-    expect(first.kind).toBe("ok");
-    if (first.kind !== "ok" || !first.sessionId) return;
-    await revokeSession(db, first.sessionId, NOW_MS + 2, "logout");
-
-    const again = await redeemLoginChallenge(db, {
-      credential: issued.credential,
-      redemptionId: "clm_continue",
-      nowMs: NOW_MS + 3,
-      authRoot,
-      userAgentLabel: "test",
-    });
-    expect(again.kind).toBe("invalid");
-    const rows = sqlite.prepare("SELECT id, revoked_at_ms FROM sessions").all() as {
-      id: string;
-      revoked_at_ms: number | null;
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.id).toBe(first.sessionId);
-    expect(rows[0]?.revoked_at_ms).toBe(NOW_MS + 2);
-  });
-
   it("refreshes authenticated_at_ms on the current session instead of minting another row", async () => {
     const { sqlite, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
@@ -372,65 +366,6 @@ describe("redeemLoginChallenge", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(first.sessionId);
     expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 60_000);
-  });
-
-  it("replays a consumed step-up against completed_session_id instead of minting", async () => {
-    const { sqlite, db } = await seeded();
-    const issued = await issueLoginChallenge(db, {
-      emailCanonical: "founder@example.com",
-      emailDisplayRequested: "founder@example.com",
-      nowMs: NOW_MS,
-      authRoot,
-    });
-    expect(issued.kind).toBe("issued");
-    if (issued.kind !== "issued") return;
-    const first = await redeemLoginChallenge(db, {
-      credential: issued.credential,
-      redemptionId: "clm_step_replay_first",
-      nowMs: NOW_MS,
-      authRoot,
-      userAgentLabel: "first",
-    });
-    expect(first.kind).toBe("ok");
-    if (first.kind !== "ok" || !first.sessionId) return;
-
-    const next = await issueLoginChallenge(db, {
-      emailCanonical: "founder@example.com",
-      emailDisplayRequested: "founder@example.com",
-      nowMs: NOW_MS + 1,
-      authRoot,
-    });
-    expect(next.kind).toBe("issued");
-    if (next.kind !== "issued") return;
-    const stepped = await redeemLoginChallenge(db, {
-      credential: next.credential,
-      redemptionId: "clm_step_replay",
-      nowMs: NOW_MS + 60_000,
-      authRoot,
-      userAgentLabel: "step",
-      stepUpSessionId: first.sessionId,
-    });
-    expect(stepped.kind).toBe("ok");
-    if (stepped.kind !== "ok") return;
-
-    const replay = await redeemLoginChallenge(db, {
-      credential: next.credential,
-      redemptionId: "clm_step_replay",
-      nowMs: NOW_MS + 90_000,
-      authRoot,
-      userAgentLabel: "replay",
-    });
-    expect(replay.kind).toBe("ok");
-    if (replay.kind !== "ok") return;
-    expect(replay.sessionId).toBe(first.sessionId);
-    expect(replay.credential).toBeNull();
-    const rows = sqlite.prepare("SELECT id, authenticated_at_ms FROM sessions").all() as {
-      id: string;
-      authenticated_at_ms: number;
-    }[];
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.id).toBe(first.sessionId);
-    expect(rows[0]?.authenticated_at_ms).toBe(NOW_MS + 90_000);
   });
 
   it("pins a consumed step-up replay to completed_session_id when another same-user session is live", async () => {

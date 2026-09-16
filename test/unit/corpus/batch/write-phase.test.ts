@@ -315,6 +315,11 @@ describe("writeResults — success path", () => {
     });
   });
 
+  // `deps()` supplies no ledger unless a test passes one, so every success case
+  // here also proves the no-ledger default writes vectors — which is what
+  // `--tenant global` wants: the pre-tenant corpus has no tenant id to key
+  // ledger rows by, and no account wipe addresses it, so the default is the
+  // no-op rather than a throw.
   it("embeds the tldr and upserts the persistent vector with metadata", async () => {
     const r2 = fakeR2();
     const vec = fakeVectorize();
@@ -377,7 +382,7 @@ describe("writeResults — success path", () => {
     expect(vec.upserts[0]!.metadata).not.toHaveProperty("tenant_id");
   });
 
-  it("ledgers the BARE reading id even when the vector id is composed", async () => {
+  it("ledgers the BARE reading id BEFORE upserting its composed vector", async () => {
     // The ledger stores reading ids and the wipe re-composes through
     // `tenantVectorId`, so there is one spelling of that rule and no stored
     // copy of its output to drift.
@@ -388,29 +393,11 @@ describe("writeResults — success path", () => {
       ...deps(r2, vec, embedMany(), ledger),
       vectorNamespace: TENANT,
     });
-    expect(events).toEqual(["live:rd_a:0"]);
-    expect(vec.upserts[0]!.id).toBe(`${TENANT}:rd_a`);
-  });
-
-  it("ledgers every reading id BEFORE upserting its vector", async () => {
-    const r2 = fakeR2();
-    const vec = fakeVectorize();
-    const { ledger, events } = fakeLedger(vec);
-    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec, embedMany(), ledger));
     // `:0` — no upsert had landed when the row was written. The reverse order
     // would leave a vector unaddressable if the process died between them.
     expect(events).toEqual(["live:rd_a:0"]);
     expect(vec.upserts).toHaveLength(1);
-  });
-
-  it("writes vectors with no ledger supplied, which is what --tenant global wants", async () => {
-    // The pre-tenant corpus has no tenant id to key ledger rows by, and no
-    // account wipe addresses it, so the default is the no-op rather than a
-    // throw.
-    const r2 = fakeR2();
-    const vec = fakeVectorize();
-    await writeResults(sidecar([sidecarTarget()]), [succeeded("rd_a")], deps(r2, vec));
-    expect(vec.upserts).toHaveLength(1);
+    expect(vec.upserts[0]!.id).toBe(`${TENANT}:rd_a`);
   });
 
   it("does not upsert vectors it could not ledger", async () => {

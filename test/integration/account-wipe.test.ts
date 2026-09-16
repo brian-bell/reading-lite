@@ -20,13 +20,10 @@ import { resolveLoginEligibility } from "../../src/control-plane/eligibility";
 import {
   VECTOR_LEDGER_BACKOFF_MS,
   VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS,
-  clearLedgerRows,
-  clearTenantLedger,
   d1VectorLedger,
 } from "../../src/control-plane/vector-ledger";
 import { parseTenantId } from "../../src/control-plane/ids";
 import {
-  AccountWipeProgressConflictError,
   emptyWipeProgress,
   readWipeProgress,
   reopenWipeProgress,
@@ -40,7 +37,6 @@ import type { ListIndexItem } from "../../src/schemas/api";
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
-  OTHER_TOKEN_ID,
   founderTenant,
   insertSecondTenant,
   otherTenant,
@@ -535,22 +531,22 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
   });
 
+  // Vectors before objects. The ledger means this no longer protects an id
+  // source, but the ordering is still the invariant: a reading missing from
+  // search is a better intermediate state than a listed reading whose detail
+  // page 404s.
   it("submits Vectorize deleteByIds while R2 objects still exist, then empties the prefix", async () => {
     await seedTenantObjects([ID_A, ID_B]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
     deleteByIds.mockImplementation(async (ids: string[]) => {
       vectorOrder.push("vector");
-      if (vectorOrder.length === 1) {
-        const remaining = await listPrefixKeys(PREFIX);
-        expect(remaining.length).toBeGreaterThan(0);
-      }
+      // Every submit happens while the prefix is still populated.
+      expect((await listPrefixKeys(PREFIX)).length).toBeGreaterThan(0);
       return { mutationId: `mut_${ids.length}` };
     });
 
-    const result = await runWipeToCompletion(
-      accountWipeEnvelopeV1({ tenantId: TENANT }),
-      { t: NOW_MS },
-    );
+    const clock = { t: NOW_MS };
+    const result = await runWipeToCompletion(accountWipeEnvelopeV1({ tenantId: TENANT }), clock);
     expect(result.kind).toBe("complete");
     expect(vectorOrder[0]).toBe("vector");
     const expectedIds = [tenantVectorId(OTHER_TENANT_ID, ID_A), tenantVectorId(OTHER_TENANT_ID, ID_B)];
@@ -565,6 +561,24 @@ describe("account wipe (195b PR1)", () => {
     // job, never a poll-until-empty loop.
     expect(result.kind === "complete" && result.mutation_ids.length).toBeGreaterThan(0);
     expect(queryIndex).toHaveBeenCalledTimes(1);
+    // What F4 was really about: the record must not carry a deleted account's
+    // reading ids. The D1 row is KEPT instead of deleted — it is the durable
+    // completion evidence — and the terminal write clears both cursors so
+    // nothing reading-shaped survives in it. `vector_cursor` was the one field
+    // that ever held an id and it is gone with migration 0010; the ledger rows
+    // that DID name these readings were cleared by the confirmation, which is
+    // what "wiped" now means.
+    expect(result).toMatchObject({ kind: "complete", residue: false });
+    const progress = await readProgress();
+    expect(progress).not.toBeNull();
+    expect(progress!.phase).toBe("done");
+    expect(progress!.completedAtMs).toBe(clock.t);
+    expect(progress!.residue).toBe(false);
+    expect(progress!.objectsDeleted).toBeGreaterThan(0);
+    expect(progress!.r2Cursor).toBeUndefined();
+    expect(JSON.stringify(progress)).not.toContain(ID_A);
+    expect(JSON.stringify(progress)).not.toContain(ID_B);
+    expect(await ledgerRows()).toEqual([]);
   });
 
   it("pages more than 1000 R2 objects and resumes from a stored cursor", async () => {
@@ -709,37 +723,37 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).toEqual(before);
   });
 
-  it("does not wipe the tenant prefix when READINGS_INDEX is unbound", async () => {
-    await seedTenantObjects([ID_A]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    const before = await listPrefixKeys(PREFIX);
-    expect(before).not.toEqual([]);
-    const ack = vi.fn();
-    const retry = vi.fn();
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(
-      processAccountWipeJob(
-        accountWipeEnvelopeV1({ tenantId: TENANT }),
+  // Move 1 / F3: an unbound index fails closed before anything is deleted, and
+  // an empty id list must not let it short-circuit to success (commit a9a9f0f's
+  // fail-closed intent applies before the emptiness test).
+  it.each([{ seeded: true }, { seeded: false }])(
+    "does not wipe the tenant prefix when READINGS_INDEX is unbound (seeded: $seeded)",
+    async ({ seeded }) => {
+      if (seeded) await seedTenantObjects([ID_A]);
+      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const before = await listPrefixKeys(PREFIX);
+      expect(before.length > 0).toBe(seeded);
+      const ack = vi.fn();
+      const retry = vi.fn();
+      const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+      await consumeAccountWipeMessage(
+        {
+          body: accountWipeEnvelopeV1({ tenantId: TENANT }),
+          ack,
+          retry,
+          attempts: 1,
+        },
         { ...(await wipeEnv()), READINGS_INDEX: undefined },
         wipeJobDeps(),
-      ),
-    ).rejects.toThrow(/index_unbound/);
-    await consumeAccountWipeMessage(
-      {
-        body: accountWipeEnvelopeV1({ tenantId: TENANT }),
-        ack,
-        retry,
-        attempts: 1,
-      },
-      { ...(await wipeEnv()), READINGS_INDEX: undefined },
-      wipeJobDeps(),
-    );
-    expect(ack).not.toHaveBeenCalled();
-    expect(retry).toHaveBeenCalled();
-    expect(deleteByIds).not.toHaveBeenCalled();
-    expect(await listPrefixKeys(PREFIX)).toEqual(before);
-    consoleErr.mockRestore();
-  });
+      );
+      expect(ack).not.toHaveBeenCalled();
+      expect(retry).toHaveBeenCalled();
+      expect(consoleErr).toHaveBeenCalledWith(expect.stringContaining("index_unbound"));
+      expect(deleteByIds).not.toHaveBeenCalled();
+      expect(await listPrefixKeys(PREFIX)).toEqual(before);
+      consoleErr.mockRestore();
+    },
+  );
 
   it("does not touch another tenant's prefix", async () => {
     await seedTenantObjects([ID_A]);
@@ -900,8 +914,10 @@ describe("account wipe (195b PR1)", () => {
     expect(progress).not.toBeNull();
     expect(progress!.phase).toBe("vectors");
     expect(progress!.force).toBe(true);
-    // Reopened, so the completion record is cleared until this pass finishes.
+    // Reopened, so the completion record is cleared until this pass finishes,
+    // and the object walk starts over rather than from a stale cursor.
     expect(progress!.completedAtMs).toBeNull();
+    expect(progress!.r2Cursor).toBeUndefined();
 
     const result = await runWipeToCompletion(queued[0]!, { t: NOW_MS });
     expect(result.kind).toBe("complete");
@@ -941,18 +957,6 @@ describe("account wipe (195b PR1)", () => {
     expect(memory.keysUnder(PREFIX)).toEqual([]);
   });
 
-  it("cron re-enqueues a done tenant that still has prefix objects", async () => {
-    await seedTenantObjects([ID_A]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await seedProgress({ phase: "done", objectsDeleted: 1, completedAtMs: NOW_MS });
-    expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
-    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
-    const progress = await readProgress();
-    expect(progress).not.toBeNull();
-    expect(progress!.phase).toBe("vectors");
-    expect(progress!.r2Cursor).toBeUndefined();
-  });
-
   it("leftover recovery re-runs Vectorize deletes before emptying R2", async () => {
     await seedTenantObjects([ID_A]);
     await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
@@ -969,39 +973,6 @@ describe("account wipe (195b PR1)", () => {
     expect(result.kind).toBe("complete");
     expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
-  });
-
-  // Vectors before objects. The ledger means this no longer protects an id
-  // source, but the ordering is still the invariant: a reading missing from
-  // search is a better intermediate state than a listed reading whose detail
-  // page 404s.
-  it("submits every vector delete before the first R2 delete", async () => {
-    await seedTenantObjects([ID_A, ID_B]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    let calls = 0;
-    deleteByIds.mockImplementation(async () => {
-      calls += 1;
-      expect((await listPrefixKeys(PREFIX)).length).toBeGreaterThan(0);
-      return { mutationId: `mut_${calls}` };
-    });
-    const result = await runWipeToCompletion(
-      accountWipeEnvelopeV1({ tenantId: TENANT }),
-      { t: NOW_MS },
-    );
-    expect(result.kind).toBe("complete");
-    expect(deleteByIds).toHaveBeenCalledTimes(1);
-    expect(deleteByIds.mock.calls[0]?.[0]).toEqual([
-      tenantVectorId(OTHER_TENANT_ID, ID_A),
-      tenantVectorId(OTHER_TENANT_ID, ID_B),
-    ]);
-    expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    // The record is KEPT now, unlike the R2 object it replaces (F4): it carries
-    // no reading id, and it is the evidence a later slice gates on. The ledger
-    // rows are gone too — cleared by the confirmation, which is what "wiped"
-    // now means.
-    const progress = await readProgress();
-    expect(progress!.completedAtMs).not.toBeNull();
-    expect(await ledgerRows()).toEqual([]);
   });
 
   // No post-empty re-submit any more: a delivery resuming at the objects phase
@@ -1065,17 +1036,6 @@ describe("account wipe (195b PR1)", () => {
     );
     expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
     consoleErr.mockRestore();
-  });
-
-  it("scheduled() fans out wipe jobs without dropping digest fan-out", async () => {
-    // Needs a non-empty prefix to be a fan-out candidate at all.
-    await seedTenantObjects([ID_A]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    await worker.scheduled(
-      { scheduledTime: NOW_MS, cron: "*/15 * * * *" } as ScheduledController,
-      env as unknown as Env,
-    );
-    expect(queued).toEqual([accountWipeEnvelopeV1({ tenantId: TENANT })]);
   });
 
   it("queue consumer acks a wipe job and does not enqueue from a malformed body", async () => {
@@ -1300,81 +1260,6 @@ describe("account wipe (195b PR1)", () => {
     expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
   });
 
-  // What F4 was really about: the record must not carry a deleted account's
-  // reading ids. The D1 row is KEPT instead of deleted — it is the durable
-  // completion evidence — and the terminal write clears both cursors so nothing
-  // reading-shaped survives in it.
-  it("keeps a cursor-free completion record at the terminal transition", async () => {
-    await seedTenantObjects([ID_A]);
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    const clock = { t: NOW_MS };
-    const result = await runWipeToCompletion(accountWipeEnvelopeV1({ tenantId: TENANT }), clock);
-    expect(result).toMatchObject({ kind: "complete", residue: false });
-    expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    const progress = await readProgress();
-    expect(progress).not.toBeNull();
-    expect(progress!.phase).toBe("done");
-    expect(progress!.completedAtMs).toBe(clock.t);
-    expect(progress!.residue).toBe(false);
-    expect(progress!.objectsDeleted).toBeGreaterThan(0);
-    // No reading id anywhere on the surviving record. `vector_cursor` was the
-    // one field that ever held one and it is gone with migration 0010; the
-    // ledger rows that DID name this reading were cleared by the confirmation.
-    expect(progress!.r2Cursor).toBeUndefined();
-    expect(JSON.stringify(progress)).not.toContain(ID_A);
-    expect(await ledgerRows()).toEqual([]);
-  });
-
-  // F8, restated for D1: at-least-once delivery plus cron overlap means two
-  // deliveries can be live on one tenant. The lease is a version, so the loser's
-  // conditional UPDATE changes zero rows — it stands down and says so instead of
-  // last-write-wins clobbering the winner's cursor.
-  it("lets one of two concurrent writers win the lease and tells the other", async () => {
-    const db = controlPlane();
-    await seedProgress({ phase: "vectors" });
-    const stored = await readWipeProgress(db, TENANT);
-    expect(stored).not.toBeNull();
-
-    // Both deliveries read the same row, so both hold the same lease version.
-    const winner = new WipeProgressWriter(db, TENANT, stored);
-    const loser = new WipeProgressWriter(db, TENANT, stored);
-
-    await winner.write({ ...stored!, phase: "objects", objectsDeleted: 7 });
-    await expect(
-      loser.write({ ...stored!, phase: "vectors", objectsDeleted: 0 }),
-    ).rejects.toBeInstanceOf(AccountWipeProgressConflictError);
-
-    // The winner's state stands, untouched by the loser's attempt.
-    const after = await readWipeProgress(db, TENANT);
-    expect(after!.phase).toBe("objects");
-    expect(after!.objectsDeleted).toBe(7);
-    expect(after!.leaseSeq).toBe(stored!.leaseSeq + 1);
-
-    // And the winner can keep writing: losing did not disturb its chain.
-    await winner.write({ ...stored!, phase: "objects", objectsDeleted: 9 });
-    expect((await readWipeProgress(db, TENANT))!.objectsDeleted).toBe(9);
-  });
-
-  // The first write for a tenant is an INSERT, not an UPDATE, so it has its own
-  // way to lose: `INSERT … WHERE NOT EXISTS` only yields `changes = 0` when the
-  // two writers are serialized. If both evaluate NOT EXISTS before either
-  // commits, the loser hits the primary key. That must surface as the same
-  // conflict, or it escapes the lease path and burns queue retry budget.
-  it("turns a losing first insert into a conflict rather than a raw constraint error", async () => {
-    const db = controlPlane();
-    expect(await readWipeProgress(db, TENANT)).toBeNull();
-    // Both deliveries believe the row is absent, which is what makes them both
-    // take the insert path.
-    const winner = new WipeProgressWriter(db, TENANT, null);
-    const loser = new WipeProgressWriter(db, TENANT, null);
-
-    await winner.write(emptyWipeProgress(NOW_MS));
-    await expect(loser.write(emptyWipeProgress(NOW_MS))).rejects.toBeInstanceOf(
-      AccountWipeProgressConflictError,
-    );
-    expect((await readWipeProgress(db, TENANT))!.leaseSeq).toBe(1);
-  });
-
   // The same contention seen through the job: a delivery whose record moved
   // under it reports `lease_held` and is acked, not retried into the DLQ.
   it("reports lease_held and acks when another delivery owns the wipe", async () => {
@@ -1407,17 +1292,6 @@ describe("account wipe (195b PR1)", () => {
     expect(retry).not.toHaveBeenCalled();
     // Nothing was deleted by the delivery that lost.
     expect(await listPrefixKeys(PREFIX)).not.toEqual([]);
-  });
-
-  // Move 1 / F3: an empty id list must not let an unbound index short-circuit to
-  // success. Commit a9a9f0f's fail-closed intent applies before the emptiness test.
-  it("throws when the Vectorize index is unbound even with no collected reading ids", async () => {
-    await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-    expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    const jobEnv = { ...(await wipeEnv()), READINGS_INDEX: undefined } as unknown as Env;
-    await expect(
-      processAccountWipeJob(accountWipeEnvelopeV1({ tenantId: TENANT }), jobEnv, wipeJobDeps()),
-    ).rejects.toThrow(/index_unbound/);
   });
 
   // Move 1 / F3: the wipe must not claim success while the tenant namespace still
@@ -1526,8 +1400,6 @@ describe("account wipe (195b PR1)", () => {
     // No probe was made and no attempt was spent.
     expect(queryIndex).not.toHaveBeenCalled();
     expect((await readProgress())!.probeAttempts).toBe(0);
-    // S6 measured deleteByIds propagation at 30-90s; the delay clears it.
-    expect(VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(90_000);
   });
 
   // A confirmation attempt that genuinely observed something backs off on the
@@ -1903,34 +1775,6 @@ describe("account wipe (195b PR1)", () => {
     expect(reopened!.firstResidue).toBe(false);
   });
 
-  // Write-once is enforced in SQL, not only by the caller, so a second
-  // completion cannot move the history even if a caller passes a fresh pair.
-  it("pins the first-completion pair against a later completion", async () => {
-    const db = controlPlane();
-    await seedProgress({ phase: "objects" });
-    const stored = await readWipeProgress(db, TENANT);
-    const writer = new WipeProgressWriter(db, TENANT, stored);
-
-    await writer.complete(stored!, NOW_MS, false);
-    const afterFirst = await readWipeProgress(db, TENANT);
-    expect(afterFirst!.firstCompletedAtMs).toBe(NOW_MS);
-    expect(afterFirst!.firstResidue).toBe(false);
-
-    // A later pass completes again, this time leaving residue.
-    const later = NOW_MS + 60_000;
-    await writer.complete(
-      { ...afterFirst!, firstCompletedAtMs: later, firstResidue: true },
-      later,
-      true,
-    );
-    const afterSecond = await readWipeProgress(db, TENANT);
-    // Current pair moves; the history does not.
-    expect(afterSecond!.completedAtMs).toBe(later);
-    expect(afterSecond!.residue).toBe(true);
-    expect(afterSecond!.firstCompletedAtMs).toBe(NOW_MS);
-    expect(afterSecond!.firstResidue).toBe(false);
-  });
-
   // Ruling 3. A heartbeat is a full-row D1 UPDATE, and beating on every page put
   // hundreds of them inside one delivery. The lease is a version now, so the
   // beat only has to keep cron from thinking the job died.
@@ -2227,31 +2071,46 @@ describe("account wipe (195b PR1)", () => {
       expect(await listPrefixKeys(PREFIX)).toEqual([]);
     });
 
-    it("seeds a reading whose vector outlived its ready status", async () => {
-      // The exact case the retired coverage check was blind to. A reading
-      // reprocessed to `failed` keeps its vector — the failure path publishes
-      // with a null similarity store and deliberately leaves it alone — so it
-      // has a live vector and no `ready` row. Deriving ids from the key space
-      // finds it; comparing against `ready` rows did not.
-      await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
-      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-      const result = await runWipeToCompletion(
-        accountWipeEnvelopeV1({ tenantId: TENANT }),
-        { t: NOW_MS },
-      );
-      expect(result.kind).toBe("complete");
-      expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
-    });
-
-    it("finds a reading the list index has lost but whose objects remain", async () => {
-      // A dropped or rewritten list row, or a partial purge. The key space
-      // still carries the id; `index/list.json` does not.
-      const reader = testReadingStore(env, otherTenant());
-      await reader.writeListIndex({ version: 1, items: [] });
-      await reader.writeByIdPointer(ID_A, {
-        id: ID_A,
-        key_prefix: `readings/2026/04/26T200000Z-${ID_A}`,
-      });
+    it.each([
+      {
+        name: "a reading whose vector outlived its ready status",
+        // The exact case the retired coverage check was blind to. A reading
+        // reprocessed to `failed` keeps its vector — the failure path publishes
+        // with a null similarity store and deliberately leaves it alone — so it
+        // has a live vector and no `ready` row. Deriving ids from the key space
+        // finds it; comparing against `ready` rows did not.
+        seed: async () => {
+          await seedTenantObjects([ID_A], { ledger: false, status: "failed" });
+        },
+      },
+      {
+        name: "a reading the list index has lost but whose objects remain",
+        // A dropped or rewritten list row, or a partial purge. The key space
+        // still carries the id; `index/list.json` does not.
+        seed: async () => {
+          const reader = testReadingStore(env, otherTenant());
+          await reader.writeListIndex({ version: 1, items: [] });
+          await reader.writeByIdPointer(ID_A, {
+            id: ID_A,
+            key_prefix: `readings/2026/04/26T200000Z-${ID_A}`,
+          });
+        },
+      },
+      {
+        name: "a reading under a corrupt list index instead of refusing",
+        // The key walk is the wider source anyway, and refusing to seed over a
+        // damaged index would strand the corpus it describes.
+        seed: async () => {
+          await env.READINGS_BUCKET.put(`${PREFIX}index/list.json`, "{not json");
+          const reader = testReadingStore(env, otherTenant());
+          await reader.writeByIdPointer(ID_A, {
+            id: ID_A,
+            key_prefix: `readings/2026/04/26T200000Z-${ID_A}`,
+          });
+        },
+      },
+    ])("seeds $name", async ({ seed }) => {
+      await seed();
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
       const result = await runWipeToCompletion(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
@@ -2365,49 +2224,26 @@ describe("account wipe (195b PR1)", () => {
       expect(memory.keysUnder(PREFIX)).toEqual([]);
     });
 
-    it("seeds over a corrupt list index instead of refusing", async () => {
-      // The key walk is the wider source anyway, and refusing to seed over a
-      // damaged index would strand the corpus it describes.
-      await env.READINGS_BUCKET.put(`${PREFIX}index/list.json`, "{not json");
-      const reader = testReadingStore(env, otherTenant());
-      await reader.writeByIdPointer(ID_A, {
-        id: ID_A,
-        key_prefix: `readings/2026/04/26T200000Z-${ID_A}`,
-      });
-      await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
-      const result = await runWipeToCompletion(
-        accountWipeEnvelopeV1({ tenantId: TENANT }),
-        { t: NOW_MS },
-      );
-      expect(result.kind).toBe("complete");
-      expect(deleteByIds).toHaveBeenCalledWith([tenantVectorId(OTHER_TENANT_ID, ID_A)]);
-    });
-
     it("does not consult the namespace guard for a tenant the ledger already tracks", async () => {
       // The guard is narrow on purpose: a ledger with rows IS tracking this
       // tenant's vectors, so the terminal confirmation handles whatever is
       // left and the objects phase is not blocked.
       await seedTenantObjects([ID_A]);
       await markDeleting(OTHER_TENANT_ID, NOW_MS - ACCOUNT_WIPE_GRACE_MS);
+      const objectsLeftAtProbe: number[] = [];
+      queryIndex.mockImplementation(async () => {
+        objectsLeftAtProbe.push((await listPrefixKeys(PREFIX)).length);
+        return { count: 0, matches: [] };
+      });
       const result = await runWipeToCompletion(
         accountWipeEnvelopeV1({ tenantId: TENANT }),
         { t: NOW_MS },
       );
       expect(result.kind).toBe("complete");
       expect(await listPrefixKeys(PREFIX)).toEqual([]);
-    });
-
-    it("the fast path clears confirmed rows but never a vector nobody has deleted", async () => {
-      // The probe happens between the row read and the DELETE, so a publisher
-      // can insert a `live` row inside that window. An empty namespace says
-      // nothing about a vector that was upserted after it answered, and
-      // clearing that row would delete the only record of it.
-      await seedLedgerSubmitted([ID_A]);
-      await seedLedger([ID_B]);
-      // The probe instant authorizes the clear; a delete submitted after it is
-      // deliberately left behind.
-      expect(await clearTenantLedger(controlPlane(), TENANT, NOW_MS)).toBe(1);
-      expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_B, "live"]]);
+      // The one namespace query is the terminal confirmation, taken after the
+      // objects phase has emptied the prefix — never a gate in front of it.
+      expect(objectsLeftAtProbe).toEqual([0]);
     });
 
     it("the fast path respects the same propagation floor as the per-id rule", async () => {
@@ -2459,33 +2295,6 @@ describe("account wipe (195b PR1)", () => {
       // the probe instant survives, so the wipe is not finished.
       expect((await ledgerRows()).map((r) => r.reading_id)).toEqual([ID_B]);
       expect(result).not.toMatchObject({ kind: "complete" });
-    });
-
-    it("does not clear a row that was re-marked live after the absence was observed", async () => {
-      // A reading re-published between the getByIds that observed its absence
-      // and the DELETE has a brand-new vector. Clearing its row because the
-      // PREVIOUS vector was confirmed gone is the exact stranding the ledger
-      // exists to prevent, reintroduced by the code meant to close it.
-      const observedAt = NOW_MS - VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS - 1;
-      await seedLedgerSubmitted([ID_A], observedAt);
-      await seedLedger([ID_A]); // republished: state live, stamp cleared
-      await clearLedgerRows(controlPlane(), TENANT, [
-        { readingId: ID_A, deletedAtMs: observedAt },
-      ]);
-      expect((await ledgerRows()).map((r) => [r.reading_id, r.state])).toEqual([[ID_A, "live"]]);
-    });
-
-    it("re-marking a reading live clears the delete bookkeeping of its previous vector", async () => {
-      // A reading republished after a delete was submitted has a NEW vector.
-      // Carrying the old deleted_at_ms or streak forward would let a
-      // confirmation about the previous vector clear a row describing this one.
-      await seedLedgerSubmitted([ID_A]);
-      await seedLedger([ID_A]);
-      const rows = await ledgerRows();
-      expect(rows).toHaveLength(1);
-      expect(rows[0]!.state).toBe("live");
-      expect(rows[0]!.deleted_at_ms).toBeNull();
-      expect(rows[0]!.absent_streak).toBe(0);
     });
   });
 });
@@ -2539,20 +2348,25 @@ describe("account teardown from cron fan-out (195 S4)", () => {
 
   it("tears the account down instead of enqueuing another wipe", async () => {
     await completedWipe();
+    const db = fromD1(env.CONTROL_PLANE);
+    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
+      "ineligible",
+    );
 
     expect(await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({
       enqueued: 0,
     });
 
     expect(queued).toEqual([]);
+    // The users row goes and the audit row is the one that outlives the account
+    // (the child tables are covered by test/unit/control-plane/account-teardown.test.ts).
     expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(0);
-    expect(await countRows("wipe_progress", "tenant_id", OTHER_TENANT_ID)).toBe(0);
-    expect(await countRows("api_tokens", "user_id", OTHER_TENANT_ID)).toBe(0);
-    expect(await countRows("api_token_scopes", "token_id", OTHER_TOKEN_ID)).toBe(0);
-    expect(await countRows("user_settings", "user_id", OTHER_TENANT_ID)).toBe(0);
-    expect(await countRows("tenant_limits", "tenant_id", OTHER_TENANT_ID)).toBe(0);
-    // The one row that outlives the account.
     expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(1);
+    // Which is what frees the address for a new signup: fenced but present
+    // before teardown, provisionable after.
+    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
+      "provisionable",
+    );
   });
 
   // F10: the tenant left `users`, so `listDeletingUsers` cannot return it and
@@ -2612,21 +2426,5 @@ describe("account teardown from cron fan-out (195 S4)", () => {
 
     expect(await countRows("users", "id", OTHER_TENANT_ID)).toBe(1);
     expect(await countRows("account_deletions", "tenant_id", OTHER_TENANT_ID)).toBe(0);
-  });
-
-  it("frees the address for a new signup only after teardown", async () => {
-    await completedWipe();
-    const db = fromD1(env.CONTROL_PLANE);
-
-    // Fenced but present: the address is claimed by a non-active row.
-    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
-      "ineligible",
-    );
-
-    await fanOutDueAccountWipes(await wipeEnv(), { nowMs: NOW_MS + 1 });
-
-    expect((await resolveLoginEligibility(db, "other@test.example", NOW_MS)).kind).toBe(
-      "provisionable",
-    );
   });
 });

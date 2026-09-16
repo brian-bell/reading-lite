@@ -91,48 +91,6 @@ describe("extractHeadless", () => {
     expect(outcome).toMatchObject({ kind: "extracted", tier: "headless", salvaged: true });
   });
 
-  it("classifies a structurally backed rendered challenge", async () => {
-    const html = readFileSync(join(FIXTURES, "structural-challenge.html"), "utf-8");
-    const outcome = await extractHeadless(
-      "https://public.example/challenge",
-      deps({ renderPage: renderer({ html }, "https://public.example/challenge") }),
-    );
-
-    expect(outcome).toMatchObject({
-      kind: "challenge",
-      tier: "headless",
-      evidence: expect.arrayContaining(["structural:cloudflare", "body:verify-human"]),
-    });
-  });
-
-  it("classifies a visible rendered subscription wall", async () => {
-    const html = readFileSync(join(FIXTURES, "wall-short-original-title.html"), "utf-8");
-    const outcome = await extractHeadless(
-      "https://public.example/story",
-      deps({ renderPage: renderer({ html }, "https://public.example/story") }),
-    );
-
-    expect(outcome).toMatchObject({
-      kind: "challenge",
-      tier: "headless",
-      evidence: expect.arrayContaining([
-        "wall:continue-reading",
-        "wall_support:existing-subscriber",
-        "wall_support:unlimited-access",
-      ]),
-    });
-  });
-
-  it("keeps a rendered complete article with a subscription footer extractable", async () => {
-    const html = readFileSync(join(FIXTURES, "article-subscription-footer.html"), "utf-8");
-    const outcome = await extractHeadless(
-      "https://public.example/story",
-      deps({ renderPage: renderer({ html }, "https://public.example/story") }),
-    );
-
-    expect(outcome).toMatchObject({ kind: "extracted", tier: "headless" });
-  });
-
   it("maps a rendered membership destination to no_article", async () => {
     const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
     const outcome = await extractHeadless(
@@ -192,20 +150,6 @@ describe("extractHeadless", () => {
     );
 
     expect(outcome).toMatchObject({ kind: "no_article" });
-  });
-
-  it("keeps a rendered article with a comment-form CAPTCHA extractable", async () => {
-    const html = readFileSync(join(FIXTURES, "captcha-comment-widget.html"), "utf-8");
-    const outcome = await extractHeadless(
-      "https://public.example/article",
-      deps({ renderPage: renderer({ html }, "https://public.example/article") }),
-    );
-
-    expect(outcome).toMatchObject({
-      kind: "extracted",
-      tier: "headless",
-      title: "Are you a robot? The CAPTCHA arms race",
-    });
   });
 
   it("reports no_article when the rendered dom still has nothing to extract", async () => {

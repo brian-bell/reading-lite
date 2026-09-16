@@ -29,7 +29,6 @@ interface FakeState {
   contextOptions: Record<string, unknown> | undefined;
   routePatterns: string[];
   gotoCalls: Array<{ url: string; opts: unknown }>;
-  evaluateExpressions: string[];
   aborted: string[];
   continued: string[];
   fulfilled: Array<{ url: string; body: string; contentType?: string; status?: number }>;
@@ -69,7 +68,6 @@ function fakePlaywright(opts: {
     contextOptions: undefined,
     routePatterns: [],
     gotoCalls: [],
-    evaluateExpressions: [],
     aborted: [],
     continued: [],
     fulfilled: [],
@@ -152,8 +150,7 @@ function fakePlaywright(opts: {
     mainFrame() {
       return mainFrame;
     },
-    async evaluate<T>(expression: string): Promise<T> {
-      state.evaluateExpressions.push(expression);
+    async evaluate<T>(): Promise<T> {
       if (opts.hangOnEvaluate) return new Promise<T>(() => {});
       if (opts.navigationDuringEvaluateStatus !== undefined) {
         const url = opts.navigationDuringEvaluateUrl ?? "https://public.example/during-evaluate";
@@ -492,20 +489,6 @@ describe("makePlaywrightRenderPage", () => {
     expect(state.closedBrowsers).toBe(1);
   });
 
-  it("measures the same serialization page.content() transfers", async () => {
-    // Playwright serializes an optional doctype followed by outerHTML. The
-    // in-page guard must use that exact HTML serialization, not XMLSerializer
-    // on the whole document (which would change void tags and add xmlns).
-    const { module, state } = fakePlaywright();
-    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
-
-    await render("https://public.example/a", OPTS);
-
-    expect(state.evaluateExpressions).toContain(
-      "new TextEncoder().encode((document.doctype ? new XMLSerializer().serializeToString(document.doctype) : \"\") + (document.documentElement ? document.documentElement.outerHTML : \"\")).length",
-    );
-  });
-
   it("gives up on a page that never answers, and closes the browser under it", async () => {
     // page.evaluate and page.content have no timeout of their own and both run
     // code the document controls, so a hostile page could otherwise hang the
@@ -561,34 +544,28 @@ describe("makePlaywrightRenderPage", () => {
     expect(state.closedBrowsers).toBe(1);
   });
 
-  it("keeps an error response when the page only changes its history fragment", async () => {
-    // Response.url() is the network URL, while page.url() includes fragments.
-    // A same-document hash/history update must not make a 429 look successful.
-    const { module, state } = fakePlaywright({
+  it.each([
+    {
+      change: "fragment",
       navigationStatus: 429,
       finalUrl: "https://public.example/a#retry-later",
-    });
-    const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
-
-    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
-      "rate limited by https://public.example/a#retry-later (status 429",
-    );
-    expect(state.closedContexts).toBe(1);
-    expect(state.closedBrowsers).toBe(1);
-  });
-
-  it("keeps an error response when the page changes its history path", async () => {
-    // pushState/replaceState can change path and query without loading a new
-    // document, so the original HTTP response still describes the captured DOM.
-    const { module, state } = fakePlaywright({
+      message: "rate limited by https://public.example/a#retry-later (status 429",
+    },
+    {
+      change: "path and query",
       navigationStatus: 403,
       finalUrl: "https://public.example/challenge?retry=1",
-    });
+      message: "bad response status 403: https://public.example/challenge?retry=1",
+    },
+  ])("keeps an error response when the page only changes its history $change", async ({ navigationStatus, finalUrl, message }) => {
+    // Response.url() is the network URL, while page.url() reflects same-document
+    // hash/pushState/replaceState updates that load no new document. The
+    // original HTTP response still describes the captured DOM, so a history
+    // change must not make an error status look successful.
+    const { module, state } = fakePlaywright({ navigationStatus, finalUrl });
     const render = makePlaywrightRenderPage({ load: async () => module, lookup: PUBLIC_LOOKUP });
 
-    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(
-      "bad response status 403: https://public.example/challenge?retry=1",
-    );
+    await expect(render("https://public.example/a", OPTS)).rejects.toThrow(message);
     expect(state.closedContexts).toBe(1);
     expect(state.closedBrowsers).toBe(1);
   });

@@ -177,21 +177,14 @@ describe("ListReadingsQuerySchema", () => {
     expect(parsed.limit).toBe(10);
   });
 
-  it("rejects limit outside 1..100", () => {
-    expect(() => ListReadingsQuerySchema.parse({ limit: "0" })).toThrow();
-    expect(() => ListReadingsQuerySchema.parse({ limit: "101" })).toThrow();
-  });
-
-  it("rejects non-numeric limit", () => {
-    expect(() => ListReadingsQuerySchema.parse({ limit: "many" })).toThrow();
-  });
-
-  it("rejects negative offset", () => {
-    expect(() => ListReadingsQuerySchema.parse({ offset: "-1" })).toThrow();
-  });
-
-  it("rejects non-numeric offset", () => {
-    expect(() => ListReadingsQuerySchema.parse({ offset: "abc" })).toThrow();
+  it.each([
+    ["limit below 1", { limit: "0" }],
+    ["limit above 100", { limit: "101" }],
+    ["non-numeric limit", { limit: "many" }],
+    ["negative offset", { offset: "-1" }],
+    ["non-numeric offset", { offset: "abc" }],
+  ])("rejects %s", (_name, query) => {
+    expect(() => ListReadingsQuerySchema.parse(query)).toThrow();
   });
 });
 
@@ -381,6 +374,11 @@ describe("ListSessionsResponseSchema", () => {
       session_cap_warning: "at cap",
     };
     expect(ListSessionsResponseSchema.parse(body)).toEqual(body);
+
+    const [session] = body.sessions;
+    expect(() =>
+      ListSessionsResponseSchema.parse({ ...body, sessions: [{ ...session, usable: "yes" }] }),
+    ).toThrow();
   });
 });
 
@@ -424,6 +422,14 @@ describe("ListTokensResponseSchema", () => {
       ],
     };
     expect(ListTokensResponseSchema.parse(body)).toEqual(body);
+
+    const [token] = body.tokens;
+    expect(() =>
+      ListTokensResponseSchema.parse({ tokens: [{ ...token, scopes: ["admin"] }] }),
+    ).toThrow();
+    expect(() =>
+      ListTokensResponseSchema.parse({ tokens: [{ ...token, format: "bogus" }] }),
+    ).toThrow();
   });
 });
 

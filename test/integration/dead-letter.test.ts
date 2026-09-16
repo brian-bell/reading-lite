@@ -84,6 +84,8 @@ describe("markDeadLettered", () => {
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    const pointer = { id: READING_ID, key_prefix: KEY_PREFIX };
+    await reader.writeByUrlPointer(DLQ_URL_HASH, pointer);
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
@@ -95,8 +97,9 @@ describe("markDeadLettered", () => {
     const item = await reader.findListIndexItem(READING_ID);
     expect(item?.status).toBe("failed");
 
-    // Failed readings must stay re-submittable: no by-url pointer.
-    expect(await reader.readByUrlPointer("d".repeat(64))).toBeNull();
+    // Failed owners reprocess in place: the by-url claim survives the DLQ mark
+    // so the next submit of this URL lands on this reading, not a new one.
+    expect(await reader.readByUrlPointer(DLQ_URL_HASH)).toEqual(pointer);
   });
 
   it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {
@@ -376,66 +379,68 @@ describe("markDeadLettered", () => {
     expect(after?.last_attempt?.id).toBe("at_NEWER");
   });
 
-  it("releases a held reading slot when retries are exhausted", async () => {
-    const { tenant, usage, reader } = await quotaUsage();
-    const manifest = pendingManifest();
-    await reader.writeManifest(KEY_PREFIX, manifest);
-    const opId = `at_${READING_ID}`;
-    expect(await usage.reserveReading(opId, Date.now())).toEqual({ ok: true });
-
-    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
-
-    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("failed");
-    expect(await usage.reserveReading("at_after_dlq", Date.now())).toEqual({ ok: true });
-  });
-
-  it("releases a held slot on a confirmed-absent dead-letter", async () => {
-    const { tenant, usage } = await quotaUsage();
-    expect(await usage.reserveReading(`at_${READING_ID}`, Date.now())).toEqual({ ok: true });
-
-    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
-
-    expect(await usage.reserveReading("at_after_absent", Date.now())).toEqual({ ok: true });
-  });
-
-  it("releases a held slot when a purge tombstone is present", async () => {
-    const { tenant, usage, reader } = await quotaUsage();
-    await reader.writeManifest(KEY_PREFIX, pendingManifest());
-    await reader.writePurgeTombstone(READING_ID);
-    expect(await usage.reserveReading(`at_${READING_ID}`, Date.now())).toEqual({ ok: true });
-
-    await markDeadLettered(args(), env as unknown as Env, services(), tenant);
-
-    expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
-    expect(await usage.reserveReading("at_after_tombstone", Date.now())).toEqual({ ok: true });
-  });
-
-  it("releases a held slot when a stale dead-lettered attempt no longer owns the reading", async () => {
-    const { tenant, usage, reader } = await quotaUsage();
-    const v2: Manifest = {
-      ...pendingManifest(),
-      status: "ready",
-      title: "v2 (newer attempt)",
-      active_attempt: undefined,
-      last_attempt: {
-        id: "at_NEWER",
-        trigger: "reprocess",
-        status: "succeeded",
-        started_at: "2026-05-07T12:30:00.000Z",
+  it.each([
+    {
+      state: "pending manifest",
+      attemptId: undefined,
+      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+        await reader.writeManifest(KEY_PREFIX, pendingManifest());
       },
-    };
-    await reader.writeManifest(KEY_PREFIX, v2);
-    expect(await usage.reserveReading("at_ORIGINAL", Date.now())).toEqual({ ok: true });
+      check: async (reader: ReturnType<typeof testReadingStore>) => {
+        expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("failed");
+      },
+    },
+    {
+      state: "confirmed-absent manifest",
+      attemptId: undefined,
+      seed: async () => {},
+      check: async (reader: ReturnType<typeof testReadingStore>) => {
+        expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+      },
+    },
+    {
+      state: "purge tombstone",
+      attemptId: undefined,
+      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+        await reader.writeManifest(KEY_PREFIX, pendingManifest());
+        await reader.writePurgeTombstone(READING_ID);
+      },
+      check: async (reader: ReturnType<typeof testReadingStore>) => {
+        expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
+      },
+    },
+    {
+      state: "stale attempt that no longer owns the reading",
+      attemptId: "at_ORIGINAL",
+      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+        const v2: Manifest = {
+          ...pendingManifest(),
+          status: "ready",
+          title: "v2 (newer attempt)",
+          active_attempt: undefined,
+          last_attempt: {
+            id: "at_NEWER",
+            trigger: "reprocess",
+            status: "succeeded",
+            started_at: "2026-05-07T12:30:00.000Z",
+          },
+        };
+        await reader.writeManifest(KEY_PREFIX, v2);
+      },
+      check: async (reader: ReturnType<typeof testReadingStore>) => {
+        expect((await reader.readManifest(KEY_PREFIX))?.title).toBe("v2 (newer attempt)");
+      },
+    },
+  ])("releases a held reading slot on dead-letter: $state", async ({ attemptId, seed, check }) => {
+    const { tenant, usage, reader } = await quotaUsage();
+    await seed(reader);
+    const held = attemptId ?? `at_${READING_ID}`;
+    expect(await usage.reserveReading(held, Date.now())).toEqual({ ok: true });
 
-    await markDeadLettered(
-      args({ attemptId: "at_ORIGINAL" }),
-      env as unknown as Env,
-      services(),
-      tenant,
-    );
+    await markDeadLettered(args(attemptId ? { attemptId } : {}), env as unknown as Env, services(), tenant);
 
-    expect((await reader.readManifest(KEY_PREFIX))?.title).toBe("v2 (newer attempt)");
-    expect(await usage.reserveReading("at_after_stale", Date.now())).toEqual({ ok: true });
+    await check(reader);
+    expect(await usage.reserveReading("at_after_dlq", Date.now())).toEqual({ ok: true });
   });
 });
 

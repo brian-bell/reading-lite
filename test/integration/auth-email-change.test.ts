@@ -329,54 +329,6 @@ describe("verified email change", () => {
     expect(same.sent).toHaveLength(0);
   });
 
-  it("restores the previous email-change link when a later different-address send fails", async () => {
-    const session = await redeemUser("restore-changer@test.example", "clm_restore_email_req");
-    const toA = await request("/api/auth/email-change", {
-      method: "POST",
-      cookie: session.cookie,
-      csrf: session.csrf,
-      body: { email: "address-a@test.example" },
-    });
-    expect(toA.res.status).toBe(200);
-    expect(toA.sent).toHaveLength(1);
-    const credentialA = credentialFrom(toA.sent[0]!.verifyUrl);
-
-    const toB = await request("/api/auth/email-change", {
-      method: "POST",
-      cookie: session.cookie,
-      csrf: session.csrf,
-      body: { email: "address-b@test.example" },
-      sendMagicLink: async () => {
-        throw new Error("resend 400");
-      },
-    });
-    expect(toB.res.status).toBe(200);
-    expect(await toB.res.json()).toEqual({ ok: true });
-    expect(toB.sent).toHaveLength(0);
-
-    const workerEnv = env as unknown as Env;
-    const rows = await workerEnv.CONTROL_PLANE.prepare(
-      `SELECT email_canonical, state FROM auth_challenges
-       WHERE purpose = 'email_change' AND user_id = ?
-       ORDER BY issued_at_ms`,
-    )
-      .bind(session.userId)
-      .all<{ email_canonical: string; state: string }>();
-    expect(rows.results).toEqual([
-      { email_canonical: "address-a@test.example", state: "issued" },
-      { email_canonical: "address-b@test.example", state: "revoked" },
-    ]);
-
-    const restored = await request("/api/auth/redeem", {
-      method: "POST",
-      cookie: session.cookie,
-      csrf: session.csrf,
-      body: { credential: credentialA, redemption_id: "clm_restore_email_a" },
-    });
-    expect(restored.res.status).toBe(200);
-    expect((await restored.res.json() as { email: string }).email).toBe("address-a@test.example");
-  });
-
   it("restores the caller's previous link without stealing another user's live target", async () => {
     const caller = await redeemUser("snapshot-caller@test.example", "clm_snap_caller");
     const other = await redeemUser("snapshot-other@test.example", "clm_snap_other");
@@ -409,6 +361,7 @@ describe("verified email change", () => {
       },
     });
     expect(callerB.res.status).toBe(200);
+    expect(await callerB.res.json()).toEqual({ ok: true });
     expect(callerB.sent).toHaveLength(0);
 
     const workerEnv = env as unknown as Env;
@@ -430,6 +383,7 @@ describe("verified email change", () => {
       body: { credential: credentialA, redemption_id: "clm_snap_restore_a" },
     });
     expect(restoredA.res.status).toBe(200);
+    expect((await restoredA.res.json() as { email: string }).email).toBe("snap-a@test.example");
 
     const restoredOtherB = await request("/api/auth/redeem", {
       method: "POST",

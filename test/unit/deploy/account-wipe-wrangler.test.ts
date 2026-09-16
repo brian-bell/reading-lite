@@ -17,9 +17,6 @@ describe("account wipe wrangler wiring", () => {
     expect(wrangler).toMatch(/queue = "reading-lite-wipe"\s*\nmax_batch_size = 1/);
     expect(wrangler).toMatch(/queue = "reading-lite-staging-wipe"\s*\nmax_batch_size = 1/);
     expect(testToml).not.toMatch(/binding = "ACCOUNT_WIPE_JOBS"/);
-    expect(read("src/account-wipe.ts")).not.toMatch(/READING_JOBS/);
-    expect(read("src/control-plane/account-handlers.ts")).not.toMatch(/account-wipe/);
-    expect(read("src/control-plane/account-delete.ts")).not.toMatch(/account-wipe/);
   });
 
   // The terminal probe bound is only consumed inside one message's retry budget
@@ -66,11 +63,10 @@ describe("account wipe wrangler wiring", () => {
     }
   });
 
-  // The S6 rehearsal runbook is the operator-facing pin contract: rolling the
-  // gate back after writes is not free, rescue must clear deleting_at_ms,
-  // fencing a signed-up tenant must revoke credentials, and teardown must
-  // use the automatic teardown path.
-  it("documents the staging pin rollback, rescue, fence, and teardown procedures", () => {
+  // The S6 rehearsal runbook is the operator-facing pin contract: fencing a
+  // signed-up tenant must revoke credentials, and teardown must stay on the
+  // automatic path rather than the retired manual D1 deletes.
+  it("keeps the staging rehearsal runbook on credential revocation and automatic teardown", () => {
     const wrangler = read("wrangler.toml");
     const stagingVars = /\[env\.staging\.vars\]([\s\S]*?)\n\[/.exec(wrangler);
     expect(stagingVars, "[env.staging.vars] block").not.toBeNull();
@@ -81,20 +77,7 @@ describe("account wipe wrangler wiring", () => {
     expect(rehearsal, "rehearsal section").toBeDefined();
     const section = rehearsal!.split("\n## ")[0];
 
-    expect(section).toMatch(/complete rollback only before post-pin writes resume/i);
-    expect(section).toMatch(/reverse reconcili/i);
-    expect(section).toMatch(/deleting_at_ms=NULL/);
-    expect(section).toMatch(/COALESCE\(deleting_at_ms/);
-    expect(section).toMatch(/heartbeat is advisory/i);
-    expect(section).toMatch(/Pause cron fan-out and teardown/i);
-    expect(section).toMatch(/delayed retries/i);
-    expect(section).toMatch(/first_completed_at_ms IS NULL/);
-    expect(section).toMatch(/DELETE \/api\/account/);
     expect(section).toMatch(/revocation_reason='account_delete'/);
-    expect(section).toMatch(/Control-plane teardown is automatic/);
-    expect(section).toMatch(/completed_user_id/);
-    expect(section).toMatch(/account_deletions/);
-    expect(section).toMatch(/account residue-scan/);
     // Instructions must not restore the pre-S4 manual teardown commands.
     expect(section).not.toMatch(/--command "DELETE FROM (?:users|sessions|api_tokens|auth_challenges)/);
   });

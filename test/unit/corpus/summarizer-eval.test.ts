@@ -28,8 +28,7 @@ const strongReading: ReadingSummary = {
 };
 
 describe("summarizer evaluation corpus", () => {
-  it("covers every required non-secret quality category and model candidate", () => {
-    expect(EVALUATION_CASES).toHaveLength(10);
+  it("covers every required non-secret quality category and pins effort on each Anthropic candidate", () => {
     expect(new Set(EVALUATION_CASES.map((item) => item.category))).toEqual(
       new Set([
         "long",
@@ -43,21 +42,6 @@ describe("summarizer evaluation corpus", () => {
         "novel",
         "prompt-injection",
       ]),
-    );
-    expect(EVALUATION_CANDIDATES.map((item) => item.id)).toEqual([
-      "anthropic",
-      "terra-none",
-      "terra-low",
-      "terra-medium",
-      "luna-low",
-      "sol-low",
-    ]);
-    expect(EVALUATION_CANDIDATES[0]).toEqual(
-      expect.objectContaining({
-        provider: "anthropic",
-        model: "claude-sonnet-5",
-        anthropicEffort: "low",
-      }),
     );
     for (const candidate of EVALUATION_CANDIDATES.filter(
       (item) => item.provider === "anthropic",

@@ -265,15 +265,30 @@ describe("session inspect and revoke", () => {
     expect((await request("/api/whoami", { authorization: `Bearer ${OTHER_TOKEN_SECRET}` })).res.status).toBe(200);
 
     const ownerBearerSession = await redeemSession("clm_revoke_scope_owner_bearer");
+    const securityMail: SecurityMail[] = [];
     const bearerRevoke = await request("/api/auth/sessions/revoke-all", {
       method: "POST",
       authorization: "Bearer test-token",
       body: {},
+      securityMail,
     });
     expect(bearerRevoke.res.status).toBe(200);
+    expect(bearerRevoke.res.headers.get("set-cookie")).toBeNull();
+    expect(securityMail).toHaveLength(1);
     expect((await request("/api/whoami", { cookie: ownerBearerSession.cookie })).res.status).toBe(401);
     expect((await request("/api/whoami", { cookie: other.cookie })).res.status).toBe(200);
     expect((await request("/api/whoami", { authorization: `Bearer ${OTHER_TOKEN_SECRET}` })).res.status).toBe(200);
+
+    // A second revoke with nothing left to revoke sends no security mail.
+    const again: SecurityMail[] = [];
+    const second = await request("/api/auth/sessions/revoke-all", {
+      method: "POST",
+      authorization: "Bearer test-token",
+      body: {},
+      securityMail: again,
+    });
+    expect(second.res.status).toBe(200);
+    expect(again).toHaveLength(0);
   });
 
   it("logout revokes one session while another owner session and another tenant survive", async () => {
@@ -295,7 +310,7 @@ describe("session inspect and revoke", () => {
     expect((await request("/api/whoami", { cookie: other.cookie })).res.status).toBe(200);
   });
 
-  it("lets bearer list and revoke-all without CSRF, and leaves corpus reads ungated by recent-auth", async () => {
+  it("lets bearer list sessions without CSRF, and leaves corpus reads ungated by recent-auth", async () => {
     const session = await redeemSession("clm_bearer_list");
     const listed = await request("/api/auth/sessions", { authorization: "Bearer test-token" });
     expect(listed.res.status).toBe(200);
@@ -315,27 +330,6 @@ describe("session inspect and revoke", () => {
 
     const readings = await request("/api/readings", { cookie: session.cookie });
     expect(readings.res.status).toBe(200);
-
-    const securityMail: SecurityMail[] = [];
-    const revoked = await request("/api/auth/sessions/revoke-all", {
-      method: "POST",
-      authorization: "Bearer test-token",
-      body: {},
-      securityMail,
-    });
-    expect(revoked.res.status).toBe(200);
-    expect(securityMail).toHaveLength(1);
-    expect(revoked.res.headers.get("set-cookie")).toBeNull();
-
-    const again: SecurityMail[] = [];
-    const second = await request("/api/auth/sessions/revoke-all", {
-      method: "POST",
-      authorization: "Bearer test-token",
-      body: {},
-      securityMail: again,
-    });
-    expect(second.res.status).toBe(200);
-    expect(again).toHaveLength(0);
   });
 
   it("refreshes authenticated_at_ms on redeem when a live same-user cookie is present", async () => {

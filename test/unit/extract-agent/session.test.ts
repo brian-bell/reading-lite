@@ -204,6 +204,7 @@ describe("runSession", () => {
       error: { name: "AgentFatalError", message: "GET /api/readings failed: 401" },
     });
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(await exists(deps.config.lockPath)).toBe(false);
   });
 
   it("pings the failure url on a crashed execute run when one is configured", async () => {
@@ -248,6 +249,7 @@ describe("runSession", () => {
     expect(result.status).toBe("ok"); // the corpus work itself completed
     expect(warn.mock.calls.map((c) => String(c[0])).join(" ")).toMatch(/run report/);
     expect(fetchMock).not.toHaveBeenCalled();
+    expect(await exists(deps.config.lockPath)).toBe(false);
   });
 
   it("treats a failed ping as a warning, not a failed run", async () => {
@@ -413,26 +415,6 @@ describe("runSession concurrency", () => {
     expect((await readLines(deps.config.runLogPath))[0]).toMatchObject({ status: "crashed" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe("https://hc.example/ping/fail");
-  });
-
-  it("releases the lock even when the run crashes", async () => {
-    const { deps } = await makeDeps({
-      pageReadings: vi.fn(async () => {
-        throw new AgentFatalError("boom");
-      }),
-    });
-    const result = await runSession({ execute: true }, deps);
-
-    expect(result.exitCode).toBe(1);
-    expect(await exists(deps.config.lockPath)).toBe(false);
-  });
-
-  it("releases the lock even when the report cannot be written", async () => {
-    const { deps } = await makeDeps({}, { runLogPath: await unwritableLogPath() });
-    const result = await runSession({ execute: true }, deps);
-
-    expect(result.exitCode).toBe(1);
-    expect(await exists(deps.config.lockPath)).toBe(false);
   });
 
   it("reports a failed lock release as crashed and pings the failure url", async () => {

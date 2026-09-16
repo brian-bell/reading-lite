@@ -60,20 +60,13 @@ describe("parseDigestEnvelope", () => {
     });
   });
 
-  it("builds the same shape the cron enqueues", () => {
-    expect(
-      digestEnvelopeV1({
-        tenantId: parseTenantId(TENANT)!,
-        userId: parseUserId(TENANT)!,
-        period_key: "2026-W36",
-        cadence: "weekly",
-      }),
-    ).toEqual({
-      version: 1,
-      tenantId: TENANT,
-      userId: TENANT,
+  it("round-trips what the cron enqueues through the parser", () => {
+    const envelope = digestEnvelopeV1({
+      tenantId: parseTenantId(TENANT)!,
+      userId: parseUserId(TENANT)!,
       period_key: "2026-W36",
       cadence: "weekly",
     });
+    expect(parseDigestEnvelope(envelope)).toEqual({ ok: true, envelope });
   });
 });

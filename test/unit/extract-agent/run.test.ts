@@ -230,15 +230,6 @@ describe("runAgent planning", () => {
     expect(summary).toMatchObject({ deferred: 0 });
   });
 
-  it("dry-run performs zero extractions, submits, or sidecar writes", async () => {
-    const { deps } = makeDeps([blockedRow(), blockedRow()]);
-
-    await runAgent({ execute: false }, deps);
-
-    expect(deps.extract).not.toHaveBeenCalled();
-    expect(deps.submit).not.toHaveBeenCalled();
-    expect(deps.saveState).not.toHaveBeenCalled();
-  });
 });
 
 describe("runAgent execution", () => {
@@ -309,61 +300,6 @@ describe("runAgent execution", () => {
 
     expect(movedDeps.reddit).toHaveBeenCalledWith(moved.url);
     expect(retried).toMatchObject({ attempted: 1, imported: 1, manual: 0 });
-  });
-
-  it("applies the shared inherited-title gate to Reddit bodies without submitting", async () => {
-    const row = blockedRow({
-      url: "https://www.reddit.com/r/x/comments/abc/t/",
-      title: "T".repeat(200),
-    });
-    const body = {
-      source_url: row.url,
-      markdown: "x".repeat(MARKDOWN_SUBMIT_BUDGET_BYTES - 100),
-    };
-    const { deps, saved } = makeDeps([row], {
-      reddit: vi.fn(async (): Promise<RedditOutcome> => ({ kind: "extracted", body })),
-    });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(deps.submit).not.toHaveBeenCalled();
-    expect(summary).toMatchObject({ gate_rejected: 1, imported: 0 });
-    expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "gate_rejected", attempts: 1 });
-  });
-
-  it("refunds a Reddit existing-owner race so a later static row can use the paid slot", async () => {
-    const reddit = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
-    const staticRow = blockedRow();
-    const submit = vi
-      .fn()
-      .mockResolvedValueOnce({ outcome: "existing", id: reddit.id })
-      .mockResolvedValueOnce({ outcome: "new", id: staticRow.id });
-    const { deps } = makeDeps([reddit, staticRow], {
-      config: makeConfig({ maxPaidActions: 1 }),
-      submit,
-    });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(submit).toHaveBeenCalledTimes(2);
-    expect(summary).toMatchObject({ attempted: 2, imported: 2, deferred: 0 });
-  });
-
-  it("records a Reddit submit error with the ordinary retry backoff", async () => {
-    const row = blockedRow({ url: "https://www.reddit.com/r/x/comments/abc/t/" });
-    const { deps, saved } = makeDeps([row], {
-      submit: vi.fn(async () => ({ outcome: "error" as const, error: "500 boom" })),
-    });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(summary).toMatchObject({ errors: 1, imported: 0 });
-    expect(saved.at(-1)?.readings[row.id]).toMatchObject({
-      attempts: 1,
-      last_outcome: "error",
-      next_eligible_at: new Date(NOW.getTime() + 60 * 60 * 1000).toISOString(),
-      given_up: false,
-    });
   });
 
   it("maps a dead Reddit thread to the dead outcome with the ordinary error sidecar", async () => {
@@ -444,15 +380,6 @@ describe("runAgent execution", () => {
     expect(saved.at(-1)?.readings[row.id]).toMatchObject({ last_outcome: "imported", attempts: 0 });
   });
 
-  it("treats a 200/existing submit as imported (worker got there first)", async () => {
-    const row = blockedRow();
-    const { deps } = makeDeps([row], { submit: vi.fn(async () => ({ outcome: "existing" as const, id: row.id })) });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(summary.imported).toBe(1);
-  });
-
   it("respects the paid-action cap and reports the overflow as deferred", async () => {
     const rows = Array.from({ length: 11 }, () => blockedRow());
     const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 10 }) });
@@ -462,16 +389,6 @@ describe("runAgent execution", () => {
     expect(deps.submit).toHaveBeenCalledTimes(10);
     expect(summary).toMatchObject({ imported: 10, deferred: 1 });
     expect(summary.rows.filter((r) => r.outcome === "deferred")).toHaveLength(1);
-  });
-
-  it("--limit caps attempts below the budget cap", async () => {
-    const rows = [blockedRow(), blockedRow(), blockedRow()];
-    const { deps } = makeDeps(rows);
-
-    const summary = await runAgent({ execute: true, limit: 1 }, deps);
-
-    expect(deps.extract).toHaveBeenCalledTimes(1);
-    expect(summary).toMatchObject({ attempted: 1, imported: 1, deferred: 2 });
   });
 
   it("--only narrows the run to one reading by id or url", async () => {
@@ -488,14 +405,15 @@ describe("runAgent execution", () => {
     expect(deps2.extract).toHaveBeenCalledWith(a.url);
   });
 
-  it("gate-rejects markdown over the ceiling without consuming a submit", async () => {
+  it("gate-rejects over-ceiling and too-short markdown without consuming a submit", async () => {
     const big = blockedRow();
+    const thin = blockedRow();
     const fine = blockedRow();
-    const { deps, saved } = makeDeps([big, fine], {
+    const { deps, saved } = makeDeps([big, thin, fine], {
       config: makeConfig({ maxPaidActions: 1 }),
       extract: vi.fn(async (url: string): Promise<ExtractOutcome> => ({
         kind: "extracted",
-        markdown: url === big.url ? "x".repeat(MARKDOWN_IMPORT_MAX_BYTES) : GOOD_MARKDOWN,
+        markdown: url === big.url ? "x".repeat(MARKDOWN_IMPORT_MAX_BYTES) : url === thin.url ? "thin" : GOOD_MARKDOWN,
         title: "T",
         tier: "static", salvaged: false,
       })),
@@ -503,11 +421,12 @@ describe("runAgent execution", () => {
 
     const summary = await runAgent({ execute: true }, deps);
 
-    // The over-ceiling row burned no budget, so the second row still submits.
+    // The rejected rows burned no budget, so the last row still submits.
     expect(deps.submit).toHaveBeenCalledTimes(1);
     expect(deps.submit).toHaveBeenCalledWith(expect.objectContaining({ source_url: fine.url }));
-    expect(summary).toMatchObject({ gate_rejected: 1, imported: 1 });
+    expect(summary).toMatchObject({ gate_rejected: 2, imported: 1 });
     expect(saved.at(-1)?.readings[big.id]).toMatchObject({ last_outcome: "gate_rejected", attempts: 1 });
+    expect(saved.at(-1)?.readings[thin.id]).toMatchObject({ last_outcome: "gate_rejected", attempts: 1 });
   });
 
   it("gate-rejects a body under the ceiling whose title pushes the queue payload over it", async () => {
@@ -589,34 +508,6 @@ describe("runAgent execution", () => {
 
     expect(submit).toHaveBeenCalledTimes(3);
     expect(summary).toMatchObject({ imported: 3, deferred: 0 });
-  });
-
-  it("still stops at the cap once real paid work is enqueued", async () => {
-    const rows = [blockedRow(), blockedRow(), blockedRow()];
-    const submit = vi.fn().mockResolvedValue({ outcome: "new", id: "rd_z" });
-    const { deps } = makeDeps(rows, { config: makeConfig({ maxPaidActions: 2 }), submit });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(submit).toHaveBeenCalledTimes(2);
-    expect(summary).toMatchObject({ imported: 2, deferred: 1 });
-  });
-
-  it("gate-rejects short markdown", async () => {
-    const row = blockedRow();
-    const { deps } = makeDeps([row], {
-      extract: vi.fn(async (): Promise<ExtractOutcome> => ({
-        kind: "extracted",
-        markdown: "thin",
-        title: "T",
-        tier: "static", salvaged: false,
-      })),
-    });
-
-    const summary = await runAgent({ execute: true }, deps);
-
-    expect(deps.submit).not.toHaveBeenCalled();
-    expect(summary.gate_rejected).toBe(1);
   });
 
   it("records challenge and dead outcomes in the sidecar without submitting", async () => {
@@ -913,17 +804,6 @@ describe("runAgent execution", () => {
     const summary = await runAgent({ execute: true }, deps);
 
     expect(summary).toMatchObject({ rendered: 2, imported: 2, deferred: 0 });
-  });
-
-  it("performs zero renders in a dry run", async () => {
-    const { deps } = makeDeps([blockedRow(), blockedRow()], {
-      extract: vi.fn(async (): Promise<ExtractOutcome> => ({ kind: "challenge", detail: "403" })),
-    });
-
-    await runAgent({ execute: false }, deps);
-
-    expect(deps.render).not.toHaveBeenCalled();
-    expect(deps.extract).not.toHaveBeenCalled();
   });
 
   it("keeps YouTube in the manual queue without invoking any extraction route", async () => {

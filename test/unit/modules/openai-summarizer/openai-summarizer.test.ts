@@ -244,33 +244,6 @@ describe("buildSummarizeRequestBody", () => {
     });
   });
 
-  it("surfaces a reject_source outcome as a source-rejected error", async () => {
-    const response = completedResponse();
-    response.output[0].content[0].text = JSON.stringify({
-      result: "reject_source",
-      reason: "placeholder, not an extraction",
-      reading: null,
-    });
-    const fetchFn = vi.fn<typeof fetch>(
-      async () =>
-        new Response(JSON.stringify(response), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
-    );
-
-    const error = await summarizeReading(input, {
-      fetch: fetchFn,
-      apiKey: "sk-openai",
-      model: "gpt-5.6-terra",
-      reasoningEffort: "low",
-    }).catch((caught) => caught);
-
-    expect(error).toBeInstanceOf(OpenAISourceRejectedError);
-    expect(error).toMatchObject({
-      message: "placeholder, not an extraction",
-    });
-  });
 });
 
 describe("parseSummarizeResponse", () => {

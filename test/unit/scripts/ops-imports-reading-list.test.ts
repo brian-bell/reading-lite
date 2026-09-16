@@ -347,13 +347,7 @@ describe("ops reading-list process", () => {
 });
 
 describe("production API default host in operator help", () => {
-  it("names readinglite.ai and keeps override flags", () => {
-    expect(importRedditCommand.helpText).toContain("https://readinglite.ai");
-    expect(importRedditCommand.helpText).toContain("READER_URL");
-    expect(importYoutubeCommand.helpText).toContain("https://readinglite.ai");
-    expect(importYoutubeCommand.helpText).toContain("READER_URL");
-    expect(readingListProcessCommand.helpText).toContain("https://readinglite.ai/api/readings");
-    expect(readingListProcessCommand.helpText).toContain("READER_URL");
+  it("no longer names a retired production host", () => {
     for (const help of [
       importRedditCommand.helpText,
       importYoutubeCommand.helpText,

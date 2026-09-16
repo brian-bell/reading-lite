@@ -163,6 +163,24 @@ describe("ManifestSchema", () => {
     expect(ManifestSchema.parse({ ...baseReady, usage }).usage).toEqual(usage);
   });
 
+  it("rejects V2 usage whose fields belong to the other provider's arm", () => {
+    // The discriminated union picks the arm by `provider`, so the Anthropic
+    // cache fields do not satisfy the openai arm's required token fields.
+    const usage = {
+      summarization: {
+        provider: "openai",
+        model: "gpt-5.6-terra",
+        input_tokens: 1_000,
+        output_tokens: 200,
+        cache_creation_input_tokens: 80,
+        cache_read_input_tokens: 640,
+      },
+      openai_embedding_tokens: 50,
+    };
+
+    expect(() => ManifestSchema.parse({ ...baseReady, usage })).toThrow();
+  });
+
   it("accepts a pending manifest with no enriched fields", () => {
     const pending: Manifest = {
       id: "rd_01ABCXYZ",
@@ -309,6 +327,13 @@ describe("ProcessingAttemptSchema", () => {
       ],
     };
     expect(ProcessingAttemptSchema.parse(attempt)).toEqual(attempt);
+
+    expect(() =>
+      ProcessingAttemptSchema.parse({
+        ...attempt,
+        events: [{ stage: "bogus", status: "started", at: "2026-04-26T20:00:00.000Z" }],
+      }),
+    ).toThrow();
   });
 });
 

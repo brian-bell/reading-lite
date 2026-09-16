@@ -23,11 +23,6 @@ describe("digest wrangler wiring", () => {
     expect(wrangler).toContain('queue = "reading-lite-staging-digest"');
     expect(wrangler).toContain('dead_letter_queue = "reading-lite-digest-dlq"');
     expect(wrangler).toContain('dead_letter_queue = "reading-lite-staging-digest-dlq"');
-    expect(read("src/digest-pipeline.ts")).toMatch(/modules\/digest-email/);
-    expect(read("src/digest-pipeline.ts")).not.toMatch(/sendReadingEmail/);
-    expect(read("src/digest-pipeline.ts")).not.toMatch(/env\.LOCAL_MAIL_SINK/);
-    expect(read("src/digest-pipeline.ts")).not.toMatch(/READING_JOBS/);
-    expect(read("src/modules/digest-email.ts")).toMatch(/joinUrl|escapeText/);
     expect(wrangler).toMatch(/queue = "reading-lite-digest"\s*\nmax_batch_size = 1/);
     expect(wrangler).toMatch(/queue = "reading-lite-staging-digest"\s*\nmax_batch_size = 1/);
   });

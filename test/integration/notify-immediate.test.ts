@@ -672,124 +672,99 @@ describe("processReading immediate notification recipient", () => {
     consoleErr.mockRestore();
   });
 
-  it("redacts recipients in send_email diagnostics and logs when Resend fails", async () => {
-    const fetchFn = makeStubFetch({
-      resendStatus: 500,
-      resendBody: { message: "Invalid to: founder@test.example" },
-    });
+  // Runs one ready reading whose Resend call fails with `resendMessage`, then
+  // returns the send_email diagnostics error text and the console.error text
+  // (message field of JSON lines, raw text otherwise) for leak assertions.
+  async function failedSendEmailText(id: string, url: string, resendMessage: string) {
+    const fetchFn = makeStubFetch({ resendStatus: 500, resendBody: { message: resendMessage } });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await processReady(submitArgs("rd_MAIL07", "https://example.com/resend-redact"), fetchFn);
+    try {
+      await processReady(submitArgs(id, url), fetchFn);
+      const app = createApp({ services: makeServices(fetchFn) });
+      const diagnostics = await app.request(
+        `/api/readings/${id}/diagnostics`,
+        { headers: { authorization: `Bearer ${TOKEN}` } },
+        env,
+      );
+      const diag = (await diagnostics.json()) as {
+        manifest: { status: string };
+        attempts: Array<{
+          status: string;
+          events: Array<{ stage: string; status: string; error?: { message: string } }>;
+        }>;
+      };
+      const sendEmail = diag.attempts[0]!.events.find((event) => event.stage === "send_email");
+      const logged = consoleErr.mock.calls.map((call) => {
+        const first = call[0];
+        if (typeof first === "string") {
+          try {
+            return String((JSON.parse(first) as { message?: string }).message ?? first);
+          } catch {
+            return first;
+          }
+        }
+        return String(first);
+      }).join("\n");
+      return { diag, sendEmail, sendMessage: sendEmail?.error?.message ?? "", logged };
+    } finally {
+      consoleErr.mockRestore();
+    }
+  }
 
-    const app = createApp({ services: makeServices(fetchFn) });
-    const diagnostics = await app.request(
-      "/api/readings/rd_MAIL07/diagnostics",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
+  it("redacts recipients in send_email diagnostics and logs when Resend fails", async () => {
+    const { diag, sendEmail, sendMessage, logged } = await failedSendEmailText(
+      "rd_MAIL07",
+      "https://example.com/resend-redact",
+      "Invalid to: founder@test.example",
     );
-    const diag = (await diagnostics.json()) as {
-      manifest: { status: string };
-      attempts: Array<{
-        status: string;
-        events: Array<{ stage: string; status: string; error?: { message: string } }>;
-      }>;
-    };
     expect(diag.manifest.status).toBe("ready");
-    const sendEmail = diag.attempts[0]!.events.find((event) => event.stage === "send_email");
     expect(sendEmail?.status).toBe("failed");
-    expect(sendEmail?.error?.message).toContain("f***@test.example");
+    expect(sendMessage).toContain("f***@test.example");
     expect(JSON.stringify(diag)).not.toContain("founder@test.example");
     expect(JSON.stringify(diag)).not.toContain("reader@test.example");
     expect(JSON.stringify(diag)).not.toContain("reading-lite@test.example");
-
-    const logged = consoleErr.mock.calls.map((call) => call.map((arg) => String(arg)).join(" ")).join("\n");
     expect(logged).toContain("f***@test.example");
     expect(logged).not.toContain("founder@test.example");
     expect(logged).not.toContain("reading-lite@test.example");
-    consoleErr.mockRestore();
   });
 
-  it("redacts slash, quoted, IDN, and no-dot recipients from send_email diagnostics and logs", async () => {
+  it.each([
+    {
+      name: "slash, quoted, IDN, and no-dot recipients",
+      id: "rd_MAIL10",
+      url: "https://example.com/resend-shapes",
+      setup: async (workerEnv: Env) => {
+        const unusual = "first/last@test.example";
+        await workerEnv.CONTROL_PLANE.prepare("UPDATE users SET email_display = ? WHERE id = ?")
+          .bind(unusual, FOUNDER_TENANT_ID)
+          .run();
+        const leaked = [unusual, '"Foo Bar"@example.com', "user@exämple.com", "user@localhost", "a @ b"];
+        return { leaked, message: `Invalid to: ${leaked.join(" and ")}`, restore: async () => {} };
+      },
+    },
+    {
+      name: "EMAIL_FROM",
+      id: "rd_MAIL11",
+      url: "https://example.com/resend-from",
+      setup: async (workerEnv: Env) => {
+        const from = "noreply @ reading.test";
+        const previous = workerEnv.EMAIL_FROM;
+        workerEnv.EMAIL_FROM = from;
+        return { leaked: [from], message: `Invalid from: ${from}`, restore: async () => { workerEnv.EMAIL_FROM = previous; } };
+      },
+    },
+  ])("scrubs $name from send_email diagnostics and logs", async ({ id, url, setup }) => {
     const workerEnv = env as unknown as Env;
-    const unusual = "first/last@test.example";
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE users SET email_display = ? WHERE id = ?")
-      .bind(unusual, FOUNDER_TENANT_ID)
-      .run();
-
-    const leaked = [unusual, '"Foo Bar"@example.com', "user@exämple.com", "user@localhost", "a @ b"];
-    const fetchFn = makeStubFetch({
-      resendStatus: 500,
-      resendBody: { message: `Invalid to: ${leaked.join(" and ")}` },
-    });
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await processReady(submitArgs("rd_MAIL10", "https://example.com/resend-shapes"), fetchFn);
-
-    const app = createApp({ services: makeServices(fetchFn) });
-    const diagnostics = await app.request(
-      "/api/readings/rd_MAIL10/diagnostics",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const diag = (await diagnostics.json()) as {
-      attempts: Array<{
-        events: Array<{ stage: string; error?: { message: string } }>;
-      }>;
-    };
-    const sendMessage = diag.attempts[0]!.events.find((event) => event.stage === "send_email")?.error?.message ?? "";
-    const logged = consoleErr.mock.calls.map((call) => {
-      const first = call[0];
-      if (typeof first === "string") {
-        try {
-          return String((JSON.parse(first) as { message?: string }).message ?? first);
-        } catch {
-          return first;
-        }
+    const { leaked, message, restore } = await setup(workerEnv);
+    try {
+      const { sendMessage, logged } = await failedSendEmailText(id, url, message);
+      for (const address of leaked) {
+        expect(sendMessage).not.toContain(address);
+        expect(logged).not.toContain(address);
       }
-      return String(first);
-    }).join("\n");
-    for (const address of leaked) {
-      expect(sendMessage).not.toContain(address);
-      expect(logged).not.toContain(address);
+    } finally {
+      await restore();
     }
-    consoleErr.mockRestore();
-  });
-
-  it("scrubs EMAIL_FROM from send_email diagnostics and logs", async () => {
-    const workerEnv = env as unknown as Env;
-    const from = "noreply @ reading.test";
-    workerEnv.EMAIL_FROM = from;
-    const fetchFn = makeStubFetch({
-      resendStatus: 500,
-      resendBody: { message: `Invalid from: ${from}` },
-    });
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await processReady(submitArgs("rd_MAIL11", "https://example.com/resend-from"), fetchFn);
-
-    const app = createApp({ services: makeServices(fetchFn) });
-    const diagnostics = await app.request(
-      "/api/readings/rd_MAIL11/diagnostics",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const diag = (await diagnostics.json()) as {
-      attempts: Array<{
-        events: Array<{ stage: string; error?: { message: string } }>;
-      }>;
-    };
-    const sendMessage = diag.attempts[0]!.events.find((event) => event.stage === "send_email")?.error?.message ?? "";
-    const logged = consoleErr.mock.calls.map((call) => {
-      const first = call[0];
-      if (typeof first === "string") {
-        try {
-          return String((JSON.parse(first) as { message?: string }).message ?? first);
-        } catch {
-          return first;
-        }
-      }
-      return String(first);
-    }).join("\n");
-    expect(sendMessage).not.toContain(from);
-    expect(logged).not.toContain(from);
-    consoleErr.mockRestore();
   });
 
   it("skips staging allowlist misses", async () => {

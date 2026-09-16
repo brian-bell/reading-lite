@@ -315,6 +315,11 @@ describe("activateRecoverTargets", () => {
 
     expect(result.skipped).toEqual([]);
     expect(result.activated[0]!.contentAlreadyWritten).toBe(true);
+    // The activating sidecar lands before the first by-url claim or write.
+    const sidecarIdx = fakeR2.calls.indexOf("sidecar:activating");
+    const firstWriteIdx = fakeR2.calls.findIndex((c) => c.startsWith("putIfAbsent:") || c.startsWith("put:"));
+    expect(sidecarIdx).toBeGreaterThanOrEqual(0);
+    expect(sidecarIdx).toBeLessThan(firstWriteIdx);
     expect(fakeR2.putIfAbsent).toHaveBeenCalledWith(
       `index/by-url/${URL_HASH}`,
       JSON.stringify({ id: "rd_a", key_prefix: KEY_PREFIX }),
@@ -486,61 +491,28 @@ describe("activateRecoverTargets", () => {
     expect(fakeR2.store.has(`index/by-url/${URL_HASH}`)).toBe(false);
   });
 
-  it("preserves source_type and the original created_at on the pending flip", async () => {
-    const failed = recoverManifest({ created_at: "2025-03-04T05:06:07.000Z" });
-    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
-    const t = recoverTarget();
-    t.target.createdAt = failed.created_at;
-    t.target.manifest = failed;
+  it.each(["url", "markdown"] as const)(
+    "preserves a %s source_type and the original created_at on the pending flip",
+    async (sourceType) => {
+      const failed = recoverManifest({ source_type: sourceType, created_at: "2025-03-04T05:06:07.000Z" });
+      const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
+      const t = recoverTarget();
+      t.target.createdAt = failed.created_at;
+      t.target.manifest = failed;
 
-    await activateRecoverTargets([t], {
-      r2: fakeR2 as any,
-      model: "m",
-      now: () => NOW,
-      saveSidecar: vi.fn(async () => {}),
-    });
+      await activateRecoverTargets([t], {
+        r2: fakeR2 as any,
+        model: "m",
+        now: () => NOW,
+        saveSidecar: vi.fn(async () => {}),
+      });
 
-    const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
-    expect(pending.source_type).toBe("url");
-    expect(pending.created_at).toBe("2025-03-04T05:06:07.000Z");
-    expect(pending.updated_at).toBe(NOW);
-  });
-
-  it("preserves a markdown source_type on the pending flip", async () => {
-    const failed = recoverManifest({ source_type: "markdown" });
-    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
-    const t = recoverTarget();
-    t.target.manifest = failed;
-
-    await activateRecoverTargets([t], {
-      r2: fakeR2 as any,
-      model: "m",
-      now: () => NOW,
-      saveSidecar: vi.fn(async () => {}),
-    });
-
-    const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
-    expect(pending.source_type).toBe("markdown");
-  });
-
-  it("saves the activating sidecar before the first by-url claim or write", async () => {
-    const failed = recoverManifest();
-    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
-
-    await activateRecoverTargets([recoverTarget()], {
-      r2: fakeR2 as any,
-      model: "m",
-      now: () => NOW,
-      saveSidecar: vi.fn(async (s) => {
-        fakeR2.calls.push(`sidecar:${s.processingStatus}`);
-      }),
-    });
-
-    const sidecarIdx = fakeR2.calls.indexOf("sidecar:activating");
-    const firstWriteIdx = fakeR2.calls.findIndex((c) => c.startsWith("putIfAbsent:") || c.startsWith("put:"));
-    expect(sidecarIdx).toBeGreaterThanOrEqual(0);
-    expect(sidecarIdx).toBeLessThan(firstWriteIdx);
-  });
+      const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
+      expect(pending.source_type).toBe(sourceType);
+      expect(pending.created_at).toBe("2025-03-04T05:06:07.000Z");
+      expect(pending.updated_at).toBe(NOW);
+    },
+  );
 
   it("is idempotent across a re-run: single by-url, by-id, and list row", async () => {
     const failed = recoverManifest();

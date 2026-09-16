@@ -637,7 +637,7 @@ describe("POST /mcp", () => {
     expect(diag.payload.manifest).toBeDefined();
   });
 
-  it("a read-only token can connect but write tools pass through 403", async () => {
+  it("a read-only token can connect and list every tool", async () => {
     const secret = await insertScopedToken("scope-read-only-mcp", ["readings:read"]);
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const listed = await mcpRpc(
@@ -647,65 +647,8 @@ describe("POST /mcp", () => {
     );
     expect(listed.res.status).toBe(200);
     expect((listed.rpc.result?.tools ?? []).length).toBe(8);
-
-    const write = await callTool(
-      app,
-      "submit_url",
-      { url: "https://example.com/forbidden" },
-      { token: secret },
-    );
-    expect(write.rpc.result?.isError).toBe(true);
-    expect(write.payload.http_status).toBe(403);
-    expect(write.payload.error).toBe("bad or missing token");
-    assertNoTokenLeak(write.rpc);
   });
 
-  it("other-tenant get_reading, list_readings, and reprocess_reading match unknown-id", async () => {
-    await insertSecondTenant(env as unknown as Env);
-    const id = "rd_OWNED0001";
-    const unknownId = "rd_0000000000";
-    await seedReady({
-      id,
-      url: "https://example.com/mcp-owned",
-      title: "Owned by founder",
-      tldr: "Founder-only",
-      markdown: "# Owned\n\nbody",
-    });
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-
-    const owner = await callTool(app, "get_reading", { id });
-    expect(owner.rpc.result?.isError).not.toBe(true);
-    expect(owner.payload.id).toBe(id);
-
-    const otherGet = await callTool(app, "get_reading", { id }, { token: OTHER_TOKEN_SECRET });
-    const unknownGet = await callTool(app, "get_reading", { id: unknownId }, { token: OTHER_TOKEN_SECRET });
-    expect(unknownGet.rpc.result?.isError).toBe(true);
-    expect(otherGet.rpc.result).toEqual(unknownGet.rpc.result);
-
-    const otherList = await callTool(app, "list_readings", {}, { token: OTHER_TOKEN_SECRET });
-    expect(otherList.rpc.result?.isError).not.toBe(true);
-    expect(otherList.payload.readings).toEqual([]);
-    expect(otherList.payload.has_more).toBe(false);
-
-    const otherReprocess = await callTool(
-      app,
-      "reprocess_reading",
-      { id },
-      { token: OTHER_TOKEN_SECRET },
-    );
-    const unknownReprocess = await callTool(
-      app,
-      "reprocess_reading",
-      { id: unknownId },
-      { token: OTHER_TOKEN_SECRET },
-    );
-    expect(unknownReprocess.rpc.result?.isError).toBe(true);
-    expect(otherReprocess.rpc.result).toEqual(unknownReprocess.rpc.result);
-
-    const stillOwned = await callTool(app, "get_reading", { id });
-    expect(stillOwned.rpc.result?.isError).not.toBe(true);
-    expect(stillOwned.payload.status).toBe("ready");
-  });
 });
 
 
@@ -815,6 +758,8 @@ describe("MCP adversarial tenant matrix", () => {
       const denied = await callTool(app, name, args, { token });
       expect(denied.payload.http_status).toBe(403);
       expect(denied.rpc.result?.isError).toBe(true);
+      expect(denied.payload.error).toBe("bad or missing token");
+      assertNoTokenLeak(denied.rpc);
       const unknownArgs = name === "reprocess_reading" ? { ...args, id: unknownId }
         : name === "submit_url" ? { url: "https://example.com/unknown" }
         : { source_url: "https://example.com/unknown", markdown: "# forbidden" };

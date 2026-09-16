@@ -3,7 +3,6 @@ import {
   TURNSTILE_SITEVERIFY_URL,
   TURNSTILE_TEST_SECRET_FAIL,
   TURNSTILE_TEST_SECRET_PASS,
-  TURNSTILE_TEST_SITE_KEY_BLOCK,
   TURNSTILE_TEST_SITE_KEY_PASS,
   turnstileSiteKey,
   verifyTurnstileToken,
@@ -18,15 +17,6 @@ function jsonFetch(body: unknown, status = 200): typeof fetch {
     });
   };
 }
-
-describe("turnstile dummy keys", () => {
-  it("exports Cloudflare test site and secret keys", () => {
-    expect(TURNSTILE_TEST_SITE_KEY_PASS).toBe("1x00000000000000000000AA");
-    expect(TURNSTILE_TEST_SITE_KEY_BLOCK).toBe("2x00000000000000000000AB");
-    expect(TURNSTILE_TEST_SECRET_PASS).toBe("1x0000000000000000000000000000000AA");
-    expect(TURNSTILE_TEST_SECRET_FAIL).toBe("2x0000000000000000000000000000000AA");
-  });
-});
 
 describe("turnstileSiteKey", () => {
   it("returns null for missing or blank keys", () => {

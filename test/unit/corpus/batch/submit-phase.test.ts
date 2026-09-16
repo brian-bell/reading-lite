@@ -351,11 +351,9 @@ describe("submitOpenAIBatch", () => {
       "gpt-5.6-terra",
       "low",
     );
-    const order: string[] = [];
     const saved: PersistedSidecar[] = [];
     const client = {
       upload: vi.fn(async (jsonl: string, runId: string) => {
-        order.push(`upload:${runId}`);
         expect(jsonl).toBe(prepared.jsonl);
         return {
           id: "file_input",
@@ -364,8 +362,7 @@ describe("submitOpenAIBatch", () => {
           bytes: prepared.byteCount,
         };
       }),
-      create: vi.fn(async (inputFileId: string, runId: string) => {
-        order.push(`create:${inputFileId}:${runId}`);
+      create: vi.fn(async (inputFileId: string) => {
         return {
           id: "batch_1",
           input_file_id: inputFileId,
@@ -387,12 +384,9 @@ describe("submitOpenAIBatch", () => {
       runId: "run_stable",
       batch: client,
       putObject: noopPut(),
-      saveInputJsonl: vi.fn(async (jsonl: string) => {
-        order.push(`saveJsonl:${jsonl.length}`);
-      }),
+      saveInputJsonl: vi.fn(async () => undefined),
       saveSidecar: vi.fn(async (sidecar: PersistedSidecar) => {
         saved.push(sidecar);
-        order.push(`save:${sidecar.phase}`);
       }),
       acquireLock: async () => ({
         release: async () => undefined,
@@ -400,14 +394,9 @@ describe("submitOpenAIBatch", () => {
       loadSidecar: async () => null,
     });
 
-    expect(order).toEqual([
-      `saveJsonl:${prepared.jsonl.length}`,
-      "save:uploading",
-      "upload:run_stable",
-      "save:creating",
-      "create:file_input:run_stable",
-      "save:submitted",
-    ]);
+    // The full call order (lock, checkpoints, upload, create, release) is
+    // pinned by "holds the sidecar lock ..." below; this test pins the bytes
+    // and the checkpoint contents.
     expect(saved[0]!.targets).toEqual(result.sidecar.targets);
     expect(saved).toMatchObject([
       {

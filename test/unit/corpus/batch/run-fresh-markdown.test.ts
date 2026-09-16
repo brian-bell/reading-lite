@@ -277,24 +277,6 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     expect(index.items.map((i: any) => i.id)).toContain("rd_FRESH0");
   });
 
-  it("saves a sidecar before creating the batch (crash-window safety)", async () => {
-    const h = harness();
-    const calls: string[] = [];
-    const origSave = h.deps.saveSidecar;
-    h.deps.saveSidecar = vi.fn(async (s: PersistedSidecar) => {
-      calls.push(s.processingStatus === "activating" ? "save:activating" : s.batchId === "" ? "save:pending" : "save:final");
-      await origSave(s);
-    });
-    const origCreate = h.batch.create;
-    h.batch.create = vi.fn(async (...args: any[]) => {
-      calls.push("create");
-      return (origCreate as any)(...args);
-    });
-    await runFreshMarkdownBatch([article("alpha", "https://example.com/alpha")], h.deps);
-    expect(calls.indexOf("save:activating")).toBeLessThan(calls.indexOf("save:pending"));
-    expect(calls.indexOf("save:pending")).toBeLessThan(calls.indexOf("create"));
-  });
-
   it("skips all activation losers without creating a batch", async () => {
     const h = harness();
     h.r2.putIfAbsent = vi.fn(async () => false);

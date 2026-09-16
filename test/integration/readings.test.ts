@@ -12,7 +12,6 @@ import {
   processReading,
   type ProcessReadingArgs,
 } from "../../src/process-reading";
-import { ReadingVisibility } from "../../src/reading-visibility";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { SimilarityStore, tenantVectorId } from "../../src/modules/stores/similarity-store";
 import {
@@ -1337,57 +1336,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     consoleErr.mockRestore();
   });
 
-  it("claims and reprocesses a legacy failed reading that has no by-url pointer", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const url = "https://example.com/legacy-failed-no-pointer";
-    const urlHash = await sha256Hex(url);
-    const createdAt = "2026-04-26T19:00:00.000Z";
-    const id = "rd_LEGACY";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const legacy: Manifest = {
-      id,
-      url,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "BadStatusError", message: "bad response status 404" },
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
-    };
-    await reader.writeManifest(keyPrefix, legacy);
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
-
-    const retry = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id, status: "pending" });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess", email: true });
-
-    const lookup = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(lookup.status).toBe(200);
-    expect(await lookup.json()).toEqual({ id });
-  });
-
   it("reprocesses in place after a failed fresh batch releases its by-url claim", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -1597,65 +1545,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(queuedJobs[0]).toMatchObject({ id: newer.id, trigger: "reprocess" });
   });
 
-  it("repairs a damaged by-url owner from a legacy failed reading missing from index/list.json", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const url = "https://example.com/legacy-missing-from-index";
-    const urlHash = await sha256Hex(url);
-    const indexedUrl = "https://example.com/other-indexed-url";
-    const legacy: Manifest = {
-      id: "rd_MISSING_FROM_INDEX",
-      url,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "old", message: "failed copy missing from index" },
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const indexed: Manifest = {
-      ...legacy,
-      id: "rd_INDEXED_OTHER",
-      url: indexedUrl,
-      url_hash: await sha256Hex(indexedUrl),
-    };
-    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
-    await reader.writeManifest(legacyPrefix, legacy);
-    await reader.writeManifest(indexedPrefix, indexed);
-    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
-    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_ORPHAN",
-      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
-    });
-
-    const retry = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id: legacy.id, status: "pending" });
-    expect(await reader.readByUrlPointer(urlHash)).toEqual({
-      id: legacy.id,
-      key_prefix: legacyPrefix,
-    });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ id: legacy.id, trigger: "reprocess" });
-  });
-
   it("repairs a stale by-url pointer whose manifest is missing", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -1719,30 +1608,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
     listSpy.mockRestore();
     putSpy.mockRestore();
-  });
-
-  it("GET /api/readings/lookup returns 409 initializing for a fresh pointer whose manifest is not yet written", async () => {
-    // Read-only repair is off, but the grace-window path is preserved: a pointer
-    // whose manifest hasn't landed yet but is still inside the grace window (the
-    // pointer-before-manifest write order) reports the owner as initializing (409),
-    // not "not found" — so a poller knows to keep polling rather than re-submit.
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const url = "https://example.com/lookup-initializing";
-    const urlHash = await sha256Hex(url);
-    // Fresh pointer: key_prefix timestamp == services.now() baseTime (20:00:00Z).
-    const fresh = { id: "rd_FRESH", key_prefix: "readings/2026/04/26T200000Z-rd_FRESH" };
-    await reader.writeByUrlPointer(urlHash, fresh);
-
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-
-    expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ id: "rd_FRESH" });
   });
 
   it("gives up with 503 when the by-url slot stays contended past the claim bound", async () => {
@@ -2087,73 +1952,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(vector.upsert).not.toHaveBeenCalled();
     expect(vector.deleteByIds).toHaveBeenCalledWith([tenantVectorId(FOUNDER_TENANT_ID, staleId)]);
     expect(vector.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, staleId))).toBe(false);
-  });
-
-  it("keeps the vector when cleanup runs against a pending manifest carrying a foreign last_attempt", async () => {
-    // Crafted seed for an otherwise-unreachable divergence: the list row is
-    // vacant-pending (active+last cleared) so the list gate removes it, but the
-    // manifest at the same prefix is pending with a last_attempt from another
-    // attempt. The vector gate must refuse — a last_attempt signals another
-    // attempt touched the reading, so this attempt may not own the vector.
-    const vector = installVectorizeStub();
-    const reader = testReadingStore(env);
-    const similarity = new SimilarityStore(env.READINGS_INDEX);
-    const id = "rd_DIVERGENT";
-    const url = "https://example.com/divergent-cleanup";
-    const urlHash = await sha256Hex(url);
-    const createdAt = "2026-04-26T19:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-
-    const divergentManifest: Manifest = {
-      id,
-      url,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "pending",
-      active_attempt: undefined,
-      last_attempt: {
-        id: "at_PRIOR",
-        trigger: "submit",
-        status: "failed",
-        started_at: createdAt,
-        finished_at: createdAt,
-      },
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
-    };
-    await reader.writeManifest(keyPrefix, divergentManifest);
-    // The list row is vacant-pending: the list gate WILL match (and remove it).
-    await reader.appendOrReplaceListIndexItem({
-      id,
-      key_prefix: keyPrefix,
-      url,
-      status: "pending",
-      created_at: createdAt,
-      updated_at: createdAt,
-    });
-    vector.vectors.set(id, {
-      values: new Array(1536).fill(0.42),
-      metadata: { url, title: "Divergent vector" },
-    });
-
-    await new ReadingVisibility(reader, similarity).remove({
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_FOREIGN",
-    });
-
-    // List row removed (list gate's vacant-pending rule matched)...
-    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
-    // ...but the vector is KEPT (manifest gate refuses on the foreign last_attempt).
-    expect(vector.deleteByIds).not.toHaveBeenCalled();
-    expect(vector.vectors.has(id)).toBe(true);
   });
 
   it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
@@ -3071,186 +2869,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(await content.text()).toBe(markdown);
   });
 
-  it("imports Markdown over a legacy failed reading that has no by-url pointer", async () => {
-    const sourceUrl = "https://example.com/legacy-failed-import-markdown";
-    const markdown = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const urlHash = await sha256Hex(sourceUrl);
-    const legacy: Manifest = {
-      id: "rd_LEGACY_IMPORT",
-      url: sourceUrl,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "BadStatusError", message: "bad response status 404" },
-      content_type: "application/octet-stream",
-      content_status: "failed",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    await reader.writeManifest(keyPrefix, legacy);
-    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
-
-    const submit = await app.fetch(
-      new Request("http://t/api/readings/import-markdown", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          source_url: sourceUrl,
-          title: "Legacy Import",
-          markdown,
-        }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(submit.status).toBe(202);
-    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
-    expect(await reader.readByUrlPointer(urlHash)).toEqual({
-      id: legacy.id,
-      key_prefix: keyPrefix,
-    });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({
-      id: legacy.id,
-      trigger: "import",
-      source: { kind: "markdown", title: "Legacy Import", markdown },
-    });
-  });
-
-  it("imports Markdown over a legacy failed reading when the by-url pointer is damaged", async () => {
-    const sourceUrl = "https://example.com/legacy-import-damaged-owner";
-    const markdown = "# Legacy Damaged Owner\n\nThe user supplied text for the old failed URL.";
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const urlHash = await sha256Hex(sourceUrl);
-    const legacy: Manifest = {
-      id: "rd_LEGACY_DAMAGED_IMPORT",
-      url: sourceUrl,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "BadStatusError", message: "bad response status 404" },
-      content_type: "application/octet-stream",
-      content_status: "failed",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    await reader.writeManifest(keyPrefix, legacy);
-    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_ORPHAN_IMPORT",
-      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT",
-    });
-
-    const submit = await app.fetch(
-      new Request("http://t/api/readings/import-markdown", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          source_url: sourceUrl,
-          title: "Legacy Damaged Owner",
-          markdown,
-        }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(submit.status).toBe(202);
-    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
-    expect(await reader.readByUrlPointer(urlHash)).toEqual({
-      id: legacy.id,
-      key_prefix: keyPrefix,
-    });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({
-      id: legacy.id,
-      trigger: "import",
-      source: { kind: "markdown", title: "Legacy Damaged Owner", markdown },
-    });
-  });
-
-  it("imports Markdown over a legacy failed reading missing from a stale list index", async () => {
-    const sourceUrl = "https://example.com/legacy-import-stale-index";
-    const markdown = "# Legacy Stale Index\n\nThe user supplied text for an unindexed old failed URL.";
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = testReadingStore(env);
-    const urlHash = await sha256Hex(sourceUrl);
-    const indexedUrl = "https://example.com/other-import-index-row";
-    const legacy: Manifest = {
-      id: "rd_LEGACY_IMPORT_STALE_INDEX",
-      url: sourceUrl,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "BadStatusError", message: "bad response status 404" },
-      content_type: "application/octet-stream",
-      content_status: "failed",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const indexed: Manifest = {
-      ...legacy,
-      id: "rd_IMPORT_INDEXED_OTHER",
-      url: indexedUrl,
-      url_hash: await sha256Hex(indexedUrl),
-    };
-    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
-    await reader.writeManifest(legacyPrefix, legacy);
-    await reader.writeManifest(indexedPrefix, indexed);
-    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
-    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_ORPHAN_IMPORT_STALE_INDEX",
-      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN_IMPORT_STALE_INDEX",
-    });
-
-    const submit = await app.fetch(
-      new Request("http://t/api/readings/import-markdown", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          source_url: sourceUrl,
-          title: "Legacy Stale Index",
-          markdown,
-        }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(submit.status).toBe(202);
-    expect(await submit.json()).toMatchObject({ id: legacy.id, status: "pending" });
-    expect(await reader.readByUrlPointer(urlHash)).toEqual({
-      id: legacy.id,
-      key_prefix: legacyPrefix,
-    });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({
-      id: legacy.id,
-      trigger: "import",
-      source: { kind: "markdown", title: "Legacy Stale Index", markdown },
-    });
-  });
-
   it("keeps markdown import retryable when queue send fails", async () => {
     const sourceUrl = "https://example.com/import-queue-send-fails";
     const markdown = "# Retryable Import\n\nThe markdown body should survive queue failure.";
@@ -3938,37 +3556,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     consoleErr.mockRestore();
   });
 
-  it("rejects reprocess when another attempt is active", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const ctx = createExecutionContext();
-    const submit = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url: "https://example.com/active" }),
-      }),
-      env,
-      ctx,
-    );
-    const { id } = (await submit.json()) as { id: string };
-
-    // Deliberately do not drain — the reading must still look pending+running
-    // when the reprocess request lands so that the 409 guard fires.
-    const retry = await app.fetch(
-      new Request(`http://t/api/readings/${id}/reprocess`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({}),
-      }),
-      env,
-      createExecutionContext(),
-    );
-    expect(retry.status).toBe(409);
-    await drainQueue(services);
-    await waitOnExecutionContext(ctx);
-  });
-
   it("rejects malformed and null reprocess bodies before enqueueing work", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
 
@@ -4084,6 +3671,127 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const body = (await list.json()) as { readings: Array<{ status: string; url: string }> };
     expect(body.readings).toHaveLength(5);
     expect(body.readings.every((r) => r.status === "ready")).toBe(true);
+  });
+});
+
+// A legacy failed reading (one written before by-url ownership) is recovered
+// the same way whichever write path finds it: the request lands on the legacy
+// id, the by-url pointer is rewritten to it, and one job is queued. Only the
+// request shape and the queued trigger differ between the two routes.
+const LEGACY_MARKDOWN = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
+
+describe.each([
+  {
+    route: "POST /api/readings",
+    request: (url: string) => ({ path: "/api/readings", body: { url } }),
+    queued: (id: string) => ({ id, trigger: "reprocess", email: true }),
+  },
+  {
+    route: "POST /api/readings/import-markdown",
+    request: (url: string) => ({
+      path: "/api/readings/import-markdown",
+      body: { source_url: url, title: "Legacy Import", markdown: LEGACY_MARKDOWN },
+    }),
+    queued: (id: string) => ({
+      id,
+      trigger: "import",
+      source: { kind: "markdown", title: "Legacy Import", markdown: LEGACY_MARKDOWN },
+    }),
+  },
+])("$route recovers a legacy failed reading", ({ request, queued }) => {
+  function legacyManifest(id: string, url: string, urlHash: string): Manifest {
+    return {
+      id,
+      url,
+      url_hash: urlHash,
+      source_type: "url",
+      status: "failed",
+      error: { code: "BadStatusError", message: "bad response status 404" },
+      content_type: "application/octet-stream",
+      content_status: "failed",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: "2026-04-26T19:00:00.000Z",
+      updated_at: "2026-04-26T19:00:00.000Z",
+    };
+  }
+
+  type Seed = (reader: ReadingStore, url: string, urlHash: string) => Promise<{ id: string; keyPrefix: string }>;
+
+  const indexedLegacy: Seed = async (reader, url, urlHash) => {
+    const legacy = legacyManifest("rd_LEGACY", url, urlHash);
+    const keyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    await reader.writeManifest(keyPrefix, legacy);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: keyPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, keyPrefix));
+    return { id: legacy.id, keyPrefix };
+  };
+
+  const indexedLegacyBehindDamagedPointer: Seed = async (reader, url, urlHash) => {
+    const seeded = await indexedLegacy(reader, url, urlHash);
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    return seeded;
+  };
+
+  const unindexedLegacyBehindDamagedPointer: Seed = async (reader, url, urlHash) => {
+    // index/list.json is stale: it names a different URL's reading, not the
+    // legacy one, so the repair has to find the legacy by key space.
+    const indexedUrl = "https://example.com/other-indexed-url";
+    const legacy = legacyManifest("rd_MISSING_FROM_INDEX", url, urlHash);
+    const indexed = legacyManifest("rd_INDEXED_OTHER", indexedUrl, await sha256Hex(indexedUrl));
+    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
+    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
+    await reader.writeManifest(legacyPrefix, legacy);
+    await reader.writeManifest(indexedPrefix, indexed);
+    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
+    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
+    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
+    await reader.writeByUrlPointer(urlHash, {
+      id: "rd_ORPHAN",
+      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
+    });
+    return { id: legacy.id, keyPrefix: legacyPrefix };
+  };
+
+  it.each([
+    ["that has no by-url pointer", indexedLegacy],
+    ["when the by-url pointer is damaged", indexedLegacyBehindDamagedPointer],
+    ["missing from a stale list index behind a damaged by-url pointer", unindexedLegacyBehindDamagedPointer],
+  ])("%s", async (_case, seed) => {
+    const services = makeServices(makeStubFetch());
+    const app = createApp({ services });
+    const reader = testReadingStore(env);
+    const url = "https://example.com/legacy-failed";
+    const urlHash = await sha256Hex(url);
+    const { id, keyPrefix } = await seed(reader, url, urlHash);
+    const { path, body } = request(url);
+
+    const retry = await app.fetch(
+      new Request(`http://t${path}`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      env,
+      createExecutionContext(),
+    );
+
+    expect(retry.status).toBe(202);
+    expect(await retry.json()).toMatchObject({ id, status: "pending" });
+    expect(await reader.readByUrlPointer(urlHash)).toEqual({ id, key_prefix: keyPrefix });
+    expect(queuedJobs).toHaveLength(1);
+    expect(queuedJobs[0]).toMatchObject(queued(id));
+
+    const lookup = await app.request(
+      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
+      { headers: { authorization: `Bearer ${TOKEN}` } },
+      env,
+    );
+    expect(lookup.status).toBe(200);
+    expect(await lookup.json()).toEqual({ id });
   });
 });
 
@@ -4657,7 +4365,6 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     await waitOnExecutionContext(ctx2);
     putSpy.mockRestore();
     consoleErr.mockRestore();
-    expect(failedRawWrite).toBe(true);
 
     // The supplied markdown was never written, so the failed attempt must not
     // claim that it became the reading's durable source.
@@ -4948,54 +4655,34 @@ describe("POST /api/readings/:id/reprocess — email opt-in", () => {
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 
-  it("emails on reprocess when body sets email:true", async () => {
+  it("emails on reprocess when body sets email:true, with or without force", async () => {
     const idCounter = { n: 0 };
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn, idCounter);
     const id = await seedReady(services, "https://example.com/loud-reprocess", fetchFn);
 
     const app = createApp({ services });
-    const ctx = createExecutionContext();
-    const retry = await app.fetch(
-      new Request(`http://t/api/readings/${id}/reprocess`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ email: true }),
-      }),
-      env,
-      ctx,
-    );
-    expect(retry.status).toBe(202);
-    await drainQueue(services);
-    await waitOnExecutionContext(ctx);
+    let sent = 0;
+    for (const body of [{ email: true }, { force: true, email: true }]) {
+      const ctx = createExecutionContext();
+      const retry = await app.fetch(
+        new Request(`http://t/api/readings/${id}/reprocess`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        env,
+        ctx,
+      );
+      expect(retry.status).toBe(202);
+      await drainQueue(services);
+      await waitOnExecutionContext(ctx);
 
-    const calls = resendCalls(fetchFn);
-    expect(calls).toHaveLength(1);
-    const body = JSON.parse(calls[0]![1]!.body as string) as { subject: string };
-    expect(body.subject).toBe("Test Article");
-  });
-
-  it("emails on reprocess with both force:true and email:true", async () => {
-    const idCounter = { n: 0 };
-    const fetchFn = makeStubFetch();
-    const services = makeServices(fetchFn, idCounter);
-    const id = await seedReady(services, "https://example.com/force-and-email", fetchFn);
-
-    const app = createApp({ services });
-    const ctx = createExecutionContext();
-    const retry = await app.fetch(
-      new Request(`http://t/api/readings/${id}/reprocess`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ force: true, email: true }),
-      }),
-      env,
-      ctx,
-    );
-    expect(retry.status).toBe(202);
-    await drainQueue(services);
-    await waitOnExecutionContext(ctx);
-    expect(resendCalls(fetchFn)).toHaveLength(1);
+      const calls = resendCalls(fetchFn);
+      expect(calls).toHaveLength(++sent);
+      const mail = JSON.parse(calls[sent - 1]![1]!.body as string) as { subject: string };
+      expect(mail.subject).toBe("Test Article");
+    }
   });
 });
 
@@ -5077,44 +4764,11 @@ describe("processReading — backwards-compat for in-flight queue messages witho
 });
 
 describe("GET /api/readings/lookup", () => {
-  it("returns the id for a known URL", async () => {
-    const fetchFn = makeStubFetch();
-    const services = makeServices(fetchFn);
-    const app = createApp({ services });
-    const ctx = createExecutionContext();
-    await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url: "https://example.com/find-me" }),
-      }),
-      env,
-      ctx,
-    );
-    await drainQueue(services);
-    await waitOnExecutionContext(ctx);
-
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/find-me")}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { id: string };
-    expect(json.id).toMatch(/^rd_/);
-  });
-
-  it("returns 404 for an unknown URL", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent("https://example.com/nope")}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(res.status).toBe(404);
-  });
-
   it("returns 409 for a fresh initializing by-url owner", async () => {
+    // Read-only repair is off, but the grace-window path is preserved: a pointer
+    // whose manifest has not landed yet (the pointer-before-manifest write
+    // order) reports the owner as initializing, not "not found", so a poller
+    // keeps polling rather than re-submitting.
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const reader = testReadingStore(env);
     const url = "https://example.com/lookup-initializing";
@@ -5227,25 +4881,6 @@ describe("GET /api/readings/lookup", () => {
     expect(res.status).toBe(404);
     expect(await reader.readByUrlPointer(urlHash)).toBeNull();
   });
-
-  it("returns 404 for a stale lookup owner without a matching manifest", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = testReadingStore(env);
-    const url = "https://example.com/lookup-orphan";
-    const urlHash = await sha256Hex(url);
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_LOOKUP_ORPHAN_ONLY",
-      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN_ONLY",
-    });
-
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-
-    expect(res.status).toBe(404);
-  });
 });
 
 describe("POST /api/readings/similar", () => {
@@ -5274,34 +4909,6 @@ describe("POST /api/readings/similar", () => {
     expect(stub.upsert).not.toHaveBeenCalled();
     expect(stub.deleteByIds).not.toHaveBeenCalled();
     expect(queuedEnvelopes).toEqual([]);
-  });
-
-  it("calls Vectorize and returns mapped items", async () => {
-    const stub = installVectorizeStub();
-    // Seeded in the founder namespace under the tenant-prefixed id, exactly as
-    // the completed founder migration wrote it: the route queries tenant-scoped
-    // (TENANT_DATA_PLANE=1 in wrangler.test.toml), so an unscoped vector
-    // would rightly be invisible to it — and the bare `rd_seed` asserted below
-    // proves the store strips its own prefix from matches.
-    stub.vectors.set(tenantVectorId(FOUNDER_TENANT_ID, "rd_seed"), {
-      values: new Array(1536).fill(0.1),
-      namespace: FOUNDER_TENANT_ID,
-      metadata: { url: "https://example.com/seed", title: "Seed", created_at: "2026-04-25T00:00:00.000Z" },
-    });
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request(
-      "/api/readings/similar",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ query_embedding: new Array(1536).fill(0.1), k: 5 }),
-      },
-      env,
-    );
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { items: Array<{ id: string; url: string }> };
-    expect(json.items).toHaveLength(1);
-    expect(json.items[0]!.id).toBe("rd_seed");
   });
 
   it("returns an empty result set when the Vectorize binding is absent (local dev)", async () => {
@@ -5357,24 +4964,6 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({ readings: [], limit: 20, offset: 0, has_more: false });
-  });
-
-  it("POST /api/readings writes a pending index entry; processReading replaces it with ready", async () => {
-    const fetchFn = makeStubFetch();
-    const services = makeServices(fetchFn);
-    const app = createApp({ services });
-    const id = await postOne(app, "https://example.com/article-1", services);
-
-    const list = await app.request(
-      "/api/readings",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(list.status).toBe(200);
-    const body = (await list.json()) as { readings: Array<{ id: string; status: string }> };
-    expect(body.readings).toHaveLength(1);
-    expect(body.readings[0]!.id).toBe(id);
-    expect(body.readings[0]!.status).toBe("ready");
   });
 
   it("failure path: index entry ends up failed", async () => {

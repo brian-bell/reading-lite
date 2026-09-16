@@ -5,73 +5,55 @@ function read(path: string): string {
   return readFileSync(path, "utf8");
 }
 
+// Reads `key` from exactly one TOML table. The lookup is bounded to that
+// table's body (up to the next `[...]` header) so a key missing from staging
+// cannot fall through to production's value and pass the comparison below.
 function envVar(
   wrangler: string,
-  env: "staging" | "production",
+  env: "local" | "staging" | "production",
   key: string,
 ): string | undefined {
-  const re = new RegExp(
-    `\\[env\\.${env}\\.vars\\][\\s\\S]*?^${key} = "([^"]*)"$`,
-    "m",
-  );
-  return wrangler.match(re)?.[1];
+  const table = env === "local" ? "vars" : `env\\.${env}\\.vars`;
+  const body = wrangler.match(
+    new RegExp(`^\\[${table}\\]\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, "m"),
+  )?.[1];
+  return body?.match(new RegExp(`^${key} = "([^"]*)"$`, "m"))?.[1];
 }
 
-describe("checked-in summarizer provider configuration", () => {
-  it("uses high OpenAI effort in staging and production; local stays low", () => {
-    const wrangler = read("wrangler.toml");
+describe("envVar", () => {
+  it("does not fall through to a later table when the key is absent", () => {
+    const toml = [
+      "[vars]",
+      'A = "local"',
+      "",
+      "[env.staging.vars]",
+      'B = "staging"',
+      "",
+      "[[env.staging.routes]]",
+      'pattern = "x"',
+      "",
+      "[env.production.vars]",
+      'A = "production"',
+      'B = "production"',
+      "",
+    ].join("\n");
+    expect(envVar(toml, "local", "A")).toBe("local");
+    expect(envVar(toml, "local", "B")).toBeUndefined();
+    expect(envVar(toml, "staging", "A")).toBeUndefined();
+    expect(envVar(toml, "staging", "B")).toBe("staging");
+    expect(envVar(toml, "production", "A")).toBe("production");
+  });
+});
 
-    expect(
-      wrangler.match(/^SUMMARIZER_PROVIDER = "openai"$/gm),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_MODEL = "gpt-5\.6-terra"$/gm,
-      ),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/gm,
-      ),
-    ).toHaveLength(2);
-    expect(
-      wrangler.match(
-        /\[env\.staging\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /\[env\.production\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-5"$/gm),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/gm,
-      ),
-    ).toHaveLength(2);
-    expect(
-      wrangler.match(
-        /\[env\.staging\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /\[env\.production\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
+describe("checked-in summarizer provider configuration", () => {
+  it("keeps local (top-level [vars]) on low effort for both providers", () => {
+    // Staging and production are owned by the test below.
+    const wrangler = read("wrangler.toml");
+    expect(envVar(wrangler, "local", "SUMMARIZER_PROVIDER")).toBe("openai");
+    expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_MODEL")).toBe("gpt-5.6-terra");
+    expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
+    expect(envVar(wrangler, "local", "ANTHROPIC_MODEL")).toBe("claude-sonnet-5");
+    expect(envVar(wrangler, "local", "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
   });
 
   it("keeps staging summarizer knobs identical to production", () => {

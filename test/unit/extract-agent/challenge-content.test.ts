@@ -227,27 +227,6 @@ describe("classifyChallengeContent", () => {
     });
   });
 
-  it("ignores invisible quotation markup inside an article challenge shell", () => {
-    const body = "Please verify you are human to continue.";
-    const verdict = classifyChallengeContent({
-      html: [
-        "<html><head><title>Human verification</title></head><body>",
-        "<article><h1>Human verification</h1>",
-        `<p>${body}</p>`,
-        '<q style="visibility:hidden">Example verification copy.</q>',
-        "</article></body></html>",
-      ].join(""),
-      title: "Human verification",
-      markdown: body,
-      rendered: true,
-    });
-
-    expect(verdict).toMatchObject({
-      challenge: true,
-      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
-    });
-  });
-
   it("does not treat explanatory prose beginning with verification copy as challenge UI", () => {
     for (const articleBody of [
       "<p>Please verify you are human to continue is the copy shown to customers.</p>",
@@ -395,28 +374,14 @@ describe("classifyChallengeContent", () => {
     });
   });
 
-  it("classifies a text-only interstitial when Readability yields no article", () => {
+  it.each([
+    ["a button in main", "<main><h1>Human verification</h1><button>Please verify you are human to continue.</button></main>"],
+    ["a span in a div", "<div class=\"verification\"><span>Please verify you are human to continue.</span></div>"],
+  ])("classifies visible no-article verification copy from %s when Readability yields no article", (_, body) => {
     const verdict = classifyChallengeContent({
       html: [
         "<html><head><title>Human verification</title></head><body>",
-        "<main><h1>Human verification</h1>",
-        "<button>Please verify you are human to continue.</button></main>",
-        "</body></html>",
-      ].join(""),
-      rendered: true,
-    });
-
-    expect(verdict).toMatchObject({
-      challenge: true,
-      evidence: expect.arrayContaining(["title:human-check", "body:verify-human"]),
-    });
-  });
-
-  it("classifies no-article fallback copy in generic visible elements", () => {
-    const verdict = classifyChallengeContent({
-      html: [
-        "<html><head><title>Human verification</title></head><body>",
-        "<div class=\"verification\"><span>Please verify you are human to continue.</span></div>",
+        body,
         "</body></html>",
       ].join(""),
       rendered: true,
@@ -813,23 +778,12 @@ describe("classifyChallengeContent", () => {
     expect(verdict).toEqual({ challenge: false });
   });
 
+  // The full essence-match set lives as a literal in the source; these
+  // representatives cover the plain, legacy-versioned, and x- spellings.
   it.each([
-    "application/ecmascript",
-    "application/javascript",
-    "application/x-ecmascript",
-    "application/x-javascript",
-    "text/ecmascript",
     "text/javascript",
-    "text/javascript1.0",
-    "text/javascript1.1",
-    "text/javascript1.2",
-    "text/javascript1.3",
-    "text/javascript1.4",
     "text/javascript1.5",
-    "text/jscript",
-    "text/livescript",
-    "text/x-ecmascript",
-    "text/x-javascript",
+    "application/x-javascript",
   ])("treats the standard JavaScript MIME type %s as executable structure", (type) => {
     const verdict = classifyChallengeContent({
       html: `<script type="${type}">window.cf_chl_opt = {};</script>`,

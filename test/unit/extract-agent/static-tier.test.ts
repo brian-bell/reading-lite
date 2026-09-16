@@ -63,34 +63,6 @@ describe("extractStatic", () => {
     });
   });
 
-  it("classifies a visible original-title subscription wall", async () => {
-    const html = readFileSync(join(FIXTURES, "wall-short-original-title.html"), "utf-8");
-    const outcome = await extractStatic(
-      "https://public.example/story",
-      deps(() => htmlResponse(html)),
-    );
-
-    expect(outcome).toMatchObject({
-      kind: "challenge",
-      tier: "static",
-      evidence: expect.arrayContaining([
-        "wall:continue-reading",
-        "wall_support:existing-subscriber",
-        "wall_support:unlimited-access",
-      ]),
-    });
-  });
-
-  it("keeps a complete article with a subscription footer extractable", async () => {
-    const html = readFileSync(join(FIXTURES, "article-subscription-footer.html"), "utf-8");
-    const outcome = await extractStatic(
-      "https://public.example/story",
-      deps(() => htmlResponse(html)),
-    );
-
-    expect(outcome).toMatchObject({ kind: "extracted", tier: "static" });
-  });
-
   it("maps a requested membership destination to no_article", async () => {
     const html = readFileSync(join(FIXTURES, "membership-landing-page.html"), "utf-8");
     const outcome = await extractStatic(

@@ -587,22 +587,6 @@ describe("ReadingIntake safe-url guard", () => {
     expect(out).toMatchObject({ kind: "invalid_url" });
     expect(usage.ops).toEqual(["admit"]);
   });
-
-  it("returns rate_limited for an unfetchable url when admission denies first", async () => {
-    const usage: TenantUsage = {
-      ...allowAllUsage(),
-      admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
-    };
-    const { intake } = makeIntake({ usage });
-
-    const out = await intake.submit(CREDS_URL, { email: false });
-
-    expect(out).toEqual({
-      kind: "rate_limited",
-      limit: "request_rate",
-      resetAtMs: Date.parse(NOW) + 60_000,
-    });
-  });
 });
 
 function recordingUsage(): TenantUsage & { ops: string[] } {
@@ -740,13 +724,15 @@ describe("ReadingIntake usage quotas", () => {
     expect(usage.ops.some((op) => op.startsWith("release:"))).toBe(true);
   });
 
-  it("returns rate_limited without claiming when admitRequest denies", async () => {
+  it("returns rate_limited without claiming when admitRequest denies, before url validation", async () => {
     const usage: TenantUsage = {
       ...allowAllUsage(),
       admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
     };
     const { intake, reader } = makeIntake({ usage });
-    const url = "https://example.com/quota-rate";
+    // Credentialed (unfetchable) url: admission is denied before the url would
+    // have been rejected as invalid_url.
+    const url = "https://user:secretpass@example.com/quota-rate";
 
     const out = await intake.submit(url, { email: false });
 

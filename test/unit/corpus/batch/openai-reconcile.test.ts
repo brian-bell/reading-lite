@@ -205,11 +205,16 @@ describe("reconcileOpenAIPreSubmitSidecar — creating phase", () => {
       ...baseCreating,
       targets: [sampleTarget],
     };
-    const deps = makeDeps(c.batch, saved);
+    const release = vi.fn(async () => undefined);
+    const deps = {
+      ...makeDeps(c.batch, saved),
+      acquireLock: vi.fn(async () => ({ release })),
+    };
 
     await reconcileOpenAIPreSubmitSidecar(sidecar, deps);
 
     expect(deps.acquireLock).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed when the create-window lock cannot be acquired", async () => {

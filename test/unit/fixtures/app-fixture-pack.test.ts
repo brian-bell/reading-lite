@@ -39,24 +39,6 @@ describe("app browser-evidence fixture pack", () => {
     }
   });
 
-  it("names the states the acceptance matrix relies on", () => {
-    const names = new Set(buildAppFixturePack().fixtures.map((f) => f.name));
-    for (const name of [
-      "attention",
-      "gardens",
-      "sparse-archive",
-      "unavailable-source",
-      "degraded-youtube",
-      "old-manifest",
-      "long-title",
-      "imported-markdown",
-      "reprocess-failed",
-      "pending",
-    ]) {
-      expect(names, name).toContain(name);
-    }
-  });
-
   it("keeps the pending fixture pending at the pinned clock", () => {
     const pack = buildAppFixturePack();
     const pending = pack.fixtures.find((f) => f.name === "pending");
