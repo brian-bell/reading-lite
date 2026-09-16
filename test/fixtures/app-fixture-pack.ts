@@ -118,7 +118,7 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     const attemptsPrefix = layout.attemptsPrefix(fixture.keyPrefix);
     // The endpoint's final ordering (ReadingStore.listAttempts sorts its
     // shortlist by started_at, newest first). Its 20-attempt shortlist by
-    // upload time is not modelled: no fixture has more than one attempt.
+    // upload time is not modelled: no fixture has more than two attempts.
     const attempts: ProcessingAttempt[] = owned
       .filter((object) => object.key.startsWith(attemptsPrefix))
       .map((object) => ProcessingAttemptSchema.parse(JSON.parse(object.body)))

@@ -43,6 +43,7 @@ see these states locally.
 | `degraded-youtube` | `rd_FXYTDEGRD1` | ready | `enrichment_degradation` present (`youtube`, tier `transcript`): ready on the oEmbed floor with description but no transcript |
 | `old-manifest` | `rd_FXPAST0001` | ready | No `similarity`, `novelty_verdict`, or `connections_computed_at`; legacy usage shape. Omit the missing lines; never show "unclassified" |
 | `long-title` | `rd_FXMAXNAME1` | ready | 130-character title, past the summarizer's 120-char output cap (the manifest field has none); must wrap, never truncate |
+| `reprocess-failed` | `rd_FXREPROC01` | ready | Ready reading whose `last_attempt` is a **failed reprocess** (`BadStatusError` at `fetch_source`, trigger `reprocess`): the summary stays, the manifest carries no `error`, and the library card shows the "Reprocess failed" badge. Two attempt logs: the succeeded submit and the failed reprocess |
 | `imported-markdown` | `rd_FXMDPAGE01` | ready | `source_type: "markdown"` with a `text/markdown` raw capture; metadata line says "Imported Markdown". Its body carries the rich content the Source view handles: a table, a fenced code block, an image, raw HTML, and an unbreakable link |
 | `pending` | `rd_FXPENDNG01` | pending | Fresh submit with a running attempt (`stage: "queued"`). Stamped from the seed clock; re-seed once it passes the 15-minute pending TTL |
 | `fail-source-unreachable` | `rd_FXERR00001` | failed | `BadStatusError` at `fetch_source` — source unreachable category |
@@ -75,12 +76,16 @@ and the detail route 404s ("arrived from a removed target").
   `content_status: "failed"`, exactly as the worker failure path writes them.
 - Each reading has an attempt log under `attempts/` with realistic stage
   events, including the dead-letter shape for `fail-stopped`.
+  `reprocess-failed` has two: its manifest is the ready one rolled forward
+  (`rollForward` in `src/modules/manifest-drafting.ts`), so `updated_at` is the
+  reprocess failure while `fetched_at` and `similarity.computed_at` stay the
+  succeeded attempt's.
 - Seeded ids satisfy the worker's `parseReadingId` shape, so reprocess,
   lookup, and MCP paths treat fixtures like any other reading.
 - The seeder overwrites `index/list.json` with the pack's rows only. Any
   other local reading keeps its objects but drops out of the list; see
   [resetting](../../operations.md#seeding-local-r2) for a pristine store.
-- The library lists the pack's 18 rows, newest first: `pending`, the eight
+- The library lists the pack's 19 rows, newest first: `pending`, the eight
   failures, then the ready baselines — matching the store's `created_at`
   sort.
 
@@ -91,4 +96,5 @@ Ready readings have no Vectorize vectors (local dev has no binding), so
 manifest-only. Submit, import, and reprocess still return 503 locally (no
 Queue); use the seeded states instead. Reprocess-pending (a ready reading
 under a running reprocess) and batch-owned pending are Phase 4 states; add
-them here as named fixtures when those slices need them.
+them here as named fixtures when those slices need them (the failed variant,
+`reprocess-failed`, is in the pack).

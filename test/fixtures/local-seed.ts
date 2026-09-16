@@ -25,6 +25,7 @@ import { createHash } from "node:crypto";
 import {
   failedManifest,
   readyManifest,
+  rollForward,
   submitPending,
 } from "../../src/modules/manifest-drafting";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
@@ -66,6 +67,8 @@ export interface LocalSeedFixture {
   id: string;
   keyPrefix: string;
   manifest: Manifest;
+  /** Ids of the attempt logs written under `attempts/`, oldest first. */
+  attemptIds: string[];
 }
 
 export interface LocalSeedPlan {
@@ -80,7 +83,7 @@ export interface LocalSeedPlan {
 // Reading ids are minted rd_<10 chars of the Crockford-ish alphabet
 // (src/services.ts mintReadingId), so fixture ids stay parseReadingId-valid:
 // uppercase, no I/L/O/U, exactly ten characters. Attempt ids follow
-// at_<same>.
+// at_<same>, with the trailing digit counting the reading's attempts.
 const IDS = {
   attention: "rd_FXATTENT01",
   gardens: "rd_FXGARDEN01",
@@ -91,6 +94,7 @@ const IDS = {
   markdown: "rd_FXMDPAGE01",
   youtube: "rd_FXYTDEGRD1",
   old: "rd_FXPAST0001",
+  reprocessFailed: "rd_FXREPROC01",
   pending: "rd_FXPENDNG01",
   failUnreachable: "rd_FXERR00001",
   failIncomplete: "rd_FXERR00002",
@@ -103,6 +107,11 @@ const IDS = {
 } as const;
 
 export const LOCAL_SEED_REMOVED_TARGET_ID = "rd_FXVANSHD01";
+
+/** The reading's nth attempt id: every fixture id ends in a digit, which the ordinal replaces. */
+function attemptIdOf(readingId: string, ordinal: number): string {
+  return `at_${readingId.slice(3, -1)}${ordinal}`;
+}
 
 const CONNECTED_REFRESHED_AT = "2026-09-08T03:07:00.000Z";
 const TENSIONS_JUDGED_AT = "2026-09-09T03:07:00.000Z";
@@ -181,7 +190,7 @@ function stageCompletionAt(
 
 interface AttemptLogSpec {
   attemptId: string;
-  trigger: "submit" | "import";
+  trigger: "submit" | "import" | "reprocess";
   reading: { id: string; url: string; urlHash: string; keyPrefix: string };
   startedAt: string;
   /** Stages that ran to completion, in order (queued included). */
@@ -290,6 +299,23 @@ interface ReadySpec {
   tensionsJudged?: TensionJudged[];
   /** April-era manifest: no similarity, no novelty_verdict, legacy usage. */
   legacy?: { usage: Usage };
+  /**
+   * A later reprocess that failed: the ready manifest is rolled forward
+   * (manifest-drafting rollForward) with the failed attempt as last_attempt
+   * and no error of its own, and the failed attempt gets a second log.
+   */
+  failedReprocess?: FailureSpec & { startedAt: string };
+}
+
+/** How an attempt fails, shared by the failed fixtures and a ready fixture's failed reprocess. */
+interface FailureSpec {
+  /** Without failed_at: it is stamped from the attempt's failure event time. */
+  error: Omit<ManifestError, "failed_at">;
+  stage: ProcessingStage;
+  /** Stages that ran before the failure (queued included). */
+  stages: readonly ProcessingStage[];
+  /** Dead-letter shape (queue retries exhausted). */
+  dlq?: boolean;
 }
 
 type ReadingSummaryUsage = {
@@ -383,7 +409,7 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
         ? MARKDOWN_STAGES
         : URL_STAGES;
   const attempt = attemptLog({
-    attemptId: `at_${spec.id.slice(3)}`,
+    attemptId: attemptIdOf(spec.id, 1),
     trigger: spec.trigger,
     reading: { id: spec.id, url: spec.url, urlHash: urlHashValue, keyPrefix },
     startedAt,
@@ -444,6 +470,27 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
     manifest = ManifestSchema.parse({ ...rest, usage: spec.legacy.usage });
   }
 
+  // A failed reprocess over a ready reading: the worker restores the ready
+  // manifest it preserved before the pending overwrite (rollForward), so the
+  // summary stays and only last_attempt and updated_at record the failure.
+  let reprocessAttempt: ProcessingAttempt | undefined;
+  if (spec.failedReprocess !== undefined) {
+    reprocessAttempt = attemptLog({
+      attemptId: attemptIdOf(spec.id, 2),
+      trigger: "reprocess",
+      reading: { id: spec.id, url: spec.url, urlHash: urlHashValue, keyPrefix },
+      startedAt: spec.failedReprocess.startedAt,
+      stages: spec.failedReprocess.stages,
+      failAt: { stage: spec.failedReprocess.stage, error: spec.failedReprocess.error },
+      dlq: spec.failedReprocess.dlq,
+    });
+    manifest = rollForward(
+      manifest,
+      attemptSummary(reprocessAttempt),
+      reprocessAttempt.finished_at!,
+    );
+  }
+
   const objects: LocalSeedObject[] = [];
   objects.push(
     seedManifest(keyPrefix, manifest),
@@ -467,9 +514,23 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
     body: JSON.stringify(attempt),
     contentType: "application/json",
   });
+  if (reprocessAttempt !== undefined) {
+    objects.push({
+      key: layout.attemptKey(keyPrefix, reprocessAttempt.id),
+      body: JSON.stringify(reprocessAttempt),
+      contentType: "application/json",
+    });
+  }
 
   return {
-    fixture: { name: spec.name, state: spec.state, id: spec.id, keyPrefix, manifest },
+    fixture: {
+      name: spec.name,
+      state: spec.state,
+      id: spec.id,
+      keyPrefix,
+      manifest,
+      attemptIds: [attempt.id, ...(reprocessAttempt === undefined ? [] : [reprocessAttempt.id])],
+    },
     objects,
   };
 }
@@ -502,7 +563,7 @@ function seedPointer(key: string, keyPrefix: string, id: string): LocalSeedObjec
 // ---------------------------------------------------------------------------
 // Failed fixtures — one per acceptance-matrix failure category
 
-interface FailedSpec {
+interface FailedSpec extends FailureSpec {
   name: string;
   state: string;
   id: string;
@@ -510,13 +571,6 @@ interface FailedSpec {
   createdAt: string;
   /** Seconds from created_at until the attempt started. */
   queueSeconds: number;
-  /** Without failed_at: it is stamped from the attempt's failure event time. */
-  error: Omit<ManifestError, "failed_at">;
-  stage: ProcessingStage;
-  /** Stages that ran before the failure (queued included). */
-  stages: readonly ProcessingStage[];
-  /** Dead-letter shape (queue retries exhausted). */
-  dlq?: boolean;
 }
 
 function assembleFailed(spec: FailedSpec): AssembledFixture {
@@ -524,7 +578,7 @@ function assembleFailed(spec: FailedSpec): AssembledFixture {
   const urlHashValue = urlHash(spec.url);
   const startedAt = addMs(spec.createdAt, spec.queueSeconds * 1000);
   const attempt = attemptLog({
-    attemptId: `at_${spec.id.slice(3)}`,
+    attemptId: attemptIdOf(spec.id, 1),
     trigger: "submit",
     reading: { id: spec.id, url: spec.url, urlHash: urlHashValue, keyPrefix },
     startedAt,
@@ -556,6 +610,7 @@ function assembleFailed(spec: FailedSpec): AssembledFixture {
       id: spec.id,
       keyPrefix,
       manifest,
+      attemptIds: [attempt.id],
     },
     objects: [
       seedManifest(keyPrefix, manifest),
@@ -748,6 +803,53 @@ const READY_SPECS: ReadySpec[] = [
     usage: {
       summarization: openaiUsage({ input: 4211, output: 497, reasoning: 205, cached: 0, cacheWrite: 4211 }),
       openai_embedding_tokens: 1710,
+    },
+  },
+  {
+    name: "reprocess-failed",
+    state: "Ready with a failed reprocess: last_attempt is a failed reprocess attempt (BadStatusError at fetch_source), the manifest keeps its summary and carries no error; two attempt logs",
+    id: IDS.reprocessFailed,
+    url: "https://fieldnotes.example/the-tab-that-never-closes",
+    createdAt: "2026-09-05T08:40:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "The tab that never closes",
+      tldr: "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+      tags: ["Attention"],
+      keywords: ["browser tabs", "saving", "deferral", "reading later"],
+      people: ["Mara Ellis"],
+      orgs: [],
+      novelty_verdict: "familiar",
+      connections: [
+        {
+          id: IDS.attention,
+          reason: "Both essays treat saving as a way to end a session well rather than to defer it.",
+        },
+      ],
+      summary_markdown: [
+        "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "",
+        "The essay separates saving from deferring: a saved reading has a place to be, while an open tab is an unpaid debt in the corner of the screen.",
+      ].join("\n"),
+    },
+    similarity: { count: 1, max: 0.59, mean: 0.59 },
+    contentKey: "reprocess-failed",
+    neighbourhoodIds: [IDS.attention],
+    usage: {
+      summarization: openaiUsage({ input: 3120, output: 412, reasoning: 160, cached: 2200, cacheWrite: 920 }),
+      openai_embedding_tokens: 1180,
+    },
+    connectionsComputedAt: CONNECTED_REFRESHED_AT,
+    failedReprocess: {
+      startedAt: "2026-09-10T16:05:00.000Z",
+      stages: ["queued", "fetch_source"],
+      stage: "fetch_source",
+      error: {
+        code: "BadStatusError",
+        message: "bad response status 503: Service Unavailable",
+        stage: "fetch_source",
+        retryable: true,
+      },
     },
   },
   {
@@ -1074,7 +1176,7 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
   const pendingUrl = "https://fieldnotes.example/making-room-for-slow-work";
   const pendingHash = urlHash(pendingUrl);
   const pendingPrefix = buildKeyPrefix(pendingId, nowIso);
-  const pendingAttemptId = `at_${pendingId.slice(3)}`;
+  const pendingAttemptId = attemptIdOf(pendingId, 1);
   const { manifest: pendingManifest, attempt: pendingAttemptSummary } =
     submitPending(
       {
@@ -1100,6 +1202,7 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
       id: pendingId,
       keyPrefix: pendingPrefix,
       manifest: pendingManifest,
+      attemptIds: [pendingAttemptId],
     },
     objects: [
       seedManifest(pendingPrefix, pendingManifest),

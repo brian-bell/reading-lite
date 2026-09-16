@@ -92,6 +92,17 @@ const LONG_TITLE_SECTIONS = [
   },
 ];
 
+const REPROCESS_SECTIONS = [
+  {
+    heading: "The tab that never closes",
+    text: "There is always one browser tab that survives every restart: an article you meant to finish, kept open as a promise. Keeping it open changes nothing about whether you will read it. What changes is how the promise sits with you, a small unpaid debt in the corner of the screen.",
+  },
+  {
+    heading: "Save it and let it go",
+    text: "Saving is not the same as deferring. A saved reading has a place to be, and can wait there without asking for anything. The tab can close. If the piece matters, a library brings it back when a newer question makes it relevant again.",
+  },
+];
+
 const UNAVAILABLE_SECTIONS = [
   {
     heading: "A memory of pages",
@@ -185,6 +196,16 @@ export const FIXTURE_CONTENT: Record<string, FixtureContent> = {
       body: html(
         "The case for a little friction",
         FRICTION_SECTIONS.map((s) => h(s.heading, s.text)).join("\n"),
+      ),
+      contentType: "text/html; charset=utf-8",
+    },
+  },
+  "reprocess-failed": {
+    extractedMarkdown: md(REPROCESS_SECTIONS),
+    raw: {
+      body: html(
+        "The tab that never closes",
+        REPROCESS_SECTIONS.map((s) => h(s.heading, s.text)).join("\n"),
       ),
       contentType: "text/html; charset=utf-8",
     },
