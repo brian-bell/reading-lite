@@ -1,9 +1,32 @@
 import path from "node:path";
 import { defineWorkersProject, readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
-import { defineProject } from "vitest/config";
+import { configDefaults, defineProject } from "vitest/config";
 
 const AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
+
+// Unit tests that need the Workers runtime: they import cloudflare:test or
+// cloudflare:workers (directly or through src/index.ts), or they assert on
+// workerd semantics that Node lacks (safe-fetch: workerd's Request accepts a
+// userinfo URL, Node's throws). Every other unit test runs in the Node pool,
+// which skips the per-file D1 migration and founder bootstrap in
+// test/apply-control-plane.ts that dominates the workers pool's wall time.
+// Integration tests always run on workerd.
+const WORKERS_RUNTIME_UNIT_TESTS = [
+  "test/unit/extractor/safe-fetch.test.ts",
+  "test/unit/intake/activation.test.ts",
+  "test/unit/intake/intake.test.ts",
+  "test/unit/modules/processing-checkpoint.test.ts",
+  "test/unit/modules/reading-claim.test.ts",
+  "test/unit/process-reading/commit-terminal.test.ts",
+  "test/unit/process-reading/mark-failed.test.ts",
+  "test/unit/queue/dead-letter.test.ts",
+  "test/unit/queue/dispatch.test.ts",
+  "test/unit/queue/relationship-refresh.test.ts",
+  "test/unit/reading-visibility/visibility.test.ts",
+  "test/unit/stores/list-index.test.ts",
+  "test/unit/stores/reading-store.test.ts",
+];
 
 export default [
   defineWorkersProject({
@@ -13,22 +36,7 @@ export default [
       // GitHub Actions workers-pool regularly exceeds Vitest's 5s default
       // (two-tenant save-to-ready and MCP import+poll timed out at 5000ms).
       testTimeout: 20_000,
-      include: [
-        "test/integration/**/*.test.ts",
-        "test/unit/schemas/**/*.test.ts",
-        "test/unit/extractor/**/*.test.ts",
-        "test/unit/embeddings/**/*.test.ts",
-        "test/unit/anthropic/**/*.test.ts",
-        "test/unit/email/**/*.test.ts",
-        "test/unit/http-retry/**/*.test.ts",
-        "test/unit/queue/**/*.test.ts",
-        "test/unit/stores/**/*.test.ts",
-        "test/unit/modules/**/*.test.ts",
-        "test/unit/process-reading/**/*.test.ts",
-        "test/unit/intake/**/*.test.ts",
-        "test/unit/reading-visibility/**/*.test.ts",
-        "test/unit/reading-purge/**/*.test.ts",
-      ],
+      include: ["test/integration/**/*.test.ts", ...WORKERS_RUNTIME_UNIT_TESTS],
       exclude: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
@@ -90,24 +98,8 @@ export default [
   defineProject({
     test: {
       name: "node",
-      include: [
-        "test/unit/staleness/**/*.test.ts",
-        "test/unit/manifest-drafting/**/*.test.ts",
-        "test/unit/lib/**/*.test.ts",
-        "test/unit/fixtures/**/*.test.ts",
-        "test/unit/import-bookmarks/**/*.test.ts",
-        "test/unit/import-markdown/**/*.test.ts",
-        "test/unit/deploy/**/*.test.ts",
-        "test/unit/corpus/**/*.test.ts",
-        "test/unit/reddit-import/**/*.test.ts",
-        "test/unit/youtube-import/**/*.test.ts",
-        "test/unit/check-corpus/**/*.test.ts",
-        "test/unit/process-reading-list/**/*.test.ts",
-        "test/unit/extract-agent/**/*.test.ts",
-        "test/unit/control-plane/**/*.test.ts",
-        "test/unit/scripts/**/*.test.ts",
-        "test/unit/openapi/**/*.test.ts",
-      ],
+      include: ["test/unit/**/*.test.ts"],
+      exclude: [...configDefaults.exclude, ...WORKERS_RUNTIME_UNIT_TESTS],
       environment: "node",
     },
   }),
