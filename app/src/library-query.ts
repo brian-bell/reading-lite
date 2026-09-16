@@ -46,15 +46,28 @@ export function libraryQueryOptions(
 }
 
 /**
- * The library route's loader, for the page the URL names (#414), so a reload
- * or a deep link renders that page on the server. Identity is shared with the
- * root loader's in-flight whoami rather than read twice; signed out or
- * unknown, there is no library to read. prefetchQuery never throws, so an
- * unavailable backend renders its state in the page instead of failing the
- * route.
+ * Reads the page the URL names (#414) and waits for it, so a server render
+ * has it in the HTML. Identity is shared with the root loader's in-flight
+ * whoami rather than read twice; signed out or unknown, there is no library
+ * to read. prefetchQuery never throws, so an unavailable backend renders its
+ * state in the page instead of failing the route.
  */
 export async function prefetchLibraryPage(queryClient: QueryClient, params: LibraryParams): Promise<void> {
   const identity = await identityOf(queryClient);
   if (!identity) return;
   await queryClient.prefetchQuery(libraryQueryOptions(queryClient, params, identity));
 }
+
+/**
+ * The browser's loader: starts the read and lets the page mount at once
+ * (#416). Its region is busy until the rows arrive, "Loading…" appears only
+ * after 300 ms, and a read that fails, or cannot run offline, renders its
+ * state on the new page rather than holding the old one up. useQuery joins
+ * the read started here, so it is still one request.
+ */
+export function startLibraryPage(queryClient: QueryClient, params: LibraryParams): void {
+  void prefetchLibraryPage(queryClient, params);
+}
+
+/** The library route's loader: wait for the page on the server, start it in the browser. */
+export const loadLibraryPage = createIsomorphicFn().server(prefetchLibraryPage).client(startLibraryPage);

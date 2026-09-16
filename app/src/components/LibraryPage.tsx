@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { onlineManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useLocation } from "@tanstack/react-router";
-import { useRef, type FocusEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useSyncExternalStore, type FocusEvent, type RefObject } from "react";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryPage as LibraryPageBody, LibraryRow } from "../library";
@@ -13,9 +13,10 @@ import {
   searchForPage,
   type LibrarySearch,
 } from "../library-search";
+import { libraryViewOf, type LibraryView } from "../library-state";
 import { hostnameOf } from "../reading-presentation";
-import { PageHeading } from "./PageHeading";
-import { DelayedText } from "./ReadingStates";
+import { PageHeading, focusPageHeading } from "./PageHeading";
+import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { SignInPage } from "./SignInPage";
 
 // The library (#413, first slice of #404). The page the URL names is read
@@ -25,10 +26,14 @@ import { SignInPage } from "./SignInPage";
 // navigation that reads through same-origin /api/readings, and a reload or a
 // deep link renders the same page on the server.
 //
-// The heading stays "Library" in every state, so focus after a route change
-// lands on the same page whatever the rows turned out to be. Tags, filters,
-// and the matrix's common states are later slices of #404; until they land,
-// anything but a page of rows is one plain sentence under the heading.
+// The heading stays "Library" for everything the library itself has to say
+// (rows, an empty library, a page past the end, loading, offline with nothing
+// loaded), so focus after a route change lands on the same page whatever the
+// rows turned out to be. The matrix's common states (#416) are the shared
+// state pages, each with its own heading, as on the reading page: 403, 412,
+// and a server error replace the library; a 401 is the shell's page; offline
+// is a notice above whatever was already loaded. Tags and filters are later
+// slices of #404.
 
 /** `/`: the sign-in form in place when signed out, the library when signed in. */
 export function LibraryHome({ search }: { search: LibrarySearch }) {
@@ -50,44 +55,102 @@ export function LibraryHome({ search }: { search: LibrarySearch }) {
   return <LibraryPage search={search} />;
 }
 
+const subscribeOnline = (listener: () => void) => onlineManager.subscribe(listener);
+const isOnline = () => onlineManager.isOnline();
+const isOnlineOnServer = () => true;
+
 export function LibraryPage({ search }: { search: LibrarySearch }) {
   const params = libraryParamsOf(search);
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  const { data, error, isPending, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
+  const { data, error, isPending, fetchStatus, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
+  // Re-rendered when the browser's connection comes and goes, so the offline
+  // notice follows it. TanStack Query listens to the same events to pause and
+  // continue the fetch.
+  const online = useSyncExternalStore(subscribeOnline, isOnline, isOnlineOnServer);
+  const view = libraryViewOf({ data, error, isPending, fetchStatus, online });
+  const retry = () => void refetch();
+  // A read that settles as one of the state pages replaces the library, and
+  // whatever had focus in it: the heading a route change just focused, or the
+  // pager step the reader pressed. The new page's heading takes it, so the
+  // state is announced rather than focus falling to the top of the document.
+  const focusWasInLibrary = useRef(false);
+  useEffect(() => {
+    if (focusWasInLibrary.current) {
+      focusWasInLibrary.current = false;
+      focusPageHeading();
+    }
+  }, [view.kind]);
 
+  switch (view.kind) {
+    case "forbidden":
+      return <Forbidden />;
+    case "account-changed":
+      return <AccountChanged actingTenant={view.actingTenant} />;
+    case "server-error":
+      return <ServerError message={view.message} onRetry={retry} />;
+    default:
+      return (
+        <div className="page library">
+          <FocusWithin flag={focusWasInLibrary} />
+          <PageHeading>Library</PageHeading>
+          <LibraryContent view={view} search={search} offset={params.offset} onRetry={retry} />
+        </div>
+      );
+  }
+}
+
+/**
+ * Records, as the library is unmounted, whether focus was inside it. Layout
+ * cleanup runs before the DOM is removed, so the focused element is still
+ * there to ask.
+ */
+function FocusWithin({ flag }: { flag: RefObject<boolean> }) {
+  useLayoutEffect(
+    () => () => {
+      flag.current = document.activeElement?.closest(".page.library") !== null;
+    },
+    [flag],
+  );
+  return null;
+}
+
+/**
+ * What sits under the Library heading: the busy region, the offline notice,
+ * or the rows, and the pager. The pager stays mounted while a page is being
+ * read, with Next kept as it was: a page change from the keyboard leaves
+ * focus on the step that was pressed, and only a step that turns out to be
+ * unavailable on arrival loses its href and hands focus to the page number
+ * (see Pager). Unmounting it would drop focus to the top of the document
+ * without a blur.
+ */
+function LibraryContent({
+  view,
+  search,
+  offset,
+  onRetry,
+}: {
+  view: Extract<LibraryView, { kind: "loading" | "offline" | "ready" }>;
+  search: LibrarySearch;
+  offset: number;
+  onRetry: () => void;
+}) {
+  const page = view.kind === "loading" ? undefined : view.page;
+  const empty = page !== undefined && page.readings.length === 0;
   return (
-    <div className="page library">
-      <PageHeading>Library</PageHeading>
-      {error ? (
-        // A 401 never gets here: the shell shows the expired-session page.
-        <div className="library-message">
-          <p className="auth-lede">Something went wrong on our side. {error.message}</p>
-          <div className="form-actions">
-            <button type="button" className="button button-primary" onClick={() => void refetch()}>
-              Retry
-            </button>
-          </div>
-        </div>
-      ) : isPending || !data ? (
-        <div className="library-message" aria-busy="true">
-          <DelayedText delayMs={300}>Loading…</DelayedText>
-        </div>
-      ) : data.state === "forbidden" ? (
-        <p className="auth-lede">You don't have access to this.</p>
-      ) : data.state === "account-changed" ? (
-        <p className="auth-lede">This tab is signed in to a different account than the page expects.</p>
-      ) : data.page.readings.length === 0 && params.offset > 0 ? (
-        <PastTheEnd search={search} offset={params.offset} />
-      ) : data.page.readings.length === 0 ? (
+    <>
+      {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
+      {view.kind === "loading" ? (
+        <LoadingRegion className="library-message" />
+      ) : page === undefined ? null : empty && offset > 0 ? (
+        <PastTheEnd search={search} offset={offset} />
+      ) : empty ? (
         <p className="auth-lede">No readings yet.</p>
       ) : (
-        <>
-          <LibraryRows rows={data.page.readings} />
-          <Pager search={search} offset={params.offset} page={data.page} />
-        </>
+        <LibraryRows rows={page.readings} />
       )}
-    </div>
+      {empty ? null : <Pager search={search} offset={offset} page={page} />}
+    </>
   );
 }
 
@@ -108,8 +171,10 @@ const PAGE_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
 
 /**
  * Previous, the page number, and Next. The page number follows the snapped
- * offset asked for, and Next the backend's `has_more`. A step that cannot be
- * followed stays in place, disabled, so the pager never shifts.
+ * offset asked for, and Next the backend's `has_more`; while the page is
+ * still being read, Next is assumed to exist, so a reader stepping forward
+ * keeps the control they are on. A step that cannot be followed stays in
+ * place, disabled, so the pager never shifts.
  *
  * The step a reader just followed is usually the one that becomes unavailable
  * on arrival: Next into the last page, Previous back to the first. Losing its
@@ -119,7 +184,7 @@ const PAGE_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
  * leaving for somewhere else carries a relatedTarget, and a step a reader can
  * still follow is not disabled.
  */
-function Pager({ search, offset, page }: { search: LibrarySearch; offset: number; page: LibraryPageBody }) {
+function Pager({ search, offset, page }: { search: LibrarySearch; offset: number; page: LibraryPageBody | undefined }) {
   const pageLabel = useRef<HTMLSpanElement>(null);
   const keepFocusInPager = (event: FocusEvent<HTMLElement>) => {
     if (event.relatedTarget === null && event.target.getAttribute("aria-disabled") === "true") {
@@ -133,7 +198,10 @@ function Pager({ search, offset, page }: { search: LibrarySearch; offset: number
       <span className="library-pager-page" ref={pageLabel} tabIndex={-1}>
         Page {pageNumber(offset)}
       </span>
-      <PagerStep label="Next" search={page.has_more ? searchForPage(search, offset + LIBRARY_PAGE_SIZE) : null} />
+      <PagerStep
+        label="Next"
+        search={page === undefined || page.has_more ? searchForPage(search, offset + LIBRARY_PAGE_SIZE) : null}
+      />
     </nav>
   );
 }

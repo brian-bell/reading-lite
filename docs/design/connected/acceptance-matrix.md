@@ -101,7 +101,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | --- | --- | --- | --- |
 | Loading | Query pending | Page frame and heading render; content region `aria-busy`; text "Loading…" after 300 ms, no spinner-only state | None |
 | Expired session | 401 from any request | "Your session ended." Keep the current URL | "Sign in" to `/login?next=` with the current path |
-| Permission denied | 403 | "You don't have access to this." Never treated as sign-out; the session stays | Back to library |
+| Permission denied | 403 | "You don't have access to this." Never treated as sign-out; the session stays | Back to library (none on the library itself) |
 | Account changed | 412 expected-tenant mismatch | "This tab is signed in to a different account than the page expects." | Reload |
 | Account closing | Only the tab that started deletion, from a successful `DELETE /api/account` | Signed-out page explaining the account is being deleted; sign-in during the grace period follows the backend (confirm in Phase 5) | None |
 | Offline | Fetch throws while `navigator.onLine` is false | Inline banner; keep form input and loaded content | Retry; refetch active queries on `online` |
