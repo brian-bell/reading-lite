@@ -16,6 +16,7 @@ npm test             # unit/component tests, plus the service-binding check
 npm run build        # dist/client (assets) and dist/server (Worker + wrangler.json)
 npm run test:smoke   # runs the built Worker in workerd; build first
 npm run test:browser # browser evidence: themes, viewports, axe, keyboard; build first
+npm run test:browser:ci # the essential subset CI runs
 ```
 
 Build a deployable environment with `CLOUDFLARE_ENV=staging` or
@@ -247,11 +248,22 @@ would keep passing after that rule broke. `e2e/specs/focus-check.spec.ts` (the
 uploaded by CI for review; they are not pixel-diff baselines, because the
 design spec uses system fonts and wrapping differs by machine.
 
+CI runs the essential scope, `npm run test:browser:ci` (`e2e/scope.ts`): the
+cases marked `essential` in `e2e/coverage.ts` — the major states of each route:
+the library signed out, signed in, searched, empty, session-ended, and failed;
+sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
+Source; and open Details — in the `phone-dark` and `desktop-light` projects, so
+both viewports and both themes are still covered, plus the behaviour specs and
+`checks`. Reduced motion and zoom, the other matrix projects, and the remaining
+states run only in the full `npm run test:browser`, which is the local
+verification before a frontend change ships.
+
 Extending it:
 
 - **A route or state:** add a case to `e2e/coverage.ts`. Every project picks it
-  up. `prepare` reaches states that need interaction, as the open account menu
-  does. A state reached by navigating between readings needs
+  up; mark it `essential` only if it is a major state of a route, so CI stays
+  short. `prepare` reaches states that need interaction, as the open account
+  menu does. A state reached by navigating between readings needs
   `serveReadingsInBrowser` (`e2e/test.ts`) first: the frontend Worker answers
   `/api/*` with 404 by design, so the browser's own reading requests are served
   from the fixture pack by a Playwright route. `e2e/specs/reading-trail.spec.ts`

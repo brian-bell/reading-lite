@@ -2,7 +2,10 @@
 //
 // Add a route or a state by adding a case here: every project in
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
-// the keyboard pass, and a screenshot against it. `fixture` names a state from
+// the keyboard pass, and a screenshot against it. Mark it `essential` only if
+// it is a major state of a route (the library, a ready, pending, failed, and
+// missing reading, sign-in, save, one trail hop, Source, Details): CI runs
+// those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
 // edit in test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo
@@ -10,6 +13,7 @@
 
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
+import { EVIDENCE_SCOPE } from "./scope";
 import { LIBRARY_STATE_SESSIONS } from "./sessions";
 import { serveDiagnosticsInBrowser, serveLibraryInBrowser, serveReadingsInBrowser, serveSourceInBrowser } from "./test";
 
@@ -22,6 +26,8 @@ export interface EvidenceCase {
   state: SignedState;
   /** The `<h1>` that proves the page rendered before anything is measured. */
   heading: string;
+  /** Part of the essential scope CI runs (e2e/scope.ts). */
+  essential?: true;
   /**
    * A session cookie other than the default reader's, for a backend-stub
    * scenario (#416). Signs the context in whatever `state` says the page
@@ -36,16 +42,17 @@ export interface EvidenceCase {
   prepare?: (page: Page) => Promise<void>;
 }
 
-export const EVIDENCE_CASES: EvidenceCase[] = [
+export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
-  { name: "library-signed-out", path: "/", state: "signed-out", heading: "Sign in" },
+  { name: "library-signed-out", essential: true, path: "/", state: "signed-out", heading: "Sign in" },
   // Signed in, the first page of the pack's list index, rendered on the server
   // (#413). The pack's pending, failed, reprocess-failed, and long-title rows
   // are all on it (#415), so this one page is the evidence for the badges, the
   // wrapped title, and the clamped summaries in every viewport and theme.
   {
     name: "library-signed-in",
+    essential: true,
     path: "/",
     state: "signed-in",
     heading: "Library",
@@ -92,6 +99,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // needs a session with nothing saved.
   {
     name: "library-search",
+    essential: true,
     path: "/?q=quiet",
     state: "signed-in",
     heading: "Library",
@@ -140,6 +148,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-empty",
+    essential: true,
     path: "/",
     state: "signed-in",
     session: LIBRARY_STATE_SESSIONS.empty,
@@ -166,6 +175,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // in the browser, by changing page with the network gone.
   {
     name: "library-session-ended",
+    essential: true,
     path: "/",
     state: "signed-out",
     session: LIBRARY_STATE_SESSIONS["session-ended"],
@@ -187,6 +197,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-server-error",
+    essential: true,
     path: "/",
     state: "signed-in",
     session: LIBRARY_STATE_SESSIONS["server-error"],
@@ -220,14 +231,15 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Save reading" },
-  { name: "save-signed-in", path: "/save", state: "signed-in", heading: "Save reading" },
-  { name: "login", path: "/login", state: "signed-out", heading: "Sign in" },
+  { name: "save-signed-in", essential: true, path: "/save", state: "signed-in", heading: "Save reading" },
+  { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 
   // Reading detail (#370). Each heading is the page's own <h1>: the title for a
   // reading that has one, the URL for a failed manifest (which never got one),
   // and the state's sentence where there is no reading to show.
   {
     name: "reading-ready",
+    essential: true,
     path: "/readings/rd_FXATTENT01",
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
@@ -273,6 +285,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "reading-pending",
+    essential: true,
     path: "/readings/rd_FXPENDNG01",
     state: "signed-in",
     heading: "https://fieldnotes.example/making-room-for-slow-work",
@@ -280,6 +293,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "reading-failed",
+    essential: true,
     path: "/readings/rd_FXERR00001",
     state: "signed-in",
     heading: "https://registration-wall.example/members-only-report",
@@ -289,6 +303,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // the route 404s (docs/design/connected/fixture-pack.md).
   {
     name: "reading-not-found",
+    essential: true,
     path: "/readings/rd_FXVANSHD01",
     state: "signed-in",
     heading: "This reading isn't in your library.",
@@ -307,6 +322,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "reading-trail-one-hop",
+    essential: true,
     path: "/readings/rd_FXATTENT01",
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
@@ -361,6 +377,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // request.
   {
     name: "reading-source",
+    essential: true,
     path: "/readings/rd_FXATTENT01",
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
@@ -397,6 +414,7 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // loading and failed states are reached by holding and failing the request.
   {
     name: "reading-details-open",
+    essential: true,
     path: "/readings/rd_FXATTENT01",
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
@@ -447,6 +465,10 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
 ];
+
+/** The cases this run covers: every case in full, the `essential` ones in CI. */
+export const EVIDENCE_CASES: EvidenceCase[] =
+  EVIDENCE_SCOPE === "full" ? ALL_EVIDENCE_CASES : ALL_EVIDENCE_CASES.filter((evidence) => evidence.essential);
 
 /** Opens the Details disclosure. */
 export async function openDetails(page: Page): Promise<void> {
