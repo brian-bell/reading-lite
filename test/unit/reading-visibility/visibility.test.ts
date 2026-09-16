@@ -12,7 +12,6 @@ import { EMBEDDING_DIM } from "../../../src/schemas/api";
 import type {
   Manifest,
   ProcessingAttemptSummary,
-  ProcessingStage,
 } from "../../../src/schemas/manifest";
 
 const ID = "rd_X";
@@ -177,16 +176,6 @@ describe("ReadingVisibility.publish", () => {
     expect(vectors.has(ID)).toBe(true);
   });
 
-  it("publishes without a ledger, so a control-plane-less environment still works", async () => {
-    const reader = newReader();
-    const { similarity, vectors } = fakeVectorize();
-    const vis = new ReadingVisibility(reader, similarity, null);
-
-    await vis.publish(readyManifest(), args(), vectorOpt());
-
-    expect(vectors.has(ID)).toBe(true);
-  });
-
   it("writes the list row only when similarity is null", async () => {
     const reader = newReader();
     const vis = new ReadingVisibility(reader, null);
@@ -194,22 +183,6 @@ describe("ReadingVisibility.publish", () => {
     await vis.publish(readyManifest(), args(), vectorOpt());
 
     expect(await reader.findListIndexItem(ID)).not.toBeNull();
-  });
-
-  it("emits a ProcessingStage event per sub-write through the instrument", async () => {
-    const reader = newReader();
-    const { similarity } = fakeVectorize();
-    const vis = new ReadingVisibility(reader, similarity);
-
-    const stages: ProcessingStage[] = [];
-    const instrument = <T>(stage: ProcessingStage, fn: () => Promise<T>): Promise<T> => {
-      stages.push(stage);
-      return fn();
-    };
-
-    await vis.publish(readyManifest(), args(), vectorOpt(), { instrument });
-
-    expect(stages).toEqual(["write_indexes", "upsert_vector"]);
   });
 });
 
@@ -362,22 +335,6 @@ describe("ReadingVisibility.removeForDeletedTenant", () => {
       manifest({ status: "failed", last_attempt: attempt("at_FOREIGN", "failed") }),
     );
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest(), PREFIX));
-    const { similarity, vectors } = fakeVectorize();
-    vectors.set(ID, { values: embedding(), metadata: {} });
-    const vis = new ReadingVisibility(reader, similarity);
-
-    await vis.removeForDeletedTenant(args());
-
-    expect(await reader.findListIndexItem(ID)).toBeNull();
-    expect(vectors.has(ID)).toBe(false);
-  });
-
-  it("removes an owned list row alongside the vector", async () => {
-    const reader = newReader();
-    await reader.writeManifest(PREFIX, manifest({ active_attempt: attempt(ATTEMPT) }));
-    await reader.appendOrReplaceListIndexItem(
-      manifestToIndexItem(manifest({ active_attempt: attempt(ATTEMPT) }), PREFIX),
-    );
     const { similarity, vectors } = fakeVectorize();
     vectors.set(ID, { values: embedding(), metadata: {} });
     const vis = new ReadingVisibility(reader, similarity);

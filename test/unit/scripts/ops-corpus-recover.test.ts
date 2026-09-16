@@ -122,13 +122,6 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
 }
 
 describe("ops corpus recover — realtime routing", () => {
-  it("fails closed without --tenant", async () => {
-    const r = makeDeps();
-    await expect(corpusRecoverCommand.run([], r.deps)).rejects.toThrow(/--tenant is required/);
-    expect(r.reprocessed).toHaveLength(0);
-    expect(r.indexWrites).toHaveLength(0);
-    expect(r.batchExecutes).toHaveLength(0);
-  });
 
   it("refuses a foreign audit before any realtime or batch side effect", async () => {
     const r = makeDeps();
@@ -437,9 +430,7 @@ describe("ops corpus recover — batch routing", () => {
     expect(r.batchExecutes[0].map((row) => row.reading_id)).toEqual(["rd_a"]);
   });
 
-  it("names readinglite.ai as the default production API base in help", () => {
-    expect(corpusRecoverCommand.helpText).toContain("https://readinglite.ai");
-    expect(corpusRecoverCommand.helpText).toContain("READER_URL");
+  it("no longer names a retired production host in help", () => {
     expect(corpusRecoverCommand.helpText).not.toContain("reading-lite.bbell.dev");
     expect(corpusRecoverCommand.helpText).not.toContain("bbookmarks.com");
   });

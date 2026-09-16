@@ -384,18 +384,8 @@ binding = "READING_JOBS"
     expect(h.out.join("\n")).toContain("Usage: 2 judgements; input=200 output=40 reasoning=0");
   });
 
-  it("counts the usage of a judgement whose manifest write then loses CAS", async () => {
-    const h = harness({ cas: false });
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "1"],
-        h.deps,
-      ),
-    ).toBe(1);
-    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
-  });
 
-  it("does not blind-write or update the list after a manifest CAS loss", async () => {
+  it("counts the usage but neither blind-writes nor updates the list after a manifest CAS loss", async () => {
     const h = harness({ cas: false });
     expect(
       await corpusRefreshConnectionsCommand.run(
@@ -406,6 +396,8 @@ binding = "READING_JOBS"
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.listWrites).toEqual([]);
     expect(h.err.join("\n")).toMatch(/CAS lost/);
+    // The judgement was paid for whether or not its write landed.
+    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
   });
 
   it("reads every manifest once, with no per-action re-read on execute", async () => {

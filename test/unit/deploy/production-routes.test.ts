@@ -69,6 +69,9 @@ describe("production worker routes", () => {
   const routes = routesFor(wrangler, "env.production.routes");
 
   it("serves the same three path sets on readinglite.ai and readinglite.app, and the API on next", () => {
+    // Exact set: nothing else is routed. `www` belongs to a Cloudflare redirect
+    // rule, never to a worker route, and the retired reading-lite.bbell.dev
+    // host is not a Worker route.
     expect(routes).toEqual([
       { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -81,15 +84,6 @@ describe("production worker routes", () => {
       { pattern: "next.readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "next.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
-  });
-
-  it("routes exactly those eight patterns and nothing else", () => {
-    // `www` belongs to a Cloudflare redirect rule, never to a worker route.
-    // The retired reading-lite.bbell.dev host is not a Worker route.
-    expect(routes).toHaveLength(8);
-    expect(routes.every((route) => route !== null)).toBe(true);
-    expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
-    expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
   });
 
   it("counts a route however its block is spelled", () => {
@@ -170,6 +164,7 @@ describe("staging worker routes", () => {
   const routes = routesFor(wrangler, "env.staging.routes");
 
   it("serves the same three path sets on both staging hosts, and the API on next-staging", () => {
+    // Exact set: no www. redirect host and no retired bbell.dev host.
     expect(routes).toEqual([
       { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -180,12 +175,5 @@ describe("staging worker routes", () => {
       { pattern: "next-staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "next-staging.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
-  });
-
-  it("routes exactly those eight patterns and nothing else", () => {
-    expect(routes).toHaveLength(8);
-    expect(routes.every((route) => route !== null)).toBe(true);
-    expect(routes.some((route) => route?.pattern.startsWith("www."))).toBe(false);
-    expect(routes.some((route) => route?.pattern.includes("bbell.dev"))).toBe(false);
   });
 });

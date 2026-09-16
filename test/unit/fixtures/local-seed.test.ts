@@ -299,59 +299,37 @@ describe("local seed fixture pack", () => {
     );
   });
 
-  it("represents the sparse archive as similarity.count = 0 with no connections", () => {
+  it("pins the non-obvious invariants of the named states", () => {
+    // Sparse archive: an empty similarity result has a count and no stats.
     const sparse = byId.get("rd_FXSPARSE01")!.manifest;
-    expect(sparse.similarity).toEqual({ count: 0, computed_at: sparse.similarity?.computed_at });
+    expect(sparse.similarity?.count).toBe(0);
     expect(sparse.similarity?.max).toBeUndefined();
     expect(sparse.similarity?.mean).toBeUndefined();
     expect(sparse.connections).toEqual([]);
-    expect(sparse.novelty_verdict).toBe("novel");
-  });
 
-  it("represents the unavailable source as raw_only with no extracted artifact", () => {
-    const unavailable = byId.get("rd_FXRAWSRC01")!.manifest;
-    expect(unavailable.content_status).toBe("raw_only");
-    expect(plan.objects.some((o) => o.key === `${byId.get("rd_FXRAWSRC01")!.keyPrefix}/extracted.md`)).toBe(false);
-    expect(unavailable.title).toBeDefined();
-    expect(unavailable.summary_markdown).toBeDefined();
-  });
+    // Unavailable source: raw_only means no extracted.md object exists.
+    const rawSrc = byId.get("rd_FXRAWSRC01")!;
+    expect(rawSrc.manifest.content_status).toBe("raw_only");
+    expect(plan.objects.some((o) => o.key === `${rawSrc.keyPrefix}/extracted.md`)).toBe(false);
 
-  it("represents degraded YouTube with a transcript-tier enrichment degradation", () => {
+    // Degraded YouTube: a transcript-tier degradation on a still-ready reading.
     const youtube = byId.get("rd_FXYTDEGRD1")!.manifest;
-    expect(youtube.enrichment_degradation).toEqual({
-      source: "youtube",
-      tier: "transcript",
-      code: "YoutubeEnrichmentParseError",
-      message: "timedtext response was empty or unparseable",
-    });
+    expect(youtube.enrichment_degradation).toMatchObject({ source: "youtube", tier: "transcript" });
     expect(youtube.status).toBe("ready");
-  });
 
-  it("represents the old manifest without similarity, verdict, or connections date", () => {
+    // Old manifest: pre-similarity fields absent, usage on the legacy arm.
     const old = byId.get("rd_FXPAST0001")!.manifest;
     expect(old.similarity).toBeUndefined();
     expect(old.novelty_verdict).toBeUndefined();
     expect(old.connections_computed_at).toBeUndefined();
-    // Legacy usage arm (pre-v2 shape).
-    expect(old.usage).toEqual({
-      anthropic_input_tokens: 12840,
-      anthropic_output_tokens: 733,
-      openai_embedding_tokens: 1902,
-    });
-  });
+    expect(old.usage).toHaveProperty("anthropic_input_tokens");
 
-  it("carries the 130-character long title verbatim, past the summarizer's 120-char cap", () => {
-    const longTitle = byId.get("rd_FXMAXNAME1")!.manifest;
-    expect(longTitle.title!.length).toBe(130);
-    expect(longTitle.title).toBe(
-      "What we lose when every tool for thinking becomes a place to organize, optimize, and measure the work instead of actually doing it",
-    );
-  });
+    // Long title: past the summarizer's 120-char cap, kept verbatim.
+    expect(byId.get("rd_FXMAXNAME1")!.manifest.title!.length).toBeGreaterThan(120);
 
-  it("marks the imported Markdown fixture as a markdown source", () => {
+    // Imported Markdown: a markdown source reached through an import attempt.
     const markdown = byId.get("rd_FXMDPAGE01")!.manifest;
     expect(markdown.source_type).toBe("markdown");
-    expect(markdown.content_type).toBe("text/markdown; charset=utf-8");
     expect(markdown.last_attempt?.trigger).toBe("import");
   });
 

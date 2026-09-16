@@ -1,24 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { cookieAuthAllowed, isSameOriginRequest, PUBLIC_WEB_ORIGINS } from "../../../src/control-plane/origin";
+import { cookieAuthAllowed, isSameOriginRequest } from "../../../src/control-plane/origin";
 
 const same = {
   url: "https://readinglite.ai/api/whoami",
   webBaseUrl: "https://readinglite.ai/",
 };
-
-describe("PUBLIC_WEB_ORIGINS", () => {
-  it("names every production and staging host this project serves", () => {
-    expect(PUBLIC_WEB_ORIGINS).toEqual([
-      "https://readinglite.ai",
-      "https://readinglite.app",
-      "https://staging.readinglite.ai",
-      "https://staging.readinglite.app",
-      // New-frontend preview hosts (ADR 0003); retired after the Phase 5 cutover.
-      "https://next.readinglite.ai",
-      "https://next-staging.readinglite.ai",
-    ]);
-  });
-});
 
 describe("isSameOriginRequest", () => {
   it("requires a matching Origin", () => {

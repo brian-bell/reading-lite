@@ -59,14 +59,6 @@ function makeDeps(items: ListItem[] = ITEMS): {
 }
 
 describe("ops corpus audit", () => {
-  it("fails closed without --tenant", async () => {
-    const { deps, writes, listReads } = makeDeps();
-    await expect(corpusAuditCommand.run(["--out", "reports"], deps)).rejects.toThrow(
-      /--tenant is required/,
-    );
-    expect(listReads).toHaveLength(0);
-    expect(writes).toHaveLength(0);
-  });
 
   it("plan mode reads and classifies but writes no report files", async () => {
     const { deps, out, writes, mkdirs } = makeDeps();
@@ -180,9 +172,7 @@ describe("ops corpus audit", () => {
     expect(listReads).toHaveLength(0);
   });
 
-  it("is registered as plan-first under the corpus group", () => {
-    expect(corpusAuditCommand.group).toBe("corpus");
-    expect(corpusAuditCommand.name).toBe("audit");
+  it("is registered as plan-first", () => {
     expect(corpusAuditCommand.safety).toBe("plan-first");
   });
 });

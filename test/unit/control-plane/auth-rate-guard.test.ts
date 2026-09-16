@@ -187,17 +187,22 @@ function recordingGuard(decision: { ok: boolean; reason?: string } = { ok: true 
   return { env, bodies };
 }
 
+const UNBOUND_ADMITS: ReadonlyArray<[string, (env: Env) => Promise<string>]> = [
+  ["admitAuthIp", (env) => admitAuthIp(env, new Request("https://example.test/"))],
+  ["admitAuthSend", (env) => admitAuthSend(env, "a@b.test")],
+];
+
+describe("without a Durable Object binding", () => {
+  it.each(UNBOUND_ADMITS)("%s fails closed on staging", async (_name, admit) => {
+    expect(await admit({ APP_ENV: "staging", AUTH_ROOT_SECRET: ROOT_HEX } as Env)).toBe("deny");
+  });
+
+  it.each(UNBOUND_ADMITS)("%s allows local traffic", async (_name, admit) => {
+    expect(await admit({ APP_ENV: "local", AUTH_ROOT_SECRET: ROOT_HEX } as Env)).toBe("allow");
+  });
+});
+
 describe("admitAuthIp", () => {
-  it("fails closed on staging without a Durable Object binding", async () => {
-    const env = { APP_ENV: "staging", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthIp(env, new Request("https://example.test/"))).toBe("deny");
-  });
-
-  it("allows local traffic when the Durable Object is unbound", async () => {
-    const env = { APP_ENV: "local", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthIp(env, new Request("https://example.test/"))).toBe("allow");
-  });
-
   it("posts kind ip with an HMAC of the coarse IP and no email hash", async () => {
     const { env, bodies } = recordingGuard({ ok: false, reason: "ip" });
     expect(
@@ -215,16 +220,6 @@ describe("admitAuthIp", () => {
 });
 
 describe("admitAuthSend", () => {
-  it("fails closed on staging without a Durable Object binding", async () => {
-    const env = { APP_ENV: "staging", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthSend(env, "a@b.test")).toBe("deny");
-  });
-
-  it("allows local traffic when the Durable Object is unbound", async () => {
-    const env = { APP_ENV: "local", AUTH_ROOT_SECRET: ROOT_HEX } as Env;
-    expect(await admitAuthSend(env, "a@b.test")).toBe("allow");
-  });
-
   it("posts kind send with an HMAC of the email and no IP hash", async () => {
     const { env, bodies } = recordingGuard({ ok: false, reason: "email" });
     expect(await admitAuthSend(env, "founder@test.example")).toBe("deny");

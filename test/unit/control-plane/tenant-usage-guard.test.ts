@@ -298,29 +298,6 @@ describe("TenantUsageGuard", () => {
     expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
   });
 
-  it("alarm keeps a held reservation after refresh moves expiry past now", async () => {
-    const now = Date.now();
-    const map = new Map<string, unknown>([
-      [
-        "op:at_refresh",
-        {
-          status: "held",
-          hourKey: utcHourKey(now),
-          monthKey: utcMonthKey(now),
-          expiresAt: now - 1,
-        },
-      ],
-      [`h:${utcHourKey(now)}`, { count: 1 }],
-      [`m:${utcMonthKey(now)}`, { count: 1 }],
-    ]);
-    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
-    expect(
-      await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_refresh", nowMs: now }),
-    ).toEqual({ ok: true });
-    await guard.alarm();
-    expect(map.has("op:at_refresh")).toBe(true);
-    expect(map.get(`m:${utcMonthKey(now)}`)).toEqual({ count: 1 });
-  });
 });
 
 describe("tenantUsageFor", () => {

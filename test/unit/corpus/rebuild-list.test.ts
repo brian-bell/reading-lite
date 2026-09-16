@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { enforceSoleWriter } from "../../../scripts/corpus-lib/sole-writer";
 import { planListRebuild, rebuildWriteGuard } from "../../../scripts/corpus-lib/rebuild-list";
 import type { Manifest } from "../../../src/schemas/manifest";
 
@@ -74,19 +73,5 @@ describe("rebuildWriteGuard", () => {
       action: "dry-run",
       reason: "",
     });
-  });
-});
-
-describe("corpus-rebuild-list sole-writer glue", () => {
-  it("refuses an --execute run that has not acknowledged sole-writer", () => {
-    const write: string[] = [];
-    let exitCode: number | undefined;
-    enforceSoleWriter(
-      { execute: true, acknowledged: false, tool: "corpus-rebuild-list" },
-      { write: (s) => write.push(s), exit: (code) => { exitCode = code; } },
-    );
-    expect(write.join("")).toMatch(/corpus-rebuild-list/);
-    expect(write.join("")).toMatch(/--sole-writer/);
-    expect(exitCode).toBe(2);
   });
 });

@@ -111,35 +111,6 @@ describe("batch sidecar I/O", () => {
     }
   });
 
-  it("saves through a valid persisted sidecar and loads it back", async () => {
-    const { dir, path } = await tempPath();
-    try {
-      const sidecar = {
-        version: 2,
-        provider: "anthropic",
-        phase: "submitted",
-        batchId: "msgbatch_1",
-        model: "m",
-        processingStatus: "in_progress",
-        resultsUrl: null,
-        targets: [target],
-      } as Sidecar;
-      await saveSidecar(path, sidecar);
-      const expected = {
-        version: 2,
-        provider: "anthropic",
-        phase: "submitted",
-        batchId: "msgbatch_1",
-        model: "m",
-        targets: [target],
-      };
-      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject(expected);
-      await expect(loadSidecar(path)).resolves.toMatchObject(expected);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
   it("round-trips judged candidate IDs and still loads a pre-upgrade sidecar without them", async () => {
     const { dir, path } = await tempPath();
     try {

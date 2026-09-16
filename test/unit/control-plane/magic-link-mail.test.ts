@@ -20,40 +20,25 @@ describe("buildMagicLinkVerifyUrl", () => {
   });
 });
 
+const STAGING_BASE = "https://staging.readinglite.ai/";
+
 describe("publicWebBase", () => {
-  it("mails the link back to the public host the login started on", () => {
-    expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request")).toBe(
-      "https://readinglite.ai",
-    );
-    expect(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request")).toBe(
-      "https://readinglite.app",
-    );
-    expect(publicWebBase(CONFIGURED_BASE, "https://staging.readinglite.ai/api/auth/request")).toBe(
-      "https://staging.readinglite.ai",
-    );
-    expect(publicWebBase(CONFIGURED_BASE, "https://staging.readinglite.app/api/auth/request")).toBe(
-      "https://staging.readinglite.app",
-    );
-  });
-
-  it("mails new-frontend preview logins back to their preview host", () => {
-    expect(publicWebBase(CONFIGURED_BASE, "https://next.readinglite.ai/api/auth/request")).toBe(
-      "https://next.readinglite.ai",
-    );
-    expect(
-      publicWebBase("https://staging.readinglite.ai/", "https://next-staging.readinglite.ai/api/auth/request"),
-    ).toBe("https://next-staging.readinglite.ai");
-    expect(publicWebBase(CONFIGURED_BASE, "https://next.staging.readinglite.ai/api/auth/request")).toBe(
-      "https://readinglite.ai",
-    );
-  });
-
-  it("produces a verify URL on the host the request arrived at", () => {
-    const base = publicWebBase(CONFIGURED_BASE, "https://readinglite.ai/api/auth/request");
-    expect(buildMagicLinkVerifyUrl(base, "ml_abc.def")).toBe("https://readinglite.ai/auth/verify#ml_abc.def");
-    expect(
-      buildMagicLinkVerifyUrl(publicWebBase(CONFIGURED_BASE, "https://readinglite.app/api/auth/request"), "ml_abc.def"),
-    ).toBe("https://readinglite.app/auth/verify#ml_abc.def");
+  it.each([
+    // Production base: every public host mails back to itself.
+    [CONFIGURED_BASE, "https://readinglite.ai", "https://readinglite.ai"],
+    [CONFIGURED_BASE, "https://readinglite.app", "https://readinglite.app"],
+    [CONFIGURED_BASE, "https://staging.readinglite.ai", "https://staging.readinglite.ai"],
+    [CONFIGURED_BASE, "https://staging.readinglite.app", "https://staging.readinglite.app"],
+    // New-frontend preview hosts (ADR 0003); a lookalike falls back to the base.
+    [CONFIGURED_BASE, "https://next.readinglite.ai", "https://next.readinglite.ai"],
+    [STAGING_BASE, "https://next-staging.readinglite.ai", "https://next-staging.readinglite.ai"],
+    [CONFIGURED_BASE, "https://next.staging.readinglite.ai", "https://readinglite.ai"],
+    // Staging base: staging hosts mail back to themselves, the legacy host to the base.
+    [STAGING_BASE, "https://staging.readinglite.ai", "https://staging.readinglite.ai"],
+    [STAGING_BASE, "https://staging.readinglite.app", "https://staging.readinglite.app"],
+    [STAGING_BASE, "https://reading-lite-staging.bbell.dev", "https://staging.readinglite.ai"],
+  ])("with base %s, a login arriving at %s mails back to %s", (base, host, expected) => {
+    expect(publicWebBase(base, `${host}/api/auth/request`)).toBe(expected);
   });
 
   it("falls back to WEB_BASE_URL for an unknown or spoofed request host", () => {
@@ -81,19 +66,6 @@ describe("publicWebBase", () => {
   it("leaves loopback requests on the configured base", () => {
     expect(publicWebBase("http://127.0.0.1:5173", "http://127.0.0.1:8787/api/auth/request")).toBe(
       "http://127.0.0.1:5173",
-    );
-  });
-
-  it("mails staging logins back to the staging host they arrived on", () => {
-    const stagingBase = "https://staging.readinglite.ai/";
-    expect(publicWebBase(stagingBase, "https://staging.readinglite.ai/api/auth/request")).toBe(
-      "https://staging.readinglite.ai",
-    );
-    expect(publicWebBase(stagingBase, "https://staging.readinglite.app/api/auth/request")).toBe(
-      "https://staging.readinglite.app",
-    );
-    expect(publicWebBase(stagingBase, "https://reading-lite-staging.bbell.dev/api/auth/request")).toBe(
-      "https://staging.readinglite.ai",
     );
   });
 

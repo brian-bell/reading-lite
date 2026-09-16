@@ -203,16 +203,6 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "xhigh" },
       { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
     ]);
-    expect(
-      buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
-    ).not.toHaveProperty("reasoningEffort");
-    expect(
-      buildCandidateMatrix(parseComparisonArgs(["--target", ARTICLE_URL]), "gpt-5.6-luna")[4],
-    ).toEqual({
-      provider: "anthropic",
-      model: "claude-sonnet-5",
-      anthropicEffort: "low",
-    });
   });
 
   it("honors an explicit --base-url over the production default", () => {

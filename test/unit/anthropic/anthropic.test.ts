@@ -72,7 +72,9 @@ describe("summarizeReading", () => {
     expect(out.usage.cache_read_input_tokens).toBe(80);
   });
 
-  it("calls Anthropic with model, headers, tool_choice, and cache_control", async () => {
+  it("calls the Anthropic messages endpoint with the API key and version headers", async () => {
+    // Body shape is owned by the buildSummarizeRequestBody tests below, which
+    // also pin that summarizeReading sends that body byte-for-byte.
     const fetchFn = vi.fn<typeof fetch>(async () => ok(toolUseResponse(validToolInput)));
     await summarizeReading(
       {
@@ -92,23 +94,6 @@ describe("summarizeReading", () => {
     expect(headers.get("x-api-key")).toBe("sk-secret");
     expect(headers.get("anthropic-version")).toBe("2023-06-01");
     expect(headers.get("content-type")).toBe("application/json");
-    const body = JSON.parse(init.body as string);
-    expect(body.model).toBe("claude-sonnet-5");
-    expect(body.max_tokens).toBe(8192);
-    expect(body.thinking).toEqual({ type: "disabled" });
-    expect(body.output_config).toEqual({ effort: "low" });
-    expect(body.tool_choice).toEqual({ type: "any" });
-    expect(Array.isArray(body.tools)).toBe(true);
-    expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual([
-      EMIT_READING_TOOL_NAME,
-      REJECT_SOURCE_TOOL_NAME,
-    ]);
-    // System is an array of blocks with cache_control on the last block (caches tools+system together).
-    expect(Array.isArray(body.system)).toBe(true);
-    const lastSystem = body.system[body.system.length - 1];
-    expect(lastSystem.cache_control).toEqual({ type: "ephemeral" });
-    // Volatile content (extracted text + similar context) is in the user message, after the cache breakpoint.
-    expect(body.messages[0].role).toBe("user");
   });
 
   it("includes the extracted text and URL in the user message", async () => {
@@ -393,49 +378,8 @@ describe("parseEmitReadingResult", () => {
     expect(out.usage).toEqual(usage);
   });
 
-  it("throws NoToolUseError when no emit_reading block is present", () => {
-    expect(() =>
-      parseEmitReadingResult([{ type: "text", text: "nope" }], usage),
-    ).toThrow(NoToolUseError);
-  });
-
-  it("throws BadToolInputError when the tool input fails validation", () => {
-    expect(() =>
-      parseEmitReadingResult(
-        [{ type: "tool_use", id: "t", name: EMIT_READING_TOOL_NAME, input: { ...validToolInput, novelty_verdict: "maybe" } }],
-        usage,
-      ),
-    ).toThrow(BadToolInputError);
-  });
-
-  it("throws SourceRejectedError when reject_source is called", () => {
-    expect(() =>
-      parseEmitReadingResult(
-        [
-          {
-            type: "tool_use",
-            id: "t",
-            name: REJECT_SOURCE_TOOL_NAME,
-            input: { reason: "this is a recap of the URL, not the article" },
-          },
-        ],
-        usage,
-      ),
-    ).toThrow(SourceRejectedError);
-    expect(() =>
-      parseEmitReadingResult(
-        [
-          {
-            type: "tool_use",
-            id: "t",
-            name: REJECT_SOURCE_TOOL_NAME,
-            input: { reason: "this is a recap of the URL, not the article" },
-          },
-        ],
-        usage,
-      ),
-    ).toThrow("this is a recap of the URL, not the article");
-  });
+  // NoToolUse / BadToolInput / SourceRejected are covered through
+  // summarizeReading above, which reaches this parser unchanged.
 
   it("prefers reject_source when both tools are present", () => {
     expect(() =>

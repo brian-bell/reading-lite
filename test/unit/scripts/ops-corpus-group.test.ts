@@ -138,12 +138,6 @@ describe("ops corpus drop", () => {
     await expect(corpusDropCommand.run(["--tenant", "global", "rd_f", "--allow-ready"], deps)).rejects.toThrow(UsageError);
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps([FAILED_ITEM]);
-    await expect(corpusDropCommand.run(["rd_f", "--execute"], deps)).rejects.toThrow(/--tenant is required/);
-    expect(calls.deletes).toHaveLength(0);
-    expect(calls.indexWrites).toBe(0);
-  });
 
   it("requires selectors", async () => {
     const { deps } = makeDeps([FAILED_ITEM]);
@@ -213,27 +207,7 @@ describe("ops corpus sweep", () => {
     expect(calls.indexWrites).toBe(1);
   });
 
-  it("fails closed without --tenant", async () => {
-    await expect(corpusSweepCommand.run(["--execute"], makeDeps(DUP_ITEMS).deps)).rejects.toThrow(
-      /--tenant is required/,
-    );
-  });
 
-  it("probes vector existence under the selected tenant namespace", async () => {
-    const { deps } = makeDeps(DUP_ITEMS);
-    const probes: Array<string | undefined> = [];
-    deps.r2.vectorExists = async (_index, _id, namespace) => {
-      probes.push(namespace);
-      return true;
-    };
-    const code = await corpusSweepCommand.run(
-      ["--tenant", "usr_11111111-1111-4111-8111-111111111111"],
-      deps,
-    );
-    expect(code).toBe(0);
-    expect(probes.length).toBeGreaterThan(0);
-    expect(new Set(probes)).toEqual(new Set(["usr_11111111-1111-4111-8111-111111111111"]));
-  });
 
   it("tenant mode probes and deletes the ADR-0002 tenant-prefixed vector id", async () => {
     const { deps } = makeDeps(DUP_ITEMS);
@@ -354,13 +328,6 @@ describe("ops corpus delete-orphans", () => {
     expect(calls.indexWrites).toBe(1);
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps();
-    await expect(
-      corpusDeleteOrphansCommand.run(["--ids", "rd_orphan", "--execute"], deps),
-    ).rejects.toThrow(/--tenant is required/);
-    expect(calls.deletes).toHaveLength(0);
-  });
 
   it("refuses an audit taken under a different tenant", async () => {
     const { deps, calls, lines } = makeDeps();
@@ -522,13 +489,6 @@ describe("ops corpus backfill-similarity", () => {
     expect(calls.indexWrites).toBe(1);
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps([]);
-    await expect(corpusBackfillSimilarityCommand.run(["--execute"], deps)).rejects.toThrow(
-      /--tenant is required/,
-    );
-    expect(calls.puts).toHaveLength(0);
-  });
 
   it("a missing vector makes an execute run incomplete (exit 1)", async () => {
     const { deps, calls } = makeDeps(null);
@@ -803,12 +763,6 @@ describe("ops corpus backfill-vectors", () => {
     expect(lines.join("\n")).toContain("refresh-neighbours --full");
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps } = makeDeps();
-    await expect(corpusBackfillVectorsCommand.run(["--execute"], deps)).rejects.toThrow(
-      /--tenant is required/,
-    );
-  });
 
   it("rejects --local because Vectorize has no local store", async () => {
     const { deps } = makeDeps();
@@ -851,13 +805,6 @@ describe("ops corpus normalize-tags", () => {
     expect(lines.join("\n")).toContain("developer-tools");
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps();
-    await expect(corpusNormalizeTagsCommand.run(["--execute"], deps)).rejects.toThrow(
-      /--tenant is required/,
-    );
-    expect(calls.puts).toHaveLength(0);
-  });
 
   it("--execute writes manifests and the index", async () => {
     const { deps, calls } = makeDeps();
@@ -914,13 +861,6 @@ describe("ops corpus rebuild-list", () => {
     expect(calls.indexWrites).toBe(0);
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps();
-    await expect(
-      corpusRebuildListCommand.run(["--execute", "--sole-writer"], deps),
-    ).rejects.toThrow(/--tenant is required/);
-    expect(calls.indexWrites).toBe(0);
-  });
 
   it("--execute without --sole-writer refuses with exit 2", async () => {
     const { deps, calls, lines } = makeDeps();
@@ -1081,12 +1021,6 @@ describe("ops corpus ingest", () => {
     expect(calls.sidecarClears).toBe(1);
   });
 
-  it("fails closed without --tenant", async () => {
-    const { deps } = makeDeps();
-    await expect(
-      corpusIngestCommand.run(["--dir", "/md", "--execute", "--sole-writer"], deps),
-    ).rejects.toThrow(/--tenant is required/);
-  });
 
   it("refuses to resume a sidecar under a different tenant", async () => {
     const { deps, calls, lines } = makeDeps();

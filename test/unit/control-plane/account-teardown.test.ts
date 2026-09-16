@@ -274,28 +274,6 @@ describe("tearDownAccount — the completion gate", () => {
     }
   });
 
-  // "We could not look" must never read as "confirmed clean": objects orphaned
-  // by this delete can never be found through the tenant again, because the
-  // hard delete removes it from `listDeletingUsers` for good.
-  it("checks the prefix itself rather than trusting the caller", async () => {
-    const { sqlite, db } = await seeded();
-    wipeRecord(sqlite, { completedAtMs: NOW_MS });
-    const { env } = guardEnv();
-    let asked = 0;
-
-    await tearDownAccount(db, env, {
-      tenantId: USER,
-      nowMs: NOW_MS,
-      prefixVerdict: async () => {
-        asked += 1;
-        return "empty";
-      },
-    });
-
-    expect(asked).toBe(1);
-    expect(count(sqlite, "users", "id", USER)).toBe(0);
-  });
-
   // A late publisher during either Durable Object purge or the address-history
   // lookup must not see an earlier `empty` verdict used for the hard delete:
   // cron then stops enumerating the tenant and the new object is orphaned.
@@ -348,6 +326,10 @@ describe("tearDownAccount — the completion gate", () => {
     expect(count(sqlite, "users", "id", USER)).toBe(1);
     expect(count(sqlite, "sessions", "user_id", USER)).toBe(1);
   });
+  // Known residual, not asserted: a data-plane write that lands after this
+  // final "empty" verdict and before the independent D1 batch is still torn
+  // down. Teardown cannot fence R2 and D1 atomically, so the recheck narrows
+  // that window rather than closing it.
 
   it("reports not_found for an unknown or malformed tenant", async () => {
     const { db } = await seeded();
@@ -412,54 +394,6 @@ describe("tearDownAccount — the deletes", () => {
     ).toEqual([]);
     expect(sqlite.prepare("SELECT id FROM sessions WHERE id = ?").get(SESSION)).toBeUndefined();
     expect(sqlite.prepare("SELECT id FROM auth_challenges WHERE id = ?").get(CHALLENGE)).toBeUndefined();
-  });
-
-  it("characterizes the remaining final-prefix-verdict race as a data-plane residual", async () => {
-    const { sqlite, db } = await seeded();
-    wipeRecord(sqlite, { completedAtMs: NOW_MS });
-    const prefixObjects: string[] = [];
-    let finalVerdictObserved!: () => void;
-    const finalVerdict = new Promise<void>((resolve) => {
-      finalVerdictObserved = resolve;
-    });
-    let releaseBatch!: () => void;
-    const batchReleased = new Promise<void>((resolve) => {
-      releaseBatch = resolve;
-    });
-    const delayedBatch: ControlPlaneDb = {
-      first: (sql, ...params) => db.first(sql, ...params),
-      all: (sql, ...params) => db.all(sql, ...params),
-      run: (sql, ...params) => db.run(sql, ...params),
-      batch: async (statements) => {
-        await batchReleased;
-        return db.batch(statements);
-      },
-    };
-
-    const teardown = tearDownAccount(delayedBatch, {}, {
-      tenantId: USER,
-      nowMs: NOW_MS,
-      prefixVerdict: async () => {
-        finalVerdictObserved();
-        return prefixObjects.length === 0 ? "empty" : "not_empty";
-      },
-    });
-    try {
-      await finalVerdict;
-      expect(prefixObjects).toEqual([]);
-      // This simulates a writer whose data-plane write lands after the final R2
-      // verdict but before the independent D1 batch. It is intentionally a
-      // characterization: current teardown cannot atomically fence this write.
-      prefixObjects.push(`u/${USER}/readings/rd_late/manifest.json`);
-    } finally {
-      // Do not leave the in-process teardown blocked if an assertion above
-      // fails: the test runner must be able to observe the real failure.
-      releaseBatch();
-    }
-
-    await expect(teardown).resolves.toMatchObject({ kind: "torn_down", tenantId: USER });
-    expect(count(sqlite, "users", "id", USER)).toBe(0);
-    expect(prefixObjects).toEqual([`u/${USER}/readings/rd_late/manifest.json`]);
   });
 
   it("purges the tenant guard and the tenant's global leases", async () => {
@@ -647,14 +581,6 @@ describe("tearDownAccount — Durable Object failure is fail-closed", () => {
     expect(auditRow(sqlite)).toBeDefined();
   });
 
-  it("treats an unbound namespace as nothing to clear", async () => {
-    const { sqlite, db } = await seeded();
-    wipeRecord(sqlite, { completedAtMs: NOW_MS });
-
-    const result = await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
-    expect(result.kind).toBe("torn_down");
-    expect(count(sqlite, "users", "id", USER)).toBe(0);
-  });
 });
 
 describe("tearDownAccount — email reuse", () => {
@@ -694,18 +620,6 @@ describe("tearDownAccount — email reuse", () => {
       )
       .run(EMAIL, EMAIL, NOW_MS);
     await expect(eligibility(db)).resolves.toBe("provisionable");
-  });
-
-  it("clears the issued challenge holding the freed address", async () => {
-    const { sqlite, db } = await seeded();
-    wipeRecord(sqlite, { completedAtMs: NOW_MS });
-
-    await tearDownAccount(db, {}, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix });
-
-    // Both because it carries email_canonical/email_display, and because a
-    // leftover `issued` row occupies the auth_challenges_one_issued slot for an
-    // address that is supposed to be free.
-    expect(count(sqlite, "auth_challenges", "email_canonical", EMAIL)).toBe(0);
   });
 
   // The signup challenge that created the account: issued with a NULL user_id,

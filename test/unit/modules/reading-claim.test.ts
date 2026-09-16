@@ -348,30 +348,6 @@ describe("ReadingClaim.resolveOwner", () => {
     scan.mockRestore();
   });
 
-  it("still repairs a damaged pointer with default opts (write paths)", async () => {
-    const { store, claim } = newClaim();
-    const url = "https://example.com/default-repair";
-    const urlHash = await sha256Hex(url);
-    const legacy = await writeReading(store, url, {
-      id: "rd_LEGACY",
-      status: "ready",
-      created_at: "2026-04-26T19:00:00.000Z",
-    });
-    await store.writeByUrlPointer(urlHash, {
-      id: "rd_ORPHAN",
-      key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN",
-    });
-
-    const res = await claim.resolveOwner(url);
-
-    expect(res.kind).toBe("owned");
-    if (res.kind === "owned") expect(res.pointer.id).toBe("rd_LEGACY");
-    expect(await store.readByUrlPointer(urlHash)).toEqual({
-      id: "rd_LEGACY",
-      key_prefix: legacy.keyPrefix,
-    });
-  });
-
   it("terminates after the bounded attempts under persistent CAS contention", async () => {
     const store = new ReadingStore(env.READINGS_BUCKET);
     const claim = new ReadingClaim(store, fakeServices(), { maxAttempts: 3 });

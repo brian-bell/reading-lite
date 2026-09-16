@@ -236,35 +236,14 @@ describe("resolveDigestRecipient", () => {
     });
   });
 
-  it("skips empty FROM, inactive, unverified, missing user, and allowlist — not notify_immediate", async () => {
+  // The remaining skip reasons are the immediate resolver's shared predicates,
+  // exercised above; one case shows the digest path applies them too.
+  it("still skips a deleting user", async () => {
     const { sqlite, db } = await bootstrapped();
-    await expect(resolveDigestRecipient(db, { ...sendEnv, EMAIL_FROM: "  " }, USER_ID)).resolves.toEqual({
-      kind: "skip",
-      reason: "empty_from",
-    });
-
-    sqlite.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(USER_ID);
-    await expect(resolveDigestRecipient(db, sendEnv, USER_ID)).resolves.toEqual({
-      kind: "skip",
-      reason: "inactive_user",
-    });
-
     sqlite.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").run(USER_ID);
     await expect(resolveDigestRecipient(db, sendEnv, USER_ID)).resolves.toEqual({
       kind: "skip",
       reason: "inactive_user",
     });
-
-    sqlite
-      .prepare("UPDATE users SET status = 'active', email_verified_at_ms = NULL WHERE id = ?")
-      .run(USER_ID);
-    await expect(resolveDigestRecipient(db, sendEnv, USER_ID)).resolves.toEqual({
-      kind: "skip",
-      reason: "unverified_email",
-    });
-
-    await expect(
-      resolveDigestRecipient(db, sendEnv, "usr_11111111-1111-4111-8111-111111111111"),
-    ).resolves.toEqual({ kind: "skip", reason: "missing_user" });
   });
 });

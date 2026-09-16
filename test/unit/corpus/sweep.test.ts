@@ -313,15 +313,7 @@ describe("invalidatedByDrop", () => {
     );
     expect(out.invalidated).toBe(true);
     expect(out.staleConnections).toEqual(["rd_gone"]);
-  });
-
-  it("reports the verdict so the operator can see what is now wrong", () => {
-    const out = invalidatedByDrop(
-      keeper.id,
-      { novelty_verdict: "duplicate", connections: [{ id: "rd_gone", reason: "x" }] },
-      new Set(["rd_gone"]),
-      [{ id: "rd_gone", created_at: "2020-01-01T00:00:00.000Z" }],
-    );
+    // the verdict is reported so the operator can see what is now wrong
     expect(out.verdict).toBe("duplicate");
   });
 

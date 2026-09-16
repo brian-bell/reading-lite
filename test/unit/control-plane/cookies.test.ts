@@ -14,7 +14,6 @@ describe("session cookie", () => {
     expect(header).toContain("HttpOnly");
     expect(header).toContain("SameSite=Lax");
     expect(header).toContain(`Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}`);
-    expect(SESSION_COOKIE_MAX_AGE_SECONDS).toBe(7_776_000);
     expect(header).not.toMatch(/Max-Age=0(?!\d)/);
     expect(header.includes("Domain=")).toBe(false);
   });

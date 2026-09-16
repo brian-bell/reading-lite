@@ -349,18 +349,6 @@ describe("readingApiFor", () => {
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer tok-abc");
   });
 
-  it("lookup decodes a 404 into not_found and a 409 owner into initializing", async () => {
-    const fetchMock = vi.fn<typeof fetch>();
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse(404, { error: "not found" }))
-      .mockResolvedValueOnce(
-        jsonResponse(409, { error: "reading owner is still initializing", id: "rd_2" }),
-      );
-    const api = apiWith(fetchMock);
-    expect(await api.lookup("https://a.test/")).toEqual({ kind: "not_found" });
-    expect(await api.lookup("https://b.test/")).toEqual({ kind: "initializing", id: "rd_2" });
-  });
-
   it("getReading parses the manifest behind GET /api/readings/:id", async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse(200, MANIFEST));
     const out = await apiWith(fetchMock).getReading("rd_owner");

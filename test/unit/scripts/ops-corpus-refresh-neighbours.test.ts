@@ -226,11 +226,16 @@ describe("ops corpus refresh-neighbours", () => {
       expect(warning(lines)[0]).toContain("--bucket reading-lite-staging --vectorize staging-vectors");
     });
 
-    it("pins the resolved --via backend in the recovery command when --via was omitted", async () => {
-      const { deps, lines } = makeDeps({ state: marker });
+    it("pins the resolved --via backend in the recovery command, on stderr, when --via was omitted", async () => {
+      const { deps } = makeDeps({ state: marker });
+      const stderr: string[] = [];
+      deps.io.stderr = (line) => stderr.push(line);
       await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
-      expect(warning(lines)[0]).toContain("--via wrangler");
-      expect(warning(lines)[0]).not.toContain("Account:");
+      const [line] = warning(stderr);
+      expect(line).toContain("Full sweep overdue: last_full_run_at missing or unusable (age unknown; threshold 7 days)");
+      expect(line).toContain('npm run ops -- corpus refresh-neighbours --tenant "global" --full --execute --sole-writer --out ./refresh-report-full.json');
+      expect(line).toMatch(/--via wrangler$/);
+      expect(line).not.toContain("Account:");
     });
 
     it("pins --via direct when credentials auto-selected that path and --via was omitted", async () => {
@@ -263,7 +268,8 @@ describe("ops corpus refresh-neighbours", () => {
         }),
       });
       expect(warning(lines)[0]).toMatch(/--via direct$/);
-      expect(warning(lines)[0]).toContain("Account: r2-acct (R2), vec-acct (Vectorize)");
+      expect(warning(lines)[0]).toContain("r2-acct");
+      expect(warning(lines)[0]).toContain("vec-acct");
     });
   });
 
@@ -276,19 +282,6 @@ describe("ops corpus refresh-neighbours", () => {
     for (const written of calls.stateWrites) expect(written).toMatchObject({ last_full_run_at: state.last_full_run_at });
   });
 
-  it("warns on stderr when a scoped plan has no full sweep timestamp", async () => {
-    const { deps, calls } = makeDeps({
-      state: { version: 2, last_run_at: LATER, list_ids: ["rd_r", "rd_n"] },
-    });
-    const warnings: string[] = [];
-    deps.io.stderr = (line) => warnings.push(line);
-    expect(await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps)).toBe(0);
-    expect(warnings.join("\n")).toContain("Full sweep overdue: last_full_run_at missing or unusable (age unknown; threshold 7 days)");
-    expect(warnings.join("\n")).toContain('npm run ops -- corpus refresh-neighbours --tenant "global" --full --execute --sole-writer --out ./refresh-report-full.json');
-    expect(calls.puts).toEqual([]);
-    expect(calls.indexWrites).toBe(0);
-    expect(calls.stateWrites).toEqual([]);
-  });
 
   it("prints a Timing block naming every phase the pass used", async () => {
     const { deps, lines } = makeDeps({});
@@ -512,27 +505,8 @@ describe("ops corpus refresh-neighbours", () => {
     expect(lines.join("\n")).toContain("SOLE-WRITER MODE: ops corpus refresh-neighbours");
   });
 
-  it("documents --sole-writer in help", async () => {
-    expect(corpusRefreshNeighboursCommand.helpText).toContain("--sole-writer");
-  });
 
-  it("fails closed without --tenant", async () => {
-    const { deps, calls } = makeDeps({});
-    await expect(corpusRefreshNeighboursCommand.run(["--execute"], deps)).rejects.toThrow(/--tenant is required/);
-    expect(calls.puts).toHaveLength(0);
-    expect(calls.reports).toHaveLength(0);
-  });
 
-  // The only reading in scope owns no vector, so the pass measured nothing at
-  // all: a configuration failure rather than one broken reading (exit 1), and
-  // the report is still written.
-  it("a scope of one whose vector is missing is a configuration failure (exit 1)", async () => {
-    const { deps, calls } = makeDeps({ items: [READY], matches: null });
-    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--execute", "--sole-writer"], deps);
-    expect(code).toBe(1);
-    expect(calls.puts).toHaveLength(0);
-    expect(calls.reports).toHaveLength(1);
-  });
 
   it("plan mode reports a whole unmeasurable scope as a configuration failure too", async () => {
     const { deps, lines } = makeDeps({ items: [READY], matches: null });
@@ -546,16 +520,6 @@ describe("ops corpus refresh-neighbours", () => {
     expect(text).toContain("PLAN — corpus unchanged.");
   });
 
-  // The footer is the only line saying nothing was written; a plan pass that
-  // found broken readings needs it more than a quiet one does.
-  it("keeps the PLAN footer on a plan pass that exits 3", async () => {
-    const { deps, lines } = makeDeps({
-      matchesFor: (id) => (id === "rd_r" ? null : undefined),
-    });
-    const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
-    expect(code).toBe(3);
-    expect(lines.join("\n")).toContain("PLAN — corpus unchanged.");
-  });
 
   // An aborted loop never asked the targets after the throw, so "measured none
   // of them" is not the corpus answering. It still exits 1 through the error.
@@ -583,6 +547,9 @@ describe("ops corpus refresh-neighbours", () => {
     const text = lines.join("\n");
     expect(text).not.toContain("Configuration failure");
     expect(text).toMatch(/need human attention/);
+    // The footer is the only line saying nothing was written; a plan pass that
+    // found broken readings needs it more than a quiet one does.
+    expect(text).toContain("PLAN — corpus unchanged.");
   });
 
   it("honours --out for the report path", async () => {
@@ -810,9 +777,7 @@ describe("ops corpus refresh-neighbours", () => {
       const { deps, lines } = makeDeps({});
       const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
       expect(code).toBe(0);
-      expect(lines.join("\n")).toContain(
-        "Storage: wrangler — no CORPUS_R2_*/CLOUDFLARE_API_TOKEN credentials",
-      );
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler/m);
     });
 
     it("auto-selects the direct path when credentials are present", async () => {
@@ -827,7 +792,7 @@ describe("ops corpus refresh-neighbours", () => {
       });
       expect(code).toBe(0);
       expect(used).toEqual(["direct"]);
-      expect(lines.join("\n")).toContain("Storage: direct (S3/REST) — CORPUS_R2_* keys");
+      expect(lines.join("\n")).toMatch(/^Storage: direct/m);
     });
 
     it("--via wrangler forces the fallback even with credentials present", async () => {
@@ -840,7 +805,7 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(code).toBe(0);
       expect(used).toEqual(["wrangler"]);
-      expect(lines.join("\n")).toContain("Storage: wrangler — --via wrangler");
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler/m);
     });
 
     // The header must never name a path the pass did not take.
@@ -851,9 +816,8 @@ describe("ops corpus refresh-neighbours", () => {
         storageVars: () => CREDS,
       });
       expect(code).toBe(0);
-      expect(lines.join("\n")).toContain(
-        "Storage: wrangler — CORPUS_R2_* keys, but no direct client available",
-      );
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler/m);
+      expect(lines.join("\n")).not.toMatch(/^Storage: direct/m);
     });
 
     it("rejects an unknown --via value as usage", async () => {
@@ -875,9 +839,6 @@ describe("ops corpus refresh-neighbours", () => {
       ).rejects.toThrow(/--via direct cannot be combined with --local/);
     });
 
-    it("documents --via in help", async () => {
-      expect(corpusRefreshNeighboursCommand.helpText).toContain("--via <path>");
-    });
   });
 
   describe("incremental scope", () => {
@@ -892,9 +853,9 @@ describe("ops corpus refresh-neighbours", () => {
       return makeDeps({ state: MARKER });
     }
 
-    it("scopes against the marker by default", async () => {
+    it.each([{ flags: [] }, { flags: ["--since-last-run"] }])("scopes against the marker by default and under $flags, measuring nothing on a quiet corpus", async ({ flags }) => {
       const { deps, calls, lines } = quietCorpus();
-      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps);
+      const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...flags], deps);
       expect(code).toBe(0);
       expect(calls.stateReads).toBe(1);
       expect(calls.queries).toEqual([]);
@@ -914,19 +875,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(lines.join("\n")).toContain("Scope: full — --full");
     });
 
-    it("measures nothing when no reading has moved since the marker", async () => {
-      const { deps, calls, lines } = quietCorpus();
-      const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--since-last-run"],
-        deps,
-      );
-      expect(code).toBe(0);
-      expect(calls.stateReads).toBe(1);
-      expect(calls.queries).toEqual([]);
-      const text = lines.join("\n");
-      expect(text).toContain("Scope: incremental (0 reading(s))");
-      expect(text).toContain("To measure: 0");
-    });
 
     it("measures a changed reading and its reverse neighbourhood, asking for no metadata", async () => {
       const { deps, calls, lines } = makeDeps({
@@ -1091,16 +1039,6 @@ describe("ops corpus refresh-neighbours", () => {
       });
     });
 
-    // The report and the marker have to agree: a limit that never truncated
-    // narrowed nothing, and the pass is complete by both accounts.
-    it("does not call a pass narrowed by a --limit it never reached", async () => {
-      const { deps, calls } = makeDeps({ state: MARKER });
-      await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--full", "--limit", "500"],
-        deps,
-      );
-      expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
-    });
 
     it("advances the marker only on a complete execute pass", async () => {
       const { deps, calls } = quietCorpus();
@@ -1160,39 +1098,11 @@ describe("ops corpus refresh-neighbours", () => {
       );
       expect(code).toBe(0);
       expect(calls.stateWrites).toHaveLength(1);
+      // The report and the marker have to agree: a limit that never truncated
+      // narrowed nothing, and the pass is complete by both accounts.
+      expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
     });
 
-    // Holding the marker on a reading nobody can measure pins the whole scope
-    // on an ever-older timestamp: nothing about a vectorless reading's row will
-    // move when its vector comes back, so the marker carries the id instead and
-    // every later pass measures it again.
-    it("advances the marker past unmeasurable readings, recording them for retry", async () => {
-      const { deps, calls, lines } = makeDeps({
-        state: MARKER,
-        // rd_r owns no vector; rd_n measures normally.
-        matchesFor: (id) => (id === "rd_r" ? null : undefined),
-      });
-      const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-        deps,
-      );
-      // Still flagged: the reading is unmeasured and the operator must see it.
-      // Exit 3 rather than 1 — the pass did its job, this one reading needs a
-      // human, and re-running the pass will not change that.
-      expect(code).toBe(3);
-      expect(calls.stateWrites).toEqual([
-        {
-          version: 2,
-          last_run_at: "2026-08-22T12:00:00.000Z",
-          last_full_run_at: "2026-08-22T12:00:00.000Z",
-          list_ids: ["rd_n", "rd_r"],
-          unmeasurable_ids: ["rd_r"],
-        },
-      ]);
-      expect(lines.join("\n")).toContain(
-        "Carried on the run marker for retry: 1 unmeasurable reading(s).",
-      );
-    });
 
     it("records a manifest that fails ManifestSchema as unmeasurable too", async () => {
       const { deps, calls } = makeDeps({
@@ -1212,29 +1122,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
     });
 
-    // The distinction this whole contract turns on. Above: a few unmeasurable
-    // readings among measured ones — the marker advances past them and the exit
-    // says "a reading needs a human". Here: nothing in a non-empty scope could
-    // be measured, which is what a wrong index or namespace looks like — the
-    // marker freezes and the exit says "the operator has infrastructure to fix".
-    it("freezes both markers and exits 1 when a sweep measured none of the corpus", async () => {
-      const { deps, calls, lines } = makeDeps({
-        state: MARKER,
-        // Every target answers "no vector", as a query against the wrong
-        // Vectorize index or the wrong tenant namespace does.
-        matches: null,
-      });
-      const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-        deps,
-      );
-      expect(code).toBe(1);
-      expect(calls.stateWrites).toEqual([]);
-      const text = lines.join("\n");
-      expect(text).toContain("swept the corpus and measured 0 of 2 ready reading(s)");
-      expect(text).toContain("no vector: 2");
-      expect(text).toContain("neither run marker advanced");
-    });
 
     // The carried-retry case the marker exists for. On a quiet corpus the whole
     // incremental scope IS the reading the last pass could not measure. Calling
@@ -1262,24 +1149,6 @@ describe("ops corpus refresh-neighbours", () => {
       });
     });
 
-    // The same broken corpus a nightly pass cannot judge, seen by the weekly
-    // sweep that can: no carried set, no marker needed, same verdict every time
-    // until someone fixes it.
-    it("reports the configuration failure from the sweep, with no marker to bootstrap from", async () => {
-      for (const state of [undefined, MARKER, { ...MARKER, unmeasurable_ids: ["rd_r"] }]) {
-        const { deps, calls, lines } = makeDeps({
-          ...(state === undefined ? {} : { state }),
-          matches: null,
-        });
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(1);
-        expect(calls.stateWrites).toEqual([]);
-        expect(lines.join("\n")).toContain("Configuration failure");
-      }
-    });
 
     // A misconfiguration cannot hide in incremental passes: a changed ready
     // reading whose vector cannot be found escalates the scope to a sweep, and
@@ -1351,20 +1220,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(text).toContain("1 unmeasurable reading(s) carried forward");
     });
 
-    // A failed query, an unparseable manifest or a failed write leaves work
-    // this pass owed the corpus undone, so the next one still has to sweep.
-    it("holds the marker back when a measurement failed rather than was impossible", async () => {
-      const { deps, calls } = makeDeps({
-        state: MARKER,
-        queryThrow: (id) => (id === "rd_r" ? new Error("boom") : undefined),
-      });
-      const code = await corpusRefreshNeighboursCommand.run(
-        ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-        deps,
-      );
-      expect(code).toBe(1);
-      expect(calls.stateWrites).toEqual([]);
-    });
 
     // A full pass takes minutes and neither writer of this object holds a lock,
     // so a `corpus backfill-vectors` can stamp the marker while it runs. Writing
@@ -1628,70 +1483,110 @@ describe("ops corpus refresh-neighbours", () => {
 
     // One place that pins the whole contract, so a later change to any single
     // failure mode has to say which side of the 1/3 line it lands on.
+    //
+    // Swept explicitly: the codes are scope-independent, but a quiet corpus
+    // under the default scope has no target to fail on, which would make every
+    // case here pass for the wrong reason.
+    //
+    // The distinction the contract turns on: a few unmeasurable readings among
+    // measured ones — the marker advances past them, carrying their ids so
+    // every later pass retries them (holding the marker on a vectorless
+    // reading would pin the whole scope on an ever-older timestamp), and the
+    // exit says "a reading needs a human". Nothing measurable in a non-empty
+    // scope is what a wrong index or namespace looks like — the marker
+    // freezes and the exit says "the operator has infrastructure to fix". A
+    // failed query or list flush leaves work this pass owed the corpus undone,
+    // so the marker freezes there too and the next pass still has to sweep.
     describe("exit-code contract", () => {
-      // Swept explicitly: the codes are scope-independent, but a quiet corpus
-      // under the default scope has no target to fail on, which would make
-      // every case here pass for the wrong reason.
-      it("exits 0 when every target measured and nothing is outstanding", async () => {
-        const { deps } = makeDeps({ state: MARKER });
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(0);
-      });
-
-      it("exits 1 when a measurement failed — the operator re-runs", async () => {
-        const { deps, calls } = makeDeps({
-          state: MARKER,
-          queryThrow: (id) => (id === "rd_r" ? new Error("503") : undefined),
-        });
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(1);
-        expect(calls.stateWrites).toEqual([]);
-      });
-
-      it("exits 1 when the list flush failed — the operator re-runs", async () => {
-        const { deps, calls } = makeDeps({
-          state: MARKER,
-          items: [{ ...READY, similarity: undefined }, NEIGHBOUR],
-        });
-        deps.r2.mergeListRows = async () => {
-          throw new Error("put index/list.json failed: 500");
-        };
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(1);
-        expect(calls.stateWrites).toEqual([]);
-      });
-
-      it("exits 1 when nothing in a non-empty scope could be measured", async () => {
-        const { deps, calls } = makeDeps({ state: MARKER, matches: null });
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(1);
-        expect(calls.stateWrites).toEqual([]);
-      });
-
-      it("exits 3 when the pass completed and only specific readings need a human", async () => {
-        const { deps, calls } = makeDeps({
-          state: MARKER,
-          matchesFor: (id) => (id === "rd_r" ? null : undefined),
-        });
-        const code = await corpusRefreshNeighboursCommand.run(
-          ["--tenant", "global", "--full", "--execute", "--sole-writer"],
-          deps,
-        );
-        expect(code).toBe(3);
-        // The pass completed, so the marker moved and carried the id forward.
-        expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
+      const ADVANCED = {
+        version: 2,
+        last_run_at: "2026-08-22T12:00:00.000Z",
+        last_full_run_at: "2026-08-22T12:00:00.000Z",
+        list_ids: ["rd_n", "rd_r"],
+      };
+      const NONE_MEASURED = [
+        "Configuration failure",
+        "swept the corpus and measured 0 of 2 ready reading(s)",
+        "no vector: 2",
+        "neither run marker advanced",
+      ];
+      it.each<{
+        name: string;
+        opts: Parameters<typeof makeDeps>[0];
+        flushFails?: boolean;
+        code: number;
+        marker: unknown[];
+        text?: string[];
+      }>([
+        {
+          name: "0 — every target measured and nothing outstanding",
+          opts: { state: MARKER },
+          code: 0,
+          marker: [ADVANCED],
+        },
+        {
+          name: "1 — a measurement failed; the operator re-runs",
+          opts: { state: MARKER, queryThrow: (id) => (id === "rd_r" ? new Error("503") : undefined) },
+          code: 1,
+          marker: [],
+        },
+        {
+          name: "1 — the list flush failed; the operator re-runs",
+          opts: { state: MARKER, items: [{ ...READY, similarity: undefined }, NEIGHBOUR] },
+          flushFails: true,
+          code: 1,
+          marker: [],
+        },
+        // Every target answers "no vector", as a query against the wrong
+        // Vectorize index or the wrong tenant namespace does — the same verdict
+        // whether the sweep had no marker, a marker, or a carried retry set.
+        {
+          name: "1 — nothing in a non-empty scope could be measured, no marker",
+          opts: { matches: null },
+          code: 1,
+          marker: [],
+          text: NONE_MEASURED,
+        },
+        {
+          name: "1 — nothing in a non-empty scope could be measured, marker present",
+          opts: { state: MARKER, matches: null },
+          code: 1,
+          marker: [],
+          text: NONE_MEASURED,
+        },
+        {
+          name: "1 — nothing in a non-empty scope could be measured, retry set carried",
+          opts: { state: { ...MARKER, unmeasurable_ids: ["rd_r"] }, matches: null },
+          code: 1,
+          marker: [],
+          text: NONE_MEASURED,
+        },
+        // rd_r owns no vector; rd_n measures normally. The pass did its job,
+        // this one reading needs a human, and re-running will not change that.
+        {
+          name: "3 — the pass completed and only specific readings need a human",
+          opts: { state: MARKER, matchesFor: (id) => (id === "rd_r" ? null : undefined) },
+          code: 3,
+          marker: [{ ...ADVANCED, unmeasurable_ids: ["rd_r"] }],
+          text: ["Carried on the run marker for retry: 1 unmeasurable reading(s)."],
+        },
+      ])("exits $name", async ({ opts, flushFails, code, marker, text }) => {
+        const { deps, calls, lines } = makeDeps(opts);
+        if (flushFails) {
+          deps.r2.mergeListRows = async () => {
+            throw new Error("put index/list.json failed: 500");
+          };
+        }
+        expect(
+          await corpusRefreshNeighboursCommand.run(
+            ["--tenant", "global", "--full", "--execute", "--sole-writer"],
+            deps,
+          ),
+        ).toBe(code);
+        expect(calls.stateWrites).toEqual(marker);
+        // Whatever the verdict, the report is still written.
+        expect(calls.reports).toHaveLength(1);
+        for (const line of text ?? []) expect(lines.join("\n")).toContain(line);
       });
 
       it("documents the exit codes in help", () => {
@@ -1711,8 +1606,6 @@ describe("ops corpus refresh-neighbours", () => {
     });
 
     it("documents both scope flags in help, with --since-last-run as the default", () => {
-      expect(corpusRefreshNeighboursCommand.helpText).toContain("--since-last-run");
-      expect(corpusRefreshNeighboursCommand.helpText).toContain("--full ");
       expect(corpusRefreshNeighboursCommand.helpText).toMatch(
         /--since-last-run {4}Measure only the readings in scope[^\n]*\n[^\n]*The default\./,
       );

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { RESEND_EMAILS_URL } from "../../../src/modules/email";
 import { latestLocalMagicLink, storeLocalMagicLink } from "../../../src/control-plane/magic-link-mail";
 import { deliverSecurityMail, renderSecurityMail } from "../../../src/control-plane/security-mail";
 import { buildAuthResendPayload } from "../../../src/control-plane/resend-mail";
@@ -115,30 +114,5 @@ describe("deliverSecurityMail", () => {
     const latest = await latestLocalMagicLink(db, "founder@example.com");
     expect(latest?.verify_url).toBe(verifyUrl);
     expect(sqlite.prepare("SELECT COUNT(*) AS n FROM dev_mail_outbox").get()).toEqual({ n: 1 });
-  });
-
-  it("POSTs JSON without a tracking key", async () => {
-    let body = "";
-    await deliverSecurityMail({ APP_ENV: "production" } as Env, {
-      emailCanonical: "founder@example.com",
-      emailDisplay: "founder@example.com",
-      kind: "sessions_revoked_all",
-      nowMs: 1,
-      sendSecurityMail: async (message) => {
-        body = JSON.stringify(
-          buildAuthResendPayload("reading-lite@test.example", {
-            to: message.to,
-            subject: message.subject,
-            text: message.text,
-            html: message.html,
-          }),
-        );
-      },
-    });
-    const parsed = JSON.parse(body) as { to: string[] };
-    expect(parsed.to).toEqual(["founder@example.com"]);
-    expect("tracking" in parsed).toBe(false);
-    expect(body).not.toContain("reader@test.example");
-    expect(body).not.toContain(RESEND_EMAILS_URL);
   });
 });

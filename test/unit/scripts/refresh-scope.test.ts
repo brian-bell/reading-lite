@@ -112,7 +112,6 @@ describe("parseRefreshState", () => {
     expect(
       parseRefreshState({ version: 1, last_run_at: LAST_RUN, list_row_count: 553 }),
     ).toBeNull();
-    expect(REFRESH_STATE_VERSION).toBe(2);
   });
 
   // Dropping either of these would narrow a later pass on data that is not

@@ -5,7 +5,6 @@ import {
 } from "../../../scripts/ops-lib/commands/corpus-purge-connections";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import { makeR2RestClient } from "../../../scripts/lib/cf-clients";
-import { mintReadingId, parseReadingId } from "../../../src/services";
 
 const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 const OTHER_TENANT = "usr_22222222-2222-4222-8222-222222222222";
@@ -117,26 +116,12 @@ describe("ops corpus purge-connections", () => {
     expect(storage.get).toHaveBeenCalledWith(key);
   });
 
+  // Representative shapes only; the full reading-id alphabet contract lives in
+  // test/unit/services/reading-id.test.ts.
   it.each([
-    ["uppercase encoded slash", "rd_PREFIX%2Fbackup"],
-    ["lowercase encoded slash", "rd_PREFIX%2fbackup"],
-    ["literal slash", "rd_PREFIX/backup"],
-    ["backslash", "rd_PREFIX\\backup"],
-    ["colon", "rd_PREFIX:backup"],
-    ["percent", "rd_PREFIX%backup"],
-    ["dot segments", "rd_../backup"],
-    ["query-like text", "rd_PREFIX?backup"],
-    ["hash-like text", "rd_PREFIX#backup"],
-    ["whitespace", "rd_PREFIX backup"],
-    ["control character", "rd_PREFIX\u0001X"],
-    ["Unicode", "rd_PRÉFIXBACK"],
-    ["short suffix", "rd_123456789"],
-    ["long suffix", "rd_12345678901"],
-    ["lowercase suffix", "rd_abcdefghjk"],
-    ["ambiguous I", "rd_ABCDEFHIJK"],
-    ["ambiguous L", "rd_ABCDEFHLJK"],
-    ["ambiguous O", "rd_ABCDEFOHJK"],
-    ["ambiguous U", "rd_ABCDEFUHJK"],
+    ["encoded slash", "rd_PREFIX%2Fbackup"],
+    ["ambiguous letter", "rd_ABCDEFHIJK"],
+    ["wrong length", "rd_123456789"],
   ])("ignores a non-mintable manifest key without fetching it: %s", async (_case, readingId) => {
     const key = canonicalKey(readingId);
     const { storage } = memoryStorage({ [key]: { body: "{corrupt-but-ignored", etag: "e1" } });
@@ -156,19 +141,6 @@ describe("ops corpus purge-connections", () => {
     expect(storage.putIfMatch).not.toHaveBeenCalled();
   });
 
-  it("keeps parsing and minting on one exact reading-id alphabet", () => {
-    const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-    for (const character of alphabet) {
-      expect(parseReadingId(`rd_${character.repeat(10)}`)).toBe(`rd_${character.repeat(10)}`);
-    }
-    for (const character of ["I", "L", "O", "U"]) {
-      expect(parseReadingId(`rd_${character.repeat(10)}`)).toBeNull();
-    }
-    for (let index = 0; index < 100; index += 1) {
-      const minted = mintReadingId();
-      expect(parseReadingId(minted)).toBe(minted);
-    }
-  });
 
   it("rejects an invalid target id with one audit and no storage calls", async () => {
     const createStorage = vi.fn();

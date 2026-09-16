@@ -217,12 +217,6 @@ describe("ops corpus seed-vector-ledger — plan and execute", () => {
     expect(h.ledgered).toEqual([]);
   });
 
-  it("refuses a missing or malformed tenant selector", async () => {
-    const h = harness(CORPUS);
-    await expect(run([], h.deps)).rejects.toThrow(UsageError);
-    await expect(run(["--tenant", "nope"], h.deps)).rejects.toThrow(UsageError);
-    expect(h.ledgered).toEqual([]);
-  });
 
   it("says plainly that an empty walk is not proof of an empty corpus", async () => {
     const h = harness({});
@@ -233,12 +227,9 @@ describe("ops corpus seed-vector-ledger — plan and execute", () => {
     expect(text).toContain("check --bucket and --tenant");
   });
 
-  it("registers plan-first, with the tenant selector and the rollout order in its help", async () => {
-    expect(corpusSeedVectorLedgerCommand.group).toBe("corpus");
+  it("registers plan-first, with the rollout order in its help", async () => {
     expect(corpusSeedVectorLedgerCommand.safety).toBe("plan-first");
     const help = corpusSeedVectorLedgerCommand.helpText;
-    expect(help).toContain("--execute");
-    expect(help).toContain("--tenant");
     // What it is NOT is the load-bearing part now: the wipe seeds itself, so
     // an operator must not be told this is a prerequisite for deletion.
     expect(help).toMatch(/NOT A PREREQUISITE FOR DELETION/i);

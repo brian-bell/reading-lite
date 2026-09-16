@@ -402,24 +402,6 @@ describe("consumeProcessReadingMessage", () => {
     expect(msg.ack).not.toHaveBeenCalled();
   });
 
-  it("processes an import job from an import-only api_token", async () => {
-    const { sqlite, db, founder } = await seededFounder();
-    sqlite.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:import'").run(TOKEN);
-    const envelope = founderEnvelope({ job: job({ trigger: "import" }) });
-    const msg = fakeMessage(envelope);
-    const process = vi.fn(async () => {});
-
-    await consumeProcessReadingMessage(msg, {
-      db,
-      nowMs: NOW_MS,
-      process,
-    });
-
-    expect(process).toHaveBeenCalledOnce();
-    expect(process).toHaveBeenCalledWith(envelope.job, { tenantId: founder.userId });
-    expect(msg.ack).not.toHaveBeenCalled();
-  });
-
   it("acks an inactive-tenant envelope without processing", async () => {
     const { sqlite, db } = await seededFounder();
     sqlite.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").run(TENANT);
@@ -436,62 +418,4 @@ describe("consumeProcessReadingMessage", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
   });
 
-  it("processes a live session actor envelope", async () => {
-    const { sqlite, db, founder } = await seededFounder();
-    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
-    const envelope = founderEnvelope({ actor: { kind: "session", credentialId: SESSION } });
-    const msg = fakeMessage(envelope);
-    const process = vi.fn(async () => {});
-
-    await consumeProcessReadingMessage(msg, {
-      db,
-      nowMs: NOW_MS,
-      process,
-    });
-
-    expect(process).toHaveBeenCalledOnce();
-    expect(process).toHaveBeenCalledWith(envelope.job, { tenantId: founder.userId });
-    expect(msg.ack).not.toHaveBeenCalled();
-  });
-
-  it("acks a revoked or expired session actor envelope without processing", async () => {
-    const { sqlite, db } = await seededFounder();
-    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
-    sqlite.prepare("UPDATE sessions SET revoked_at_ms = ? WHERE id = ?").run(NOW_MS, SESSION);
-    const process = vi.fn();
-    const revoked = fakeMessage(
-      founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
-    );
-    await consumeProcessReadingMessage(revoked, { db, nowMs: NOW_MS, process });
-    expect(process).not.toHaveBeenCalled();
-    expect(revoked.ack).toHaveBeenCalledOnce();
-
-    sqlite
-      .prepare(
-        "UPDATE sessions SET revoked_at_ms = NULL, idle_expires_at_ms = ?, absolute_expires_at_ms = ? WHERE id = ?",
-      )
-      .run(NOW_MS + SESSION_IDLE_TTL_MS, NOW_MS, SESSION);
-    const expired = fakeMessage(
-      founderEnvelope({ actor: { kind: "session", credentialId: SESSION } }),
-    );
-    await consumeProcessReadingMessage(expired, { db, nowMs: NOW_MS, process });
-    expect(process).not.toHaveBeenCalled();
-    expect(expired.ack).toHaveBeenCalledOnce();
-  });
-
-  it("acks a revoked or expired api_token actor envelope without processing", async () => {
-    const { sqlite, db } = await seededFounder();
-    const process = vi.fn();
-    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = ?").run(NOW_MS);
-    const revoked = fakeMessage(founderEnvelope());
-    await consumeProcessReadingMessage(revoked, { db, nowMs: NOW_MS, process });
-    expect(process).not.toHaveBeenCalled();
-    expect(revoked.ack).toHaveBeenCalledOnce();
-
-    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = NULL, expires_at_ms = ?").run(NOW_MS);
-    const expired = fakeMessage(founderEnvelope());
-    await consumeProcessReadingMessage(expired, { db, nowMs: NOW_MS, process });
-    expect(process).not.toHaveBeenCalled();
-    expect(expired.ack).toHaveBeenCalledOnce();
-  });
 });

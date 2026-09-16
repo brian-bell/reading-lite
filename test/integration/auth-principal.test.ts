@@ -111,40 +111,22 @@ describe("D1-backed founder principal", () => {
     expect((await request("/api/readings")).status).toBe(401);
     expect((await request("/api/readings", "Bearer wrong")).status).toBe(401);
     expect((await request("/api/readings", "Basic test-token")).status).toBe(401);
+    expect((await request("/api/whoami")).status).toBe(401);
+    expect((await request("/api/whoami", "Bearer wrong")).status).toBe(401);
   });
 
-  it("rejects a suspended founder with 403", async () => {
+  it.each(["suspended", "deleting"])("rejects a %s founder with 403", async (status) => {
     const workerEnv = env as unknown as Env;
     await workerEnv.CONTROL_PLANE.prepare(
-      "UPDATE users SET status = 'suspended' WHERE email_canonical = ?",
+      "UPDATE users SET status = ? WHERE email_canonical = ?",
     )
-      .bind("founder@test.example")
+      .bind(status, "founder@test.example")
       .run();
 
     try {
       const res = await request("/api/readings", `Bearer ${TOKEN}`);
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: "forbidden" });
-    } finally {
-      await workerEnv.CONTROL_PLANE.prepare(
-        "UPDATE users SET status = 'active' WHERE email_canonical = ?",
-      )
-        .bind("founder@test.example")
-        .run();
-    }
-  });
-
-  it("rejects a deleting founder with 403", async () => {
-    const workerEnv = env as unknown as Env;
-    await workerEnv.CONTROL_PLANE.prepare(
-      "UPDATE users SET status = 'deleting' WHERE email_canonical = ?",
-    )
-      .bind("founder@test.example")
-      .run();
-
-    try {
-      const res = await request("/api/readings", `Bearer ${TOKEN}`);
-      expect(res.status).toBe(403);
     } finally {
       await workerEnv.CONTROL_PLANE.prepare(
         "UPDATE users SET status = 'active' WHERE email_canonical = ?",
@@ -280,11 +262,6 @@ describe("GET /api/whoami", () => {
     await waitOnExecutionContext(ctx);
     return res;
   }
-
-  it("requires bearer auth", async () => {
-    expect((await whoami()).status).toBe(401);
-    expect((await whoami("Bearer wrong")).status).toBe(401);
-  });
 
   it("returns the bearer token's own tenant identity, uncacheable", async () => {
     const res = await whoami(`Bearer ${TOKEN}`);

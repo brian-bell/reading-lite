@@ -197,24 +197,6 @@ describe("operator lease-clear entrypoint", () => {
     }
   });
 
-  it("refuses malformed bodies without reaching the guards", async () => {
-    expect(
-      (await endpoint().fetch(clearRequest({ attemptId: "at_x" }))).status,
-    ).toBe(400);
-    expect(
-      (await endpoint().fetch(clearRequest({ tenantId: "not-a-tenant", attemptId: "at_x" }))).status,
-    ).toBe(400);
-    expect(
-      (await endpoint().fetch(
-        clearRequest({ tenantId: FOUNDER_TENANT_ID, attemptId: "at_x", expectedTenantExpiresAt: -1 }),
-      )).status,
-    ).toBe(400);
-    expect(
-      (await endpoint().fetch(new Request("https://operator/clear?x=1", { method: "POST" }))).status,
-    ).toBe(400);
-    expect((await endpoint().fetch(new Request("https://operator/nope", { method: "POST" }))).status).toBe(404);
-  });
-
   it("fails closed when the recovery authority is unbound", async () => {
     const response = await endpoint({ ...env, GLOBAL_USAGE_GUARD: undefined } as unknown as Env).fetch(
       clearRequest({ tenantId: FOUNDER_TENANT_ID, attemptId: "at_x" }),

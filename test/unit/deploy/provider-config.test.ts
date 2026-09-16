@@ -7,71 +7,23 @@ function read(path: string): string {
 
 function envVar(
   wrangler: string,
-  env: "staging" | "production",
+  env: "local" | "staging" | "production",
   key: string,
 ): string | undefined {
-  const re = new RegExp(
-    `\\[env\\.${env}\\.vars\\][\\s\\S]*?^${key} = "([^"]*)"$`,
-    "m",
-  );
+  const table = env === "local" ? "vars" : `env\\.${env}\\.vars`;
+  const re = new RegExp(`^\\[${table}\\][\\s\\S]*?^${key} = "([^"]*)"$`, "m");
   return wrangler.match(re)?.[1];
 }
 
 describe("checked-in summarizer provider configuration", () => {
-  it("uses high OpenAI effort in staging and production; local stays low", () => {
+  it("keeps local (top-level [vars]) on low effort for both providers", () => {
+    // Staging and production are owned by the test below.
     const wrangler = read("wrangler.toml");
-
-    expect(
-      wrangler.match(/^SUMMARIZER_PROVIDER = "openai"$/gm),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_MODEL = "gpt-5\.6-terra"$/gm,
-      ),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/gm,
-      ),
-    ).toHaveLength(2);
-    expect(
-      wrangler.match(
-        /\[env\.staging\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /\[env\.production\.vars\][\s\S]*?^OPENAI_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(/^ANTHROPIC_MODEL = "claude-sonnet-5"$/gm),
-    ).toHaveLength(3);
-    expect(
-      wrangler.match(
-        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"$/gm,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/gm,
-      ),
-    ).toHaveLength(2);
-    expect(
-      wrangler.match(
-        /\[env\.staging\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
-    expect(
-      wrangler.match(
-        /\[env\.production\.vars\][\s\S]*?^ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high"$/m,
-      ),
-    ).toHaveLength(1);
+    expect(envVar(wrangler, "local", "SUMMARIZER_PROVIDER")).toBe("openai");
+    expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_MODEL")).toBe("gpt-5.6-terra");
+    expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
+    expect(envVar(wrangler, "local", "ANTHROPIC_MODEL")).toBe("claude-sonnet-5");
+    expect(envVar(wrangler, "local", "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
   });
 
   it("keeps staging summarizer knobs identical to production", () => {

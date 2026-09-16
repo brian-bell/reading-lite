@@ -216,7 +216,6 @@ describe("bucket → control-plane mapping", () => {
 
 describe("ops account sweep-wipe-prefix", () => {
   it("is registered plan-first and never deletes without --execute", async () => {
-    expect(accountSweepWipePrefixCommand.group).toBe("account");
     expect(accountSweepWipePrefixCommand.safety).toBe("plan-first");
 
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
@@ -231,7 +230,7 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(out).toContain("PLAN");
   });
 
-  it("names the tenants at risk and prints a D1 query scoped to exactly them", async () => {
+  it("names the tenants at risk, prints a D1 query scoped to exactly them, and states the S2 rules", async () => {
     const other = TENANT_ID.replace("1111-1111", "4444-4444");
     const storage = fakeStorage({
       listings: [[object(PROGRESS_KEY), object(accountWipeProgressKey(other))]],
@@ -245,27 +244,20 @@ describe("ops account sweep-wipe-prefix", () => {
     // status survives a completed wipe, so it never returns to 0.
     expect(out).not.toContain("count(*)");
     expect(out).toContain("status='deleting' is NOT the signal");
-  });
 
-  it("makes S2's deploy the precondition and an unfinished wipe_progress row the in-flight signal", async () => {
-    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
-    const { out } = await run([], storage);
-
+    // S2's deploy is the precondition; pre-deploy the rule is wait, not
+    // sweep-around: a stale record is DUE FOR RESUMPTION, not inert
+    // (src/account-wipe.ts wipeLeaseHeld). Post-deploy the in-flight signal
+    // lives in D1, not in R2, and the lease window is the worker's own.
     expect(out).toContain("BEFORE S2 DEPLOYS");
     expect(out).toContain("AFTER S2 DEPLOYS");
-    // Pre-deploy the rule is wait, not sweep-around; a stale record is DUE FOR
-    // RESUMPTION, not inert (src/account-wipe.ts wipeLeaseHeld).
     expect(out).toContain("Do not sweep around it");
     expect(out).toContain("RESUME");
-    // Post-deploy the in-flight signal lives in D1, not in R2.
     expect(out).toContain("completed_at_ms NULL and a recent updated_at_ms heartbeat");
-  });
-
-  it("states the lease window the worker actually uses", async () => {
-    const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
-    const { out } = await run([], storage);
     expect(out).toContain(`${ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000} minutes`);
   });
+
+
 
   it("points the D1 query at the control plane matching the bucket", async () => {
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });

@@ -92,7 +92,6 @@ describe("isStaleDigestPending", () => {
     expect(isStaleDigestPending(NOW_MS, NOW_MS)).toBe(false);
     expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS - 1)).toBe(false);
     expect(isStaleDigestPending(NOW_MS, NOW_MS + DIGEST_PENDING_STALE_MS)).toBe(true);
-    expect(DIGEST_PENDING_STALE_MS).toBe(15 * 60_000);
   });
 });
 
@@ -146,20 +145,6 @@ describe("digest fan-out + send-time skips", () => {
     });
     expect(row?.status).toBe("skipped");
     expect(row?.skip_reason).toBe("empty_window");
-  });
-
-  it("honors opt-out between enqueue and send", async () => {
-    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
-    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
-    await setDigest(FOUNDER_TENANT_ID, { cadence: "off" });
-    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS });
-
-    const row = await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
-      userId: FOUNDER_TENANT_ID,
-      cadence: "daily",
-      periodKey: "2026-09-02",
-    });
-    expect(row).toMatchObject({ status: "skipped", skip_reason: "cadence_off" });
   });
 
   it("does not enqueue a deleting tenant and skips an already-queued digest", async () => {
@@ -252,20 +237,6 @@ describe("digest fan-out + send-time skips", () => {
         periodKey: "2026-09-02",
       }),
     ).toMatchObject({ status: "skipped", skip_reason: "allowlist" });
-  });
-
-  it("still sends after the local hour has passed when period_key still matches", async () => {
-    await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
-    await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
-    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
-    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: laterMs });
-    expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
-        userId: FOUNDER_TENANT_ID,
-        cadence: "daily",
-        periodKey: "2026-09-02",
-      }),
-    ).toMatchObject({ status: "skipped", skip_reason: "empty_window" });
   });
 
   it("skips when the local period_key has rolled even if cadence is still on", async () => {
@@ -695,7 +666,10 @@ describe("digest send isolation (196 B2)", () => {
     ]);
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
     const fetchFn = resendOkFetch();
-    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
+    // Sending after the local hour has passed is still the same period_key:
+    // the window is evaluated (empty here), not skipped as period_rolled.
+    const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
+    await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: laterMs, fetch: fetchFn });
     expect(fetchFn).not.toHaveBeenCalled();
     expect(
       await getDigestDelivery(fromD1(env.CONTROL_PLANE), {

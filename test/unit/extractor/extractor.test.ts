@@ -355,61 +355,22 @@ describe("extractFromUrl", () => {
         throw new Error("fetch should not be called for blocked hosts");
       }) as unknown as typeof fetch;
 
-    const blocked = [
+    // The host and scheme rules themselves are owned by blocked-host.test.ts
+    // and safe-fetch.test.ts; these representatives pin that assertSafeUrl
+    // runs before any fetch is issued.
+    it.each([
       "http://localhost/",
-      "http://localhost./",
-      "http://printer.local/",
-      "http://printer.local./",
       "http://127.0.0.1/",
-      "http://127.255.0.1/",
-      "http://10.0.0.1/",
-      "http://10.255.255.255/",
-      "http://172.16.0.1/",
-      "http://172.31.255.255/",
-      "http://192.168.1.1/",
-      "http://169.254.169.254/",
-      "http://169.254.0.1/",
-      "http://0.0.0.0/",
-      "http://[::1]/",
-      "http://[fc00::1]/",
-      "http://[fd12:3456::1]/",
-      "http://[fe80::1]/",
-      // IPv4-mapped IPv6 (::ffff:a.b.c.d) decodes to the embedded IPv4; treat
-      // the embedded address with the same private/loopback/link-local rules.
       "http://[::ffff:127.0.0.1]/",
-      "http://[::ffff:10.0.0.1]/",
-      "http://[::ffff:172.16.0.1]/",
-      "http://[::ffff:192.168.1.1]/",
-      "http://[::ffff:169.254.169.254]/",
-      "http://[::ffff:0.0.0.0]/",
-      // IPv4-compatible IPv6 (::a.b.c.d) — same treatment.
-      "http://[::127.0.0.1]/",
-      "http://[::10.0.0.1]/",
-      // Long-form loopback (uncompressed ::1).
-      "http://[0:0:0:0:0:0:0:1]/",
       "https://user:pass@example.com/",
-      "https://user@example.com/",
-    ];
-
-    for (const url of blocked) {
-      it(`rejects ${url} with BlockedHostError without calling fetch`, async () => {
-        const fetchFn = failingFetch();
-        await expect(
-          extractFromUrl(url, extractorDeps(fetchFn)),
-        ).rejects.toBeInstanceOf(BlockedHostError);
-        expect(fetchFn).not.toHaveBeenCalled();
-      });
-    }
-
-    for (const url of ["file:///etc/passwd", "gopher://example.com/", "ftp://example.com/"]) {
-      it(`rejects ${url} (non-http(s) scheme)`, async () => {
-        const fetchFn = failingFetch();
-        await expect(
-          extractFromUrl(url, extractorDeps(fetchFn)),
-        ).rejects.toBeInstanceOf(BlockedHostError);
-        expect(fetchFn).not.toHaveBeenCalled();
-      });
-    }
+      "file:///etc/passwd",
+    ])("rejects %s with BlockedHostError without calling fetch", async (url) => {
+      const fetchFn = failingFetch();
+      await expect(
+        extractFromUrl(url, extractorDeps(fetchFn)),
+      ).rejects.toBeInstanceOf(BlockedHostError);
+      expect(fetchFn).not.toHaveBeenCalled();
+    });
 
     it("does NOT block a public IPv4 host (1.1.1.1)", async () => {
       const fetchFn = fakeFetch({
@@ -417,40 +378,6 @@ describe("extractFromUrl", () => {
       });
       const out = await extractFromUrl("http://1.1.1.1/", extractorDeps(fetchFn));
       expect(out.content_status).toBe("captured");
-    });
-
-    it("does NOT block 172.32.0.1 (just outside the 172.16.0.0/12 private range)", async () => {
-      const fetchFn = fakeFetch({
-        "http://172.32.0.1/": { headers: { "content-type": "text/plain" }, body: "ok" },
-      });
-      const out = await extractFromUrl("http://172.32.0.1/", extractorDeps(fetchFn));
-      expect(out.content_status).toBe("captured");
-    });
-
-    it("does NOT block normal https hosts", async () => {
-      const fetchFn = fakeFetch({
-        "https://example.com/": { headers: { "content-type": "text/plain" }, body: "ok" },
-      });
-      const out = await extractFromUrl("https://example.com/", extractorDeps(fetchFn));
-      expect(out.content_status).toBe("captured");
-    });
-
-    it("rejects a 302 to a private literal without issuing the second fetch", async () => {
-      const calls: string[] = [];
-      const fetchFn = fakeFetch(
-        {
-          "https://example.com/start": {
-            status: 302,
-            headers: { location: "http://192.168.1.1/admin" },
-            body: "",
-          },
-        },
-        (url) => calls.push(url),
-      );
-      await expect(extractFromUrl("https://example.com/start", extractorDeps(fetchFn))).rejects.toBeInstanceOf(
-        BlockedHostError,
-      );
-      expect(calls).toEqual(["https://example.com/start"]);
     });
 
     it("does not retry a 302 to a private literal when retry is wired", async () => {
@@ -499,43 +426,6 @@ describe("extractFromUrl", () => {
       ).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(BlockedHostError);
       expect(err).not.toBeInstanceOf(TypeError);
-      expect(calls).toEqual(["https://example.com/start"]);
-      expect(sleep).not.toHaveBeenCalled();
-    });
-
-    it("omits passwords from BlockedHostError on a userinfo URL", async () => {
-      const fetchFn = failingFetch();
-      const err = await extractFromUrl(
-        "https://alice:s3cret@example.com/",
-        extractorDeps(fetchFn),
-      ).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(BlockedHostError);
-      expect(String(err)).not.toContain("s3cret");
-      expect((err as BlockedHostError).url).toBe("https://example.com/");
-      expect(fetchFn).not.toHaveBeenCalled();
-    });
-
-    it("omits passwords from BlockedHostError when a redirect Location carries userinfo", async () => {
-      const calls: string[] = [];
-      const sleep = vi.fn(async () => {});
-      const fetchFn = fakeFetch(
-        {
-          "https://example.com/start": {
-            status: 302,
-            headers: { location: "https://alice:s3cret@example.com/admin" },
-            body: "",
-          },
-        },
-        (url) => calls.push(url),
-      );
-      const err = await extractFromUrl(
-        "https://example.com/start",
-        extractorDeps(fetchFn, {
-          retry: { sleep, maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 2 },
-        }),
-      ).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(BlockedHostError);
-      expect(String(err)).not.toContain("s3cret");
       expect(calls).toEqual(["https://example.com/start"]);
       expect(sleep).not.toHaveBeenCalled();
     });
@@ -723,20 +613,11 @@ describe("extractFromUrl — YouTube", () => {
     ).rejects.toBeInstanceOf(RateLimitedError);
   });
 
-  it("fails the reading when oEmbed errors with a non-429 status (BadStatusError)", async () => {
-    // Tier 1 is the required floor: a 5xx there is a real failure, distinct from
-    // the best-effort watch-page/transcript fetches which degrade.
+  it.each([503, 404])("fails the reading when oEmbed answers a non-429 %i (BadStatusError)", async (status) => {
+    // Tier 1 is the required floor: an error there is a real failure, distinct
+    // from the best-effort watch-page/transcript fetches which degrade.
     const fetchFn = fakeFetch({
-      [OEMBED]: { status: 503, body: "unavailable" },
-    });
-    await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(
-      BadStatusError,
-    );
-  });
-
-  it("throws BadStatusError when the video is unavailable (oEmbed 404)", async () => {
-    const fetchFn = fakeFetch({
-      [OEMBED]: { status: 404, body: "not found" },
+      [OEMBED]: { status, body: "error" },
     });
     await expect(extractFromUrl(WATCH, { fetch: fetchFn, ...deps })).rejects.toBeInstanceOf(
       BadStatusError,

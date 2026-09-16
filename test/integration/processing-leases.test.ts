@@ -1015,6 +1015,15 @@ describe("processing leases (Workers pool)", () => {
   });
 
   it("does not re-pay summarize when lease unavailable hits after summarize succeeds", async () => {
+    // A neighbour missing url metadata must not break the checkpointed context.
+    (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
+      upsert: vi.fn(async () => ({ mutationId: "m" })),
+      deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
+      query: vi.fn(async () => ({
+        count: 1,
+        matches: [{ id: "rd_NEIGHBOUR", score: 0.9, metadata: { title: "Neighbour" } }],
+      })),
+    } as unknown as VectorizeIndex;
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -1051,6 +1060,11 @@ describe("processing leases (Workers pool)", () => {
       expect(sendDelayed).toHaveBeenCalledOnce();
       expect(summaryCalls(fetchFn)).toBe(1);
       expect(embedCalls(fetchFn)).toBe(1);
+      await expect(
+        testReadingStore(env, tenant).readProcessingCheckpoint(job.keyPrefix, "at_skip_sum"),
+      ).resolves.toMatchObject({
+        summarize: { similar_context: [{ id: "rd_NEIGHBOUR", url: "" }] },
+      });
     } finally {
       restore();
     }
@@ -1125,66 +1139,6 @@ describe("processing leases (Workers pool)", () => {
         nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
       }),
     ).toMatchObject({ ok: false, reason: "monthly" });
-  });
-
-  it("does not re-pay summarize when a neighbour is missing url metadata", async () => {
-    (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-      upsert: vi.fn(async () => ({ mutationId: "m" })),
-      deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
-      query: vi.fn(async () => ({
-        count: 1,
-        matches: [{ id: "rd_NEIGHBOUR", score: 0.9, metadata: { title: "Neighbour" } }],
-      })),
-    } as unknown as VectorizeIndex;
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 2,
-    });
-    const tenant = tenantOf(tenantId);
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_SKIP_SUM_URL",
-      url: "https://lease.test/skip-sum-url",
-      attemptId: "at_skip_sum_url",
-      source: PARKED_MARKDOWN,
-    });
-    const fetchFn = makeFetch();
-    const svc = services(fetchFn);
-    const restore = interceptGlobalLeaseFetch(async (body, next) => {
-      if (body.kind === "renew_lease") {
-        if (summaryCalls(fetchFn) === 1) {
-          return new Response(JSON.stringify({ ok: false, reason: "unavailable" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-      }
-      return next();
-    });
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    try {
-      await dispatchQueueMessage(
-        msg,
-        () => processReading(job, env as unknown as Env, svc, tenant),
-        { sendDelayed },
-      );
-      expect(sendDelayed).toHaveBeenCalledOnce();
-      expect(summaryCalls(fetchFn)).toBe(1);
-      await expect(
-        testReadingStore(env, tenant).readProcessingCheckpoint(job.keyPrefix, "at_skip_sum_url"),
-      ).resolves.toMatchObject({
-        summarize: { similar_context: [{ id: "rd_NEIGHBOUR", url: "" }] },
-      });
-    } finally {
-      restore();
-    }
-    await processReading(job, env as unknown as Env, svc, tenant);
-    expect(summaryCalls(fetchFn)).toBe(1);
-    expect(embedCalls(fetchFn)).toBe(2);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "ready",
-    });
   });
 
   it("refreshes a held reading reservation on defer and commits quota after success", async () => {
@@ -1286,35 +1240,6 @@ describe("processing leases (Workers pool)", () => {
     });
   });
 
-  it("keeps deferring when under PROCESSING_DEFER_MAX_AGE_MS", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    expect(await holdTenantLease(tenantId, "at_under_blocker")).toMatchObject({ ok: true });
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_UNDER",
-      url: "https://lease.test/under",
-      attemptId: "at_under",
-      source: PARKED_MARKDOWN,
-    });
-    const fetchFn = makeFetch();
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "pending",
-      active_attempt: { id: "at_under" },
-    });
-  });
 });
 
 describe("orphaned in-flight lease recovery (#256)", () => {
@@ -1324,67 +1249,9 @@ describe("orphaned in-flight lease recovery (#256)", () => {
   const DEAD_SINCE_MS = () =>
     Date.parse("2026-09-03T00:00:01.000Z") - 2 * PROCESSING_LEASE_TTL_MS;
 
-  it("releases both overdue orphaned rows when the defer ceiling terminalizes the reading", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    // Simulate the dead worker: both rows held, heartbeat lapsed, for THIS
-    // attempt.
-    const tenantHeld = await holdTenantLease(tenantId, "at_ceiling", DEAD_SINCE_MS());
-    const globalHeld = await globalLease({
-      kind: "acquire_lease",
-      tenantId,
-      attemptId: "at_ceiling",
-      nowMs: DEAD_SINCE_MS(),
-    });
-    expect(tenantHeld).toMatchObject({ ok: true });
-    expect(globalHeld).toMatchObject({ ok: true });
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_CEILING",
-      url: "https://lease.test/ceiling",
-      attemptId: "at_ceiling",
-      source: PARKED_MARKDOWN,
-    });
-    job.attemptStartedAt = new Date(
-      Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
-    ).toISOString();
-    const fetchFn = makeFetch();
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    // Terminalized, not deferred — and no paid dispatch on a release-only path.
-    expect(sendDelayed).not.toHaveBeenCalled();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "ProcessingDeferExpiredError" },
-    });
-    // ProcessingDeferExpiredError can no longer leave permanent capacity loss:
-    // the tenant slot is free for a new attempt even at cap 1, and the global
-    // row is gone (a re-acquire of the same attempt is fresh, not adopted).
-    const fresh = await holdTenantLease(tenantId, "at_ceiling_new");
-    expect(fresh).toMatchObject({ ok: true, already_running: false });
-    expect(
-      await globalLease({ kind: "acquire_lease", tenantId, attemptId: "at_ceiling", nowMs: Date.now() }),
-    ).toMatchObject({ ok: true, already_running: false });
-    await tenantLease(tenantId, {
-      kind: "release_lease",
-      attemptId: "at_ceiling_new",
-      fence: fresh.fence,
-      nowMs: Date.now(),
-    });
-  });
-
-  it.each(["recovery_response", "terminal_write"])(
-    "finishes a retired attempt after an interrupted %s", async failure => {
+  it.each(["none", "recovery_response", "terminal_write"])(
+    "releases both overdue orphaned rows when the defer ceiling terminalizes the reading (interrupted: %s)",
+    async failure => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
@@ -1427,15 +1294,21 @@ describe("orphaned in-flight lease recovery (#256)", () => {
       if (failure === "terminal_write" && key.endsWith("/manifest.json")) throw new Error("R2 outage");
       return put(key, value, options);
     });
-    try {
-      await dispatchQueueMessage(msg,
-        () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
-    } finally { restore(); putSpy.mockRestore(); }
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(await testReadingStore(env, tenant).readManifest(job.keyPrefix)).toMatchObject({ status: "pending" });
-    expect(await holdTenantLease(tenantId, "at_ceiling")).toMatchObject({ ok: false, reason: "stale_fence" });
-    expect(embedCalls(fetchFn)).toBe(0);
-    sendDelayed.mockClear();
+    if (failure !== "none") {
+      // The retiring delivery is interrupted: it defers, and a later delivery
+      // finishes the already-retired attempt.
+      try {
+        await dispatchQueueMessage(msg,
+          () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
+      } finally { restore(); putSpy.mockRestore(); }
+      expect(sendDelayed).toHaveBeenCalledOnce();
+      expect(await testReadingStore(env, tenant).readManifest(job.keyPrefix)).toMatchObject({ status: "pending" });
+      expect(await holdTenantLease(tenantId, "at_ceiling")).toMatchObject({ ok: false, reason: "stale_fence" });
+      expect(embedCalls(fetchFn)).toBe(0);
+      sendDelayed.mockClear();
+    } else {
+      restore(); putSpy.mockRestore();
+    }
     await dispatchQueueMessage(
       msg,
       () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
@@ -1443,7 +1316,8 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     );
     // Terminalized, not deferred — and no paid dispatch on a release-only path.
     expect(sendDelayed).not.toHaveBeenCalled();
-    expect(msg.ack).toHaveBeenCalledTimes(2);
+    expect(msg.ack).toHaveBeenCalledTimes(failure === "none" ? 1 : 2);
+    expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
       status: "failed",

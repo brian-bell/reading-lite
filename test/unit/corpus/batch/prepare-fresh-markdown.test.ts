@@ -202,7 +202,7 @@ describe("prepareFreshMarkdown — existing owner", () => {
       // pointer written seconds ago (same now()), manifest not yet written: a
       // realtime submit is in flight.
       byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/2026/06/22T000000Z-rd_OWNER" } },
-      manifests: {},
+      manifests: {} as Record<string, Manifest>,
     });
     const plan = await prepareFreshMarkdown([a], d);
 
@@ -211,122 +211,29 @@ describe("prepareFreshMarkdown — existing owner", () => {
     expect(plan.dispositions[0]!.kind).toBe("skip-initializing");
   });
 
-  it("skips a stale pointer whose manifest is gone as occupied-needs-repair", async () => {
-    const a = article();
-    const d = deps({
+  // A damaged by-url pointer stays occupied for this slice: fresh ingest must
+  // report it as occupied-needs-repair instead of scanning for a repair target
+  // and claiming over it. Each row seeds a cold owner that a scan WOULD find,
+  // so `coldCalls` staying empty proves the branch never consults the list
+  // index — reading the pointer as unclaimed would take the no-pointer path
+  // and, against a stale index, mint a duplicate.
+  it.each([
+    {
+      name: "a stale pointer whose manifest is gone",
       // pointer from years ago, manifest gone: a genuinely damaged pointer.
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
-      manifests: {},
-    });
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(d.ids).toEqual([]);
-    expect(plan.toIngest).toHaveLength(0);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-
-  it("skips a stale-missing by-url pointer even when a failed cold owner exists", async () => {
-    // Damaged pointer (manifest gone, years old) BUT index/list.json still owns
-    // this URL via a prior failed ingest. The damaged-pointer branch must run the
-    // cold lookup before minting, or it duplicates an already-owned URL and then
-    // overwrites the by-url pointer on success.
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
-      manifests: {},
-      cold: {
-        [a.sourceUrl!]: {
-          id: "rd_OWNER",
-          key_prefix: "readings/kp-owner",
-          manifest: manifest({ id: "rd_OWNER", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
-        },
-      },
-    });
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(d.ids).toHaveLength(0);
-    expect(plan.toIngest).toHaveLength(0);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-
-  it("does not run a cold repair scan for an occupied damaged pointer in this slice", async () => {
-    // A damaged by-url pointer stays occupied for this slice. Fresh ingest must
-    // skip it instead of scanning for a repair target and claiming over it.
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } },
-      manifests: {},
-    });
-    await prepareFreshMarkdown([a], d);
-    expect(d.coldCalls).toEqual([]);
-  });
-
-  it("skips a structurally-damaged by-url pointer instead of claiming over it", async () => {
-    // The by-url object exists but is missing id/key_prefix (stale/manual schema
-    // damage). It must NOT read as unclaimed: that would take the no-pointer path
-    // with forceScan:false and, against a stale index, mint a duplicate. This
-    // slice reports it as occupied-needs-repair instead of claiming over it.
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: "damaged" },
-      cold: {
-        [a.sourceUrl!]: {
-          id: "rd_OWNER",
-          key_prefix: "readings/kp-owner",
-          manifest: manifest({ id: "rd_OWNER", status: "failed", created_at: "2025-12-01T00:00:00.000Z" }),
-        },
-      },
-    });
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(d.coldCalls).toEqual([]);
-    expect(d.ids).toHaveLength(0);
-    expect(plan.toIngest).toHaveLength(0);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-
-  it("skips a structurally-damaged by-url pointer when the forced scan would find nothing", async () => {
-    const a = article();
-    const d = deps({ byUrl: { [hex(a.sourceUrl!)]: "damaged" } }); // no cold owner
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(d.coldCalls).toEqual([]);
-    expect(d.ids).toEqual([]);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-
-  it("skips an occupied cross-wired by-url pointer before cold repair", async () => {
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
-      manifests: {
-        "readings/kp-other": manifest({
-          id: "rd_OTHER",
-          url: "https://example.com/other",
-          url_hash: hex("https://example.com/other"),
-          status: "ready",
-        }),
-      },
-      cold: {
-        [a.sourceUrl!]: {
-          id: "rd_OWNER",
-          key_prefix: "readings/kp-owner",
-          manifest: manifest({ id: "rd_OWNER", status: "ready" }),
-        },
-      },
-    });
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(plan.toIngest).toHaveLength(0);
-    expect(d.ids).toHaveLength(0);
-    expect(d.coldCalls).toEqual([]);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-
-  it("skips when the pointer is cross-wired to another reading's manifest", async () => {
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/kp-other" } },
+      byUrl: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } as const,
+      manifests: {} as Record<string, Manifest>,
+      coldStatus: "failed" as const,
+    },
+    {
+      name: "a structurally-damaged pointer (missing id/key_prefix)",
+      byUrl: "damaged" as const,
+      manifests: {} as Record<string, Manifest>,
+      coldStatus: "failed" as const,
+    },
+    {
+      name: "a pointer cross-wired to another reading's manifest",
+      byUrl: { id: "rd_OWNER", key_prefix: "readings/kp-other" } as const,
       manifests: {
         // the manifest behind the pointer belongs to a DIFFERENT url/id.
         "readings/kp-other": manifest({
@@ -336,9 +243,24 @@ describe("prepareFreshMarkdown — existing owner", () => {
           status: "ready",
         }),
       },
+      coldStatus: "ready" as const,
+    },
+  ])("skips $name as occupied-needs-repair without a cold repair scan", async ({ byUrl, manifests, coldStatus }) => {
+    const a = article();
+    const d = deps({
+      byUrl: { [hex(a.sourceUrl!)]: byUrl },
+      manifests,
+      cold: {
+        [a.sourceUrl!]: {
+          id: "rd_OWNER",
+          key_prefix: "readings/kp-owner",
+          manifest: manifest({ id: "rd_OWNER", status: coldStatus, created_at: "2025-12-01T00:00:00.000Z" }),
+        },
+      },
     });
     const plan = await prepareFreshMarkdown([a], d);
 
+    expect(d.coldCalls).toEqual([]);
     expect(d.ids).toEqual([]);
     expect(plan.toIngest).toHaveLength(0);
     expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");

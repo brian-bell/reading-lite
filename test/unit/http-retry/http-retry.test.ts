@@ -225,8 +225,18 @@ describe("fetchWithRetry", () => {
     expect(fetchFn).toHaveBeenCalledTimes(3);
   });
 
-  it("does not retry AbortError (caller-driven cancellation)", async () => {
-    const abortErr = new DOMException("aborted", "AbortError");
+  it.each([
+    ["a DOMException", () => new DOMException("aborted", "AbortError")],
+    [
+      "a generic Error named AbortError",
+      () => {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        return err;
+      },
+    ],
+  ])("does not retry AbortError as %s (caller-driven cancellation)", async (_name, make) => {
+    const abortErr = make();
     const fetchFn = vi.fn(async () => {
       throw abortErr;
     });
@@ -285,25 +295,6 @@ describe("fetchWithRetry", () => {
     expect(response.status).toBe(200);
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(sleeps).toHaveLength(1);
-  });
-
-  it("does not retry errors whose name is AbortError on a generic Error", async () => {
-    const abortErr = new Error("aborted");
-    abortErr.name = "AbortError";
-    const fetchFn = vi.fn(async () => {
-      throw abortErr;
-    });
-    const { sleep } = recordingSleep();
-    await expect(
-      fetchWithRetry(fetchFn as unknown as typeof fetch, "https://x", {}, {
-        maxAttempts: 3,
-        baseDelayMs: 50,
-        maxDelayMs: 1_000,
-        sleep,
-        random: () => 1,
-      }),
-    ).rejects.toBe(abortErr);
-    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   it("applies jitter as random * computed (random=0 → no sleep)", async () => {

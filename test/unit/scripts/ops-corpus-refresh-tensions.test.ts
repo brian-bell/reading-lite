@@ -305,11 +305,6 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
   });
 
-  it("counts the usage of a judgement that then fails to write", async () => {
-    const h = harness({ casFailOn: "rd_a" });
-    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
-    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
-  });
 
   it("prints a zero run total when no judgement was made", async () => {
     const h = harness();
@@ -593,9 +588,10 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.judge).not.toHaveBeenCalled();
   });
 
-  it("does not write the second side when the first CAS loses", async () => {
+  it("counts the usage but does not write the second side when the first CAS loses", async () => {
     const h = harness({ casFailOn: "rd_a" });
     expect(await run(h, "--execute", "--sole-writer")).toBe(1);
+    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
     expect(h.writes).toHaveLength(1);
     expect(h.stored("rd_b")).not.toHaveProperty("tensions");
     expect(h.err.join("\n")).toMatch(/rd_a\|rd_b: manifest CAS lost/);

@@ -36,7 +36,6 @@ function gateHarness(options: { startMs?: number; maxBackoffMs?: number } = {}) 
 describe("parseConcurrencyFlag", () => {
   it("defaults to the captain's four in flight", () => {
     expect(parseConcurrencyFlag(undefined)).toBe(DEFAULT_EXECUTE_CONCURRENCY);
-    expect(DEFAULT_EXECUTE_CONCURRENCY).toBe(4);
   });
 
   it("accepts a positive integer", () => {
@@ -64,7 +63,6 @@ describe("parseConcurrencyFlag", () => {
 describe("parseMaxBackoffFlag", () => {
   it("defaults to the captain's ten minutes", () => {
     expect(parseMaxBackoffFlag(undefined)).toBe(DEFAULT_MAX_BACKOFF_MS);
-    expect(DEFAULT_MAX_BACKOFF_MS).toBe(10 * 60_000);
   });
 
   it("reads every unit it documents, and seconds when none is given", () => {

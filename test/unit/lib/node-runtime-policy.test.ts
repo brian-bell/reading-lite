@@ -33,25 +33,11 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(pkg.scripts["types:check"]).toContain("types:generate");
   });
 
-  it("keeps scripts.ops on tsx scripts/ops.ts and spawners on wrangler-cli", () => {
+  it("keeps scripts.ops on tsx scripts/ops.ts", () => {
+    // Spawner coverage (every ops wrangler spawner imports wrangler-cli) lives
+    // in lib/wrangler-cli.test.ts.
     const pkg = readPkg();
     expect(pkg.scripts.ops).toBe("tsx scripts/ops.ts");
-
-    const spawners = [
-      "scripts/corpus-lib/wrangler-r2.ts",
-      "scripts/corpus-lib/wrangler-put.ts",
-      "scripts/check-corpus-lib/fetch-index.ts",
-      "scripts/ops-lib/commands/deploy-worker.ts",
-      "scripts/ops-lib/commands/deploy-web.ts",
-      "scripts/staging-env.ts",
-      "scripts/lib/founder-bootstrap.ts",
-      "scripts/dev-setup.ts",
-    ];
-    for (const file of spawners) {
-      const src = readFileSync(path.join(repoRoot, file), "utf8");
-      expect(src, file).toMatch(/wrangler-cli["']/);
-      expect(src, file).not.toMatch(/spawn\(\s*["']wrangler["']/);
-    }
   });
 
   it("fails the dev Node gate below 22.12 and fail-closes on unparseable versions", () => {
@@ -77,13 +63,6 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
         message: DEV_NODE_GATE_MESSAGE,
       });
     }
-
-    expect(DEV_NODE_GATE_MESSAGE).toBe(
-      `Use Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+ for \`npm run dev\`. Node 20.19.x is for \`npm run ops\` only.`,
-    );
-    expect(DEV_NODE_GATE_MESSAGE).toContain(`Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+`);
-    expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run dev/);
-    expect(DEV_NODE_GATE_MESSAGE).toMatch(/npm run ops/);
   });
 
   it("compares major, minor, and patch against parsed DEV_NODE_MINIMUM", () => {
@@ -92,11 +71,6 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(isNodeAtLeast("22.12.0", "22.12.1")).toBe(false);
     expect(isNodeAtLeast("22.11.99", DEV_NODE_MINIMUM)).toBe(false);
     expect(isNodeAtLeast("22.12.0", "not-a-version")).toBe(false);
-
-    const src = readFileSync(path.join(repoRoot, "scripts/require-dev-node.ts"), "utf8");
-    expect(src).toMatch(/isNodeAtLeast\(\s*version,\s*DEV_NODE_MINIMUM\s*\)/);
-    expect(src).not.toMatch(/major\s*[<>]=?\s*22/);
-    expect(src).not.toMatch(/minor\s*[<>]=?\s*12/);
   });
 
   it("derives the gate message floor from DEV_NODE_MINIMUM", () => {
@@ -104,11 +78,6 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(formatDevNodeFloor("23.0.0")).toBe("23.0");
     expect(formatDevNodeFloor("22.12.1")).toBe("22.12.1");
     expect(formatDevNodeFloor("not-a-version")).toBe("not-a-version");
-    expect(DEV_NODE_GATE_MESSAGE).toContain(`Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+`);
-
-    const src = readFileSync(path.join(repoRoot, "scripts/require-dev-node.ts"), "utf8");
-    expect(src).toMatch(/formatDevNodeFloor\(\s*DEV_NODE_MINIMUM\s*\)/);
-    expect(src).not.toMatch(/Use Node 22\.12\+/);
   });
 
   it("uses a valid npm engine override for the Node 20 ops install", () => {
