@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "typecheck": "tsc --noEmit",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:browser:ci": "BROWSER_EVIDENCE=essential playwright test"
   },
   "dependencies": {
     "@tanstack/react-query": "5.102.8",

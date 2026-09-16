@@ -215,9 +215,12 @@ jobs:
         if: steps.browser-cache.outputs.cache-hit == 'true'
       # The suite serves the built Worker against the fixture-pack stub.
       - run: npm run build
-      # Axe (WCAG 2.2 AA) and the keyboard pass fail the job; screenshots are
-      # evidence for review, not pixel gates.
-      - run: npm run test:browser
+      # The essential scope (app/e2e/scope.ts): the major states of each route
+      # in one light and one dark project, plus the behaviour specs. Axe (WCAG
+      # 2.2 AA) and the keyboard pass fail the job; screenshots are evidence
+      # for review, not pixel gates. `npm run test:browser` is the full matrix,
+      # for local verification.
+      - run: npm run test:browser:ci
       - uses: actions/upload-artifact@v4
         if: always()
         with:

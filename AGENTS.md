@@ -36,6 +36,7 @@ npm run dev                     # :5174, proxies /api to :8787
 npm run typecheck && npm test
 npm run build && npm run test:smoke
 npm run test:browser            # Playwright: themes, viewports, axe, keyboard
+npm run test:browser:ci         # the essential subset CI runs
 ```
 
 There is no lint script. Full Worker verification is `npm test`,
@@ -43,7 +44,9 @@ There is no lint script. Full Worker verification is `npm test`,
 plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
 `build`, `test:smoke`, and `test:browser` in `app/`. CI runs Worker and Node
 tests, SPA tests/build, the `app/` checks and its browser-evidence job on
-Node 22, and the ops compatibility check on Node 20.19.2. Documentation-only changes
+Node 22, and the ops compatibility check on Node 20.19.2. The browser-evidence
+job runs `test:browser:ci`, the essential subset; run the full `test:browser`
+locally before shipping a frontend change. Documentation-only changes
 skip runtime CI and deployment; the two `app/` jobs run only when `app/**`, the
 root `wrangler.toml`, `src/frontend-reads.ts`, or the CI workflow changed.
 
