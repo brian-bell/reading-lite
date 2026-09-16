@@ -339,13 +339,8 @@ describe("Reprocess on a ready reading", () => {
 describe("a reprocess that does not start", () => {
   // Copy for each 429 window is owned by test/save-page.test.tsx; one of each
   // refusal is enough to show the reading page renders it and keeps the card.
+  // The 409, whose refetch shows the running attempt, has its own tests below.
   it.each([
-    {
-      name: "an attempt already running",
-      answer: json({ error: "reading already has an active attempt" }, 409),
-      sentence: "This reading is already processing.",
-      action: "Open reading",
-    },
     {
       name: "a quota",
       answer: json({ error: "hourly reading quota exceeded", code: "quota_exhausted", limit: "hourly" }, 429),
@@ -389,6 +384,40 @@ describe("a reprocess that does not start", () => {
       screen.getByText("You don't have permission to reprocess this reading.", { selector: ".offline-notice-text" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(failed.url);
+  });
+
+  // The notice describes the attempt the 409 found; once the watch sees that
+  // attempt end, the card says what happened and the notice would contradict it.
+  it("takes the already-processing notice away when that attempt ends, and says the outcome", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    await openReading(failed);
+    reprocesses = [json({ error: "reading already has an active attempt" }, 409)];
+    reads = [json(runningOver(failed))];
+
+    fireEvent.click(button("Retry"));
+    await settle();
+    expect(screen.getByText("This reading is already processing.", { selector: ".offline-notice-text" })).toBeInTheDocument();
+    expect(politeRegion()).toBe("This reading is already processing.");
+    expect(button("Open reading")).toBeInTheDocument();
+
+    reads = [json({ ...READY, id: failed.id, url: failed.url })];
+    await advance(3 * SECOND);
+    await settle();
+    expect(screen.queryByText("This reading is already processing.", { selector: ".offline-notice-text" })).toBeNull();
+    expect(politeRegion()).toBe("Processing finished. This reading is ready.");
+  });
+
+  // A failed refetch leaves the reading from before the request cached, which
+  // is not proof the attempt the 409 named has ended.
+  it("keeps the already-processing notice when the refetch after it fails", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    await openReading(failed);
+    reprocesses = [json({ error: "reading already has an active attempt" }, 409)];
+    reads = [json({ error: "backend unavailable" }, 503)];
+
+    fireEvent.click(button("Retry"));
+    await settle();
+    expect(screen.getByText("This reading is already processing.", { selector: ".offline-notice-text" })).toBeInTheDocument();
   });
 
   it("keeps focus on the card's control when Retry finds an attempt already running", async () => {

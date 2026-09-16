@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import { reprocessReading } from "../api/reprocess";
 import { whoamiQueryKey, type Identity } from "../identity";
@@ -31,7 +31,7 @@ import type { ReprocessOutcome } from "../reprocess";
 //   412 on the write is a notice, and the reading's own read decides whether
 //   the page is still theirs.
 
-/** What stays on the page after an answer that did not start an attempt. */
+/** What stays on the page after an answer that did not start an attempt, until the next send (or, for already-processing, until that attempt ends). */
 export type ReprocessNotice =
   | Exclude<ReprocessOutcome, { kind: "started" | "not-found" }>
   | { kind: "offline" }
@@ -45,10 +45,26 @@ export interface Reprocess {
   notice: ReprocessNotice | null;
 }
 
-export function useReprocess(id: string): Reprocess {
+export function useReprocess(id: string, processing: boolean): Reprocess {
   const queryClient = useQueryClient();
   const sendingRef = useRef(false);
   const [notice, setNotice] = useState<ReprocessNotice | null>(null);
+
+  // "Already processing" is about the attempt the 409 found. Once this page
+  // has seen that attempt running and then seen the reading no longer
+  // processing, it has ended and the status card says how; the notice would
+  // contradict it. Only an observed end clears it: a refetch that failed
+  // leaves the reading from before the request cached, which proves nothing.
+  const sawProcessing = useRef(false);
+  useEffect(() => {
+    if (notice?.kind !== "already-processing") {
+      sawProcessing.current = false;
+      return;
+    }
+    if (processing) sawProcessing.current = true;
+    else if (sawProcessing.current) setNotice(null);
+  }, [processing, notice]);
+
   const mutation = useMutation({
     mutationFn: () =>
       reprocessReading(queryClient, id, expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey))),

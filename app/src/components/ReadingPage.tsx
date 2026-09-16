@@ -9,6 +9,8 @@ import { searchForView, type ReadingView } from "../reading-view";
 import { isProcessing, type Reading, type ReadingResult } from "../reading";
 import { limitSentence } from "../capture-refusal";
 import { categorize } from "../reading-failure";
+import { diagnosticsQueryKey } from "../reading-diagnostics";
+import { sourceQueryKey } from "../reading-source";
 import { readingState } from "../reading-state";
 import { readingSchedule } from "../status-refresh";
 import type { TrailHop } from "../reading-trail";
@@ -65,8 +67,8 @@ function ReadingPageFor({ id, view }: { id: string; view: ReadingView }) {
   const watch = useStatusWatch<ReadingResult>({ keyOf: watchKeyOf, schedule: readingSchedule });
   const { data, error, isPending, refetch } = useQuery(readingQueryOptions(queryClient, id, identity, watch.options));
   const trail = useTrail();
-  const announcement = useOutcomeAnnouncement(data);
-  const reprocess = useReprocess(id);
+  const announcement = useOutcomeAnnouncement(id, data);
+  const reprocess = useReprocess(id, data?.state === "ready" && isProcessing(data.reading));
 
   // A 401 never gets here: the shell shows the expired-session page at this URL.
   // A failed background check leaves the reading on screen; the status card
@@ -110,9 +112,12 @@ interface Said {
  * matrix, Status refresh contract, Terminal): only when this page saw the
  * reading being processed and then saw it finish, so a reading that opens
  * already ready or failed announces nothing. The library's rows changed with
- * it, so their queries are invalidated. Focus stays where the reader left it.
+ * it, and so did what the attempt rewrote and logged — the Source view's
+ * extracted Markdown and the Details diagnostics, which never go stale on
+ * their own — so their queries are invalidated. Focus stays where the reader
+ * left it.
  */
-function useOutcomeAnnouncement(data: ReadingResult | undefined): Said | null {
+function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): Said | null {
   const queryClient = useQueryClient();
   const key = watchKeyOf(data);
   const previous = useRef<string | null>(key);
@@ -123,8 +128,10 @@ function useOutcomeAnnouncement(data: ReadingResult | undefined): Said | null {
     previous.current = key;
     if (was === null || key !== null) return;
     void queryClient.invalidateQueries({ queryKey: ["library"] });
+    void queryClient.invalidateQueries({ queryKey: sourceQueryKey(id) });
+    void queryClient.invalidateQueries({ queryKey: diagnosticsQueryKey(id) });
     if (data?.state === "ready") setAnnounced({ text: outcomeText(data.reading) });
-  }, [key, data, queryClient]);
+  }, [id, key, data, queryClient]);
 
   return announced;
 }
@@ -275,13 +282,24 @@ function ReadingSurface({
  */
 function useSaid(notice: ReprocessNotice | null, announcement: Said | null): string | null {
   const [said, setSaid] = useState<string | null>(null);
+  const lastNotice = useRef<string | null>(null);
   useEffect(() => {
     setSaid(announcement?.text ?? null);
   }, [announcement]);
   // After the outcome's effect, so an answer to what the reader just pressed
-  // wins when both land in one render.
+  // wins when both land in one render. A notice going away empties the region
+  // only if the region still says that notice: an outcome said in the same
+  // render (an already-processing notice cleared because its attempt ended)
+  // stays.
   useEffect(() => {
-    setSaid(notice ? reprocessNoticeSentence(notice) : null);
+    if (notice) {
+      lastNotice.current = reprocessNoticeSentence(notice);
+      setSaid(lastNotice.current);
+      return;
+    }
+    const gone = lastNotice.current;
+    lastNotice.current = null;
+    if (gone !== null) setSaid((current) => (current === gone ? null : current));
   }, [notice]);
   return said;
 }

@@ -16,7 +16,9 @@ import { stageLabel } from "../src/components/ReadingStatusCard";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 import { ProcessingStageSchema, type Reading } from "../src/reading";
+import { diagnosticsQueryKey } from "../src/reading-diagnostics";
 import { readingQueryOptions } from "../src/reading-query";
+import { sourceQueryKey } from "../src/reading-source";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 
@@ -221,15 +223,20 @@ describe("the schedule", () => {
 });
 
 describe("stopping", () => {
-  // Check 3.
-  it("stops at ready, announces it once, and refreshes the library", async () => {
+  // Check 3. The attempt rewrote the reading's content and logged itself, so
+  // a Source view or Details already read are stale too (#443 review).
+  it("stops at ready, announces it once, and refreshes the library, Source, and Diagnostics", async () => {
     const { queryClient } = await openReading(PENDING);
     queryClient.setQueryData(["library", { offset: 0 }], { rows: [] });
+    queryClient.setQueryData(sourceQueryKey(PENDING_ID), { state: "unavailable" });
+    queryClient.setQueryData(diagnosticsQueryKey(PENDING_ID), { state: "unavailable" });
     answerWith(pending(), json({ ...PENDING, status: "ready", active_attempt: null, title: "Done" }));
     await advance(6 * SECOND);
 
     expect(announcement()).toBe("Processing finished. This reading is ready.");
     expect(queryClient.getQueryState(["library", { offset: 0 }])?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(sourceQueryKey(PENDING_ID))?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(diagnosticsQueryKey(PENDING_ID))?.isInvalidated).toBe(true);
     expect(screen.queryByLabelText("Processing status")).not.toBeInTheDocument();
     await advance(5 * MINUTE);
     expect(requestTimes).toEqual([3 * SECOND, 6 * SECOND]);
