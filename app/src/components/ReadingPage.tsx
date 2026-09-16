@@ -8,6 +8,7 @@ import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
 import { isProcessing, type Reading, type ReadingResult } from "../reading";
 import { categorize } from "../reading-failure";
+import { readingState } from "../reading-state";
 import { readingSchedule } from "../status-refresh";
 import type { TrailHop } from "../reading-trail";
 import { saveNoticeOf } from "../save-notice";
@@ -112,14 +113,15 @@ function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): st
 /**
  * A failed reprocess leaves `status: "ready"` — the backend restores the
  * previous manifest — and records the failure on `last_attempt`, so the
- * attempt decides, as the library's "Reprocess failed" badge does.
+ * shared classification (reading-state.ts) decides, as the library's
+ * "Reprocess failed" badge does.
  */
 function outcomeText(reading: Reading): string {
-  const reprocessFailed = reading.status === "ready" && reading.last_attempt?.status === "failed";
-  if (reading.status !== "failed" && !reprocessFailed) return "Processing finished. This reading is ready.";
-  const lead = reprocessFailed ? "Processing again failed; the previous version is still here." : "Processing failed.";
-  const error = reading.error ?? reading.last_attempt?.error;
-  return error ? `${lead} ${categorize(error).headline}` : lead;
+  const state = readingState(reading);
+  if (state.kind !== "failed" && state.kind !== "reprocess-failed") return "Processing finished. This reading is ready.";
+  const lead =
+    state.kind === "reprocess-failed" ? "Processing again failed; the previous version is still here." : "Processing failed.";
+  return state.error ? `${lead} ${categorize(state.error).headline}` : lead;
 }
 
 /**

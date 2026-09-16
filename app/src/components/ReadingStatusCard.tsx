@@ -1,5 +1,6 @@
 import { categorize } from "../reading-failure";
-import { isProcessing, type ProcessingStage, type Reading } from "../reading";
+import type { ProcessingStage, Reading, ReadingError } from "../reading";
+import { readingState } from "../reading-state";
 import type { WatchStatus } from "./use-status-watch";
 
 // The status card at the top of a reading that is not ready, or that is ready
@@ -61,16 +62,17 @@ export function ReadingStatusCard({
   checkFailed: boolean;
   onCheck: () => void;
 }) {
-  // `isProcessing` (reading.ts) is the shared rule: a running attempt decides
-  // before the manifest status does, because reprocessing a ready reading
-  // keeps `status: "ready"` and adds the attempt (backend `reprocessPending`),
+  // `readingState` (reading-state.ts) is the shared rule, the library badge's
+  // too. A running attempt decides before the manifest status does, because
+  // reprocessing a ready reading keeps `status: "ready"` and adds the attempt,
   // so status alone would hide the card for the whole reprocess — the
   // acceptance matrix puts that reading in the Pending row, with the prior
   // content still below.
-  if (isProcessing(reading)) {
+  const state = readingState(reading);
+  if (state.kind === "processing") {
     return <PendingCard reading={reading} text={checkText(watch, checkFailed)} onCheck={onCheck} />;
   }
-  if (reading.status === "failed") return <FailedCard reading={reading} />;
+  if (state.kind === "failed") return <FailedCard error={state.error} />;
   return null;
 }
 
@@ -94,9 +96,7 @@ function PendingCard({ reading, text, onCheck }: { reading: Reading; text: strin
   );
 }
 
-function FailedCard({ reading }: { reading: Reading }) {
-  // The manifest's own error, else the one the last attempt recorded.
-  const error = reading.error ?? reading.last_attempt?.error;
+function FailedCard({ error }: { error: ReadingError | undefined }) {
   if (!error) {
     return (
       <section className="status-card status-card-failed" aria-label="Processing status">
