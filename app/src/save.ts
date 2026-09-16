@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ApiError } from "./api/errors";
-import { actingTenantOf, messageOf } from "./reading";
+import { actingTenantOf, isProcessing, messageOf } from "./reading";
 
 // Saving a URL (#431, Phase 4 of #339): the rule the field applies before it
 // asks, and what POST /api/readings answered. Pure, so both are tested without
@@ -38,11 +38,40 @@ export function saveUrlProblem(raw: string): string | undefined {
  */
 export const SubmitAcceptedSchema = z.looseObject({ id: z.string().min(1) });
 
+/**
+ * What a reading that already exists answers with: the owning manifest for a
+ * 200 (src/router.ts, the `existing` outcome), and `{ error, id, poll }` for
+ * the 409 that names the owner still initializing. Loose for the same reason
+ * as above: only what decides the notice is read here — the manifest's own
+ * status and the attempt running over it — and the reading's page reads the
+ * rest for itself. Each state field `.catch`es its own shape, so a body that
+ * carries something unexpected there still names the reading to open.
+ */
+export const SubmitExistingSchema = z.looseObject({
+  id: z.string().min(1),
+  status: z.string().optional().catch(undefined),
+  active_attempt: z
+    .looseObject({ status: z.string().optional().catch(undefined) })
+    .nullish()
+    .catch(undefined),
+});
+
+/**
+ * What the reader is told on arrival about a URL that was already theirs
+ * (#432). A closed set: the reading page renders one sentence per value and
+ * nothing else, so a body that fits neither says nothing rather than guessing.
+ */
+export type SaveNotice = "already-saved" | "still-processing";
+
 export type SubmitOutcome =
   /** 202: an attempt was written and enqueued. */
   | { kind: "accepted"; id: string }
-  /** 200 or 409: this URL is already a reading, so open it. */
-  | { kind: "existing"; id: string }
+  /**
+   * 200 or 409: this URL is already a reading, so open it. `notice` is what
+   * the reading says about it once it is open — absent when the backend gave
+   * nothing to say (the 409, which names an id and no state).
+   */
+  | { kind: "existing"; id: string; notice?: SaveNotice }
   /** 400: the backend rejected the URL, in its own words. */
   | { kind: "invalid"; message: string }
   /** 403: never a sign-out, and never the field's fault. */
@@ -72,15 +101,31 @@ export function submitFromResponse(status: number, body: unknown): SubmitOutcome
   // 200 is the reading that already owns this URL (its manifest), and 409 is
   // the owner still initializing, which names the same id to poll. Either way
   // the reader asked for a reading that exists, so the page opens it.
+  //
+  // Only the 200 carries a state to describe: a failed owner is reprocessed in
+  // place and answers 202, so what comes back here is ready or pending, and a
+  // ready one may have an attempt running over it. The 409 names nothing but
+  // the id, and its reading's own status card says what is happening.
   if (status === 200 || status === 409) {
-    const id = idOf(body);
-    if (id !== undefined) return { kind: "existing", id };
+    const parsed = SubmitExistingSchema.safeParse(body);
+    // Only the 200 carries a state to describe; the 409 names an id and
+    // nothing else, so it says nothing.
+    if (parsed.success) {
+      return { kind: "existing", id: parsed.data.id, notice: status === 200 ? noticeFor(parsed.data) : undefined };
+    }
   }
   throw new ApiError(status, messageOf(body) ?? `save returned ${status}`);
 }
 
-function idOf(body: unknown): string | undefined {
-  if (typeof body !== "object" || body === null) return undefined;
-  const id = (body as { id?: unknown }).id;
-  return typeof id === "string" && id !== "" ? id : undefined;
+/**
+ * What the reading says about itself on arrival. Being worked on is
+ * `isProcessing` (reading.ts), the same rule the reading's own status card and
+ * the library's badge read, so the notice and the card under it agree. A
+ * status that is neither ready nor being processed (or missing) is nothing the
+ * reader needs told.
+ */
+function noticeFor(manifest: z.infer<typeof SubmitExistingSchema>): SaveNotice | undefined {
+  if (isProcessing(manifest)) return "still-processing";
+  if (manifest.status === "ready") return "already-saved";
+  return undefined;
 }

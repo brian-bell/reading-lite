@@ -8,6 +8,8 @@ import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
 import type { Reading } from "../reading";
 import type { TrailHop } from "../reading-trail";
+import { saveNoticeOf } from "../save-notice";
+import type { SaveNotice } from "../save";
 import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
@@ -15,6 +17,7 @@ import { ReadingSource, type LoadedImages } from "./ReadingSource";
 import { AccountChanged, ReadingForbidden, ReadingLoading, ReadingNotFound, ServerError } from "./ReadingStates";
 import { ReadingStatusCard } from "./ReadingStatusCard";
 import { ReadingNovelty, ReadingSummary } from "./ReadingSummary";
+import { useRenderedLocation } from "./rendered-location";
 import { ReturnTrail, useTrail } from "./ReturnTrail";
 import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 
@@ -23,7 +26,8 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 // without a second request.
 //
 // The order of the reading column is the design spec's (Reading surface):
-// the return trail when the reader followed a relationship here, title,
+// the return trail when the reader followed a relationship here, the one-time
+// notice a save left when the URL was already in the library (#432), title,
 // metadata line, tags, the phone jump to the context column, status card when
 // active or failed, the Summary/Source tabs (#372), the selected view's
 // content, the novelty panel below either view, then the collapsed Details
@@ -59,6 +63,7 @@ function ReadingSurface({ reading, view, trail }: { reading: Reading; view: Read
     <div className={context ? "page reading reading-layout" : "page reading"}>
       <article className="reading-column">
         <ReturnTrail hops={trail} />
+        <SaveNoticeBanner />
         <PageHeading>{reading.title ?? reading.url}</PageHeading>
         <p className="reading-meta">
           <span>{hostnameOf(reading.url)}</span>
@@ -74,6 +79,34 @@ function ReadingSurface({ reading, view, trail }: { reading: Reading; view: Read
       </article>
       {context ? <ReadingContext reading={reading} /> : null}
     </div>
+  );
+}
+
+/** What each notice says, in the reader's terms. */
+const SAVE_NOTICE_TEXT: Record<SaveNotice, string> = {
+  "already-saved": "Already in your library",
+  "still-processing": "Already saved and still processing",
+};
+
+/**
+ * What a save that opened an existing reading left behind (#432), read from
+ * the history entry the way the return trail is — so the Summary/Source
+ * switch, which replaces the entry and keeps its state, keeps it, browser Back
+ * to that entry shows it again, and a reload (another document load) or a
+ * plain link to the same reading carries none.
+ *
+ * The live region is always here and its text is what changes, as the save
+ * form's and the sign-in form's are: a `role="status"` element that mounts
+ * with its text already in it is not reliably announced. An empty one is
+ * `display: none`, so it takes no space on the readings that have no notice —
+ * which is nearly all of them.
+ */
+function SaveNoticeBanner() {
+  const notice = useRenderedLocation((location) => saveNoticeOf(location.state));
+  return (
+    <p className="reading-notice" role="status">
+      {notice ? SAVE_NOTICE_TEXT[notice] : null}
+    </p>
   );
 }
 

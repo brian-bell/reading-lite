@@ -43,6 +43,7 @@ vi.mock("@tanstack/react-start/server", () => ({ getRequest: () => request.curre
 
 const readings = pack.readings as Record<string, Reading>;
 const PENDING = "rd_FXPENDNG01";
+const READY = "rd_FXATTENT01";
 
 const ACCEPTED = {
   id: PENDING,
@@ -477,5 +478,147 @@ describe("the save page", () => {
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveFocus());
     // The URL the reader typed is still there to try again.
     expect(urlField()).toHaveValue("https://example.com/a");
+  });
+});
+
+// Saving a URL the reader already owns (#432). The save opens the reading and
+// the reading says, once, what the backend answered about it: ready is already
+// in the library, pending or an attempt running over a ready manifest is still
+// processing. The notice is in history state, never in the URL.
+describe("a URL that is already a reading", () => {
+  /** A library page in the cache, so its invalidation can be read. */
+  function libraryInCache(queryClient: ReturnType<typeof createQueryClient>) {
+    const key = libraryQueryKey({ offset: 0 });
+    queryClient.setQueryData(key, {
+      state: "ready",
+      page: { readings: [], limit: 20, offset: 0, has_more: false },
+    });
+    return key;
+  }
+
+  async function saveExisting(body: unknown, status: number) {
+    stubFetch(() => Response.json(body, { status }));
+    const opened = await openSave();
+    const libraryKey = libraryInCache(opened.queryClient);
+    await userEvent.type(urlField(), "https://fieldnotes.example/making-room-for-slow-work");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    return { ...opened, libraryKey };
+  }
+
+  function notice(text: string): HTMLElement {
+    const found = screen.getAllByText(text);
+    // Once: the notice is one paragraph at the top of the reading column.
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  }
+
+  /** The notice sits above whatever the status card had to say. */
+  function isAbove(first: HTMLElement, second: HTMLElement): boolean {
+    return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
+  it("says a ready reading is already in the library", async () => {
+    const { router, queryClient, libraryKey } = await saveExisting(readings[READY], 200);
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${READY}`));
+    const banner = notice("Already in your library");
+    // Polite, and above the reading's own title.
+    expect(banner).toHaveAttribute("role", "status");
+    expect(isAbove(banner, screen.getByRole("heading", { level: 1 }))).toBe(true);
+    // The URL is the one anybody could share; the notice is not in it.
+    expect(router.state.location.href).not.toContain("notice");
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+    // The route change's heading focus still stands.
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+  });
+
+  it("says a pending reading is already saved and still processing", async () => {
+    const { router, queryClient, libraryKey } = await saveExisting(readings[PENDING], 200);
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    const banner = notice("Already saved and still processing");
+    const card = await screen.findByText("This reading is still being processed.");
+    expect(isAbove(banner, card)).toBe(true);
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+  });
+
+  // A reprocess keeps `status: "ready"` and adds the running attempt.
+  it("says a ready reading being reprocessed is still processing", async () => {
+    const reprocessing = {
+      ...readings[READY]!,
+      active_attempt: {
+        id: "at_FXATTENT02",
+        trigger: "reprocess",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-09-11T10:00:00.000Z",
+      },
+    };
+    backend.reading.mockImplementation(async () => ({ status: 200, body: reprocessing }));
+    const { router } = await saveExisting(reprocessing, 200);
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${READY}`));
+    const banner = notice("Already saved and still processing");
+    const card = await screen.findByText("This reading is being processed again.");
+    expect(isAbove(banner, card)).toBe(true);
+  });
+
+  // The 409 owner is still initializing: it names an id and no state, so the
+  // reading's own status card is the whole answer.
+  it("opens the reading a 409 names with no notice at all", async () => {
+    const { router, queryClient, libraryKey } = await saveExisting(
+      { error: "reading owner is still initializing", id: PENDING, poll: `/api/readings/${PENDING}` },
+      409,
+    );
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(await screen.findByText("This reading is still being processed.")).toBeVisible();
+    expect(screen.queryByText("Already in your library")).not.toBeInTheDocument();
+    expect(screen.queryByText("Already saved and still processing")).not.toBeInTheDocument();
+    expect(router.state.location.state.saveNotice).toBeUndefined();
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+  });
+
+  // The reading page renders the cached reading (staleTime: Infinity), so a
+  // copy read before the save would still be on screen under a notice taken
+  // from the fresh manifest: "Already in your library" over a card saying it
+  // is still being processed. The save drops that reading from the cache.
+  it("does not open a stale copy of the reading under a fresh notice", async () => {
+    const pendingCopy = {
+      ...readings[READY]!,
+      status: "pending",
+      active_attempt: {
+        id: "at_FXATTENT03",
+        trigger: "submit",
+        status: "running",
+        stage: "summarize",
+        started_at: "2026-09-11T10:00:00.000Z",
+      },
+    };
+    stubFetch(() => Response.json(readings[READY], { status: 200 }));
+    const { router, queryClient } = await openSave();
+    // What the reader saw earlier: this reading, before it finished.
+    queryClient.setQueryData(readingQueryKey(READY), { state: "ready", reading: pendingCopy });
+
+    await userEvent.type(urlField(), "https://quieter.example/a-quieter-internet");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${READY}`));
+    notice("Already in your library");
+    expect(screen.queryByText("This reading is still being processed.")).not.toBeInTheDocument();
+    expect(screen.queryByText("This reading is being processed again.")).not.toBeInTheDocument();
+  });
+
+  // A fresh save is not an existing reading, so it carries no notice.
+  it("leaves no notice on a reading the save created", async () => {
+    stubFetch(() => Response.json(ACCEPTED, { status: 202 }));
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(screen.queryByText("Already saved and still processing")).not.toBeInTheDocument();
+    expect(router.state.location.state.saveNotice).toBeUndefined();
   });
 });

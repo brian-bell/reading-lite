@@ -792,6 +792,13 @@ textarea {
   line-height: 1.6;
 }
 
+/* The save notice's live region is always in the reading column so that what
+   lands in it is announced (components/ReadingPage.tsx); with nothing to say
+   it is not a notice at all. */
+.reading-notice:empty {
+  display: none;
+}
+
 /* The tldr, as the serif lead. */
 .reading-lead {
   margin: 0 0 var(--space-5);

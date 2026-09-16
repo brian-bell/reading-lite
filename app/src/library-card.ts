@@ -1,3 +1,4 @@
+import { isProcessing } from "./reading";
 import { categorize } from "./reading-failure";
 import type { LibraryRow } from "./library";
 
@@ -8,15 +9,16 @@ import type { LibraryRow } from "./library";
 //
 // The pending and failed rules are the detail page's
 // (components/ReadingStatusCard.tsx), read from the list row's copy of the
-// same fields, so a card and the reading it opens agree. A running attempt
-// decides before the status does, because a reprocess over a ready reading
-// keeps `status: "ready"` (backend `reprocessPending`); a failed reprocess
+// same fields, so a card and the reading it opens agree. Being worked on is
+// `isProcessing` in reading.ts, shared with that card and with the save notice
+// (#432), so a running attempt decides before the status does there too. A
+// failed reprocess
 // over one restores the ready manifest with the failed attempt as
 // `last_attempt` and no error of its own (backend `rollForward`), which is
 // the only way a ready row carries a failed attempt. The detail page says
 // nothing about that state yet: #410 adds its "Reprocess failed" state with
 // the Reprocess action, and should share this classification rather than
-// copy it a third time.
+// copy it again.
 
 export type LibraryBadge =
   | { kind: "pending"; label: "Processing" }
@@ -24,9 +26,7 @@ export type LibraryBadge =
   | { kind: "reprocess-failed"; label: "Reprocess failed" };
 
 export function libraryBadge(row: LibraryRow): LibraryBadge | undefined {
-  if (row.active_attempt?.status === "running" || row.status === "pending") {
-    return { kind: "pending", label: "Processing" };
-  }
+  if (isProcessing(row)) return { kind: "pending", label: "Processing" };
   if (row.status === "failed") {
     // The manifest's own error, else the one the last attempt recorded; the
     // category headline, which for an unknown code is the backend's message.

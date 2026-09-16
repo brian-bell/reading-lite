@@ -1,5 +1,6 @@
-import { Link, useCanGoBack, useRouter, useRouterState } from "@tanstack/react-router";
+import { Link, useCanGoBack, useRouter } from "@tanstack/react-router";
 import { previousHop, trailAfterReturning, trailOf, type TrailHop } from "../reading-trail";
+import { useRenderedLocation } from "./rendered-location";
 
 // The return trail above a reading reached by following a relationship
 // (design spec, Return trail): the previous title and reason, and a way back.
@@ -11,14 +12,12 @@ import { previousHop, trailAfterReturning, trailOf, type TrailHop } from "../rea
 // the previous reading carrying the trail popped by one hop.
 
 /**
- * The trail of the page on screen. The router publishes the destination as
- * `location` before its loader runs, so while a followed reading is in flight
- * the page being left would otherwise show the trail meant for the next one
- * (and a second click would push it twice). `resolvedLocation` is the page
- * that is actually rendered, as AppFrame reads it.
+ * The trail of the page on screen (useRenderedLocation): while a followed
+ * reading is in flight the page being left would otherwise show the trail
+ * meant for the next one, and a second click would push it twice.
  */
 export function useTrail(): readonly TrailHop[] {
-  return useRouterState({ select: (state) => trailOf((state.resolvedLocation ?? state.location).state) });
+  return useRenderedLocation((location) => trailOf(location.state));
 }
 
 export function ReturnTrail({ hops }: { hops: readonly TrailHop[] }) {

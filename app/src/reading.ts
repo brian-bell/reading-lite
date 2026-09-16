@@ -181,6 +181,24 @@ export function readingQueryKey(id: string): readonly unknown[] {
 }
 
 /**
+ * Whether a reading is being worked on right now: the one rule the detail
+ * page's status card, the library card's badge, and the save notice all read
+ * it by, so the three cannot drift apart.
+ *
+ * A running attempt decides before the manifest status does, because a
+ * reprocess over a ready reading keeps `status: "ready"` and adds the attempt
+ * (backend `reprocessPending`); status alone would then say nothing is
+ * happening. Loose in its argument so a list row and an intake manifest, which
+ * are not the reading projection, can be read by it too.
+ */
+export function isProcessing(reading: {
+  status?: string;
+  active_attempt?: { status?: string } | null;
+}): boolean {
+  return reading.active_attempt?.status === "running" || reading.status === "pending";
+}
+
+/**
  * What a reader sees for one reading id.
  *
  * The statuses the acceptance matrix gives a page to are values, not thrown
