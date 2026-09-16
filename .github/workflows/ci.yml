@@ -6,8 +6,9 @@ on:
   push:
     branches: [main]
     # No CI run means no workflow_run production deployment for these pushes.
-    # Keep this list in sync with the PR classifier below. PRs must still emit
-    # the existing job checks so required checks do not remain pending.
+    # Keep this list to paths that scripts/ci-lib/changed-jobs.ts selects no
+    # jobs for. PRs must still emit the existing job checks so required checks
+    # do not remain pending.
     paths-ignore:
       - '*.md'
       - 'docs/**'
@@ -30,72 +31,44 @@ jobs:
     if: github.event_name != 'pull_request' || vars.DISABLE_PR_CI != 'true'
     runs-on: ubuntu-latest
     outputs:
-      code: ${{ steps.changes.outputs.code }}
+      worker: ${{ steps.changes.outputs.worker }}
+      ops: ${{ steps.changes.outputs.ops }}
+      web: ${{ steps.changes.outputs.web }}
       app: ${{ steps.changes.outputs.app }}
+      app-browser: ${{ steps.changes.outputs.appBrowser }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Classify changed paths
+      # Node 22.18+ runs the TypeScript classifier without a build step.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Select jobs from changed paths
         id: changes
         env:
           EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         shell: bash
         run: |
-          # `code` gates every runtime job; `app` gates the two app/ jobs, whose
-          # suites read only app/, the root wrangler.toml (the service-binding
-          # check), the FrontendReads seam, and this workflow. The app's
-          # backend fixture pack is a checked-in snapshot under app/e2e.
-          #
-          # Pushes already passed paths-ignore, so `code` is always true for
-          # them; `app` still comes from the diff against the previous main
-          # commit. Compare the entire PR, including deleted paths; disabling
+          # A push to main already passed paths-ignore and deploys whatever
+          # this run approves, so it runs every job rather than trusting an
+          # earlier commit's result. A pull request runs only the jobs whose
+          # suites read its changed paths (scripts/ci-lib/changed-jobs.ts),
+          # diffed from the merge base, including deleted paths; disabling
           # rename detection also checks the old path.
-          #
-          # A PR diffs from its merge base (`...`). A push diffs the two tips
-          # directly (`..`): after a force-push the old tip need not be an
-          # ancestor of the new one, and a merge-base diff would then miss
-          # whatever the old tip had that the new one lacks.
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            range="$BASE_SHA...$HEAD_SHA"
-          elif git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-            range="$BASE_SHA..$HEAD_SHA"
-          else
-            # No reachable previous commit (a new branch, or a force-push that
-            # discarded it): run everything rather than guess.
-            echo "code=true" >> "$GITHUB_OUTPUT"
-            echo "app=true" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" != pull_request ]]; then
+            printf '%s=true\n' worker ops web app appBrowser >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git diff --no-renames --name-only -z "$range" > "$RUNNER_TEMP/changed-paths"
-          code=false
-          app=false
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              docs/*|.agents/*.md|.agents/*.yaml|.claude/*.md|.claude/skills/*|.beads/*|LICENSE|skills-lock.json) continue ;;
-            esac
-            # Only root Markdown is ignored here; Markdown test fixtures and
-            # application assets elsewhere still need the normal checks.
-            if [[ "$path" != */* && "$path" == *.md ]]; then
-              continue
-            fi
-            code=true
-            case "$path" in
-              app/*|wrangler.toml|src/frontend-reads.ts|.github/workflows/ci.yml) app=true ;;
-            esac
-          done < "$RUNNER_TEMP/changed-paths"
-          if [[ "$EVENT_NAME" != pull_request ]]; then
-            code=true
-          fi
-          echo "code=$code" >> "$GITHUB_OUTPUT"
-          echo "app=$app" >> "$GITHUB_OUTPUT"
+          git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" \
+            | node scripts/ci-lib/changed-jobs.ts | tee -a "$GITHUB_OUTPUT"
 
   worker:
     name: Worker (typecheck + test)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -114,7 +87,7 @@ jobs:
   ops-node20:
     name: Ops CLI (Node 20)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.ops == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -143,7 +116,7 @@ jobs:
   web:
     name: Web (test + build)
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -162,7 +135,8 @@ jobs:
   app:
     name: App (typecheck + test + build + smoke)
     needs: changes
-    # Skipped jobs satisfy required checks; only app-relevant changes pay for these.
+    # Skipped jobs satisfy required checks; each job runs only for the paths
+    # its suite reads.
     if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     defaults:
@@ -187,7 +161,7 @@ jobs:
   app-browser:
     name: App (browser evidence)
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app-browser == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:

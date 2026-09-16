@@ -46,9 +46,11 @@ plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
 tests, SPA tests/build, the `app/` checks and its browser-evidence job on
 Node 22, and the ops compatibility check on Node 20.19.2. The browser-evidence
 job runs `test:browser:ci`, the essential subset; run the full `test:browser`
-locally before shipping a frontend change. Documentation-only changes
-skip runtime CI and deployment; the two `app/` jobs run only when `app/**`, the
-root `wrangler.toml`, `src/frontend-reads.ts`, or the CI workflow changed.
+locally before shipping a frontend change. On pull requests each job runs only
+for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
+update that map when a suite starts reading a new path. Unmapped paths run
+everything. Pushes to main run every job, and documentation-only pushes skip
+CI and deployment.
 
 Use [reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) to run the
 `app/` frontend and the backend together locally. [docs/docker-compose.md](docs/docker-compose.md)
