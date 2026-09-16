@@ -266,7 +266,10 @@ return path is per origin.
   ("hourly"/"monthly" reading limit for the quotas), plus " It resets at …"
   when the reset parses; "Limits can't be checked right now."; "Saving is
   unavailable right now." with an "Open the reading" link only when the 503
-  named one, and never the operator-facing error string. Every one offers "Try
+  named one, and never the operator-facing error string. A 503 that names a
+  reading is a failed owner the backend rewrote in place, so that reading's
+  query is dropped and the library invalidated before the link is offered, as
+  a 202 does. Every one offers "Try
   again", live immediately rather than counting down to a reset, which is the
   same `trySubmit` the form and the offline Retry use. The sentence is also
   set as the page's polite announcement, and the notice renders with

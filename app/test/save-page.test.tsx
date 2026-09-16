@@ -588,6 +588,28 @@ describe("the save page", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  // A 503 that names a reading is a failed owner the backend just rewrote
+  // (its rollback manifest and list row), and the reading and library queries
+  // never go stale on their own. What this tab read earlier must not be what
+  // "Open the reading" shows, nor what the library keeps showing.
+  it("drops what this tab knew about a reading a 503 names", async () => {
+    stubFetch(() => Response.json({ error: "reading setup failed", id: PENDING }, { status: 503 }));
+    const { queryClient } = await openSave();
+    const libraryKey = libraryQueryKey({ offset: 0 });
+    queryClient.setQueryData(libraryKey, { state: "ready", page: { readings: [], limit: 20, offset: 0, has_more: false } });
+    queryClient.setQueryData(readingQueryKey(PENDING), {
+      state: "ready",
+      reading: { ...readings.rd_FXERR00001, id: PENDING },
+    });
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(screen.getByRole("link", { name: "Open the reading" })).toBeVisible());
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(readingQueryKey(PENDING))).toBeUndefined();
+  });
+
   // The local `wrangler dev` body: no queue binding, and so no reading.
   it("offers no reading when the 503 names none", async () => {
     stubRefusedThenAccepted(() =>

@@ -141,6 +141,15 @@ export function SavePage() {
           // form, or a notice over the one that stays. A notice says its
           // sentence through the region that was already on the page, because
           // one inserted with its text in it is not announced.
+          if (outcome.kind === "unavailable" && outcome.id !== undefined) {
+            // The reading a 503 names is a failed owner the backend just
+            // rewrote in place (its rollback manifest and list row), so what
+            // this tab read of it earlier is what "Open the reading" would
+            // show, and what the library would keep showing. Dropped and
+            // invalidated as the accepted path does, before the link exists.
+            queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
+            await queryClient.invalidateQueries({ queryKey: ["library"] });
+          }
           setRefused(outcome);
           setAnnouncement(noticeSentence(outcome) ?? null);
           return;
