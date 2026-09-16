@@ -54,10 +54,11 @@ async function scrollY(page: Page): Promise<number> {
 }
 
 /** Page 3 of the tag-filtered search, reached as a reader would, scrolled down to the opened card. */
-async function openFilteredPage(page: Page, baseURL: string): Promise<number> {
+async function openFilteredPage(page: Page, baseURL: string, delayMs = 0): Promise<number> {
   await openCase(page, baseURL, ATTENTION);
   await serveReadingsInBrowser(page, TAGGED_READINGS);
   await serveLibraryInBrowser(page, [], (url) => ({
+    delayMs,
     status: 200,
     body: libraryPage(TAGGED, {
       q: url.searchParams.get("q") ?? undefined,
@@ -112,6 +113,19 @@ for (const [size, viewport] of Object.entries({ phone: { width: 390, height: 844
       await openReading(page);
 
       await page.goBack();
+      await expectLibraryAsLeft(page, left);
+    });
+
+    // Past the library query's cache time the page is read again on return, so
+    // it renders loading first and the rows arrive after scroll restoration ran.
+    test(`${size}: the scroll comes back after the page had to be read again`, async ({ page, baseURL }) => {
+      await page.clock.install({ time: new Date(pack.generated_at) });
+      const left = await openFilteredPage(page, baseURL!, 400);
+      await openReading(page);
+      await page.clock.runFor("31:00");
+
+      await page.getByRole("button", { name: "Back to library" }).click();
+      await expect(page.getByRole("list", { name: "Readings" })).toHaveCount(0);
       await expectLibraryAsLeft(page, left);
     });
   });

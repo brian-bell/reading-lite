@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useElementScrollRestoration, useLocation, useNavigate } from "@tanstack/react-router";
 import {
   createContext,
   useContext,
@@ -141,6 +141,7 @@ function LibraryContent({
 }) {
   const page = view.kind === "loading" ? undefined : view.page;
   const empty = page !== undefined && page.readings.length === 0;
+  useScrollRestoredOnceRowsArrive(view.kind === "loading", page !== undefined);
   return (
     <>
       {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
@@ -156,6 +157,29 @@ function LibraryContent({
       )}
     </>
   );
+}
+
+/**
+ * Scroll restoration runs when the route renders. A page whose rows were
+ * already cached (#407: kept 30 minutes) is whole by then, but one read again
+ * on return — browser Back or "Back to library" after the cache let it go —
+ * renders its loading state first, so the saved position is clamped to that
+ * short page and never tried again. Once rows replace a loading state, this
+ * applies the position saved for this history entry, if there is one. A new
+ * navigation's entry has none and stays at the top.
+ */
+function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolean): void {
+  const saved = useElementScrollRestoration({ getElement: () => (typeof window === "undefined" ? undefined : window) });
+  const waited = useRef(false);
+  useLayoutEffect(() => {
+    if (loading) {
+      waited.current = true;
+      return;
+    }
+    if (!loaded || !waited.current) return;
+    waited.current = false;
+    if (saved) window.scrollTo({ left: saved.scrollX, top: saved.scrollY });
+  }, [loading, loaded, saved]);
 }
 
 function LibraryRows({ rows, search }: { rows: readonly LibraryRow[]; search: LibrarySearch }) {
