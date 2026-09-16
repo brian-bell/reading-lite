@@ -2489,7 +2489,7 @@ Objects are written by `wrangler r2 object put --local` into the same
 on-disk store `.wrangler/state/v3/r2` that the dev server binds (verified
 against wrangler 4.130 — the older "different local store" caveat for
 `--local` no longer holds). The command is idempotent and **overwrites**
-`index/list.json` with the pack's 18 rows: any other local reading keeps its
+`index/list.json` with the pack's 19 rows: any other local reading keeps its
 objects but drops out of the list and `q` search. Re-run the command to
 refresh the pending fixture once it passes the 15-minute pending TTL, and to
 restore the pack after deleting readings while testing.

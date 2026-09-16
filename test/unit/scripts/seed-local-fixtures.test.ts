@@ -121,7 +121,7 @@ describe("seed-local-fixtures runSeed", () => {
       const list = lastWrittenList(puts);
       const ids = list.items.map((i) => i.id);
       expect(ids).not.toContain("rd_HANDSEED01");
-      expect(ids).toHaveLength(18);
+      expect(ids).toHaveLength(19);
       expect(puts.at(-1)?.key).toBe(LIST_KEY);
     } finally {
       restoreWarn();

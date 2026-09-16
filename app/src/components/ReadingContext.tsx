@@ -114,7 +114,7 @@ function RelationshipCardView({ card, from }: { card: RelationshipCard; from: { 
         <p className="relationship-title">
           <FollowLink card={card} from={from} />
           {targetStatusBadge(card.target.status) ? (
-            <span className={`relationship-status relationship-status-${card.target.status}`}>
+            <span className={`status-badge status-badge-${card.target.status}`}>
               {targetStatusBadge(card.target.status)}
             </span>
           ) : null}

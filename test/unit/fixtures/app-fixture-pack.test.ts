@@ -50,6 +50,7 @@ describe("app browser-evidence fixture pack", () => {
       "old-manifest",
       "long-title",
       "imported-markdown",
+      "reprocess-failed",
       "pending",
     ]) {
       expect(names, name).toContain(name);
@@ -89,6 +90,18 @@ describe("app browser-evidence fixture pack", () => {
       const starts = body.attempts.map((a) => a.started_at);
       expect(starts).toEqual([...starts].sort().reverse());
     }
+  });
+
+  // The library's "Reprocess failed" badge (#415) reads the list row; the
+  // Details section reads both attempts.
+  it("serves the failed reprocess as a ready row with a failed reprocess attempt, and both its logs", () => {
+    const pack = buildAppFixturePack();
+    const fixture = pack.fixtures.find((f) => f.name === "reprocess-failed")!;
+    expect(fixture.status).toBe("ready");
+    const row = pack.list_index.items.find((item) => item.id === fixture.id)!;
+    expect(row.error).toBeUndefined();
+    expect(row.last_attempt).toMatchObject({ trigger: "reprocess", status: "failed" });
+    expect(pack.diagnostics[fixture.id].attempts.map((a) => a.trigger)).toEqual(["reprocess", "submit"]);
   });
 
   it("serves each ready fixture's raw capture with its stored content type, and none for the rest", () => {

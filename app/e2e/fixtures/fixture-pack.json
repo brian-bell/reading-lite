@@ -57,6 +57,12 @@
       "state": "Failed, hosting limit: SpendAdmissionError at summarize"
     },
     {
+      "name": "reprocess-failed",
+      "id": "rd_FXREPROC01",
+      "status": "ready",
+      "state": "Ready with a failed reprocess: last_attempt is a failed reprocess attempt (BadStatusError at fetch_source), the manifest keeps its summary and carries no error; two attempt logs"
+    },
+    {
       "name": "gardens",
       "id": "rd_FXGARDEN01",
       "status": "ready",
@@ -183,7 +189,7 @@
         "retryable": false
       },
       "last_attempt": {
-        "id": "at_FXERR00002",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "summarize",
@@ -219,7 +225,7 @@
         "retryable": true
       },
       "last_attempt": {
-        "id": "at_FXERR00003",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "summarize",
@@ -255,7 +261,7 @@
         "retryable": true
       },
       "last_attempt": {
-        "id": "at_FXERR00004",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "embed_source",
@@ -291,7 +297,7 @@
         "retryable": false
       },
       "last_attempt": {
-        "id": "at_FXERR00005",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "summarize",
@@ -489,7 +495,7 @@
         "retryable": true
       },
       "last_attempt": {
-        "id": "at_FXERR00006",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "summarize",
@@ -510,6 +516,88 @@
       "created_at": "2026-09-05T21:30:00.000Z",
       "updated_at": "2026-09-05T21:30:37.000Z",
       "relationship_targets": {}
+    },
+    "rd_FXREPROC01": {
+      "id": "rd_FXREPROC01",
+      "url": "https://fieldnotes.example/the-tab-that-never-closes",
+      "url_hash": "8f1f18b256b3fafc2db05949d1d78f01a466af40f3f6e9fad93323d8deecc8ce",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXREPROC02",
+        "trigger": "reprocess",
+        "status": "failed",
+        "stage": "fetch_source",
+        "started_at": "2026-09-10T16:05:00.000Z",
+        "finished_at": "2026-09-10T16:05:10.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 503: Service Unavailable",
+          "stage": "fetch_source",
+          "failed_at": "2026-09-10T16:05:10.000Z",
+          "retryable": true
+        }
+      },
+      "title": "The tab that never closes",
+      "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+      "tags": [
+        "attention"
+      ],
+      "keywords": [
+        "browser tabs",
+        "saving",
+        "deferral",
+        "reading later"
+      ],
+      "people": [
+        "Mara Ellis"
+      ],
+      "orgs": [],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1,
+        "max": 0.59,
+        "mean": 0.59,
+        "computed_at": "2026-09-05T08:40:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXATTENT01",
+          "reason": "Both essays treat saving as a way to end a session well rather than to defer it."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXATTENT01"
+      ],
+      "summary_markdown": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.\n\nThe essay separates saving from deferring: a saved reading has a place to be, while an open tab is an unpaid debt in the corner of the screen.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 746,
+      "extracted_bytes": 566,
+      "content_sha256": "ed3dc4749618add0c69d393ddb78c473b7c5dd0ed767245b184d1db25f40f9d1",
+      "fetched_at": "2026-09-05T08:40:47.000Z",
+      "created_at": "2026-09-05T08:40:00.000Z",
+      "updated_at": "2026-09-10T16:05:10.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 3120,
+          "output_tokens": 412,
+          "reasoning_tokens": 160,
+          "cached_input_tokens": 2200,
+          "cache_write_tokens": 920
+        },
+        "openai_embedding_tokens": 1180
+      },
+      "relationship_targets": {
+        "rd_FXATTENT01": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "status": "ready",
+          "title": "A quieter internet is a choice we can make"
+        }
+      }
     },
     "rd_FXGARDEN01": {
       "id": "rd_FXGARDEN01",
@@ -620,7 +708,7 @@
         "retryable": true
       },
       "last_attempt": {
-        "id": "at_FXERR00007",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "summarize",
@@ -740,7 +828,7 @@
         "failed_at": "2026-08-30T19:47:23.000Z"
       },
       "last_attempt": {
-        "id": "at_FXERR00008",
+        "id": "at_FXERR00001",
         "trigger": "submit",
         "status": "failed",
         "stage": "query_similar",
@@ -1092,6 +1180,7 @@
   "contents": {
     "rd_FXATTENT01": "## Somewhere to return\n\nOn a Sunday morning, I opened a folder of articles I had been meaning to read. There were hundreds of them. Every title represented a small promise to a future version of myself: you will have more time, and this will still matter. I closed the folder. Then I opened a single essay I had read a year earlier, and found the sentence I needed.\n\n## From collection to conversation\n\nWe tend to build reading tools around the moment of capture. The button is frictionless, the queue infinite, the archive reassuring. But the important moment comes later. An old idea meets a new question. Two writers disagree in a way you can finally name. A library becomes useful when it can make those moments easier to find.\n\n## A little friction, in the right place\n\nA quieter tool does not have to be an empty tool. It can invite us to pause, compare, and follow one good connection. The distinction is whether the next action serves the thought we arrived with or replaces it. A link back to an earlier reading can deepen a session. A bottomless feed usually starts a different one.\n\n## Designing for enough\n\nImagine a reading session that ends because you have understood something. No streak to maintain, no unfinished counter asking for attention. Just a clear summary, the source within reach, and perhaps one older piece worth returning to. We can make tools that respect this kind of ending. First, we have to decide that an ending is a success.",
     "rd_FXSPARSE01": "## Available, not overdue\n\nAn archive is not a promise to read everything in it. It is a resource for the questions you have now. When an article no longer serves a question, you can let it wait without turning it into a debt.",
+    "rd_FXREPROC01": "## The tab that never closes\n\nThere is always one browser tab that survives every restart: an article you meant to finish, kept open as a promise. Keeping it open changes nothing about whether you will read it. What changes is how the promise sits with you, a small unpaid debt in the corner of the screen.\n\n## Save it and let it go\n\nSaving is not the same as deferring. A saved reading has a place to be, and can wait there without asking for anything. The tab can close. If the piece matters, a library brings it back when a newer question makes it relevant again.",
     "rd_FXGARDEN01": "## Tending an idea\n\nA warehouse promises to keep everything where you left it. A garden promises something different: what is here will change. Reading collections are closer to gardens. We pull ideas into new groupings, let some interests rest, and return to a familiar passage with a question we could not have asked last year.\n\n## Paths, not boxes\n\nA useful tag is a path you are likely to walk again. It does not need to describe an article completely. It only needs to help you return when a question becomes interesting. An imperfect collection that you visit will teach you more than a perfect one you only maintain.",
     "rd_FXFRICTN01": "## A pause with a purpose\n\nA book club interrupts a book. So does a margin note. Neither is usually described as a failure of the reading experience. The pause can be the point: it asks us to make a thought our own. Digital tools can offer the same kind of interruption if they leave the reader in control.\n\n## Leave a way back\n\nA tangent becomes a distraction when the original question disappears. Keep the starting point visible. Explain why a connection might matter. Then allow the reader to follow it, or continue exactly where they were.",
     "rd_FXMAXNAME1": "## The work around the work\n\nI spent an afternoon designing a better way to collect my writing ideas. When I finished, the ideas were beautifully arranged. None of them had become writing. Organization is not the enemy, but it is an activity with its own rewards. We need to notice when those rewards have replaced the reason we started.",
@@ -1357,7 +1446,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00002",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1393,7 +1482,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00002",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1433,14 +1522,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/09T164200Z-rd_FXERR00002/attempts/at_FXERR00002.json",
+          "key": "readings/2026/09/09T164200Z-rd_FXERR00002/attempts/at_FXERR00001.json",
           "size": 1701,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00002",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1541,7 +1630,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00003",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1577,7 +1666,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00003",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1617,14 +1706,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/09T090500Z-rd_FXERR00003/attempts/at_FXERR00003.json",
+          "key": "readings/2026/09/09T090500Z-rd_FXERR00003/attempts/at_FXERR00001.json",
           "size": 1652,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00003",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1725,7 +1814,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00004",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "embed_source",
@@ -1761,7 +1850,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00004",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "embed_source",
@@ -1801,14 +1890,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/08T221800Z-rd_FXERR00004/attempts/at_FXERR00004.json",
+          "key": "readings/2026/09/08T221800Z-rd_FXERR00004/attempts/at_FXERR00001.json",
           "size": 1622,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00004",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "embed_source",
@@ -1909,7 +1998,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00005",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1945,7 +2034,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00005",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -1985,14 +2074,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/08T115500Z-rd_FXERR00005/attempts/at_FXERR00005.json",
+          "key": "readings/2026/09/08T115500Z-rd_FXERR00005/attempts/at_FXERR00001.json",
           "size": 1599,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00005",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -2694,7 +2783,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00006",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -2730,7 +2819,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00006",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -2770,14 +2859,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/05T213000Z-rd_FXERR00006/attempts/at_FXERR00006.json",
+          "key": "readings/2026/09/05T213000Z-rd_FXERR00006/attempts/at_FXERR00001.json",
           "size": 1578,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00006",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -2856,6 +2945,369 @@
                 "failed_at": "2026-09-05T21:30:37.000Z",
                 "retryable": true
               }
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXREPROC01": {
+      "id": "rd_FXREPROC01",
+      "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+      "manifest": {
+        "id": "rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "url_hash": "8f1f18b256b3fafc2db05949d1d78f01a466af40f3f6e9fad93323d8deecc8ce",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
+            "retryable": true
+          }
+        },
+        "title": "The tab that never closes",
+        "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "browser tabs",
+          "saving",
+          "deferral",
+          "reading later"
+        ],
+        "people": [
+          "Mara Ellis"
+        ],
+        "orgs": [],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.59,
+          "mean": 0.59,
+          "computed_at": "2026-09-05T08:40:24.000Z"
+        },
+        "connections": [
+          {
+            "id": "rd_FXATTENT01",
+            "reason": "Both essays treat saving as a way to end a session well rather than to defer it."
+          }
+        ],
+        "connections_computed_at": "2026-09-08T03:07:00.000Z",
+        "connections_neighbourhood_ids": [
+          "rd_FXATTENT01"
+        ],
+        "summary_markdown": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.\n\nThe essay separates saving from deferring: a saved reading has a place to be, while an open tab is an unpaid debt in the corner of the screen.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 746,
+        "extracted_bytes": 566,
+        "content_sha256": "ed3dc4749618add0c69d393ddb78c473b7c5dd0ed767245b184d1db25f40f9d1",
+        "fetched_at": "2026-09-05T08:40:47.000Z",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "updated_at": "2026-09-10T16:05:10.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 3120,
+            "output_tokens": 412,
+            "reasoning_tokens": 160,
+            "cached_input_tokens": 2200,
+            "cache_write_tokens": 920
+          },
+          "openai_embedding_tokens": 1180
+        }
+      },
+      "index_item": {
+        "id": "rd_FXREPROC01",
+        "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "status": "ready",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "updated_at": "2026-09-10T16:05:10.000Z",
+        "title": "The tab that never closes",
+        "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "browser tabs",
+          "saving",
+          "deferral",
+          "reading later"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.59,
+          "mean": 0.59,
+          "computed_at": "2026-09-05T08:40:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
+            "retryable": true
+          }
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXREPROC01",
+            "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXREPROC01",
+            "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/manifest.json",
+          "size": 2123,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/raw.html",
+          "size": 746,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/extracted.md",
+          "size": 566,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/attempts/at_FXREPROC01.json",
+          "size": 2467,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/attempts/at_FXREPROC02.json",
+          "size": 1073,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
+            "retryable": true
+          },
+          "reading_id": "rd_FXREPROC01",
+          "url": "https://fieldnotes.example/the-tab-that-never-closes",
+          "url_hash": "8f1f18b256b3fafc2db05949d1d78f01a466af40f3f6e9fad93323d8deecc8ce",
+          "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-10T16:05:00.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-10T16:05:02.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-10T16:05:02.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "failed",
+              "at": "2026-09-10T16:05:10.000Z",
+              "duration_ms": 8000,
+              "error": {
+                "code": "BadStatusError",
+                "message": "bad response status 503: Service Unavailable",
+                "stage": "fetch_source",
+                "failed_at": "2026-09-10T16:05:10.000Z",
+                "retryable": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "at_FXREPROC01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-05T08:40:04.000Z",
+          "finished_at": "2026-09-05T08:40:47.000Z",
+          "reading_id": "rd_FXREPROC01",
+          "url": "https://fieldnotes.example/the-tab-that-never-closes",
+          "url_hash": "8f1f18b256b3fafc2db05949d1d78f01a466af40f3f6e9fad93323d8deecc8ce",
+          "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-05T08:40:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-05T08:40:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-09-05T08:40:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-09-05T08:40:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-09-05T08:40:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-09-05T08:40:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-09-05T08:40:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-09-05T08:40:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-09-05T08:40:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-09-05T08:40:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-09-05T08:40:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-09-05T08:40:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-09-05T08:40:55.000Z",
+              "duration_ms": 3000
             }
           ]
         }
@@ -3186,7 +3638,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00007",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -3222,7 +3674,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00007",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -3262,14 +3714,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/09/04T071200Z-rd_FXERR00007/attempts/at_FXERR00007.json",
+          "key": "readings/2026/09/04T071200Z-rd_FXERR00007/attempts/at_FXERR00001.json",
           "size": 661,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00007",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -3616,7 +4068,7 @@
           "failed_at": "2026-08-30T19:47:23.000Z"
         },
         "last_attempt": {
-          "id": "at_FXERR00008",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "query_similar",
@@ -3650,7 +4102,7 @@
           "failed_at": "2026-08-30T19:47:23.000Z"
         },
         "last_attempt": {
-          "id": "at_FXERR00008",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "query_similar",
@@ -3689,14 +4141,14 @@
           "uploaded": "2026-09-11T10:00:00.000Z"
         },
         {
-          "key": "readings/2026/08/30T194700Z-rd_FXERR00008/attempts/at_FXERR00008.json",
+          "key": "readings/2026/08/30T194700Z-rd_FXERR00008/attempts/at_FXERR00001.json",
           "size": 1743,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
       "attempts": [
         {
-          "id": "at_FXERR00008",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "query_similar",
@@ -5203,6 +5655,10 @@
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Against the endless queue</title>\n</head>\n<body>\n<article>\n<h2>Available, not overdue</h2>\n<p>An archive is not a promise to read everything in it. It is a resource for the questions you have now. When an article no longer serves a question, you can let it wait without turning it into a debt.</p>\n</article>\n</body>\n</html>\n"
     },
+    "rd_FXREPROC01": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>The tab that never closes</title>\n</head>\n<body>\n<article>\n<h2>The tab that never closes</h2>\n<p>There is always one browser tab that survives every restart: an article you meant to finish, kept open as a promise. Keeping it open changes nothing about whether you will read it. What changes is how the promise sits with you, a small unpaid debt in the corner of the screen.</p>\n<h2>Save it and let it go</h2>\n<p>Saving is not the same as deferring. A saved reading has a place to be, and can wait there without asking for anything. The tab can close. If the piece matters, a library brings it back when a newer question makes it relevant again.</p>\n</article>\n</body>\n</html>\n"
+    },
     "rd_FXGARDEN01": {
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Libraries are gardens, not warehouses</title>\n</head>\n<body>\n<article>\n<h2>Tending an idea</h2>\n<p>A warehouse promises to keep everything where you left it. A garden promises something different: what is here will change. Reading collections are closer to gardens. We pull ideas into new groupings, let some interests rest, and return to a familiar passage with a question we could not have asked last year.</p>\n<h2>Paths, not boxes</h2>\n<p>A useful tag is a path you are likely to walk again. It does not need to describe an article completely. It only needs to help you return when a question becomes interesting. An imperfect collection that you visit will teach you more than a perfect one you only maintain.</p>\n</article>\n</body>\n</html>\n"
@@ -5295,7 +5751,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00002",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -5325,7 +5781,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00003",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -5355,7 +5811,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00004",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "embed_source",
@@ -5385,7 +5841,7 @@
           "retryable": false
         },
         "last_attempt": {
-          "id": "at_FXERR00005",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -5483,7 +5939,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00006",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -5494,6 +5950,47 @@
             "message": "paid spend admission: monthly budget exhausted",
             "stage": "summarize",
             "failed_at": "2026-09-05T21:30:37.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXREPROC01",
+        "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "status": "ready",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "updated_at": "2026-09-10T16:05:10.000Z",
+        "title": "The tab that never closes",
+        "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "browser tabs",
+          "saving",
+          "deferral",
+          "reading later"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.59,
+          "mean": 0.59,
+          "computed_at": "2026-09-05T08:40:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
             "retryable": true
           }
         }
@@ -5549,7 +6046,7 @@
           "retryable": true
         },
         "last_attempt": {
-          "id": "at_FXERR00007",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "summarize",
@@ -5612,7 +6109,7 @@
           "failed_at": "2026-08-30T19:47:23.000Z"
         },
         "last_attempt": {
-          "id": "at_FXERR00008",
+          "id": "at_FXERR00001",
           "trigger": "submit",
           "status": "failed",
           "stage": "query_similar",

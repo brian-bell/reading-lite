@@ -39,6 +39,14 @@ describe("local seed fixture pack", () => {
   const manifests = plan.fixtures.map((f) => f.manifest);
   const byId = new Map(plan.fixtures.map((f) => [f.id, f]));
 
+  /** A fixture's attempt logs, newest first, as the diagnostics endpoint lists them. */
+  function attemptLogsOf(fixture: { keyPrefix: string }) {
+    return plan.objects
+      .filter((o) => o.key.startsWith(`${fixture.keyPrefix}/attempts/`))
+      .map((o) => ProcessingAttemptSchema.parse(JSON.parse(o.body)))
+      .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+  }
+
   it("names every acceptance-matrix state the issue lists", () => {
     const names = plan.fixtures.map((f) => f.name);
     expect(names).toEqual(
@@ -52,6 +60,7 @@ describe("local seed fixture pack", () => {
         "old-manifest",
         "long-title",
         "imported-markdown",
+        "reprocess-failed",
         "pending",
         "fail-source-unreachable",
         "fail-source-incomplete",
@@ -161,40 +170,84 @@ describe("local seed fixture pack", () => {
 
   it("seeds attempt logs that parse and agree with the manifest", () => {
     for (const fixture of plan.fixtures) {
-      const attemptKeys = plan.objects
-        .map((o) => o.key)
-        .filter((k) => k.startsWith(`${fixture.keyPrefix}/attempts/`));
-      expect(attemptKeys).toHaveLength(1);
-      const attempt = ProcessingAttemptSchema.parse(
-        JSON.parse(byKey.get(attemptKeys[0]!)!.body),
-      );
-      expect(attempt.reading_id).toBe(fixture.id);
-      expect(attempt.url).toBe(fixture.manifest.url);
-      expect(attempt.url_hash).toBe(fixture.manifest.url_hash);
-      expect(attempt.key_prefix).toBe(fixture.keyPrefix);
+      const attempts = attemptLogsOf(fixture);
+      // Exactly the logs the fixture says it wrote, oldest first.
+      expect([...attempts].reverse().map((a) => a.id), fixture.name).toEqual(fixture.attemptIds);
+      for (const attempt of attempts) {
+        expect(attempt.reading_id).toBe(fixture.id);
+        expect(attempt.url).toBe(fixture.manifest.url);
+        expect(attempt.url_hash).toBe(fixture.manifest.url_hash);
+        expect(attempt.key_prefix).toBe(fixture.keyPrefix);
+      }
 
+      // The manifest's attempt is one of the logs, and agrees with it.
       const manifestAttempt = fixture.manifest.active_attempt ?? fixture.manifest.last_attempt;
-      expect(manifestAttempt?.id).toBe(attempt.id);
-      expect(manifestAttempt?.status).toBe(attempt.status);
-      expect(manifestAttempt?.stage).toBe(attempt.stage);
-      expect(manifestAttempt?.finished_at).toBe(attempt.finished_at);
+      const attempt = attempts.find((a) => a.id === manifestAttempt?.id);
+      expect(attempt, fixture.name).toBeDefined();
+      expect(manifestAttempt?.status).toBe(attempt!.status);
+      expect(manifestAttempt?.stage).toBe(attempt!.stage);
+      expect(manifestAttempt?.finished_at).toBe(attempt!.finished_at);
+
+      // A ready manifest names the attempt that made it ready, unless a
+      // later reprocess failed and was rolled forward over it.
+      if (fixture.manifest.status === "ready") {
+        const rolledForward = manifestAttempt?.trigger === "reprocess" && manifestAttempt.status === "failed";
+        expect(attempt!.status, fixture.name).toBe(rolledForward ? "failed" : "succeeded");
+        expect(attempts.some((a) => a.status === "succeeded"), fixture.name).toBe(true);
+      }
     }
+  });
+
+  it("represents the failed reprocess as a ready manifest whose last attempt is a failed reprocess", () => {
+    const fixture = byId.get("rd_FXREPROC01")!;
+    const manifest = fixture.manifest;
+    expect(fixture.name).toBe("reprocess-failed");
+    expect(manifest.status).toBe("ready");
+    // rollForward keeps the ready data and clears the in-flight state: the
+    // failure lives on the attempt, never on the manifest.
+    expect(manifest.title).toBe("The tab that never closes");
+    expect(manifest.tldr).toBeDefined();
+    expect(manifest.error).toBeUndefined();
+    expect(manifest.active_attempt).toBeUndefined();
+    expect(manifest.last_attempt).toMatchObject({
+      id: "at_FXREPROC02",
+      trigger: "reprocess",
+      status: "failed",
+      stage: "fetch_source",
+    });
+    expect(manifest.last_attempt?.error).toMatchObject({ code: "BadStatusError", stage: "fetch_source" });
+    expect(manifest.content_status).toBe("captured");
+
+    const [reprocess, submit] = attemptLogsOf(fixture);
+    expect(submit).toMatchObject({ id: "at_FXREPROC01", trigger: "submit", status: "succeeded" });
+    expect(reprocess).toMatchObject({ id: "at_FXREPROC02", trigger: "reprocess", status: "failed" });
+    expect(Date.parse(reprocess!.started_at)).toBeGreaterThan(Date.parse(submit!.finished_at!));
+    // The list row carries the same signal the library badges from.
+    const row = plan.listIndex.items.find((item) => item.id === fixture.id)!;
+    expect(row.status).toBe("ready");
+    expect(row.error).toBeUndefined();
+    expect(row.last_attempt).toEqual(manifest.last_attempt);
   });
 
   it("derives every terminal timestamp from the generated attempt so manifest, summary, and event log share one chronology", () => {
     for (const fixture of plan.fixtures) {
-      const attemptKey = plan.objects.find((k) =>
-        k.key.startsWith(`${fixture.keyPrefix}/attempts/`),
+      const attempts = attemptLogsOf(fixture);
+      // The attempt that produced the terminal state: the one the manifest
+      // names. A ready reading's data still dates from its succeeded attempt.
+      const attempt = attempts.find(
+        (a) => a.id === (fixture.manifest.active_attempt ?? fixture.manifest.last_attempt)?.id,
       )!;
-      const attempt = ProcessingAttemptSchema.parse(JSON.parse(attemptKey.body));
 
       if (fixture.manifest.status === "ready") {
-        expect(attempt.status).toBe("succeeded");
+        const succeeded = attempts.find((a) => a.status === "succeeded")!;
+        expect(succeeded).toBeDefined();
+        // rollForward restamps updated_at at the failed reprocess; the
+        // captured data and its dates are the succeeded attempt's.
         expect(fixture.manifest.updated_at).toBe(attempt.finished_at);
-        expect(fixture.manifest.fetched_at).toBe(attempt.finished_at);
+        expect(fixture.manifest.fetched_at).toBe(succeeded.finished_at);
         // similarity is measured when query_similar completes, mid-run. The
         // old-manifest fixture predates similarity and has none.
-        const querySimilarAt = attempt.events.find(
+        const querySimilarAt = succeeded.events.find(
           (e) => e.stage === "query_similar" && e.status === "succeeded",
         )?.at;
         if (fixture.manifest.similarity !== undefined) {
@@ -206,23 +259,26 @@ describe("local seed fixture pack", () => {
       }
       if (fixture.manifest.status === "failed") {
         expect(attempt.status).toBe("failed");
-        const failureAt = attempt.events.at(-1)?.at;
         expect(fixture.manifest.updated_at).toBe(attempt.finished_at);
         expect(fixture.manifest.error?.failed_at).toBe(attempt.finished_at);
-        expect(attempt.error?.failed_at).toBe(attempt.finished_at);
+      }
+      // Every failed attempt, on a failed manifest or rolled forward under a
+      // ready one, stamps its error at its own finish.
+      for (const failed of attempts.filter((a) => a.status === "failed")) {
+        expect(failed.error?.failed_at, failed.id).toBe(failed.finished_at);
         // Ordinary failures stamp finished_at at the failure event; the
         // dead-letter shape outlives its only event (retries exhausted later).
-        expect(Date.parse(attempt.finished_at!)).toBeGreaterThanOrEqual(
-          Date.parse(failureAt!),
+        expect(Date.parse(failed.finished_at!)).toBeGreaterThanOrEqual(
+          Date.parse(failed.events.at(-1)!.at),
         );
       }
       if (fixture.manifest.status === "pending") continue;
 
-      // Events never precede the attempt's own start.
-      for (const event of attempt.events) {
-        expect(Date.parse(event.at)).toBeGreaterThanOrEqual(
-          Date.parse(attempt.started_at),
-        );
+      // Events never precede their attempt's own start.
+      for (const log of attempts) {
+        for (const event of log.events) {
+          expect(Date.parse(event.at)).toBeGreaterThanOrEqual(Date.parse(log.started_at));
+        }
       }
     }
   });

@@ -6,7 +6,7 @@
 // Shared by the stub entrypoint (server renders) and the browser route
 // (e2e/test.ts), so both answer the same page. Both serve libraryItems: the
 // pack's rows plus generated older ones, so the library has more than one
-// page (#414) while the pack itself, and `seed:local`, keep their 18. Staleness is not applied: the
+// page (#414) while the pack itself, and `seed:local`, keep their 19. Staleness is not applied: the
 // suite pins the browser to the pack's clock, at which no row is stale.
 // Plain JavaScript because e2e/backend-stub.js is bundled for workerd without
 // the app's TypeScript config; the page size is the app's own constant.
@@ -15,7 +15,7 @@ import { LIBRARY_PAGE_SIZE } from "../src/library-search";
 
 export { LIBRARY_PAGE_SIZE };
 
-/** Generated rows past the pack's: with its 18, 42 rows over three pages. */
+/** Generated rows past the pack's: with its 19, 43 rows over three pages. */
 export const ARCHIVE_ROW_COUNT = 24;
 
 /**

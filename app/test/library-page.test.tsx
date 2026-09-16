@@ -199,6 +199,55 @@ describe("the first page", () => {
     expect(screen.getByRole("link", { name: title })).toBeInTheDocument();
   });
 
+  // Badges (#415): text only, so the card keeps its one link.
+  it("badges a pending row as processing, and a failed row with its failure's headline", async () => {
+    backendAnswers(200, {
+      readings: [
+        { id: "rd_p", url: "https://fieldnotes.example/slow", status: "pending" },
+        {
+          id: "rd_f",
+          url: "https://wall.example/report",
+          status: "failed",
+          error: { code: "BadStatusError", message: "bad response status 403", stage: "fetch_source" },
+        },
+      ],
+      limit: 20,
+      offset: 0,
+      has_more: false,
+    });
+    await openTab("/");
+
+    const [pending, failed] = cards();
+    expect(within(pending!).getByText("Processing")).toBeInTheDocument();
+    expect(within(failed!).getByText("Failed")).toBeInTheDocument();
+    expect(within(failed!).getByText("The page couldn't be fetched.")).toBeInTheDocument();
+    for (const card of [pending!, failed!]) {
+      expect(within(card).getAllByRole("link")).toHaveLength(1);
+      expect(within(card).queryByRole("button")).toBeNull();
+    }
+  });
+
+  it("badges a ready row whose last attempt is a failed reprocess, keeping its summary", async () => {
+    const row = pack.list_index.items.find((item) => item.id === "rd_FXREPROC01")!;
+    backendAnswers(200, { readings: [row], limit: 20, offset: 0, has_more: false });
+    await openTab("/");
+
+    const [card] = cards();
+    expect(within(card!).getByText("Reprocess failed")).toBeInTheDocument();
+    expect(within(card!).getByRole("link", { name: row.title })).toBeInTheDocument();
+    expect(within(card!).getByText(row.tldr!)).toBeInTheDocument();
+    expect(within(card!).getAllByRole("link")).toHaveLength(1);
+  });
+
+  it("shows a ready row's summary and no badge", async () => {
+    backendServesPack();
+    await openTab("/");
+
+    const attention = cards().find((card) => within(card).queryByRole("link", { name: "A quieter internet is a choice we can make" }))!;
+    expect(within(attention).getByText(/^The best tools for thought/)).toBeInTheDocument();
+    expect(attention.querySelector(".status-badge")).toBeNull();
+  });
+
   it("opens the reading from its card", async () => {
     backendServesPack();
     await openTab("/");

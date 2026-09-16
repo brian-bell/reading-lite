@@ -94,11 +94,15 @@ return path is per origin.
   down to a 20-row page, the first page written without it) but keeps the
   URL's own string, so no spelling redirects. Previous and Next are links to
   the neighbouring page; an offset past the end offers the first page. The
-  browser-evidence stub adds 24 generated rows past the fixture pack's 18 for
+  browser-evidence stub adds 24 generated rows past the fixture pack's 19 for
   pages two and three (`e2e/library-page.js`); the pack is unchanged.
-  Cards are plain for now: a title link (the URL when there is no title)
-  stretched over the card. Filters, badges, and the matrix's common states are
-  later slices of #404.
+  Each card is a title link (the URL when there is no title) stretched over
+  the card, the summary lead clamped at three lines, and the hostname; a
+  reading that is not simply ready carries a text badge above the title
+  (`src/library-card.ts`, #415): "Processing" for pending rows and running
+  attempts, "Failed" with the failure category's headline, and "Reprocess
+  failed" on a ready row whose last attempt was a failed reprocess. Filters
+  and the matrix's common states are later slices of #404.
 - **Reading detail.** `/readings/:id` reads the reading during the server
   render through `BACKEND` (`src/reading-query.ts`, the same isomorphic shape as
   identity), so it is dehydrated into the page and the browser does not ask
