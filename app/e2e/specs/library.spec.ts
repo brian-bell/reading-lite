@@ -1,8 +1,10 @@
-// The library in a real browser (#413, #414). The component tests prove what
-// renders; these prove what only a browser can: the page read on the server is
-// not asked for again after hydration, a client-side visit or page change asks
-// the same-origin API once and pinned to the account, a reload keeps the page,
-// and each card is one target from the pointer and the keyboard.
+// The library in a real browser (#413, #414, #415). The component tests prove
+// what renders; these prove what only a browser can: the page read on the
+// server is not asked for again after hydration, a client-side visit or page
+// change asks the same-origin API once and pinned to the account, a reload
+// keeps the page, each card is one target from the pointer and the keyboard
+// with or without a badge, and at phone width a long title wraps whole while
+// the summary clamps at three lines.
 //
 // Requests only, so one viewport and theme; the matrix screenshots the page
 // in every project. It uses Playwright's own `test` for the request tests, as
@@ -11,6 +13,8 @@
 import { expect, test as base, type Page } from "@playwright/test";
 import pack from "../fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "../harness";
+import { libraryBadge } from "../../src/library-card";
+import { LibraryRowSchema } from "../../src/library";
 import { LIBRARY_PAGE_SIZE, libraryItems, libraryPage } from "../library-page.js";
 import { serveLibraryInBrowser, serveReadingsInBrowser, signIn } from "../test";
 
@@ -25,6 +29,14 @@ const FIRST_PAGE = libraryPage(ITEMS).readings;
 const SECOND_PAGE = libraryPage(ITEMS, { offset: LIBRARY_PAGE_SIZE }).readings;
 const TITLED = FIRST_PAGE.find((row): row is typeof row & { title: string } => "title" in row && !!row.title)!;
 const READING = { path: "/readings/rd_FXATTENT01", heading: "A quieter internet is a choice we can make" };
+const LONG_TITLE = FIRST_PAGE.find((row) => row.id === "rd_FXMAXNAME1")!;
+const REPROCESS_FAILED = FIRST_PAGE.find((row) => row.id === "rd_FXREPROC01")!;
+const PENDING = FIRST_PAGE.find((row) => row.id === "rd_FXPENDNG01")!;
+const FAILED = FIRST_PAGE.find((row) => row.id === "rd_FXERR00001")!;
+/** The page's badged rows, by the same rule the page applies. */
+const BADGED = FIRST_PAGE.filter((row) => libraryBadge(LibraryRowSchema.parse(row)) !== undefined);
+/** A lead long enough to overflow three lines at 390 px by a clear margin (200 characters). */
+const LONG_LEAD = FIRST_PAGE.find((row) => row.id === "rd_FXATTENT01")!;
 
 interface Recorded {
   lists: string[];
@@ -105,10 +117,70 @@ test("the whole card opens its reading", async ({ page, baseURL }) => {
   await serveReadingsInBrowser(page);
   const card = readings(page).getByRole("listitem").filter({ hasText: TITLED.title });
   // Away from the title: the stretched link covers the card's own padding.
+  // A raw pointer click does not scroll, and the card may be below the fold.
+  await card.scrollIntoViewIfNeeded();
   const box = (await card.boundingBox())!;
   await page.mouse.click(box.x + box.width - 8, box.y + box.height - 6);
   await expect(page).toHaveURL(new RegExp(`/readings/${TITLED.id}$`));
   await expect(page.getByRole("heading", { level: 1, name: TITLED.title })).toBeVisible();
+});
+
+test("badges the pending, failed, and reprocess-failed rows, and only those", async ({ page, baseURL }) => {
+  await openLibrary(page, baseURL!);
+  const items = readings(page).getByRole("listitem");
+  const pending = items.filter({ hasText: PENDING.url });
+  await expect(pending.locator(".status-badge")).toHaveText("Processing");
+  const failed = items.filter({ hasText: FAILED.url });
+  await expect(failed.locator(".status-badge")).toHaveText("Failed");
+  await expect(failed.getByText("The page couldn't be fetched.")).toBeVisible();
+  const reprocessFailed = items.filter({ hasText: REPROCESS_FAILED.title! });
+  await expect(reprocessFailed.locator(".status-badge")).toHaveText("Reprocess failed");
+  await expect(reprocessFailed.getByText(REPROCESS_FAILED.tldr!)).toBeVisible();
+  // Every other row on the page is plainly ready.
+  expect(BADGED.length).toBeGreaterThan(2);
+  await expect(readings(page).locator(".status-badge")).toHaveCount(BADGED.length);
+});
+
+test("a badge does not break the card's target", async ({ page, baseURL }) => {
+  await openLibrary(page, baseURL!);
+  await serveReadingsInBrowser(page);
+  const card = readings(page).getByRole("listitem").filter({ hasText: REPROCESS_FAILED.title! });
+  // The badge is text under the stretched link, so a pointer click on it
+  // reaches the link. A raw click, since locator.click would report the link
+  // intercepting the badge, which is the point.
+  const badge = card.locator(".status-badge");
+  await badge.scrollIntoViewIfNeeded();
+  const box = (await badge.boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page).toHaveURL(new RegExp(`/readings/${REPROCESS_FAILED.id}$`));
+  await expect(page.getByRole("heading", { level: 1, name: REPROCESS_FAILED.title })).toBeVisible();
+});
+
+test("at phone width a long title wraps whole and a summary clamps at three lines", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openLibrary(page, baseURL!);
+  const card = readings(page).getByRole("listitem").filter({ has: page.getByRole("link", { name: LONG_TITLE.title }) });
+  const title = card.getByRole("heading", { level: 2 });
+  await expect(title).toHaveText(LONG_TITLE.title!);
+  const titleBox = await title.evaluate((el) => ({
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    lines: Math.round(el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).lineHeight)),
+  }));
+  expect(titleBox.scrollWidth, "the title never overflows its card").toBeLessThanOrEqual(titleBox.clientWidth);
+  expect(titleBox.lines, "130 characters wrap onto several lines at 390 px").toBeGreaterThan(2);
+
+  const summary = readings(page)
+    .getByRole("listitem")
+    .filter({ has: page.getByRole("link", { name: LONG_LEAD.title }) })
+    .locator(".library-card-summary");
+  const summaryBox = await summary.evaluate((el) => ({
+    clientHeight: el.clientHeight,
+    scrollHeight: el.scrollHeight,
+    lineHeight: parseFloat(getComputedStyle(el).lineHeight),
+  }));
+  expect(summaryBox.scrollHeight, "the lead is longer than three lines here").toBeGreaterThan(summaryBox.clientHeight);
+  expect(Math.round(summaryBox.clientHeight / summaryBox.lineHeight)).toBe(3);
 });
 
 test("a card opens from the keyboard", async ({ page, baseURL }) => {

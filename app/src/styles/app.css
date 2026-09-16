@@ -386,6 +386,38 @@ textarea {
   overflow-wrap: anywhere;
 }
 
+/* The badge and, for a failure, its headline, above the title (#415). The
+   headline wraps under the badge on a phone rather than pushing it off the
+   card. */
+.library-card-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.library-card-error {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* The summary lead, clamped at three lines (design spec, Cards). The title
+   above it is never clamped. */
+.library-card-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  margin: 0 0 var(--space-2);
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .library-message {
   min-height: 2rem;
 }
@@ -1275,8 +1307,10 @@ textarea {
   color: var(--danger);
 }
 
-/* Text labels accompany the status colours (design spec, Metadata and state badges). */
-.relationship-status {
+/* Text labels accompany the status colours (design spec, Metadata and state
+   badges): the badge on a relationship target and on a library card (#415)
+   are the same badge. A failure of either kind takes the danger ink. */
+.status-badge {
   padding: 2px 6px;
   border-radius: 4px;
   background: var(--soft);
@@ -1288,7 +1322,8 @@ textarea {
   white-space: nowrap;
 }
 
-.relationship-status-failed {
+.status-badge-failed,
+.status-badge-reprocess-failed {
   color: var(--danger);
 }
 

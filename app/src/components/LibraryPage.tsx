@@ -4,6 +4,7 @@ import { useRef, type FocusEvent } from "react";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryPage as LibraryPageBody, LibraryRow } from "../library";
+import { libraryBadge } from "../library-card";
 import { libraryQueryOptions } from "../library-query";
 import {
   LIBRARY_PAGE_SIZE,
@@ -25,10 +26,9 @@ import { SignInPage } from "./SignInPage";
 // deep link renders the same page on the server.
 //
 // The heading stays "Library" in every state, so focus after a route change
-// lands on the same page whatever the rows turned out to be. Status badges,
-// tags, filters, and the matrix's common states are later slices of #404;
-// until they land, anything but a page of rows is one plain sentence under the
-// heading.
+// lands on the same page whatever the rows turned out to be. Tags, filters,
+// and the matrix's common states are later slices of #404; until they land,
+// anything but a page of rows is one plain sentence under the heading.
 
 /** `/`: the sign-in form in place when signed out, the library when signed in. */
 export function LibraryHome({ search }: { search: LibrarySearch }) {
@@ -170,19 +170,30 @@ function PastTheEnd({ search, offset }: { search: LibrarySearch; offset: number 
 }
 
 /**
- * A plain card: the title link is stretched over the whole card, so the card
- * is one target without nesting anything inside a link. A reading with no
- * title yet (pending, failed) is named by its URL. Long titles wrap and are
- * never truncated.
+ * One card: the state badge when the reading is not simply ready (#415), the
+ * title, the summary lead clamped at three lines (the stylesheet's job), and
+ * the hostname. The title link is stretched over the whole card, so the card
+ * is one target without nesting anything inside a link; the badge and the
+ * failure's headline are plain text, so they add nothing the pointer or the
+ * keyboard could land on instead. A reading with no title yet (pending,
+ * failed) is named by its URL. Long titles wrap and are never truncated.
  */
 function LibraryCard({ row }: { row: LibraryRow }) {
+  const badge = libraryBadge(row);
   return (
     <li className="library-card">
+      {badge ? (
+        <p className="library-card-status">
+          <span className={`status-badge status-badge-${badge.kind}`}>{badge.label}</span>
+          {badge.kind === "failed" ? <span className="library-card-error">{badge.message}</span> : null}
+        </p>
+      ) : null}
       <h2 className="library-card-title">
         <Link to="/readings/$id" params={{ id: row.id }}>
           {row.title ?? row.url}
         </Link>
       </h2>
+      {row.tldr ? <p className="library-card-summary">{row.tldr}</p> : null}
       <p className="library-card-meta">{hostnameOf(row.url)}</p>
     </li>
   );

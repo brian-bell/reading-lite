@@ -32,17 +32,22 @@ export const EVIDENCE_CASES: EvidenceCase[] = [
   // heading is the form's.
   { name: "library-signed-out", path: "/", state: "signed-out", heading: "Sign in" },
   // Signed in, the first page of the pack's list index, rendered on the server
-  // (#413).
+  // (#413). The pack's pending, failed, reprocess-failed, and long-title rows
+  // are all on it (#415), so this one page is the evidence for the badges, the
+  // wrapped title, and the clamped summaries in every viewport and theme.
   {
     name: "library-signed-in",
     path: "/",
     state: "signed-in",
     heading: "Library",
     prepare: async (page) => {
-      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
+      const list = page.getByRole("list", { name: "Readings" });
+      await expect(list.getByRole("listitem").first()).toBeVisible();
+      await expect(list.getByText("Reprocess failed")).toBeVisible();
+      await expect(list.getByRole("link", { name: /^What we lose when every tool/ })).toBeVisible();
     },
   },
-  // Pages (#414): with the generated rows past the pack's 18 there are 42 rows,
+  // Pages (#414): with the generated rows past the pack's 19 there are 43 rows,
   // so page 2 is a middle page, page 3 the last (no Next), and page 6 is past
   // the end. Each is a deep link, rendered on the server.
   {
