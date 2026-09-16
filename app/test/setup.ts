@@ -14,3 +14,18 @@ for (const name of ["localStorage", "sessionStorage"] as const) {
 afterEach(() => {
   cleanup();
 });
+
+// jsdom has HTMLDialogElement but no modal behaviour. The stub opens and
+// closes it and fires `close`, which is all a component test can observe;
+// Escape, the focus trap, and inertness are the browser's, and are owned by
+// the Playwright suite (e2e/specs/reprocess.spec.ts).
+if (typeof HTMLDialogElement !== "undefined" && typeof HTMLDialogElement.prototype.showModal !== "function") {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  };
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    if (!this.hasAttribute("open")) return;
+    this.removeAttribute("open");
+    this.dispatchEvent(new Event("close"));
+  };
+}
