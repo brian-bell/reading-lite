@@ -133,6 +133,25 @@ export function serveSaveInBrowser(page: Page, answer: { status: number; json: u
 }
 
 /**
+ * Answers `POST /api/readings/:id/reprocess` in the browser (#410) and records
+ * each one, so a spec can read the body the page sent — never `force`.
+ * `answer` is called per request, so a spec can refuse the first and accept
+ * the next.
+ */
+export function serveReprocessInBrowser(
+  page: Page,
+  answer: (id: string) => { status: number; json: unknown },
+): Request[] {
+  const reprocesses: Request[] = [];
+  void page.route("**/api/readings/*/reprocess", async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    reprocesses.push(route.request());
+    await route.fulfill(answer(decodeURIComponent(segments.at(-2) ?? "")));
+  });
+  return reprocesses;
+}
+
+/**
  * Serves `GET /api/readings/:id/content` in the browser from the pack's
  * extracted Markdown (#372). The Source view fetches it on demand and never
  * through the server render, so the stub entrypoint has no part in it. An id
