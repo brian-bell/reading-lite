@@ -4,7 +4,7 @@
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
-// missing reading, sign-in, save, one trail hop, Source, Details): CI runs
+// missing reading, sign-in, save, one trail hop, Source, Details, account sessions): CI runs
 // those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
@@ -21,6 +21,7 @@ import {
   serveReadingsInBrowser,
   serveReprocessInBrowser,
   serveSaveInBrowser,
+  serveSessionsInBrowser,
   serveSourceInBrowser,
 } from "./test";
 
@@ -385,6 +386,79 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     }),
   },
   { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
+
+  // Account sessions (#340.1). The list is fetched in the browser, so every
+  // signed-in case stubs GET /api/auth/sessions; without that the frontend
+  // Worker answers /api/* with 404.
+  { name: "account-signed-out", path: "/account/security", state: "signed-out", heading: "Sign in" },
+  {
+    name: "account-sessions",
+    essential: true,
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("Firefox (this device)")).toBeVisible();
+      await expect(page.getByRole("button", { name: "Revoke this device" })).toBeVisible();
+      await expect(page.getByRole("status")).toContainText("10-session limit");
+    },
+  },
+  {
+    name: "account-forbidden",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "You don't have access to this.",
+    stub: async (page) => {
+      await serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
+    },
+  },
+  {
+    name: "account-account-changed",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "This tab is signed in to a different account than the page expects.",
+    stub: async (page) => {
+      await serveSessionsInBrowser(page, {
+        status: 412,
+        json: { error: "expected tenant mismatch", acting_tenant: "usr_bbbbbbbb" },
+      });
+    },
+  },
+  {
+    name: "account-server-error",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Something went wrong on our side.",
+    stub: async (page) => {
+      await serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("storage unavailable")).toBeVisible();
+    },
+  },
+  {
+    name: "account-offline",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("Firefox (this device)")).toBeVisible();
+      // Drop the sessions stub so the write hits the network: Playwright's
+      // route would fulfill even while `setOffline` is on, and a 200 would
+      // sign the reader out instead of showing the notice.
+      await page.unroute("**/api/auth/sessions**");
+      await page.context().setOffline(true);
+      await page.getByRole("button", { name: "Revoke", exact: true }).click();
+      await expect(page.locator(".offline-notice-text")).toContainText("You're offline.");
+      await page.locator("#main h1").focus();
+    },
+  },
 
   // Reading detail (#370). Each heading is the page's own <h1>: the title for a
   // reading that has one, the URL for a failed manifest (which never got one),

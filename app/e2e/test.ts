@@ -216,6 +216,87 @@ export async function serveFilesInBrowser(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Serves `/api/auth/sessions` in the browser (#340.1). Account pages fetch
+ * the list on demand and never through the server render, so the stub
+ * entrypoint has no part in it. Writes are recorded so a spec can prove CSRF
+ * and that cancel sent nothing.
+ */
+export const E2E_SESSIONS = {
+  sessions: [
+    {
+      id: "ses_this_device",
+      current: true,
+      created_at_ms: 1,
+      authenticated_at_ms: 1,
+      last_seen_at_ms: 2,
+      idle_expires_at_ms: 3,
+      absolute_expires_at_ms: 4,
+      revoked_at_ms: null,
+      revocation_reason: null,
+      user_agent_label: "Firefox",
+      usable: true,
+    },
+    {
+      id: "ses_phone",
+      current: false,
+      created_at_ms: 1,
+      authenticated_at_ms: 1,
+      last_seen_at_ms: 2,
+      idle_expires_at_ms: 3,
+      absolute_expires_at_ms: 4,
+      revoked_at_ms: null,
+      revocation_reason: null,
+      user_agent_label: "Phone",
+      usable: true,
+    },
+    {
+      id: "ses_expired",
+      current: false,
+      created_at_ms: 1,
+      authenticated_at_ms: 1,
+      last_seen_at_ms: 1,
+      idle_expires_at_ms: 1,
+      absolute_expires_at_ms: 4,
+      revoked_at_ms: null,
+      revocation_reason: null,
+      user_agent_label: "Old laptop",
+      usable: false,
+    },
+  ],
+  session_cap_warning: "This account is at the 10-session limit.",
+};
+
+export async function serveSessionsInBrowser(
+  page: Page,
+  answer: { status?: number; json?: unknown } = {},
+): Promise<{ revokeAll: Request[] }> {
+  const revokeAll: Request[] = [];
+  const listed = answer.json ?? E2E_SESSIONS;
+  const status = answer.status ?? 200;
+  // Await the route: account pages fetch GET /api/auth/sessions on mount, so
+  // a fire-and-forget install can miss the first request (Worker 404).
+  await page.route("**/api/auth/sessions**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/auth/sessions") {
+      await route.fulfill({ status, json: listed });
+      return;
+    }
+    if (request.method() === "POST" && path === "/api/auth/sessions/revoke-all") {
+      revokeAll.push(request);
+      await route.fulfill({ status: 200, json: { ok: true } });
+      return;
+    }
+    if (request.method() === "DELETE" && path.startsWith("/api/auth/sessions/")) {
+      await route.fulfill({ status: 200, json: { ok: true } });
+      return;
+    }
+    await route.fallback();
+  });
+  return { revokeAll };
+}
+
 export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {
   await context.addCookies([{ name: sessionCookieName(baseURL), value: session, url: baseURL }]);
 }

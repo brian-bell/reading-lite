@@ -84,6 +84,19 @@ return path is per origin.
   `reading-lite.bearerToken` entry is removed at boot
   (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
   parameters stay plain strings (`src/search.ts`).
+- **Account.** `/account/security` lists browser sessions from
+  `GET /api/auth/sessions` in the browser (ADR 0003: account pages are not
+  server-rendered). Revoke one is `DELETE /api/auth/sessions/:id`; revoke-all
+  is `POST /api/auth/sessions/revoke-all` after a confirm dialog. Revoking this
+  device or every session drops the account without calling logout — the
+  backend already expired the cookie — and the signed-in guard sends the reader
+  to sign in. 403 and 412 are the shared state pages (403 offers Back to
+  library), a 401 is the shell's expired-session page, offline is a notice over
+  whatever was loaded, and a 5xx is the retryable server error. The list and
+  writes are pinned with `x-expected-tenant` like the library's reads. The
+  backend enforces that pin on `/api/auth/sessions…` (`requireExpectedTenant`),
+  so a mid-page cookie switch 412s the list instead of showing the other
+  account's sessions.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit
@@ -345,11 +358,12 @@ CI runs the essential scope, `npm run test:browser:ci` (`e2e/scope.ts`): the
 cases marked `essential` in `e2e/coverage.ts` — the major states of each route:
 the library signed out, signed in, searched, empty, session-ended, and failed;
 sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
-Source; and open Details — in the `phone-dark` and `desktop-light` projects, so
-both viewports and both themes are still covered, plus the behaviour specs and
-`checks`. Reduced motion and zoom, the other matrix projects, and the remaining
-states run only in the full `npm run test:browser`, which is the local
-verification before a frontend change ships.
+Source; open Details; and the account sessions list — in the `phone-dark` and
+`desktop-light` projects, so both viewports and both themes are still covered,
+plus the behaviour specs and `checks`. Reduced motion and zoom, the other
+matrix projects, and the remaining states run only in the full
+`npm run test:browser`, which is the local verification before a frontend
+change ships.
 
 Extending it:
 
