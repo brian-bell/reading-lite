@@ -267,15 +267,17 @@ export const E2E_SESSIONS = {
   session_cap_warning: "This account is at the 10-session limit.",
 };
 
-export function serveSessionsInBrowser(
+export async function serveSessionsInBrowser(
   page: Page,
   answer: { status?: number; json?: unknown } = {},
-): { deleted: Request[]; revokeAll: Request[] } {
+): Promise<{ deleted: Request[]; revokeAll: Request[] }> {
   const deleted: Request[] = [];
   const revokeAll: Request[] = [];
   const listed = answer.json ?? E2E_SESSIONS;
   const status = answer.status ?? 200;
-  void page.route("**/api/auth/sessions**", async (route) => {
+  // Await the route: account pages fetch GET /api/auth/sessions on mount, so
+  // a fire-and-forget install can miss the first request (Worker 404).
+  await page.route("**/api/auth/sessions**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (request.method() === "GET" && path === "/api/auth/sessions") {

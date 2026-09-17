@@ -16,7 +16,7 @@ const test = base.extend({
 
 async function openAccount(page: Page, baseURL: string) {
   await signIn(page.context(), baseURL);
-  const writes = serveSessionsInBrowser(page);
+  const writes = await serveSessionsInBrowser(page);
   await page.goto("/account/security");
   await expect(page.getByRole("heading", { level: 1, name: "Account" })).toBeVisible();
   await expect(page.getByText("Firefox (this device)")).toBeVisible();

@@ -398,7 +398,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Account",
     stub: async (page) => {
-      serveSessionsInBrowser(page);
+      await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
@@ -412,7 +412,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "You don't have access to this.",
     stub: async (page) => {
-      serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
+      await serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
     },
   },
   {
@@ -421,7 +421,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "This tab is signed in to a different account than the page expects.",
     stub: async (page) => {
-      serveSessionsInBrowser(page, {
+      await serveSessionsInBrowser(page, {
         status: 412,
         json: { error: "expected tenant mismatch", acting_tenant: "usr_bbbbbbbb" },
       });
@@ -433,7 +433,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Something went wrong on our side.",
     stub: async (page) => {
-      serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
+      await serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
     },
     prepare: async (page) => {
       await expect(page.getByText("storage unavailable")).toBeVisible();
@@ -445,7 +445,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Account",
     stub: async (page) => {
-      serveSessionsInBrowser(page);
+      await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
