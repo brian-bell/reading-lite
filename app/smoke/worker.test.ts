@@ -247,6 +247,17 @@ describe("signed-in identity", () => {
     expect(html).toContain('name="url"');
   });
 
+  it("server-renders the account page's frame without the sessions list", async () => {
+    const response = await request("/account/security", { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading("Account"));
+    expect(html).toContain("Revoke all sessions");
+    expect(html).toContain('aria-busy="true"');
+    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["sessions"'))).toEqual([]);
+  });
+
   // The common states on the library (#416), in the HTML before any script
   // runs: the state page with its own heading, the account menu still there.
   // 403 and 412 are values and travel with the page.

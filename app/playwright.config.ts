@@ -118,6 +118,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // Account sessions (#340.1): the confirm dialog's focus and Escape, and
+    // revoking this device / all sessions sending the reader to sign in. The
+    // component tests own the list and the common states.
+    name: "account",
+    testMatch: /account\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,

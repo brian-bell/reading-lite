@@ -25,6 +25,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "save",
   "reading-refresh",
   "reprocess",
+  "account",
 ]);
 
 export function inScope(project: { name?: string }): boolean {

@@ -1,17 +1,11 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { PageHeading } from "../../components/PageHeading";
+import { AccountPage } from "../../components/AccountPage";
 
-// Placeholder until the account page lands (Phase 5, #340). The route exists
-// now for the account menu link and the step-up return path.
+// Account / security (#340.1, Phase 5 of #340). Sessions list, revoke one,
+// and revoke-all live here; email, tokens, notifications, and deletion join
+// later on this same route. Under the signed-in guard: a link from the
+// account menu or a step-up return signs the reader in and lands here.
 export const Route = createFileRoute("/_authed/account/security")({
   head: () => ({ meta: [{ title: "Account · Reading Lite" }] }),
   component: AccountPage,
 });
-
-function AccountPage() {
-  return (
-    <div className="page">
-      <PageHeading>Account</PageHeading>
-    </div>
-  );
-}

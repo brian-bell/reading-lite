@@ -9,6 +9,7 @@ import { redirectSignedInFromLogin, requireSignedIn } from "../src/auth/guards";
 import {
   completeSignIn,
   createQueryClient,
+  dropSignedInAccount,
   sessionEndedQueryKey,
   signOut,
 } from "../src/auth/session";
@@ -205,6 +206,26 @@ describe("completeSignIn", () => {
       vi.fn(async () => Response.json({ error: "unauthorized" }, { status: 401 })),
     );
     await expect(completeSignIn(createQueryClient(() => "/"))).resolves.toBeNull();
+  });
+});
+
+describe("dropSignedInAccount", () => {
+  it("forgets the account without calling logout", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = createQueryClient(() => "/account/security");
+    queryClient.setQueryData(whoamiQueryKey, identity);
+    queryClient.setQueryData(["sessions", identity.user_id], { sessions: [] });
+    queryClient.setQueryData(["reading", "rd_ONE"], { id: "rd_ONE" });
+    queryClient.setQueryData(sessionEndedQueryKey, "/account/security");
+
+    dropSignedInAccount(queryClient);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
+    expect(queryClient.getQueryData(["sessions", identity.user_id])).toBeUndefined();
+    expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
+    expect(queryClient.getQueryData(sessionEndedQueryKey)).toBeNull();
   });
 });
 

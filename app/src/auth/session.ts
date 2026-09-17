@@ -63,6 +63,16 @@ function forgetAccount(queryClient: QueryClient): void {
   queryClient.setQueryData(sessionEndedQueryKey, null);
 }
 
+/**
+ * The session is already gone (revoked this device, or every session), so
+ * drop the account without calling logout. The caller invalidates the router
+ * so a guarded page sends the reader to sign in.
+ */
+export function dropSignedInAccount(queryClient: QueryClient): void {
+  forgetAccount(queryClient);
+  queryClient.setQueryData(whoamiQueryKey, null);
+}
+
 export type SignOutResult = "signed-out" | "still-signed-in" | "account-changed";
 
 /**
@@ -99,8 +109,7 @@ export async function signOut(queryClient: QueryClient): Promise<SignOutResult> 
       return "still-signed-in";
     }
   }
-  forgetAccount(queryClient);
-  queryClient.setQueryData(whoamiQueryKey, null);
+  dropSignedInAccount(queryClient);
   return "signed-out";
 }
 
