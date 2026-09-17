@@ -283,7 +283,10 @@ describe("the account page", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your session ended."));
     expect(router.state.location.href).toBe("/account/security");
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login?next=%2Faccount%2Fsecurity");
+    expect(within(screen.getByRole("main")).getByRole("link", { name: "Sign in" })).toHaveAttribute(
+      "href",
+      "/login?next=%2Faccount%2Fsecurity",
+    );
   });
 
   it("shows permission denied without ending the session", async () => {
