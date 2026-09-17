@@ -825,11 +825,23 @@ async function markFailed(
   // resolves failed ownership by reprocessing this same reading id.
 }
 
-async function sourceDateFromPrior(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
+/** Carry a stored publication date onto the ready draft. Exported so tests
+ *  can pin fail-closed read errors without running the full process pipeline. */
+export async function sourceDateFromPrior(
+  reader: Pick<ReadingStore, "readManifest">,
+  args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
 ): Promise<string | undefined> {
-  const current = await reader.readManifest(args.keyPrefix).catch(() => null);
+  let current: Manifest | null;
+  try {
+    current = await reader.readManifest(args.keyPrefix);
+  } catch (error) {
+    // A throw is not "no stored date". Swallowing it would let readyManifest
+    // omit source_date and commit ready, permanently dropping a prior date
+    // on failed-prior reprocess / import-over (no preserveReadyManifest).
+    const preserved = args.preserveReadyManifest?.source_date;
+    if (preserved !== undefined) return preserved;
+    throw error;
+  }
   return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }
 
