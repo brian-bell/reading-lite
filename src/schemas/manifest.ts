@@ -211,6 +211,10 @@ export const ManifestSchema = z
     content_sha256: sha256Hex(),
     enrichment_degradation: EnrichmentDegradationSchema.optional(),
 
+    // Publication date of the source itself (article, video, etc.), not when
+    // we ingested it. Optional because it postdates the corpus, many sources
+    // have none, and extraction of the date is a later slice.
+    source_date: z.string().date().optional(),
     fetched_at: z.string().datetime().optional(),
     created_at: z.string().datetime(),
     updated_at: z.string().datetime(),

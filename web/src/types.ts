@@ -168,6 +168,9 @@ export interface Manifest {
   content_sha256: string;
   enrichment_degradation?: EnrichmentDegradation;
 
+  // Publication date of the source (YYYY-MM-DD), not ingest time. Optional:
+  // older readings and sources without a date omit it.
+  source_date?: string;
   fetched_at?: string;
   created_at: string;
   updated_at: string;
@@ -205,6 +208,7 @@ export interface ListReading {
   keywords?: string[];
   novelty_verdict?: NoveltyVerdict;
   similarity?: SimilaritySnapshot;
+  source_date?: string;
   created_at: string;
   updated_at?: string;
   error?: ManifestError;

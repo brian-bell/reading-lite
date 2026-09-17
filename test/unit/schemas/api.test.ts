@@ -266,11 +266,21 @@ describe("ListIndexItemSchema", () => {
       tldr: "Short",
       tags: ["ai", "infra"],
       novelty_verdict: "novel",
+      source_date: "2024-03-15",
       updated_at: "2026-04-26T20:00:05.000Z",
     });
     expect(parsed.tags).toEqual(["ai", "infra"]);
     expect(parsed.novelty_verdict).toBe("novel");
+    expect(parsed.source_date).toBe("2024-03-15");
     expect(parsed.updated_at).toBe("2026-04-26T20:00:05.000Z");
+  });
+
+  it("omits source_date when absent and rejects a non-date", () => {
+    expect(ListIndexItemSchema.parse(baseItem).source_date).toBeUndefined();
+    expect("source_date" in ListIndexItemSchema.parse(baseItem)).toBe(false);
+    expect(() =>
+      ListIndexItemSchema.parse({ ...baseItem, source_date: "2024-03-15T00:00:00.000Z" }),
+    ).toThrow();
   });
 
   it("accepts attempt summaries", () => {

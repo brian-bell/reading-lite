@@ -63,6 +63,7 @@ export function manifestToIndexItem(
   if (m.keywords !== undefined) item.keywords = m.keywords;
   if (m.novelty_verdict !== undefined) item.novelty_verdict = m.novelty_verdict;
   if (m.similarity !== undefined) item.similarity = m.similarity;
+  if (m.source_date !== undefined) item.source_date = m.source_date;
   if (m.error !== undefined) item.error = m.error;
   if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
   if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;

@@ -63,6 +63,7 @@ describe("SPA type mirror — Manifest", () => {
       content_status: "captured",
       content_bytes: 1,
       content_sha256: "0".repeat(64),
+      source_date: "2024-03-15",
       created_at: "2026-04-26T20:00:00.000Z",
       updated_at: "2026-04-26T20:00:00.000Z",
     };
@@ -200,6 +201,7 @@ describe("SPA type mirror — ListReadingsResponse", () => {
       keywords: ["soft skills"],
       status: "ready",
       novelty_verdict: "novel",
+      source_date: "2024-03-15",
       created_at: "2026-04-26T20:00:00.000Z",
       updated_at: "2026-04-26T20:00:00.000Z",
     };
