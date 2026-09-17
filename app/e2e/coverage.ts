@@ -449,9 +449,13 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
+      // Drop the sessions stub so the write hits the network: Playwright's
+      // route would fulfill even while `setOffline` is on, and a 200 would
+      // sign the reader out instead of showing the notice.
+      await page.unroute("**/api/auth/sessions**");
       await page.context().setOffline(true);
-      await page.getByRole("button", { name: "Revoke" }).click();
-      await expect(page.getByRole("status")).toContainText("You're offline.");
+      await page.getByRole("button", { name: "Revoke", exact: true }).click();
+      await expect(page.locator(".offline-notice-text")).toContainText("You're offline.");
       await page.locator("#main h1").focus();
     },
   },
