@@ -8,9 +8,32 @@ the terminal manifest, list row, and vector.
 Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
 module map and write-order details; [operations](docs/operations.md) contains
-deployment, deletion, and corpus procedures. Tasks are tracked in
-[GitHub issues](https://github.com/brian-bell/reading-lite/issues).
-`CLAUDE.md` must remain a symlink to this file.
+deployment, deletion, and corpus procedures. Work is tracked in beads (see
+[Work tracking](#work-tracking)). `CLAUDE.md` must remain a symlink to this file.
+
+## Work tracking
+
+Beads (`bd`) is the only tracker; do not open GitHub issues. Claude, Codex, and
+Cursor hooks inject `bd prime` at session start and around compaction; run it
+yourself when that context is missing. The [beads skill](.agents/skills/beads/SKILL.md)
+covers the workflow.
+
+```sh
+bd ready                        # unblocked work
+bd show <id>                    # details, parent, blockers, comments
+bd update <id> --claim          # take it before starting
+bd create "Title" --type task --priority 2 --parent <id>
+bd dep add <id> --blocked-by <other>
+bd close <id> --reason "..."
+bd dolt push                    # publish to refs/dolt/data on origin
+```
+
+Beads imported from GitHub are `reading-lite-gh<N>` and link back to issue
+`#<N>`; historical `#<N>` references in docs and commits mean that bead. Keep
+durable notes in `bd remember` and search them with `bd memories`; Claude auto
+memory is disabled for this repo. A fresh clone runs `bd bootstrap` to clone
+the database, and `npm ci` points `core.hooksPath` at `.beads/hooks` when `bd`
+is installed.
 
 ## Commands
 

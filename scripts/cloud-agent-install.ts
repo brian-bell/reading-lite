@@ -16,6 +16,7 @@ export interface CloudAgentInstallDeps {
 }
 
 const DEFAULT_FOUNDER_EMAIL = "bellbm@gmail.com";
+export const BEADS_VERSION = "1.3.0";
 
 export function resolveFounderEmail(env: Record<string, string | undefined>): string {
   return env.FOUNDER_EMAIL?.trim() || DEFAULT_FOUNDER_EMAIL;
@@ -35,6 +36,32 @@ export function renderStgVars(env: Record<string, string | undefined>): string |
   ].join("\n");
 }
 
+// Beads is the work tracker. Its database clones from refs/dolt/data on the
+// git remote. A failure here must not block the rest of the install.
+async function setUpBeads(
+  run: (command: string, args: string[]) => Promise<number>,
+  log: (line: string) => void,
+): Promise<void> {
+  const exitCode = async (command: string, args: string[]) => {
+    try {
+      return await run(command, args);
+    } catch {
+      return 127;
+    }
+  };
+  if ((await exitCode("bd", ["version"])) !== 0) {
+    if ((await exitCode("npm", ["install", "-g", `@beads/bd@${BEADS_VERSION}`])) !== 0) {
+      log(`[cloud-agent-install] warning: beads install failed; install @beads/bd@${BEADS_VERSION} to use bd`);
+      return;
+    }
+  }
+  if ((await exitCode("bd", ["bootstrap", "--yes"])) !== 0) {
+    log("[cloud-agent-install] warning: beads bootstrap failed; run `bd bootstrap` with git access to the remote");
+    return;
+  }
+  log("[cloud-agent-install] beads database ready");
+}
+
 function defaultRun(command: string, args: string[]): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: "inherit", shell: false });
@@ -51,6 +78,8 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const run = deps.run ?? defaultRun;
   const founderBootstrap = deps.founderBootstrap ?? runFounderBootstrap;
+
+  await setUpBeads(run, log);
 
   const stgVarsPath = path.join(cwd, ".stg.vars");
   const stgVars = renderStgVars(envVars);

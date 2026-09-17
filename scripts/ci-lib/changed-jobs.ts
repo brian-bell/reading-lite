@@ -40,6 +40,9 @@ const RULES: Rule[] = [
   [/^(CONTEXT\.md|LICENSE|skills-lock\.json|\.gitignore|\.dockerignore|Dockerfile|docker-compose\.yml)$/, NONE],
   [/^evaluations\/|^\.beads\/|^\.claude\/skills\//, NONE],
   [/^(\.agents|\.claude)\/.*\.(md|yaml)$/, NONE],
+  // Agent hooks and rules. .cursor/environment.json stays with the Worker
+  // suite, which checks its install command.
+  [/^(\.claude\/settings\.json|\.codex\/.*|\.cursor\/(hooks\.json|rules\/.*))$/, NONE],
   // Skill scripts are tested by the Worker suite.
   [/^\.agents\//, ["worker"]],
 
