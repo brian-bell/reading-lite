@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  BEADS_VERSION,
   renderStgVars,
   resolveFounderEmail,
   runCloudAgentInstall,
@@ -43,6 +44,7 @@ describe("cloud-agent-install", () => {
     const writes: Array<{ path: string; content: string }> = [];
     const chmods: Array<{ path: string; mode: number }> = [];
     const logs: string[] = [];
+    const runs: string[] = [];
     const founderBootstrap = vi.fn();
 
     const code = await runCloudAgentInstall({
@@ -61,14 +63,14 @@ describe("cloud-agent-install", () => {
       },
       log: (line) => logs.push(line),
       run: async (command, args) => {
-        expect(command).toBe("npx");
-        expect(args).toEqual(["wrangler", "whoami"]);
+        runs.push([command, ...args].join(" "));
         return 0;
       },
       founderBootstrap,
     });
 
     expect(code).toBe(0);
+    expect(runs).toContain("npx wrangler whoami");
     expect(writes).toEqual([
       {
         path: "/tmp/reading-lite/.stg.vars",
@@ -127,6 +129,44 @@ describe("cloud-agent-install", () => {
       { envVars: Record<string, string | undefined> },
     ];
     expect(deps.envVars.FOUNDER_EMAIL).toBe("founder@example.com");
+  });
+
+  it.each<[string, Record<string, number | "missing">, string[], boolean]>([
+    ["bootstraps an installed bd", {}, ["bd version", "bd bootstrap --yes"], false],
+    [
+      "installs a missing bd first",
+      { "bd version": "missing" },
+      ["bd version", `npm install -g @beads/bd@${BEADS_VERSION}`, "bd bootstrap --yes"],
+      false,
+    ],
+    [
+      "warns without failing when the install fails",
+      { "bd version": "missing", [`npm install -g @beads/bd@${BEADS_VERSION}`]: 1 },
+      ["bd version", `npm install -g @beads/bd@${BEADS_VERSION}`],
+      true,
+    ],
+    ["warns without failing when bootstrap fails", { "bd bootstrap --yes": 1 }, ["bd version", "bd bootstrap --yes"], true],
+  ])("beads setup %s", async (_name, outcomes, expectedRuns, warns) => {
+    const runs: string[] = [];
+    const logs: string[] = [];
+
+    const code = await runCloudAgentInstall({
+      envVars: {},
+      writeFile: () => {},
+      chmod: () => {},
+      log: (line) => logs.push(line),
+      run: async (command, args) => {
+        const call = [command, ...args].join(" ");
+        runs.push(call);
+        const outcome = outcomes[call] ?? 0;
+        if (outcome === "missing") throw Object.assign(new Error(`spawn ${command} ENOENT`), { code: "ENOENT" });
+        return outcome;
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(runs).toEqual(expectedRuns);
+    expect(logs.some((line) => line.includes("warning: beads"))).toBe(warns);
   });
 
   it("installs the SPA without leaving cwd in web/", () => {

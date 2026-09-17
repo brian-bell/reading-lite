@@ -9,6 +9,12 @@ function only(...jobs: CiJob[]) {
 describe("CI job selection for pull requests", () => {
   it.each<[string, string[], Record<string, boolean>]>([
     ["documentation only", ["docs/architecture.md", "CONTEXT.md", "app/README.md", ".agents/skills/x/SKILL.md"], only()],
+    [
+      "agent hooks and rules",
+      [".claude/settings.json", ".codex/hooks.json", ".codex/config.toml", ".cursor/hooks.json", ".cursor/rules/beads.mdc"],
+      only(),
+    ],
+    ["the cloud agent environment", [".cursor/environment.json"], only("worker")],
     ["docs the Worker suite pins", ["docs/operations.md"], only("worker")],
     ["the SPA", ["web/src/App.tsx"], only("web")],
     ["the SPA schema mirror", ["web/src/types.ts"], only("worker", "web")],

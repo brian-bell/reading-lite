@@ -20,6 +20,10 @@ on:
       - '.claude/**/*.md'
       - '.claude/skills/**'
       - '.beads/**'
+      - '.claude/settings.json'
+      - '.codex/**'
+      - '.cursor/hooks.json'
+      - '.cursor/rules/**'
       - 'LICENSE'
       - 'skills-lock.json'
 
