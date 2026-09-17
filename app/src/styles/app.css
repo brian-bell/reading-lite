@@ -898,12 +898,39 @@ textarea {
   display: none;
 }
 
-/* The tldr, as the serif lead. */
+/* The tldr, as the serif lead: a step larger and tighter-set than the prose,
+   under a small label and, when the summary follows, closed by a short hairline so it reads as a
+   standfirst rather than the first paragraph. No colour or rule of its own —
+   those belong to notices, the trail, and the novelty panel. */
 .reading-lead {
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-6);
+}
+
+/* The small label over the lead, in the muted voice of the other
+   section labels (relationship groups, details groups). */
+.reading-lead-label {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+}
+
+.reading-lead-text {
+  margin: 0;
   font-family: var(--font-reading);
-  font-size: 21px;
-  line-height: 1.7;
+  font-size: 23px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+}
+
+.reading-lead:not(:last-child)::after {
+  content: "";
+  display: block;
+  width: 48px;
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--control-border);
 }
 
 /* Rendered summary_markdown. No captured size: it is reading matter below the
@@ -1036,8 +1063,8 @@ textarea {
 }
 
 @media (max-width: 650px) {
-  .reading-lead {
-    font-size: 20px;
+  .reading-lead-text {
+    font-size: 21px;
   }
 
   .reading-prose {
