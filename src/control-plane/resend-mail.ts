@@ -49,6 +49,22 @@ export async function sendAuthMailViaResend(
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    throw new Error(`Resend rejected auth mail (${res.status})`);
+    throw new Error(`Resend rejected auth mail (${res.status}${await resendErrorName(res)})`);
+  }
+}
+
+/**
+ * Resend's error body is `{ statusCode, name, message }`; `name` is a stable
+ * code such as `restricted_api_key` or `validation_error`. Carry it, and only
+ * it, into the thrown message so the auth log's `reason` says why delivery
+ * failed without echoing the free-text message.
+ */
+async function resendErrorName(res: Response): Promise<string> {
+  try {
+    const body: unknown = await res.json();
+    const name = body && typeof body === "object" ? (body as { name?: unknown }).name : undefined;
+    return typeof name === "string" && /^[a-z_]{1,64}$/.test(name) ? ` ${name}` : "";
+  } catch {
+    return "";
   }
 }

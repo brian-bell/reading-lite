@@ -48,6 +48,19 @@ describe("sendMagicLinkViaResend", () => {
     expect(body).not.toContain("re_test");
   });
 
+  it("names Resend's error in the rejection so the auth log can carry it", async () => {
+    const env = { RESEND_API_KEY: "re_test", EMAIL_FROM: "reading-lite@test.example" } as Env;
+    await expect(
+      sendMagicLinkViaResend(
+        env,
+        "founder@test.example",
+        verifyUrl,
+        async () =>
+          new Response(JSON.stringify({ statusCode: 403, name: "restricted_api_key", message: "no" }), { status: 403 }),
+      ),
+    ).rejects.toThrow("Resend rejected auth mail (403 restricted_api_key)");
+  });
+
   it("throws when Resend rejects the message", async () => {
     const env = {
       RESEND_API_KEY: "re_test",

@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE_MAX_AGE_SECONDS, SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import { CSRF_HEADER } from "../../src/schemas/api";
@@ -663,18 +663,33 @@ describe("invite-only magic-link sessions", () => {
       },
     });
     const ctx = createExecutionContext();
-    const failed = await app.fetch(
-      new Request("http://t/api/auth/challenge", {
-        method: "POST",
-        headers: { origin: "http://t", "content-type": "application/json" },
-        body: JSON.stringify({ email: "founder@test.example" }),
-      }),
-      env,
-      ctx,
-    );
-    await waitOnExecutionContext(ctx);
+    const lines: string[] = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line: unknown) => {
+      lines.push(String(line));
+    });
+    let failed: Response;
+    try {
+      failed = await app.fetch(
+        new Request("http://t/api/auth/challenge", {
+          method: "POST",
+          headers: { origin: "http://t", "content-type": "application/json" },
+          body: JSON.stringify({ email: "founder@test.example" }),
+        }),
+        env,
+        ctx,
+      );
+      await waitOnExecutionContext(ctx);
+    } finally {
+      info.mockRestore();
+    }
     expect(failed.status).toBe(200);
     expect(await failed.json()).toEqual({ ok: true });
+    // The reason is the only diagnostic an operator gets: the response is a
+    // uniform ok. It names the sender's error, never the address or the link.
+    const events = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    expect(events).toContainEqual(
+      expect.objectContaining({ event: "magic_link_delivery_failed", reason: "resend 400" }),
+    );
 
     const redeemed = await request("/api/auth/redeem", {
       method: "POST",
