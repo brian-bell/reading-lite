@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { sourceDateFromPrior } from "../../../src/process-reading";
+import { describe, expect, it, vi } from "vitest";
+import { processReading, sourceDateFromPrior } from "../../../src/process-reading";
+import type { Env } from "../../../src/index";
+import type { Services } from "../../../src/services";
 import type { Manifest } from "../../../src/schemas/manifest";
+import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
 
 const PREFIX = "readings/2026/04/26T200000Z-rd_TEST";
 
@@ -69,5 +72,83 @@ describe("sourceDateFromPrior", () => {
         throw error;
       }), args({ preserveReadyManifest: pending({ status: "ready" }) })),
     ).rejects.toBe(error);
+  });
+});
+
+describe("processReading — source_date is resolved before paid stages", () => {
+  function job() {
+    return {
+      id: "rd_TEST",
+      url: "https://example.com/x",
+      urlHash: "a".repeat(64),
+      createdAt: "2026-04-26T20:00:00.000Z",
+      keyPrefix: PREFIX,
+      source: { kind: "markdown" as const, markdown: "# Title\n\nbody" },
+    };
+  }
+
+  function envWith(bucket: R2Bucket): Env {
+    return {
+      READINGS_BUCKET: bucket,
+      READINGS_INDEX: {
+        upsert: vi.fn(),
+        query: vi.fn(),
+      } as unknown as VectorizeIndex,
+      READER_API_TOKEN: "x",
+      ANTHROPIC_API_KEY: "x",
+      OPENAI_API_KEY: "x",
+      ANTHROPIC_MODEL: "claude-sonnet-5",
+      FETCH_TIMEOUT_MS: "20000",
+      FETCH_MAX_BYTES: "10485760",
+      CORS_ALLOWED_ORIGINS: "",
+      PENDING_TTL_SECONDS: "300",
+    } as unknown as Env;
+  }
+
+  it("a post-extract prior-manifest read throw fails closed without calling paid fetch", async () => {
+    const body = JSON.stringify(pending({ source_date: "2024-03-15" }));
+    let extractedWritten = false;
+    let manifestGetsAfterExtract = 0;
+    const bucket = {
+      get: vi.fn(async (key: string) => {
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          if (extractedWritten) {
+            manifestGetsAfterExtract += 1;
+            // 1: unpaid ownership re-check after extract writes.
+            // 2: sourceDateFromPrior, hoisted before leases/paid stages.
+            // Later gets (markFailed) must succeed so the consumer can finish.
+            if (manifestGetsAfterExtract === 2) throw new Error("R2 hiccup");
+          }
+          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+        }
+        return null;
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
+        void value;
+      }),
+      head: vi.fn(async () => null),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+
+    const fetchFn = vi.fn<typeof fetch>();
+    const services: Services = {
+      fetch: fetchFn,
+      lookup: PUBLIC_LOOKUP,
+      now: () => "2026-04-26T20:00:01.000Z",
+      newId: () => "rd_TEST",
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      processReading(job(), envWith(bucket), services, founderTenant()),
+    ).resolves.toBeUndefined();
+
+    expect(extractedWritten).toBe(true);
+    expect(manifestGetsAfterExtract).toBeGreaterThan(1);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/R2 hiccup/);
+    consoleErr.mockRestore();
   });
 });

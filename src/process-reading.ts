@@ -179,6 +179,11 @@ export async function processReading(
       return;
     }
 
+    // source_date is not produced by extract/summarize. Resolve it here, before
+    // leases and paid stages, so a fail-closed prior-manifest read cannot burn
+    // spend. The cached value is reused at the ready draft.
+    const source_date = await sourceDateFromPrior(reader, args);
+
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
     // terminal write. Finish recovery without ever acquiring a new work hold.
@@ -313,9 +318,6 @@ export async function processReading(
     attempt.error = undefined;
     // ProcessReadingArgs satisfies ReadingIdentity structurally, and the full
     // ProcessingAttempt is stripped to its summary by the drafter's parse.
-    // source_date is not produced by extract/summarize: carry a stored prior
-    // so a successful reprocess cannot drop it.
-    const source_date = await sourceDateFromPrior(reader, args);
     const finalManifest = readyManifest(
       {
         identity: args,
