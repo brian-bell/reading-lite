@@ -306,7 +306,10 @@ paths:
         `usable: false` so the client can inspect them. When the account
         is at the ten-session cap, `session_cap_warning` is a non-null
         string the client can show before the next login evicts the
-        least-recently-used session. CSRF is not required (GET).
+        least-recently-used session. CSRF is not required (GET). Optional
+        `X-Expected-Tenant` mismatch returns 412, as on `/api/readings`.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: Session list
@@ -318,6 +321,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
@@ -332,9 +337,11 @@ paths:
         cleared. Sends a security notification (no secrets) only when at least
         one session was actually revoked. Click/open tracking is a Resend
         domain setting (off by default), not a send-payload field.
-        Single-session revoke does not send mail.
+        Single-session revoke does not send mail. Optional `X-Expected-Tenant`
+        mismatch returns 412 after CSRF (same order as readings writes).
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: All sessions revoked
@@ -346,6 +353,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
@@ -357,7 +366,8 @@ paths:
       description: |
         Soft-revokes one of the caller's sessions. Cookie callers must send
         `X-CSRF-Token`; recent-auth is not required. If the id is the current
-        session, the cookie is cleared. Does not send security mail.
+        session, the cookie is cleared. Does not send security mail. Optional
+        `X-Expected-Tenant` mismatch returns 412 after CSRF.
       parameters:
         - name: id
           in: path
@@ -366,6 +376,7 @@ paths:
             type: string
             pattern: "^ses_"
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: Session revoked
@@ -381,6 +392,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
 
   /api/auth/tokens:
     get:

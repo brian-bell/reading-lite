@@ -93,7 +93,10 @@ return path is per origin.
   to sign in. 403 and 412 are the shared state pages (403 offers Back to
   library), a 401 is the shell's expired-session page, offline is a notice over
   whatever was loaded, and a 5xx is the retryable server error. The list and
-  writes are pinned with `x-expected-tenant` like the library's reads.
+  writes are pinned with `x-expected-tenant` like the library's reads. The
+  backend enforces that pin on `/api/auth/sessions…` (`requireExpectedTenant`),
+  so a mid-page cookie switch 412s the list instead of showing the other
+  account's sessions.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

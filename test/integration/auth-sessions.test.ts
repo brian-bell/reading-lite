@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SESSION_CAP_WARNING, SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { SecurityMail } from "../../src/control-plane/security-mail";
-import { CSRF_HEADER } from "../../src/schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -29,6 +29,7 @@ async function request(
     cookie?: string;
     origin?: string;
     csrf?: string;
+    expectedTenant?: string;
     now?: string;
     securityMail?: SecurityMail[];
   } = {},
@@ -54,6 +55,7 @@ async function request(
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
   if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
+  if (init.expectedTenant !== undefined) headers.set(EXPECTED_TENANT_HEADER, init.expectedTenant);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -462,5 +464,54 @@ describe("session inspect and revoke", () => {
       current: false,
     });
     expect(live?.usable).toBe(true);
+  });
+});
+
+describe("x-expected-tenant on session routes", () => {
+  it("returns 412 when the pin is not the acting tenant, and leaves sessions alone", async () => {
+    const session = await redeemSession("clm_session_expected_tenant");
+    const whoami = await request("/api/whoami", { cookie: session.cookie });
+    const identity = (await whoami.res.json()) as { tenant_id: string };
+    const mismatch = { error: "expected tenant mismatch", acting_tenant: identity.tenant_id };
+
+    const listed = await request("/api/auth/sessions", {
+      cookie: session.cookie,
+      expectedTenant: "global",
+    });
+    expect(listed.res.status).toBe(412);
+    expect(listed.res.headers.get("cache-control")).toBe("no-store");
+    expect(await listed.res.json()).toEqual(mismatch);
+
+    expect((await request("/api/auth/sessions", { cookie: session.cookie })).res.status).toBe(200);
+    expect(
+      (await request("/api/auth/sessions", { cookie: session.cookie, expectedTenant: identity.tenant_id })).res.status,
+    ).toBe(200);
+
+    const body = (await (
+      await request("/api/auth/sessions", { cookie: session.cookie })
+    ).res.json()) as { sessions: { id: string; current: boolean }[] };
+    const currentId = body.sessions.find((row) => row.current)?.id;
+    expect(currentId).toBeTruthy();
+
+    const revoked = await request(`/api/auth/sessions/${currentId}`, {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+    });
+    expect(revoked.res.status).toBe(412);
+    expect(await revoked.res.json()).toEqual(mismatch);
+
+    const revokeAll = await request("/api/auth/sessions/revoke-all", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+      body: {},
+    });
+    expect(revokeAll.res.status).toBe(412);
+    expect(await revokeAll.res.json()).toEqual(mismatch);
+
+    expect((await request("/api/whoami", { cookie: session.cookie })).res.status).toBe(200);
   });
 });

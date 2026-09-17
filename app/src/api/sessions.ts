@@ -10,7 +10,9 @@ import { EXPECTED_TENANT_HEADER } from "./readings";
 //
 // A 403 on a write is read twice, as a save is (api/save.ts): the backend
 // checks the CSRF token before the tenant pin, so another tab signing in as
-// someone else answers 403, never the 412 a pinned read would give.
+// someone else answers 403, never the 412 a pinned read would give. The
+// sessions list (and a write whose CSRF already passed) now 412s the same
+// way readings do (`requireExpectedTenant` on `/api/auth/sessions…`).
 
 function pin(expectedTenant: string | undefined): HeadersInit {
   return expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant };
