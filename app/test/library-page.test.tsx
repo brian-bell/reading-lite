@@ -864,7 +864,7 @@ describe("search and tags", () => {
     expect(searchField()).toHaveValue("Quiet");
     expect(bar().getByRole("link", { name: "Clear tag design" })).toHaveAttribute("href", "/?q=Quiet");
     expect(bar().getByRole("link", { name: "Clear search “Quiet”" })).toHaveAttribute("href", "/?tag=design");
-    expect(bar().getAllByRole("link").map((link) => link.textContent)).toEqual(["“Quiet” ×", "design ×"]);
+    expect(bar().getAllByRole("link").map((link) => link.textContent)).toEqual(["“Quiet”", "design"]);
   });
 
   it("shows no chips without filters", async () => {
