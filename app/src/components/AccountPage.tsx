@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { useRef, useState, type RefObject } from "react";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
-import { NetworkError, isUnauthorized } from "../api/errors";
+import { isUnauthorized } from "../api/errors";
 import { dropSignedInAccount } from "../auth/session";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
@@ -13,6 +13,7 @@ import {
   type RevokeOutcome,
   type SessionListItem,
   type SessionsList,
+  type SessionsResult,
 } from "../sessions";
 import { sessionsQueryOptions } from "../sessions-query";
 import { sessionsViewOf, type SessionsView } from "../sessions-state";
@@ -36,21 +37,13 @@ import {
 
 type RevokeTarget = { kind: "one"; session: SessionListItem } | { kind: "all" };
 
-type AccountView =
-  | { kind: "loading" }
-  | { kind: "forbidden" }
-  | { kind: "account-changed"; actingTenant?: string }
-  | { kind: "server-error"; message: string; retry: "list" | "revoke" }
-  | { kind: "offline"; listed?: SessionsList }
-  | { kind: "ready"; listed: SessionsList };
-
 export function AccountPage() {
   const queryClient = useQueryClient();
   const router = useRouter();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
   const expectedTenant = expectedLayoutOf(identity);
+  const sessionsKey = sessionsQueryKey(identity?.user_id ?? "");
   const { data, error, fetchStatus, refetch } = useQuery(sessionsQueryOptions(queryClient, identity));
-  const [refused, setRefused] = useState<Exclude<RevokeOutcome, { kind: "revoked" }> | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
 
@@ -65,8 +58,16 @@ export function AccountPage() {
     networkMode: "always",
     retry: 0,
     onSuccess: async ({ target, outcome }) => {
-      if (outcome.kind !== "revoked") {
-        setRefused(outcome);
+      // A refused write shows the same page a refused list read would.
+      if (outcome.kind === "forbidden") {
+        queryClient.setQueryData<SessionsResult>(sessionsKey, { state: "forbidden" });
+        return;
+      }
+      if (outcome.kind === "account-changed") {
+        queryClient.setQueryData<SessionsResult>(sessionsKey, {
+          state: "account-changed",
+          ...(outcome.actingTenant === undefined ? {} : { acting_tenant: outcome.actingTenant }),
+        });
         return;
       }
       // This device, or every session: the backend already expired the cookie.
@@ -75,18 +76,24 @@ export function AccountPage() {
         await router.invalidate();
         return;
       }
-      await queryClient.invalidateQueries({ queryKey: sessionsQueryKey(identity?.user_id ?? "") });
+      await queryClient.invalidateQueries({ queryKey: sessionsKey });
     },
   });
 
+  // A failed revoke is shown as the list's own failure (a 401 is the shell's
+  // page), and Retry reads the list again: the failure may mean it is stale.
+  const revokeError = isUnauthorized(revoke.error) ? null : revoke.error;
+  const view = sessionsViewOf({ data, error: revokeError ?? error, fetchStatus });
   const busy = revoke.isPending;
-  const listView = sessionsViewOf({ data, error: revoke.error ? null : error, fetchStatus });
-  const view = viewOf(listView, refused, revoke.error);
+
+  function retry() {
+    revoke.reset();
+    void refetch();
+  }
 
   function send(target: RevokeTarget) {
     if (busy) return;
     revoke.reset();
-    setRefused(null);
     revoke.mutate(target);
   }
 
@@ -99,40 +106,15 @@ export function AccountPage() {
         onCloseConfirm: () => setConfirmAll(false),
         onRevokeAll: () => send({ kind: "all" }),
         onRevoke: (session) => send({ kind: "one", session }),
-        onRetryList: () => {
-          revoke.reset();
-          setRefused(null);
-          void refetch();
-        },
-        onRetryRevoke: () => {
-          revoke.reset();
-          setRefused(null);
-        },
+        onRetry: retry,
         revokeAllRef,
       })}
     </PageStateFocus>
   );
 }
 
-function viewOf(
-  list: SessionsView,
-  refused: Exclude<RevokeOutcome, { kind: "revoked" }> | null,
-  error: unknown,
-): AccountView {
-  if (refused?.kind === "forbidden" || refused?.kind === "account-changed") return refused;
-  if (error instanceof NetworkError && error.offline) {
-    const listed = list.kind === "ready" || list.kind === "offline" ? list.listed : undefined;
-    return { kind: "offline", ...(listed ? { listed } : {}) };
-  }
-  if (error && !isUnauthorized(error)) {
-    return { kind: "server-error", message: error instanceof Error ? error.message : String(error), retry: "revoke" };
-  }
-  if (list.kind === "server-error") return { ...list, retry: "list" };
-  return list;
-}
-
 function pageFor(
-  view: AccountView,
+  view: SessionsView,
   actions: {
     busy: boolean;
     confirmAll: boolean;
@@ -140,8 +122,7 @@ function pageFor(
     onCloseConfirm: () => void;
     onRevokeAll: () => void;
     onRevoke: (session: SessionListItem) => void;
-    onRetryList: () => void;
-    onRetryRevoke: () => void;
+    onRetry: () => void;
     revokeAllRef: RefObject<HTMLButtonElement | null>;
   },
 ) {
@@ -157,12 +138,7 @@ function pageFor(
     case "account-changed":
       return <AccountChanged actingTenant={view.actingTenant} />;
     case "server-error":
-      return (
-        <ServerError
-          message={view.message}
-          onRetry={view.retry === "list" ? actions.onRetryList : actions.onRetryRevoke}
-        />
-      );
+      return <ServerError message={view.message} onRetry={actions.onRetry} />;
     default:
       return (
         <div className="page account-page">
@@ -178,14 +154,10 @@ function pageFor(
               Revoke all sessions
             </button>
           </div>
-          {view.kind === "offline" ? <OfflineNotice onRetry={actions.onRetryList} /> : null}
+          {view.kind === "offline" ? <OfflineNotice onRetry={actions.onRetry} /> : null}
           {view.kind === "loading" ? <LoadingRegion /> : null}
-          {view.kind === "ready" || (view.kind === "offline" && view.listed) ? (
-            <SessionsSection
-              listed={view.kind === "ready" ? view.listed : view.listed!}
-              busy={actions.busy}
-              onRevoke={actions.onRevoke}
-            />
+          {(view.kind === "ready" || view.kind === "offline") && view.listed ? (
+            <SessionsSection listed={view.listed} busy={actions.busy} onRevoke={actions.onRevoke} />
           ) : null}
           {actions.confirmAll ? (
             <ConfirmDialog
