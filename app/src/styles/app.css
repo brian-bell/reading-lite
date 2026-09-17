@@ -91,6 +91,8 @@ textarea {
 .shell-nav {
   position: sticky;
   top: 0;
+  /* Above positioned page content, so the account menu panel is not covered. */
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -155,6 +157,22 @@ textarea {
 
 .nav-item:hover {
   color: var(--ink);
+}
+
+/* Press feedback, only where motion is welcome. Only scale transitions, so
+   hover and theme swaps stay instant. */
+@media (prefers-reduced-motion: no-preference) {
+  .nav-item,
+  .theme-option {
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }
+
+  .nav-item:active,
+  .theme-option:active {
+    scale: 0.96;
+  }
 }
 
 .nav-item[aria-current="page"] {
@@ -247,17 +265,19 @@ textarea {
   z-index: 10;
   min-width: 200px;
   max-width: min(320px, 80vw);
-  padding: var(--space-3);
+  /* Concentric with the 5 px items inside: 5 + 6 = 11. */
+  padding: 6px;
   background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 11px;
+  box-shadow: var(--popover-shadow);
   color: var(--ink);
   font-size: 13px;
   text-align: left;
 }
 
 .account-menu-email {
-  margin: 0 0 var(--space-2);
+  margin: 0;
+  padding: 6px var(--space-2) var(--space-2);
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -295,6 +315,7 @@ textarea {
 
 .account-menu-error {
   margin: var(--space-2) 0 0;
+  padding: 0 var(--space-2) 6px;
   color: var(--danger);
 }
 
@@ -1665,7 +1686,7 @@ textarea {
     flex-direction: row;
     gap: 7px;
     min-height: 44px;
-    padding: 0 var(--space-2);
+    padding-inline: 6px var(--space-2);
     font-size: 13px;
     white-space: nowrap;
   }
