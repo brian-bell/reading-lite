@@ -339,22 +339,36 @@ textarea {
   list-style: none;
 }
 
+/* Design spec, Cards: 20 px padding (16 px at ≤650), 7 px radius. */
 .library-card {
   position: relative;
-  padding: 15px 16px;
+  padding: var(--space-5);
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
   box-shadow: var(--card-shadow);
 }
 
-/* Long titles wrap, never truncate. */
+@container shell (max-width: 650px) {
+  .library-card {
+    padding: var(--space-4);
+  }
+}
+
+/* Hover deepens the border toward accent and lifts the shadow (design spec,
+   Cards). Instant, like every other state here. */
+.library-card:hover {
+  border-color: var(--card-border-hover);
+  box-shadow: var(--card-shadow-hover);
+}
+
+/* Long titles wrap, never truncate. Design spec, Library card title. */
 .library-card-title {
   margin: 0 0 var(--space-2);
   font-family: var(--font-reading);
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.24;
   overflow-wrap: anywhere;
 }
 
@@ -364,11 +378,13 @@ textarea {
 }
 
 /* The title link covers the card, so the whole card is one target. The
-   link keeps its own focus outline; the overlay only widens the hit area. */
+   link keeps its own focus outline; the overlay only widens the hit area.
+   It fills the padding box, so its radius is the card's 7 px less the 1 px
+   border; `inherit` would take the link's square corners instead. */
 .library-card-title a::after {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
+  border-radius: 6px;
   content: "";
 }
 
@@ -459,11 +475,21 @@ textarea {
   font-size: 14px;
 }
 
-/* The active tag as a chip: the tag's own look, outlined, with the × that
-   says its link clears it. */
-.tag-active {
+/* The active tag as a chip: the tag's own look, outlined, with the × icon
+   that says its link clears it. The icon sits on the label's centre line,
+   raised a half pixel, since a lowercase label's optical centre is its
+   x-height rather than its line box. */
+.library-active-filters .tag-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--control-border);
   color: var(--ink);
+}
+
+.library-active-filters .tag-active svg {
+  flex: none;
+  translate: 0 -0.5px;
 }
 
 /* Tags on a card (#417): each link its own target, raised above the
@@ -484,8 +510,11 @@ textarea {
   pointer-events: auto;
 }
 
-/* The tag the library is filtered by, on a card: text, not a target. */
+/* The tag the library is filtered by, on a card: text, not a target, outlined
+   like the active filter's chip so the match reads without comparing colours. */
 .library-card-tags .tag-current {
+  padding: 5px 9px;
+  border: 1px solid var(--control-border);
   color: var(--ink);
   pointer-events: none;
 }
