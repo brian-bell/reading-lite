@@ -420,6 +420,7 @@ async function writeNormalizedResults(
         content: contentFactsOf(target),
         usage: { summarization: usage, openai_embedding_tokens: embeddingTokens },
         attempt: terminalAttempt(target, "succeeded", finishedAt),
+        ...(target.sourceDate === undefined ? {} : { source_date: target.sourceDate }),
       },
       finishedAt,
     );

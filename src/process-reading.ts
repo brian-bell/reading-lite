@@ -313,6 +313,9 @@ export async function processReading(
     attempt.error = undefined;
     // ProcessReadingArgs satisfies ReadingIdentity structurally, and the full
     // ProcessingAttempt is stripped to its summary by the drafter's parse.
+    // source_date is not produced by extract/summarize: carry a stored prior
+    // so a successful reprocess cannot drop it.
+    const source_date = await sourceDateFromPrior(reader, args);
     const finalManifest = readyManifest(
       {
         identity: args,
@@ -338,6 +341,7 @@ export async function processReading(
             queryEmbed.usage.total_tokens + tldrEmbed.usage.total_tokens,
         },
         attempt,
+        ...(source_date === undefined ? {} : { source_date }),
       },
       services.now(),
     );
@@ -819,6 +823,14 @@ async function markFailed(
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
+}
+
+async function sourceDateFromPrior(
+  reader: ReadingStore,
+  args: ProcessReadingArgs,
+): Promise<string | undefined> {
+  const current = await reader.readManifest(args.keyPrefix).catch(() => null);
+  return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }
 
 async function resolveSourceTypeOnFailure(
