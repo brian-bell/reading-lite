@@ -58,6 +58,15 @@ export function jsonAuth(body: unknown, status: number, extraHeaders?: HeadersIn
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+/**
+ * The challenge response is a uniform `ok`, so the log is the only place a
+ * delivery failure can say why. Sender errors name their cause without
+ * addresses or links (see resend-mail.ts); anything else is reported by kind.
+ */
+function deliveryFailureReason(error: unknown): string {
+  return error instanceof Error && error.message ? error.message.slice(0, 200) : "unknown";
+}
+
 export function requireSameOrigin(c: Context<AppBindings>): boolean {
   return isSameOriginRequest({
     origin: c.req.header("origin"),
@@ -197,9 +206,13 @@ export async function handleAuthChallenge(
     } else {
       throw new Error("magic-link delivery is not configured");
     }
-  } catch {
+  } catch (error) {
     await restoreLiveChallenges(db, issued.challengeId, liveBeforeIssue);
-    logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
+    logAuthEvent("magic_link_delivery_failed", {
+      email: issued.deliveryEmail,
+      challenge_id: issued.challengeId,
+      reason: deliveryFailureReason(error),
+    });
     return jsonAuth({ ok: true }, 200);
   }
 
@@ -484,9 +497,13 @@ export async function handleEmailChangeRequest(
     } else {
       throw new Error("magic-link delivery is not configured");
     }
-  } catch {
+  } catch (error) {
     await restoreLiveChallenges(db, issued.challengeId, liveBeforeIssue);
-    logAuthEvent("magic_link_delivery_failed", { email: issued.deliveryEmail, challenge_id: issued.challengeId });
+    logAuthEvent("magic_link_delivery_failed", {
+      email: issued.deliveryEmail,
+      challenge_id: issued.challengeId,
+      reason: deliveryFailureReason(error),
+    });
     return jsonAuth({ ok: true }, 200);
   }
 
