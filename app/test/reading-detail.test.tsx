@@ -210,7 +210,7 @@ describe("the Summary view", () => {
     backendAnswers(200, reading);
     await openTab(`/readings/${ATTENTION}`);
 
-    expect(screen.getByText(reading.tldr!)).toBeInTheDocument();
+    expect(screen.getByText(reading.tldr!).previousElementSibling).toHaveTextContent(/^TL;DR$/);
     expect(screen.getByText(/^Saving is only the beginning\./)).toBeInTheDocument();
   });
 

@@ -33,6 +33,7 @@ import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
 import { librarySchedule } from "../status-refresh";
+import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { SignInPage } from "./SignInPage";
@@ -342,7 +343,8 @@ function LibraryFilters({ search }: { search: LibrarySearch }) {
               aria-label={`Clear search “${q}”`}
               onClick={() => focusAfterFilterChange("search", searchForFilters(search, { q: undefined }))}
             >
-              “{q}”<span aria-hidden="true"> ×</span>
+              “{q}”
+              <Icon name="close" size={10} strokeWidth={3} />
             </Link>
           ) : null}
           {tag ? (
@@ -357,7 +359,7 @@ function LibraryFilters({ search }: { search: LibrarySearch }) {
               onClick={() => focusAfterFilterChange("search", searchForFilters(search, { tag: undefined }))}
             >
               {tag}
-              <span aria-hidden="true"> ×</span>
+              <Icon name="close" size={10} strokeWidth={3} />
             </Link>
           ) : null}
         </p>

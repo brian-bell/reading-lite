@@ -7,11 +7,17 @@ const paths = {
   moon: "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11",
   desktop: "M3 3h18v13H3z M12 16v5 M7 21h10",
   user: "M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M4 21a8 8 0 0 1 16 0",
+  close: "M6 6l12 12 M18 6L6 18",
 } as const;
 
 export type IconName = keyof typeof paths;
 
-export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
+/**
+ * `strokeWidth` is in viewBox units (24): 1.5 by default, beside regular text.
+ * A small icon beside small text passes a heavier one so it keeps the text's
+ * weight once scaled down.
+ */
+export function Icon({ name, size = 18, strokeWidth = 1.5 }: { name: IconName; size?: number; strokeWidth?: number }) {
   return (
     <svg
       width={size}
@@ -19,7 +25,7 @@ export function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.5"
+      strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

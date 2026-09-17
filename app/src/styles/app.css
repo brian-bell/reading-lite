@@ -360,22 +360,36 @@ textarea {
   list-style: none;
 }
 
+/* Design spec, Cards: 20 px padding (16 px at ≤650), 7 px radius. */
 .library-card {
   position: relative;
-  padding: 15px 16px;
+  padding: var(--space-5);
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface);
   box-shadow: var(--card-shadow);
 }
 
-/* Long titles wrap, never truncate. */
+@container shell (max-width: 650px) {
+  .library-card {
+    padding: var(--space-4);
+  }
+}
+
+/* Hover deepens the border toward accent and lifts the shadow (design spec,
+   Cards). Instant, like every other state here. */
+.library-card:hover {
+  border-color: var(--card-border-hover);
+  box-shadow: var(--card-shadow-hover);
+}
+
+/* Long titles wrap, never truncate. Design spec, Library card title. */
 .library-card-title {
   margin: 0 0 var(--space-2);
   font-family: var(--font-reading);
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.24;
   overflow-wrap: anywhere;
 }
 
@@ -385,11 +399,13 @@ textarea {
 }
 
 /* The title link covers the card, so the whole card is one target. The
-   link keeps its own focus outline; the overlay only widens the hit area. */
+   link keeps its own focus outline; the overlay only widens the hit area.
+   It fills the padding box, so its radius is the card's 7 px less the 1 px
+   border; `inherit` would take the link's square corners instead. */
 .library-card-title a::after {
   position: absolute;
   inset: 0;
-  border-radius: inherit;
+  border-radius: 6px;
   content: "";
 }
 
@@ -480,11 +496,21 @@ textarea {
   font-size: 14px;
 }
 
-/* The active tag as a chip: the tag's own look, outlined, with the × that
-   says its link clears it. */
-.tag-active {
+/* The active tag as a chip: the tag's own look, outlined, with the × icon
+   that says its link clears it. The icon sits on the label's centre line,
+   raised a half pixel, since a lowercase label's optical centre is its
+   x-height rather than its line box. */
+.library-active-filters .tag-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--control-border);
   color: var(--ink);
+}
+
+.library-active-filters .tag-active svg {
+  flex: none;
+  translate: 0 -0.5px;
 }
 
 /* Tags on a card (#417): each link its own target, raised above the
@@ -505,8 +531,11 @@ textarea {
   pointer-events: auto;
 }
 
-/* The tag the library is filtered by, on a card: text, not a target. */
+/* The tag the library is filtered by, on a card: text, not a target, outlined
+   like the active filter's chip so the match reads without comparing colours. */
 .library-card-tags .tag-current {
+  padding: 5px 9px;
+  border: 1px solid var(--control-border);
   color: var(--ink);
   pointer-events: none;
 }
@@ -583,6 +612,22 @@ textarea {
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
+}
+
+/* Buttons settle to 0.96 while pressed: a transition, so a release mid-press
+   returns smoothly. Only under no-preference; otherwise the press is instant. */
+@media (prefers-reduced-motion: no-preference) {
+  .button,
+  .source-image-load {
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }
+
+  .button:active:not(:disabled, [aria-disabled="true"]),
+  .source-image-load:active {
+    scale: 0.96;
+  }
 }
 
 .button-primary {
@@ -875,8 +920,7 @@ textarea {
   text-decoration: none;
 }
 
-/* An instant shift, like every other control here: the app has no motion, so
-   nothing has to be unwound under prefers-reduced-motion. */
+/* An instant shift: hover colour changes never animate here. */
 .tag:hover {
   color: var(--accent);
 }
@@ -904,12 +948,39 @@ textarea {
   display: none;
 }
 
-/* The tldr, as the serif lead. */
+/* The tldr, as the serif lead: a step larger and tighter-set than the prose,
+   under a small label and, when the summary follows, closed by a short hairline so it reads as a
+   standfirst rather than the first paragraph. No colour or rule of its own —
+   those belong to notices, the trail, and the novelty panel. */
 .reading-lead {
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-6);
+}
+
+/* The small label over the lead, in the muted voice of the other
+   section labels (relationship groups, details groups). */
+.reading-lead-label {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+}
+
+.reading-lead-text {
+  margin: 0;
   font-family: var(--font-reading);
-  font-size: 21px;
-  line-height: 1.7;
+  font-size: 23px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+}
+
+.reading-lead:not(:last-child)::after {
+  content: "";
+  display: block;
+  width: 48px;
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--control-border);
 }
 
 /* Rendered summary_markdown. No captured size: it is reading matter below the
@@ -1042,8 +1113,8 @@ textarea {
 }
 
 @media (max-width: 650px) {
-  .reading-lead {
-    font-size: 20px;
+  .reading-lead-text {
+    font-size: 21px;
   }
 
   .reading-prose {
@@ -1146,6 +1217,10 @@ textarea {
   display: block;
   max-width: 100%;
   height: auto;
+  /* A neutral ring for edge definition on the paper surface: pure black or
+     white, never a palette tint, which would read as dirt on the edge. */
+  outline: 1px solid light-dark(oklch(0 0 0 / 0.1), oklch(1 0 0 / 0.1));
+  outline-offset: -1px;
 }
 
 /* Source unavailable (acceptance matrix): a soft card in the view's place,
