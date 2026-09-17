@@ -27,7 +27,12 @@ export function ReadingSummary({ reading }: { reading: Reading }) {
   return (
     <div className="reading-summary">
       {notice ? <DegradedNotice>{notice}</DegradedNotice> : null}
-      {reading.tldr ? <p className="reading-lead">{reading.tldr}</p> : null}
+      {reading.tldr ? (
+        <div className="reading-lead">
+          <p className="reading-lead-label">TL;DR</p>
+          <p className="reading-lead-text">{reading.tldr}</p>
+        </div>
+      ) : null}
       {body ? <SummaryMarkdown markdown={body} /> : null}
     </div>
   );

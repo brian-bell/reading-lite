@@ -593,6 +593,22 @@ textarea {
   cursor: pointer;
 }
 
+/* Buttons settle to 0.96 while pressed: a transition, so a release mid-press
+   returns smoothly. Only under no-preference; otherwise the press is instant. */
+@media (prefers-reduced-motion: no-preference) {
+  .button,
+  .source-image-load {
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }
+
+  .button:active:not(:disabled, [aria-disabled="true"]),
+  .source-image-load:active {
+    scale: 0.96;
+  }
+}
+
 .button-primary {
   min-height: 44px;
   border-color: var(--accent);
@@ -883,8 +899,7 @@ textarea {
   text-decoration: none;
 }
 
-/* An instant shift, like every other control here: the app has no motion, so
-   nothing has to be unwound under prefers-reduced-motion. */
+/* An instant shift: hover colour changes never animate here. */
 .tag:hover {
   color: var(--accent);
 }
@@ -912,12 +927,39 @@ textarea {
   display: none;
 }
 
-/* The tldr, as the serif lead. */
+/* The tldr, as the serif lead: a step larger and tighter-set than the prose,
+   under a small label and, when the summary follows, closed by a short hairline so it reads as a
+   standfirst rather than the first paragraph. No colour or rule of its own —
+   those belong to notices, the trail, and the novelty panel. */
 .reading-lead {
-  margin: 0 0 var(--space-5);
+  margin: 0 0 var(--space-6);
+}
+
+/* The small label over the lead, in the muted voice of the other
+   section labels (relationship groups, details groups). */
+.reading-lead-label {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+}
+
+.reading-lead-text {
+  margin: 0;
   font-family: var(--font-reading);
-  font-size: 21px;
-  line-height: 1.7;
+  font-size: 23px;
+  line-height: 1.55;
+  letter-spacing: -0.005em;
+}
+
+.reading-lead:not(:last-child)::after {
+  content: "";
+  display: block;
+  width: 48px;
+  margin-top: var(--space-6);
+  border-top: 1px solid var(--control-border);
 }
 
 /* Rendered summary_markdown. No captured size: it is reading matter below the
@@ -1050,8 +1092,8 @@ textarea {
 }
 
 @media (max-width: 650px) {
-  .reading-lead {
-    font-size: 20px;
+  .reading-lead-text {
+    font-size: 21px;
   }
 
   .reading-prose {
@@ -1154,6 +1196,10 @@ textarea {
   display: block;
   max-width: 100%;
   height: auto;
+  /* A neutral ring for edge definition on the paper surface: pure black or
+     white, never a palette tint, which would read as dirt on the edge. */
+  outline: 1px solid light-dark(oklch(0 0 0 / 0.1), oklch(1 0 0 / 0.1));
+  outline-offset: -1px;
 }
 
 /* Source unavailable (acceptance matrix): a soft card in the view's place,
