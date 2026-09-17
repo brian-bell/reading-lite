@@ -38,11 +38,8 @@ describe("sessionsViewOf", () => {
     expect(sessionsViewOf(settled({ error }))).toEqual({ kind: "server-error", message: "backend unavailable" });
   });
 
-  it("is offline when the fetch is paused for lack of a network", () => {
+  it("is offline when the fetch is paused or threw while the browser was offline", () => {
     expect(sessionsViewOf(settled({ fetchStatus: "paused" }))).toEqual({ kind: "offline" });
-  });
-
-  it("is offline when the fetch threw while the browser was offline", () => {
     expect(sessionsViewOf(settled({ error: failedToFetch(true) }))).toEqual({ kind: "offline" });
   });
 

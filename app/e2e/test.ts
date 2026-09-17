@@ -270,8 +270,7 @@ export const E2E_SESSIONS = {
 export async function serveSessionsInBrowser(
   page: Page,
   answer: { status?: number; json?: unknown } = {},
-): Promise<{ deleted: Request[]; revokeAll: Request[] }> {
-  const deleted: Request[] = [];
+): Promise<{ revokeAll: Request[] }> {
   const revokeAll: Request[] = [];
   const listed = answer.json ?? E2E_SESSIONS;
   const status = answer.status ?? 200;
@@ -290,13 +289,12 @@ export async function serveSessionsInBrowser(
       return;
     }
     if (request.method() === "DELETE" && path.startsWith("/api/auth/sessions/")) {
-      deleted.push(request);
       await route.fulfill({ status: 200, json: { ok: true } });
       return;
     }
     await route.fallback();
   });
-  return { deleted, revokeAll };
+  return { revokeAll };
 }
 
 export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {

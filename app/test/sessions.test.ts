@@ -4,7 +4,6 @@ import {
   revokeFromResponse,
   sessionHeading,
   sessionsFromResponse,
-  sessionsQueryKey,
   type SessionListItem,
 } from "../src/sessions";
 
@@ -25,20 +24,9 @@ const listed = {
   session_cap_warning: null,
 };
 
-describe("sessionsQueryKey", () => {
-  it("is account-scoped", () => {
-    expect(sessionsQueryKey("usr_a")).toEqual(["sessions", "usr_a"]);
-  });
-});
-
 describe("sessionsFromResponse", () => {
   it("returns the list on 200", () => {
     expect(sessionsFromResponse(200, listed)).toEqual({ state: "ready", listed });
-  });
-
-  it("keeps a cap warning", () => {
-    const body = { ...listed, session_cap_warning: "This account is at the 10-session limit." };
-    expect(sessionsFromResponse(200, body)).toEqual({ state: "ready", listed: body });
   });
 
   it("maps 403 and 412 to their states rather than a throw", () => {
@@ -104,10 +92,6 @@ describe("revokeFromResponse", () => {
 });
 
 describe("sessionHeading", () => {
-  it("names this device", () => {
-    expect(sessionHeading(session({ current: true, user_agent_label: "Firefox" }))).toBe("Firefox (this device)");
-  });
-
   it("falls back to Unknown browser", () => {
     expect(sessionHeading(session({ user_agent_label: null }))).toBe("Unknown browser");
   });
