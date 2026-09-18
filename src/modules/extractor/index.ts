@@ -83,8 +83,9 @@ export interface ExtractedContent {
   content_sha256: string;
   markdown?: string;
   title?: string;
-  // Publication date of the source (UTC YYYY-MM-DD). HTML branch only, from
-  // Readability's publishedTime. Absent when missing or implausible.
+  // Publication date of the source (UTC YYYY-MM-DD). HTML from Readability's
+  // publishedTime; X from the first rendered post's created_at. Absent when
+  // missing or implausible.
   source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
   // crashed and the raw-DOM salvage recovered the text. Absent for every other
