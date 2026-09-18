@@ -69,6 +69,15 @@ describe("sourceDateFromMarkdownFrontMatter", () => {
     ).toBe("2021-01-01");
   });
 
+  it("falls through a boolean published to a usable date alias", () => {
+    expect(
+      sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: true\ndate: 2024-03-15"), NOW),
+    ).toBe("2024-03-15");
+    expect(
+      sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: false\ndate: 2024-03-15"), NOW),
+    ).toBe("2024-03-15");
+  });
+
   it("normalizes an offset timestamp to the UTC calendar date", () => {
     expect(
       sourceDateFromMarkdownFrontMatter(
@@ -90,11 +99,15 @@ describe("sourceDateFromMarkdownFrontMatter", () => {
     expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: 2099-01-01"), NOW)).toBeUndefined();
     expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: 1899-12-31"), NOW)).toBeUndefined();
     expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date:"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: true"), NOW)).toBeUndefined();
+  });
+
+  it("falls through an unusable preferred key to a later alias", () => {
     expect(
       sourceDateFromMarkdownFrontMatter(
         mdWithFrontMatter("source_date: not-a-date\ndate: 2024-03-15"),
         NOW,
       ),
-    ).toBeUndefined();
+    ).toBe("2024-03-15");
   });
 });

@@ -19,7 +19,7 @@ export function sourceDateFromExtractOrPrior(
 }
 
 // Markdown imports have no date in the article body. Submitters may prefix the
-// markdown with a YAML front-matter block; the importer reads the first present
+// markdown with a YAML front-matter block; the importer reads the first *usable*
 // of `source_date`, `published`, `date` (in that order) and normalizes it.
 // Example:
 //
@@ -28,9 +28,10 @@ export function sourceDateFromExtractOrPrior(
 //   ---
 //   # Title
 //
-// Missing, unparseable, and implausible values omit the field — they never
-// fail the import. A present-but-bad preferred key does not fall through to
-// a later one.
+// A preferred key that is not a plausible UTC date (boolean `published`, empty,
+// unparseable, future, pre-1900) falls through to the next alias. Jekyll's
+// `published: true` plus `date: 2024-03-15` therefore lands the date. Missing
+// or unusable values on every key omit the field — they never fail the import.
 const MARKDOWN_FRONT_MATTER_KEYS = ["source_date", "published", "date"] as const;
 
 export function sourceDateFromMarkdownFrontMatter(
@@ -39,8 +40,12 @@ export function sourceDateFromMarkdownFrontMatter(
 ): string | undefined {
   const block = markdownFrontMatterBlock(markdown);
   if (block === undefined) return undefined;
-  const raw = firstFrontMatterValue(block, MARKDOWN_FRONT_MATTER_KEYS);
-  return sourceDateFromPublishedTime(raw, nowMs);
+  const values = frontMatterValues(block);
+  for (const key of MARKDOWN_FRONT_MATTER_KEYS) {
+    const date = sourceDateFromPublishedTime(values.get(key), nowMs);
+    if (date !== undefined) return date;
+  }
+  return undefined;
 }
 
 function markdownFrontMatterBlock(markdown: string): string | undefined {
@@ -49,10 +54,7 @@ function markdownFrontMatterBlock(markdown: string): string | undefined {
   return match?.[1];
 }
 
-function firstFrontMatterValue(
-  block: string,
-  keys: readonly string[],
-): string | undefined {
+function frontMatterValues(block: string): Map<string, string> {
   const found = new Map<string, string>();
   for (const line of block.split(/\r?\n/)) {
     const match = line.match(/^([A-Za-z_][\w]*)\s*:\s*(.*?)\s*$/);
@@ -61,11 +63,7 @@ function firstFrontMatterValue(
     if (value.length === 0) continue;
     found.set(match[1]!.toLowerCase(), value);
   }
-  for (const key of keys) {
-    const value = found.get(key);
-    if (value !== undefined) return value;
-  }
-  return undefined;
+  return found;
 }
 
 function unquoteYamlScalar(value: string): string {
