@@ -4,7 +4,8 @@
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
-// missing reading, sign-in, save, one trail hop, Source, Details, account sessions): CI runs
+// missing reading, sign-in, save, one trail hop, Source, Details, account sessions,
+// public legal pages): CI runs
 // those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
@@ -386,6 +387,13 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     }),
   },
   { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
+
+  // Public legal pages (#340.2). Signed out, no identity in the server render.
+  // No `prepare`: they are standing shell pages, so reduced-motion and zoom
+  // inherit them the way save-signed-in does.
+  { name: "terms", essential: true, path: "/terms", state: "signed-out", heading: "Terms of Service" },
+  { name: "privacy", essential: true, path: "/privacy", state: "signed-out", heading: "Privacy Policy" },
+  { name: "dmca", essential: true, path: "/dmca", state: "signed-out", heading: "Copyright Complaints" },
 
   // Account sessions (#340.1). The list is fetched in the browser, so every
   // signed-in case stubs GET /api/auth/sessions; without that the frontend

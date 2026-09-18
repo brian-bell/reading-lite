@@ -1,13 +1,16 @@
+import { isPublicLegalPath } from "../legal";
+
 // Request rules from ADR 0003 (Routing, Rendering and caching).
 //
 // The backend Worker owns /api/*, /health, and /mcp* through more specific
 // routes. The frontend never renders or proxies those paths: if a misconfigured
 // route delivers one here, it answers 404 so the fault is visible.
 //
-// Every response this Worker renders is private and uncacheable, and carries
-// the content-security policy the Source view needs (design spec, Source
-// content). Hashed static assets never reach this code; Workers Assets serves
-// them with the headers in public/_headers.
+// Authenticated HTML is private and uncacheable. Public legal pages carry no
+// identity, so they are left off that cache directive and may be prerendered.
+// Every rendered response carries the content-security policy the Source view
+// needs (design spec, Source content). Hashed static assets never reach this
+// code; Workers Assets serves them with the headers in public/_headers.
 
 export const HTML_CACHE_CONTROL = "private, no-store";
 
@@ -37,9 +40,15 @@ export function backendPathResponse(): Response {
   });
 }
 
-export function withResponsePolicy(response: Response): Response {
+export function withResponsePolicy(response: Response, pathname = ""): Response {
   const headers = new Headers(response.headers);
-  headers.set("Cache-Control", HTML_CACHE_CONTROL);
+  if (isPublicLegalPath(pathname)) {
+    // Do not mark public legal HTML private/no-store (ADR 0003). Drop a
+    // framework default so a shared cache or prerender is allowed.
+    headers.delete("Cache-Control");
+  } else {
+    headers.set("Cache-Control", HTML_CACHE_CONTROL);
+  }
   headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
   return new Response(response.body, {
     status: response.status,
