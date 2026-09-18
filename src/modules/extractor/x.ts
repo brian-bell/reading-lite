@@ -15,6 +15,7 @@ import {
   XThreadOutsideRecentWindowError,
 } from "./errors";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
+import { sourceDateFromPublishedTime } from "./source-date";
 
 const X_WEB_HOSTS = /^(?:[a-z0-9-]+\.)*(?:x|twitter)\.com$/;
 const X_API_BASE = "https://api.x.com/2";
@@ -251,6 +252,7 @@ export async function extractXThread(
   if (raw.byteLength > deps.maxBytes) {
     throw new OversizedResponseError(endpointName(sharedUrl), deps.maxBytes);
   }
+  const source_date = sourceDateFromPublishedTime(root.created_at, deps.now());
   return {
     raw,
     content_type: "application/json; charset=utf-8",
@@ -259,6 +261,7 @@ export async function extractXThread(
     content_sha256: await sha256Bytes(raw),
     markdown,
     title,
+    ...(source_date === undefined ? {} : { source_date }),
   };
 }
 

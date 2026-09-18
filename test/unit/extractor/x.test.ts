@@ -839,4 +839,105 @@ describe("extractXThread", () => {
       }),
     ).rejects.toBeInstanceOf(XThreadIncompleteError);
   });
+
+  it("sets source_date from the root post's created_at as the UTC calendar date", async () => {
+    // 23:00 on 27 July in UTC−5 is 04:00 on 28 July UTC.
+    const shared = {
+      id: "100",
+      text: "Root post",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T23:00:00-05:00",
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.source_date).toBe("2026-07-28");
+  });
+
+  it("omits source_date when the root created_at is in the future", async () => {
+    // Missing/unparseable timestamps are dropped by sourceDateFromPublishedTime
+    // (see source-date.test.ts). A future created_at is the omit path that
+    // still yields a successful extract — older than seven days fails earlier.
+    const shared = {
+      id: "100",
+      text: "Just posted",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-29T00:00:00.000Z",
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/100") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      return json({ data: [shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/100", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect("source_date" in out).toBe(false);
+  });
+
+  it("does not invent source_date from reply posts", async () => {
+    const root = {
+      id: "100",
+      text: "Root post",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-26T12:00:00.000Z",
+    };
+    const shared = {
+      id: "200",
+      text: "Next-day reply",
+      author_id: "author-1",
+      conversation_id: "100",
+      created_at: "2026-07-27T12:00:00.000Z",
+      referenced_tweets: [{ type: "replied_to", id: "100" }],
+    };
+    const fetchFn = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/2/tweets/200") {
+        return json({
+          data: shared,
+          includes: {
+            users: [{ id: "author-1", name: "Author Name", username: "author" }],
+          },
+        });
+      }
+      if (url.pathname === "/2/tweets/100") return json({ data: root });
+      return json({ data: [root, shared], meta: {} });
+    });
+
+    const out = await extractXThread("https://x.com/author/status/200", {
+      ...xDeps,
+      fetch: fetchFn as unknown as typeof fetch,
+    });
+
+    expect(out.source_date).toBe("2026-07-26");
+    expect(out.markdown).toContain("Next-day reply");
+  });
 });
