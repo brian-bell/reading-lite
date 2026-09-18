@@ -12,7 +12,10 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as SplatRouteImport } from './routes/$'
 import { Route as AuthedRouteImport } from './routes/_authed'
+import { Route as DmcaRouteImport } from './routes/dmca'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as TermsRouteImport } from './routes/terms'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
@@ -33,9 +36,24 @@ const AuthedRoute = AuthedRouteImport.update({
   id: '/_authed',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DmcaRoute = DmcaRouteImport.update({
+  id: '/dmca',
+  path: '/dmca',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrivacyRoute = PrivacyRouteImport.update({
+  id: '/privacy',
+  path: '/privacy',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TermsRoute = TermsRouteImport.update({
+  id: '/terms',
+  path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthedSaveRoute = AuthedSaveRouteImport.update({
@@ -67,7 +85,10 @@ const AuthedReadingsIdRoute = AuthedReadingsIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
@@ -77,7 +98,10 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
+  '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
@@ -89,7 +113,10 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/$': typeof SplatRoute
   '/_authed': typeof AuthedRouteWithChildren
+  '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
+  '/privacy': typeof PrivacyRoute
+  '/terms': typeof TermsRoute
   '/_authed/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
@@ -101,7 +128,10 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/$'
+    | '/dmca'
     | '/login'
+    | '/privacy'
+    | '/terms'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
@@ -111,7 +141,10 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/$'
+    | '/dmca'
     | '/login'
+    | '/privacy'
+    | '/terms'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
@@ -122,7 +155,10 @@ export interface FileRouteTypes {
     | '/'
     | '/$'
     | '/_authed'
+    | '/dmca'
     | '/login'
+    | '/privacy'
+    | '/terms'
     | '/_authed/save'
     | '/auth/verify'
     | '/login_/verify'
@@ -134,7 +170,10 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   SplatRoute: typeof SplatRoute
   AuthedRoute: typeof AuthedRouteWithChildren
+  DmcaRoute: typeof DmcaRoute
   LoginRoute: typeof LoginRoute
+  PrivacyRoute: typeof PrivacyRoute
+  TermsRoute: typeof TermsRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
   LoginVerifyRoute: typeof LoginVerifyRoute
 }
@@ -162,11 +201,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dmca': {
+      id: '/dmca'
+      path: '/dmca'
+      fullPath: '/dmca'
+      preLoaderRoute: typeof DmcaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/login': {
       id: '/login'
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/privacy': {
+      id: '/privacy'
+      path: '/privacy'
+      fullPath: '/privacy'
+      preLoaderRoute: typeof PrivacyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/terms': {
+      id: '/terms'
+      path: '/terms'
+      fullPath: '/terms'
+      preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed/save': {
@@ -226,7 +286,10 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   SplatRoute: SplatRoute,
   AuthedRoute: AuthedRouteWithChildren,
+  DmcaRoute: DmcaRoute,
   LoginRoute: LoginRoute,
+  PrivacyRoute: PrivacyRoute,
+  TermsRoute: TermsRoute,
   AuthVerifyRoute: AuthVerifyRoute,
   LoginVerifyRoute: LoginVerifyRoute,
 }

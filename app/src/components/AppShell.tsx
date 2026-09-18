@@ -4,6 +4,7 @@ import type { SignOutResult } from "../auth/session";
 import type { ThemePreference } from "../theme";
 import { AccountArea, type AccountState } from "./AccountMenu";
 import { Icon } from "./Icon";
+import { LegalFooter } from "./LegalPages";
 import { ThemeControl } from "./ThemeControl";
 
 export type { AccountState } from "./AccountMenu";
@@ -60,9 +61,12 @@ export function AppShell({
               <AccountArea account={account} onSignOut={onSignOut} />
             </nav>
           </header>
-          <main id="main" className="shell-main" tabIndex={-1}>
-            {children}
-          </main>
+          <div className="shell-body">
+            <main id="main" className="shell-main" tabIndex={-1}>
+              {children}
+            </main>
+            <LegalFooter />
+          </div>
         </div>
       </div>
     </>

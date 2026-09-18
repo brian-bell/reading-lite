@@ -38,12 +38,15 @@ return path is per origin.
 - **Backend paths.** `/api`, `/api/*`, `/health`, and `/mcp*` return 404 from
   `src/start.ts` before rendering. The backend's more specific routes own them;
   the frontend never proxies.
-- **Caching and policy.** Every rendered response is `Cache-Control: private,
-  no-store` and carries `Content-Security-Policy: img-src 'self' https: data:`
+- **Caching and policy.** Authenticated HTML is `Cache-Control: private,
+  no-store` and every rendered page carries
+  `Content-Security-Policy: img-src 'self' https: data:`
   (`src/server/request-policy.ts`): the page's own images, the remote `https:`
   images a reader loads in the Source view, and the `data:` grain in
-  `tokens.css`, nothing broader. Only `/assets/*` (content-hashed) is publicly
-  cacheable, via `public/_headers`.
+  `tokens.css`, nothing broader. Public legal pages (`/terms`, `/privacy`,
+  `/dmca`) skip identity during the server render and are left off
+  `private, no-store`, so they may be prerendered (ADR 0003). Only `/assets/*`
+  (content-hashed) is publicly cacheable by design, via `public/_headers`.
 - **Service bindings.** Each environment's `BACKEND` binding in
   `wrangler.jsonc` names the backend Worker of the same environment and its
   `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
@@ -360,11 +363,11 @@ CI runs the essential scope, `npm run test:browser:ci` (`e2e/scope.ts`): the
 cases marked `essential` in `e2e/coverage.ts` — the major states of each route:
 the library signed out, signed in, searched, empty, session-ended, and failed;
 sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
-Source; open Details; and the account sessions list — in the `phone-dark` and
-`desktop-light` projects, so both viewports and both themes are still covered,
-plus the behaviour specs and `checks`. Reduced motion and zoom, the other
-matrix projects, and the remaining states run only in the full
-`npm run test:browser`, which is the local verification before a frontend
+Source; open Details; the account sessions list; and the public legal pages —
+in the `phone-dark` and `desktop-light` projects, so both viewports and both
+themes are still covered, plus the behaviour specs and `checks`. Reduced motion
+and zoom, the other matrix projects, and the remaining states run only in the
+full `npm run test:browser`, which is the local verification before a frontend
 change ships.
 
 Extending it:

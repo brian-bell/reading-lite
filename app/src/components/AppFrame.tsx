@@ -4,6 +4,7 @@ import { useEffect, type ReactNode } from "react";
 import { dropLegacyBearerToken } from "../auth/legacy-storage";
 import { signOut, useSessionEndedAt } from "../auth/session";
 import { whoamiQueryOptions } from "../identity-query";
+import { isPublicLegalPath } from "../legal";
 import type { ThemePreference } from "../theme";
 import { AppShell, type AccountState } from "./AppShell";
 import { focusPageHeading, useFocusHeadingOnNavigation } from "./PageHeading";
@@ -28,14 +29,23 @@ export function AppFrame({
   // so the expired-session page must too, or the old page remounts and
   // refetches.
   const href = useRenderedLocation((location) => location.href);
-  const { data: identity } = useQuery(whoamiQueryOptions());
+  const pathname = useRenderedLocation((location) => location.pathname);
+  const publicLegal = isPublicLegalPath(pathname);
+  // Legal pages skip identity during the server render so the HTML can be
+  // cached or prerendered. The browser still reads whoami after hydration.
+  const { data: identity } = useQuery({
+    ...whoamiQueryOptions(),
+    enabled: !publicLegal || typeof document !== "undefined",
+  });
   const sessionEndedAt = useSessionEndedAt();
   useFocusHeadingOnNavigation();
   useEffect(dropLegacyBearerToken, []);
 
   const account: AccountState =
     identity === undefined
-      ? { status: "unknown" }
+      ? publicLegal
+        ? { status: "signed-out" }
+        : { status: "unknown" }
       : identity === null
         ? { status: "signed-out" }
         : { status: "signed-in", email: identity.email };
