@@ -252,7 +252,7 @@ export async function extractXThread(
   if (raw.byteLength > deps.maxBytes) {
     throw new OversizedResponseError(endpointName(sharedUrl), deps.maxBytes);
   }
-  const source_date = sourceDateFromPublishedTime(root.created_at, deps.now());
+  const source_date = sourceDateFromPublishedTime(ordered[0]!.created_at, deps.now());
   return {
     raw,
     content_type: "application/json; charset=utf-8",

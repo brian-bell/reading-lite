@@ -84,7 +84,7 @@ export interface ExtractedContent {
   markdown?: string;
   title?: string;
   // Publication date of the source (UTC YYYY-MM-DD). HTML from Readability's
-  // publishedTime; X from the conversation root's created_at. Absent when
+  // publishedTime; X from the first rendered post's created_at. Absent when
   // missing or implausible.
   source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
