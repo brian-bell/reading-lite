@@ -335,7 +335,8 @@ export function readyManifest(facts: ReadyFacts, now: string): Manifest {
  * placeholder with content_status "failed" — the worker failure path, where
  * extraction may never have happened; batch passes the real facts from its
  * sidecar target. Same attempt rule as readyManifest, requiring a finished
- * failed attempt (or an explicit null).
+ * failed attempt (or an explicit null). `source_date` is durable metadata:
+ * a failure must not erase a stored publication date the writer still holds.
  */
 export function failedManifest(
   identity: ReadingIdentity,
@@ -344,6 +345,7 @@ export function failedManifest(
     error: Manifest["error"] & object;
     attempt: ProcessingAttemptSummary | null;
     content?: ContentFacts;
+    source_date?: string;
   },
   now: string,
 ): Manifest {
@@ -358,6 +360,7 @@ export function failedManifest(
     status: "failed",
     error: sanitizeManifestError(facts.error),
     ...content,
+    ...(facts.source_date === undefined ? {} : { source_date: facts.source_date }),
     created_at: identity.createdAt,
     updated_at: now,
     ...(facts.attempt === null ? {} : { last_attempt: sanitizeAttemptError(facts.attempt) }),

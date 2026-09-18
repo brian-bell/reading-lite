@@ -185,8 +185,8 @@ export async function processReading(
     }
 
     // A fresh extract is authoritative; the prior fills the gap. Resolve the
-    // prior here, before leases and paid stages, so a fail-closed read cannot
-    // burn spend. Skip that read when the extract already produced a date.
+    // prior here, before leases and paid stages. Skip that read when the
+    // extract already produced a date.
     const source_date = await sourceDateForReadyDraft(extracted, reader, args);
 
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
@@ -809,11 +809,17 @@ async function markFailed(
   }
 
   const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
+  const sourceDateOnFailure = await sourceDateFromPrior(reader, args);
   // content omitted → the empty-content placeholder with content_status
   // "failed": on this path extraction may never have happened.
   const manifest = failedManifest(
     args,
-    { sourceType: sourceTypeOnFailure, error, attempt },
+    {
+      sourceType: sourceTypeOnFailure,
+      error,
+      attempt,
+      ...(sourceDateOnFailure === undefined ? {} : { source_date: sourceDateOnFailure }),
+    },
     services.now(),
   );
   // We're already on the failure path inside the queue consumer — a transient
@@ -846,8 +852,11 @@ export async function sourceDateForReadyDraft(
   );
 }
 
-/** Carry a stored publication date onto the ready draft. Exported so tests
- *  can pin fail-closed read errors without running the full process pipeline. */
+/** Carry a stored publication date onto the ready or failed draft. Exported
+ *  so tests can pin prior-read errors without running the full process
+ *  pipeline. A throw is not "no stored date", but rethrowing it would land
+ *  in markFailed and write a dateless failed terminal — strictly worse than
+ *  proceeding undated on failed-prior reprocess / import-over. */
 export async function sourceDateFromPrior(
   reader: Pick<ReadingStore, "readManifest">,
   args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
@@ -856,12 +865,10 @@ export async function sourceDateFromPrior(
   try {
     current = await reader.readManifest(args.keyPrefix);
   } catch (error) {
-    // A throw is not "no stored date". Swallowing it would let readyManifest
-    // omit source_date and commit ready, permanently dropping a prior date
-    // on failed-prior reprocess / import-over (no preserveReadyManifest).
     const preserved = args.preserveReadyManifest?.source_date;
     if (preserved !== undefined) return preserved;
-    throw error;
+    console.error(error);
+    return undefined;
   }
   return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }

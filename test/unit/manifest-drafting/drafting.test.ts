@@ -694,6 +694,20 @@ describe("failedManifest", () => {
     expect("last_attempt" in manifest).toBe(false);
   });
 
+  it("carries a prior source_date onto the failed draft and omits it when absent", () => {
+    expect(
+      failedManifest(
+        IDENTITY,
+        { sourceType: "url", error, attempt: failedAttempt, source_date: "2024-03-15" },
+        NOW,
+      ).source_date,
+    ).toBe("2024-03-15");
+    expect(
+      "source_date" in
+        failedManifest(IDENTITY, { sourceType: "url", error, attempt: failedAttempt }, NOW),
+    ).toBe(false);
+  });
+
   it("refuses a non-failed attempt", () => {
     const succeeded = { ...failedAttempt, status: "succeeded" as const };
     expect(() =>

@@ -253,6 +253,20 @@ describe("writeResults — success path", () => {
     expect(m.source_date).toBe("2024-03-15");
   });
 
+  it("writes a prior source_date from the sidecar onto a failed manifest", async () => {
+    const r2 = fakeR2();
+    await writeResults(
+      sidecar([sidecarTarget({ sourceDate: "2024-03-15" })]),
+      [errored("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect(m.status).toBe("failed");
+    expect(m.source_date).toBe("2024-03-15");
+  });
+
   it("writes a ready manifest with the resolved reading fields", async () => {
     const r2 = fakeR2();
     const vec = fakeVectorize();

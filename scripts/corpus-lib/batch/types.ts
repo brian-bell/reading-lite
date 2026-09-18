@@ -96,8 +96,8 @@ export interface SidecarTarget {
   // enrichment miss instead of dropping it.
   enrichmentDegradation?: EnrichmentDegradation;
   // Prior publication date, copied from the current/prior manifest so the
-  // write phase can stamp it onto a ready draft. Optional so sidecars written
-  // before this field still load.
+  // write phase can stamp it onto ready and failed drafts. Optional so
+  // sidecars written before this field still load.
   sourceDate?: string;
   // Persisted so the write phase records the full embedding cost even on a
   // resumed run (the similar phase, which computes it, doesn't re-run on resume).
