@@ -5,7 +5,7 @@
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
-import { serveSessionsInBrowser, signIn } from "../test";
+import { serveSessionsInBrowser, serveSettingsInBrowser, signIn } from "../test";
 
 const test = base.extend({
   baseURL: async ({}, use) => {
@@ -15,6 +15,7 @@ const test = base.extend({
 
 async function openAccount(page: Page, baseURL: string) {
   await signIn(page.context(), baseURL);
+  await serveSettingsInBrowser(page);
   const writes = await serveSessionsInBrowser(page);
   await page.goto("/account/security");
   await expect(page.getByRole("heading", { level: 1, name: "Account" })).toBeVisible();

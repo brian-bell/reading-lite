@@ -1,7 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
-import { CSRF_HEADER } from "../../src/schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -20,7 +20,7 @@ function services() {
 
 async function request(
   path: string,
-  init: { method?: string; body?: unknown; cookie?: string; csrf?: string } = {},
+  init: { method?: string; body?: unknown; cookie?: string; csrf?: string; expectedTenant?: string } = {},
   workerEnv: Env = env as unknown as Env,
 ) {
   const sent: MagicLinkMail[] = [];
@@ -32,6 +32,7 @@ async function request(
   const headers = new Headers({ origin: "http://t" });
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
+  if (init.expectedTenant !== undefined) headers.set(EXPECTED_TENANT_HEADER, init.expectedTenant);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -99,5 +100,32 @@ describe("auth settings tenant isolation", () => {
       digest_cadence: "off",
       time_zone: "UTC",
     });
+  });
+});
+
+describe("x-expected-tenant on settings", () => {
+  it("returns 412 when the pin is not the acting tenant, and changes nothing", async () => {
+    const owner = await redeem("founder@test.example", "clm_settings_expected_tenant");
+    const whoami = await request("/api/whoami", { cookie: owner.cookie });
+    const { tenant_id: tenantId } = (await whoami.res.json()) as { tenant_id: string };
+    const mismatch = { error: "expected tenant mismatch", acting_tenant: tenantId };
+
+    const read = await request("/api/auth/settings", { cookie: owner.cookie, expectedTenant: "global" });
+    expect(read.res.status).toBe(412);
+    expect(await read.res.json()).toEqual(mismatch);
+
+    const write = await request("/api/auth/settings", {
+      method: "POST",
+      cookie: owner.cookie,
+      csrf: owner.csrf,
+      expectedTenant: "global",
+      body: { notify_immediate: false },
+    });
+    expect(write.res.status).toBe(412);
+    expect(await write.res.json()).toEqual(mismatch);
+
+    const pinned = await request("/api/auth/settings", { cookie: owner.cookie, expectedTenant: tenantId });
+    expect(pinned.res.status).toBe(200);
+    expect(await pinned.res.json()).toMatchObject({ notify_immediate: true });
   });
 });

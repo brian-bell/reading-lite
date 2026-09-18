@@ -297,6 +297,45 @@ export async function serveSessionsInBrowser(
   return { revokeAll };
 }
 
+export const E2E_SETTINGS = {
+  schema_version: 1,
+  notify_immediate: true,
+  digest_cadence: "off",
+  time_zone: "UTC",
+  digest_hour_local: 8,
+  digest_weekday: 1,
+  created_at_ms: 1,
+  updated_at_ms: 2,
+};
+
+/**
+ * GET and POST /api/auth/settings (#340.6). Awaited for the same reason as the
+ * sessions route: the account page reads the settings on mount. A save
+ * answers with the stored row changed by the body.
+ */
+export async function serveSettingsInBrowser(
+  page: Page,
+  answer: { status?: number; json?: unknown } = {},
+): Promise<{ saves: Request[] }> {
+  const saves: Request[] = [];
+  let stored: Record<string, unknown> = { ...E2E_SETTINGS };
+  await page.route("**/api/auth/settings", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ status: answer.status ?? 200, json: answer.json ?? stored });
+      return;
+    }
+    if (request.method() === "POST") {
+      saves.push(request);
+      stored = { ...stored, ...(request.postDataJSON() as Record<string, unknown>) };
+      await route.fulfill({ status: 200, json: stored });
+      return;
+    }
+    await route.fallback();
+  });
+  return { saves };
+}
+
 export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {
   await context.addCookies([{ name: sessionCookieName(baseURL), value: session, url: baseURL }]);
 }

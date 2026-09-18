@@ -377,6 +377,35 @@ textarea {
   line-height: 1.25;
 }
 
+.account-section + .account-section {
+  margin-top: var(--space-6);
+}
+
+.settings-group {
+  margin: 0 0 var(--space-4);
+}
+
+.settings-group .session-meta {
+  margin: var(--space-1) 0 0;
+}
+
+/* A 44 px row so the whole label is the target, not just the box. */
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
 .session-cap-warning {
   margin: 0 0 var(--space-4);
   padding: var(--space-3) var(--space-4);

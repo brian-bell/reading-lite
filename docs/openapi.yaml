@@ -564,7 +564,10 @@ paths:
         Session cookie only (bearer 403). CSRF is not required (GET). Returns
         the full `user_settings` row (`notify_immediate`, digest cadence and
         schedule, timestamps). 404 when the row is missing. Recent-auth is
-        not required.
+        not required. Optional `X-Expected-Tenant` mismatch returns 412, as
+        on `/api/readings`.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: Settings row
@@ -578,6 +581,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
     post:
@@ -593,8 +598,11 @@ paths:
         `digest_weekday`). Digest opt-out is `digest_cadence: off`; hour,
         weekday, and time zone are still stored when cadence is off.
         Returns the full settings row. 404 when the row is missing.
+        Optional `X-Expected-Tenant` mismatch returns 412 after CSRF (same
+        order as readings writes) and changes nothing.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       requestBody:
         required: true
         content:
@@ -616,6 +624,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 

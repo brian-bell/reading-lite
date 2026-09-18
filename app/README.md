@@ -96,7 +96,12 @@ return path is per origin.
   writes are pinned with `x-expected-tenant` like the library's reads. The
   backend enforces that pin on `/api/auth/sessions…` (`requireExpectedTenant`),
   so a mid-page cookie switch 412s the list instead of showing the other
-  account's sessions.
+  account's sessions. Notifications read `GET /api/auth/settings` (zod-parsed,
+  `src/settings.ts`) and save with `POST /api/auth/settings`, pinned the same
+  way. A 403 or 412 from any read or write on the page is the whole page's
+  state; a failed settings read or save stays in the Notifications section
+  (offline notice or server error), keeps the reader's unsaved choice on
+  screen, and its Retry sends the failed save again.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

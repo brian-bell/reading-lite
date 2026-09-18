@@ -22,6 +22,7 @@ import {
   serveReprocessInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
+  serveSettingsInBrowser,
   serveSourceInBrowser,
 } from "./test";
 
@@ -387,9 +388,9 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 
-  // Account sessions (#340.1). The list is fetched in the browser, so every
-  // signed-in case stubs GET /api/auth/sessions; without that the frontend
-  // Worker answers /api/* with 404.
+  // Account (#340.1, #340.6). The sessions list and the notification settings
+  // are fetched in the browser, so every signed-in case stubs both; without
+  // that the frontend Worker answers /api/* with 404.
   { name: "account-signed-out", path: "/account/security", state: "signed-out", heading: "Sign in" },
   {
     name: "account-sessions",
@@ -398,12 +399,14 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Account",
     stub: async (page) => {
+      await serveSettingsInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
       await expect(page.getByRole("button", { name: "Revoke this device" })).toBeVisible();
       await expect(page.getByRole("status")).toContainText("10-session limit");
+      await expect(page.getByRole("checkbox", { name: "Email me when a reading is ready" })).toBeChecked();
     },
   },
   {
@@ -412,6 +415,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "You don't have access to this.",
     stub: async (page) => {
+      await serveSettingsInBrowser(page);
       await serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
     },
   },
@@ -421,6 +425,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "This tab is signed in to a different account than the page expects.",
     stub: async (page) => {
+      await serveSettingsInBrowser(page);
       await serveSessionsInBrowser(page, {
         status: 412,
         json: { error: "expected tenant mismatch", acting_tenant: "usr_bbbbbbbb" },
@@ -433,10 +438,26 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Something went wrong on our side.",
     stub: async (page) => {
+      await serveSettingsInBrowser(page);
       await serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
     },
     prepare: async (page) => {
       await expect(page.getByText("storage unavailable")).toBeVisible();
+    },
+  },
+  {
+    name: "account-settings-server-error",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page, { status: 503, json: { error: "control plane unavailable" } });
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const notifications = page.getByRole("region", { name: "Notifications" });
+      await expect(notifications.getByText("control plane unavailable")).toBeVisible();
+      await expect(page.getByText("Firefox (this device)")).toBeVisible();
     },
   },
   {
@@ -445,6 +466,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Account",
     stub: async (page) => {
+      await serveSettingsInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {

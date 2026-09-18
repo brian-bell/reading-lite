@@ -114,7 +114,7 @@ export function createApp(opts: AppOptions = {}) {
   );
   app.get("/api/auth/tokens", (c) => handleListApiTokens(c, authNowMs()));
   app.delete("/api/auth/tokens/:id", (c) => handleRevokeApiToken(c, authNowMs()));
-  app.use("/api/auth/settings", requirePrincipal(authNowMs), requireSession());
+  app.use("/api/auth/settings", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.get("/api/auth/settings", (c) => handleGetSettings(c));
   app.post("/api/auth/settings", (c) => handlePostSettings(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));

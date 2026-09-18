@@ -26,7 +26,7 @@ const listed = {
 
 describe("sessionsFromResponse", () => {
   it("returns the list on 200", () => {
-    expect(sessionsFromResponse(200, listed)).toEqual({ state: "ready", listed });
+    expect(sessionsFromResponse(200, listed)).toEqual({ state: "ready", value: listed });
   });
 
   it("maps 403 and 412 to their states rather than a throw", () => {

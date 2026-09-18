@@ -67,6 +67,15 @@ const listed = {
   session_cap_warning: null as string | null,
 };
 
+const SETTINGS = {
+  user_id: "usr_a",
+  notify_immediate: true,
+  digest_cadence: "off",
+  time_zone: "UTC",
+  digest_hour_local: 8,
+  digest_weekday: 1,
+};
+
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   component: () => (
     <AppFrame theme="system" onThemeChange={() => undefined}>
@@ -106,6 +115,9 @@ function mockApi(options?: {
   whoami?: Identity | null;
   onDelete?: (id: string) => Response;
   onRevokeAll?: () => Response;
+  settings?: unknown;
+  settingsStatus?: number;
+  onSaveSettings?: (body: Record<string, unknown>) => Response | Promise<Response>;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -119,6 +131,13 @@ function mockApi(options?: {
     }
     if (path === "/api/auth/sessions" && request.method === "GET") {
       return Response.json(options?.listed ?? listed, { status: options?.listStatus ?? 200 });
+    }
+    if (path === "/api/auth/settings" && request.method === "GET") {
+      return Response.json(options?.settings ?? SETTINGS, { status: options?.settingsStatus ?? 200 });
+    }
+    if (path === "/api/auth/settings" && request.method === "POST") {
+      const body = (await request.clone().json()) as Record<string, unknown>;
+      return (await options?.onSaveSettings?.(body)) ?? Response.json({ ...SETTINGS, ...body });
     }
     if (path === "/api/auth/sessions/revoke-all" && request.method === "POST") {
       return options?.onRevokeAll?.() ?? Response.json({ ok: true });
@@ -381,6 +400,7 @@ describe("the account page", () => {
         const path = new URL(request.url).pathname;
         if (path === "/api/whoami") return Response.json(other);
         if (path === "/api/auth/sessions" && request.method === "GET") return Response.json(listed);
+        if (path === "/api/auth/settings" && request.method === "GET") return Response.json(SETTINGS);
         return Response.json({ error: "forbidden" }, { status: 403 });
       }),
     );
@@ -418,5 +438,117 @@ describe("the account page", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
     expect(screen.getByRole("button", { name: "Revoke all sessions" })).toBeInTheDocument();
     expect(document.querySelector("[aria-busy='true']")).not.toBeNull();
+  });
+});
+
+// Immediate email (#340.6.1): read, save, and the common states on the
+// settings read and save. Parsing is settings.test.ts's; request shape is
+// settings-api.test.ts's.
+describe("notification settings on the account page", () => {
+  const toggle = () => screen.getByRole("checkbox", { name: "Email me when a reading is ready" });
+
+  it("shows the saved immediate-email setting and saves a change", async () => {
+    const fetchMock = mockApi();
+    await openAccount();
+    await waitFor(() => expect(toggle()).toBeChecked());
+
+    await userEvent.click(toggle());
+
+    await waitFor(() => expect(toggle()).not.toBeChecked());
+    const [saved] = requestsOf(fetchMock, "POST", "/api/auth/settings");
+    await expect(saved!.json()).resolves.toEqual({ notify_immediate: false });
+    await waitFor(() => expect(toggle()).toBeEnabled());
+  });
+
+  it("shows the server error for an unparseable settings body, and keeps the sessions list", async () => {
+    mockApi({ settings: { notify_immediate: "yes" } });
+    await openAccount();
+
+    const section = screen.getByRole("region", { name: "Notifications" });
+    expect(await within(section).findByText("Something went wrong on our side.")).toBeVisible();
+    expect(within(section).getByText("settings returned an unexpected body")).toBeVisible();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+  });
+
+  it("keeps the reader's choice through a failed save, and Retry sends it again", async () => {
+    let fail = true;
+    const fetchMock = mockApi({
+      onSaveSettings: (body) => {
+        if (!fail) return Response.json({ ...SETTINGS, ...body });
+        fail = false;
+        return Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+    await waitFor(() => expect(toggle()).toBeChecked());
+
+    await userEvent.click(toggle());
+
+    const section = screen.getByRole("region", { name: "Notifications" });
+    expect(await within(section).findByText("control plane unavailable")).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+
+    await userEvent.click(within(section).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(toggle()).not.toBeChecked());
+    expect(within(section).queryByText("control plane unavailable")).not.toBeInTheDocument();
+    const saves = requestsOf(fetchMock, "POST", "/api/auth/settings");
+    expect(saves).toHaveLength(2);
+    await expect(saves[1]!.json()).resolves.toEqual({ notify_immediate: false });
+  });
+
+  it("keeps the unsaved choice and shows the offline notice when a save fails offline", async () => {
+    mockApi({
+      onSaveSettings: () => {
+        onlineManager.setOnline(false);
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    await openAccount();
+    await waitFor(() => expect(toggle()).toBeChecked());
+
+    await userEvent.click(toggle());
+
+    const section = screen.getByRole("region", { name: "Notifications" });
+    expect(
+      await within(section).findByText("You're offline. Check your connection and try again."),
+    ).toBeVisible();
+    expect(toggle()).not.toBeChecked();
+    expect(within(section).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["read", 403, "You don't have access to this."],
+    ["read", 412, "This tab is signed in to a different account than the page expects."],
+    ["save", 403, "You don't have access to this."],
+    ["save", 412, "This tab is signed in to a different account than the page expects."],
+  ])("shows the page's refusal state for a settings %s %i", async (step, status, heading) => {
+    const body =
+      status === 412 ? { error: "expected tenant mismatch", acting_tenant: "usr_b" } : { error: "forbidden" };
+    mockApi(
+      step === "read"
+        ? { settingsStatus: status, settings: body }
+        : { onSaveSettings: () => Response.json(body, { status }) },
+    );
+    const { queryClient } = await openAccount();
+    if (step === "save") {
+      await waitFor(() => expect(toggle()).toBeChecked());
+      await userEvent.click(toggle());
+    }
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading));
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+
+  it("hands a 401 from a save to the shell's expired-session page", async () => {
+    mockApi({ onSaveSettings: () => Response.json({ error: "unauthorized" }, { status: 401 }) });
+    const { router } = await openAccount();
+    await waitFor(() => expect(toggle()).toBeChecked());
+
+    await userEvent.click(toggle());
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your session ended."));
+    expect(router.state.location.href).toBe("/account/security");
   });
 });

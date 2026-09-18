@@ -55,7 +55,7 @@ matrix runs through `/mcp`; alias correctness is a separate dispatch test.
 | Session/token list and revoke | Two authenticated sessions; foreign ids match unknown responses and remain usable until their owner revokes them. Lists omit the foreign resource. Mismatched `x-expected-tenant` returns 412 and revokes nothing. | `test/integration/auth-sessions.test.ts`, `auth-tokens.test.ts` |
 | Email-change redemption | A user cannot redeem another user's email-change credential; the owner can still redeem it, while the other user's session and API token remain usable. | `test/integration/auth-email-change.test.ts` |
 | Revoke-all and logout | Cookie and bearer revoke-all clear every session only for their caller; another tenant's session and token survive. Logout clears one session while another session for that user and another tenant remain usable. | `test/integration/auth-sessions.test.ts` |
-| Settings and identity | Each principal sees its own identity/settings; changing A leaves B unchanged. | `test/integration/auth-settings.test.ts` |
+| Settings and identity | Each principal sees its own identity/settings; changing A leaves B unchanged. Mismatched `x-expected-tenant` on settings returns 412 and changes nothing. | `test/integration/auth-settings.test.ts` |
 | Account deletion | B enters deleting; A stays active with a working session. | `test/integration/auth-account-delete.test.ts` |
 | Reading queue admission | An envelope claiming A with B's credential is acknowledged before processing or mutation. | `test/integration/dead-letter.test.ts`, `test/unit/control-plane/envelope.test.ts` |
 | Reading DLQ | Identical id/key in A and B: only the admitted tenant's manifest/list becomes failed. | `test/integration/dead-letter.test.ts` |
