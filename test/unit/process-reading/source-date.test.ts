@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { processReading, sourceDateFromPrior } from "../../../src/process-reading";
+import { processReading, sourceDateForReadyDraft, sourceDateFromPrior } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
 import type { Manifest } from "../../../src/schemas/manifest";
@@ -75,6 +75,49 @@ describe("sourceDateFromPrior", () => {
   });
 });
 
+describe("sourceDateForReadyDraft", () => {
+  it.each([
+    {
+      name: "fresh-wins",
+      extracted: { source_date: "2024-06-01" },
+      stored: "2020-01-01",
+      want: "2024-06-01",
+    },
+    {
+      name: "prior-fills-gap",
+      extracted: {},
+      stored: "2020-01-01",
+      want: "2020-01-01",
+    },
+    {
+      name: "neither-present",
+      extracted: {},
+      stored: undefined,
+      want: undefined,
+    },
+  ])("$name", async ({ extracted, stored, want }) => {
+    await expect(
+      sourceDateForReadyDraft(
+        extracted,
+        reader(async () => pending(stored === undefined ? {} : { source_date: stored })),
+        args(),
+      ),
+    ).resolves.toBe(want);
+  });
+
+  it("fresh-wins skips the prior-manifest read", async () => {
+    await expect(
+      sourceDateForReadyDraft(
+        { source_date: "2024-06-01" },
+        reader(async () => {
+          throw new Error("R2 hiccup");
+        }),
+        args(),
+      ),
+    ).resolves.toBe("2024-06-01");
+  });
+});
+
 describe("processReading — source_date is resolved before paid stages", () => {
   function job() {
     return {
@@ -115,7 +158,7 @@ describe("processReading — source_date is resolved before paid stages", () => 
           if (extractedWritten) {
             manifestGetsAfterExtract += 1;
             // 1: unpaid ownership re-check after extract writes.
-            // 2: sourceDateFromPrior, hoisted before leases/paid stages.
+            // 2: sourceDateForReadyDraft → sourceDateFromPrior, hoisted before leases/paid stages.
             // Later gets (markFailed) must succeed so the consumer can finish.
             if (manifestGetsAfterExtract === 2) throw new Error("R2 hiccup");
           }

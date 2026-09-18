@@ -63,7 +63,7 @@ export {
   type ResolvedAddress,
   type SafeFetchDeps,
 } from "./safe-fetch";
-export { sourceDateFromPublishedTime } from "./source-date";
+export { sourceDateFromExtractOrPrior, sourceDateFromPublishedTime } from "./source-date";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;

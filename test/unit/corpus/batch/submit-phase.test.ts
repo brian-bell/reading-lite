@@ -126,15 +126,40 @@ describe("sidecarTargetFor — enrichment_degradation", () => {
 });
 
 describe("sidecarTargetFor — source_date", () => {
-  it("copies a prior source_date onto the sidecar target", () => {
-    const target = sidecarTargetFor(summarizeTarget({ manifest: { source_date: "2024-03-15" } }));
-    expect(target.sourceDate).toBe("2024-03-15");
-  });
-
-  it("omits sourceDate when the prior manifest has none", () => {
-    const target = sidecarTargetFor(summarizeTarget());
-    expect(target.sourceDate).toBeUndefined();
-    expect("sourceDate" in target).toBe(false);
+  it.each([
+    {
+      name: "fresh-wins",
+      fresh: { ...freshContent, source_date: "2024-06-01" },
+      manifest: { source_date: "2020-01-01" },
+      want: "2024-06-01",
+    },
+    {
+      name: "prior-fills-gap",
+      fresh: freshContent,
+      manifest: { source_date: "2020-01-01" },
+      want: "2020-01-01",
+    },
+    {
+      name: "prior-fills-gap when reusing extracted.md",
+      fresh: undefined,
+      manifest: { source_date: "2024-03-15" },
+      want: "2024-03-15",
+    },
+    {
+      name: "neither-present",
+      fresh: undefined,
+      manifest: {},
+      want: undefined,
+    },
+  ] as const)("$name", ({ fresh, manifest, want }) => {
+    const target = sidecarTargetFor(
+      summarizeTarget({
+        manifest,
+        ...(fresh ? { fresh } : {}),
+      }),
+    );
+    expect(target.sourceDate).toBe(want);
+    if (want === undefined) expect("sourceDate" in target).toBe(false);
   });
 });
 

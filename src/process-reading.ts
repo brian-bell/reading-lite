@@ -15,7 +15,7 @@ import {
   summarizeSimilarity,
 } from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
-import { extractFromUrl, type ExtractedContent } from "./modules/extractor";
+import { extractFromUrl, sourceDateFromExtractOrPrior, type ExtractedContent } from "./modules/extractor";
 import { embed } from "./modules/embeddings";
 import {
   summarizeReading,
@@ -179,10 +179,10 @@ export async function processReading(
       return;
     }
 
-    // source_date is not produced by extract/summarize. Resolve it here, before
-    // leases and paid stages, so a fail-closed prior-manifest read cannot burn
-    // spend. The cached value is reused at the ready draft.
-    const source_date = await sourceDateFromPrior(reader, args);
+    // A fresh extract is authoritative; the prior fills the gap. Resolve the
+    // prior here, before leases and paid stages, so a fail-closed read cannot
+    // burn spend. Skip that read when the extract already produced a date.
+    const source_date = await sourceDateForReadyDraft(extracted, reader, args);
 
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
@@ -825,6 +825,20 @@ async function markFailed(
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
+}
+
+/** Ready-draft publication date: a fresh extract is authoritative; the prior
+ *  fills in only when the extract has no date. Exported so tests can pin the
+ *  precedence and the skip-prior-read short-circuit without the full pipeline. */
+export async function sourceDateForReadyDraft(
+  extracted: Pick<ExtractedContent, "source_date">,
+  reader: Pick<ReadingStore, "readManifest">,
+  args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
+): Promise<string | undefined> {
+  return sourceDateFromExtractOrPrior(
+    extracted.source_date,
+    extracted.source_date === undefined ? await sourceDateFromPrior(reader, args) : undefined,
+  );
 }
 
 /** Carry a stored publication date onto the ready draft. Exported so tests
