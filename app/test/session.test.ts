@@ -7,6 +7,7 @@ import { ApiError } from "../src/api/errors";
 import { LOGIN_NEXT_STORAGE_KEY, rememberReturnPath } from "../src/auth/return-path";
 import { redirectSignedInFromLogin, requireSignedIn } from "../src/auth/guards";
 import {
+  accountClosingQueryKey,
   completeSignIn,
   createQueryClient,
   dropSignedInAccount,
@@ -194,10 +195,12 @@ describe("completeSignIn", () => {
     queryClient.setQueryData(whoamiQueryKey, identity);
     queryClient.setQueryData(["reading", "rd_ONE"], { id: "rd_ONE" });
     queryClient.setQueryData(sessionEndedQueryKey, "/readings/rd_ONE");
+    queryClient.setQueryData(accountClosingQueryKey, "/account/security");
     await expect(completeSignIn(queryClient)).resolves.toEqual(other);
     expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(other);
     expect(queryClient.getQueryData(["reading", "rd_ONE"])).toBeUndefined();
     expect(queryClient.getQueryData(sessionEndedQueryKey)).toBeNull();
+    expect(queryClient.getQueryData(accountClosingQueryKey)).toBeNull();
   });
 
   it("returns null when the new session is not visible", async () => {

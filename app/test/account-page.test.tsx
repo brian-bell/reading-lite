@@ -115,6 +115,7 @@ function mockApi(options?: {
   whoami?: Identity | null;
   onDelete?: (id: string) => Response;
   onRevokeAll?: () => Response;
+  onDeleteAccount?: () => Response;
   settings?: unknown;
   settingsStatus?: number;
   onSaveSettings?: (body: Record<string, unknown>) => Response | Promise<Response>;
@@ -136,6 +137,9 @@ function mockApi(options?: {
     if (path === "/api/auth/email-change" && request.method === "POST") {
       const body = (await request.clone().json()) as { email: string };
       return options?.onEmailChange?.(body) ?? Response.json({ ok: true });
+    }
+    if (path === "/api/account" && request.method === "DELETE") {
+      return options?.onDeleteAccount?.() ?? Response.json({ ok: true });
     }
     if (path === "/api/auth/settings" && request.method === "GET") {
       return Response.json(options?.settings ?? SETTINGS, { status: options?.settingsStatus ?? 200 });
@@ -436,6 +440,44 @@ describe("the account page", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your session ended."));
     expect(router.state.location.href).toBe("/account/security");
+  });
+
+  // A state page replaces the page and its open dialog without a `close`
+  // event, so nothing tells the owner it closed. Retry must not bring it back.
+  it.each([
+    ["Revoke all sessions", "Revoke all browser sessions?"],
+    ["Delete account…", "Delete your account?"],
+  ])("does not reopen the %s dialog after a state page replaced it", async (trigger, title) => {
+    let status = 200;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = asRequest(input);
+        const path = new URL(request.url).pathname;
+        if (path === "/api/auth/sessions" && request.method === "GET") {
+          return status === 200
+            ? Response.json(listed)
+            : Response.json({ error: "storage unavailable" }, { status });
+        }
+        if (path === "/api/auth/settings" && request.method === "GET") return Response.json(SETTINGS);
+        return Response.json(reader);
+      }),
+    );
+    const { queryClient } = await openAccount();
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: trigger }));
+    expect(screen.getByRole("dialog", { name: title })).toBeInTheDocument();
+
+    status = 503;
+    await queryClient.refetchQueries({ queryKey: ["sessions", "usr_a"] });
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Something went wrong on our side."),
+    );
+    status = 200;
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+    expect(screen.queryByRole("dialog", { name: title })).not.toBeInTheDocument();
   });
 
   it("keeps the Account heading while the list is in flight", async () => {
@@ -830,3 +872,162 @@ describe("email change on the account page", () => {
     );
   });
 });
+
+describe("account deletion", () => {
+  function deleteDialog() {
+    return screen.queryByRole("dialog", { name: "Delete your account?" });
+  }
+
+  async function openDeleteDialog() {
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Delete account…" }));
+    return deleteDialog()!;
+  }
+
+  async function confirmDelete() {
+    const opened = await openDeleteDialog();
+    await userEvent.type(within(opened).getByLabelText("Type delete to confirm"), "delete");
+    await userEvent.click(within(opened).getByRole("button", { name: "Delete account" }));
+  }
+
+  it("is the last section and explains the grace and the immediate revocation", async () => {
+    mockApi();
+    await openAccount();
+
+    const sections = await screen.findAllByRole("region");
+    const last = sections[sections.length - 1]!;
+    expect(last).toHaveAccessibleName("Delete account");
+    expect(last).toHaveTextContent("revokes every browser session and API token right away");
+    expect(last).toHaveTextContent("permanently deleted after seven days");
+    expect(last).not.toHaveTextContent(/export|download|archive/i);
+  });
+
+  it("enables Delete only once delete is typed, and sends nothing until then", async () => {
+    const fetchMock = mockApi();
+    await openAccount();
+    const opened = await openDeleteDialog();
+    const field = within(opened).getByLabelText("Type delete to confirm");
+    const confirm = within(opened).getByRole("button", { name: "Delete account" });
+
+    expect(field).toHaveFocus();
+    expect(confirm).toBeDisabled();
+    for (const attempt of ["Delete", "delet", "deleted", "DELETE"]) {
+      await userEvent.clear(field);
+      await userEvent.type(field, attempt);
+      expect(confirm).toBeDisabled();
+    }
+    await userEvent.click(confirm);
+    expect(requestsOf(fetchMock, "DELETE", "/api/account")).toHaveLength(0);
+
+    await userEvent.clear(field);
+    await userEvent.type(field, " delete ");
+    expect(confirm).toBeEnabled();
+  });
+
+  it("sends nothing when the dialog is cancelled", async () => {
+    const fetchMock = mockApi();
+    await openAccount();
+    const opened = await openDeleteDialog();
+    await userEvent.type(within(opened).getByLabelText("Type delete to confirm"), "delete");
+
+    await userEvent.click(within(opened).getByRole("button", { name: "Cancel" }));
+
+    expect(deleteDialog()).not.toBeInTheDocument();
+    expect(requestsOf(fetchMock, "DELETE", "/api/account")).toHaveLength(0);
+  });
+
+  it("asks for a fresh sign-in when the backend needs recent authentication", async () => {
+    mockApi({
+      onDeleteAccount: () => Response.json({ error: "recent authentication required" }, { status: 403 }),
+    });
+    const { queryClient } = await openAccount();
+
+    await confirmDelete();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Request a fresh sign-in link to confirm a sensitive change.");
+    expect(within(alert).getByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
+      "href",
+      "/login?step_up=1&next=%2Faccount%2Fsecurity",
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+
+  it("signs out, forgets the account, and shows the closing page at this URL", async () => {
+    const fetchMock = mockApi();
+    const { router, queryClient } = await openAccount();
+
+    await confirmDelete();
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your account is being deleted."),
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
+    expect(screen.getByRole("main")).toHaveTextContent("permanently deleted after seven days");
+    expect(router.state.location.href).toBe("/account/security");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
+    expect(queryClient.getQueryData(["sessions", "usr_a"])).toBeUndefined();
+    expect(requestsOf(fetchMock, "DELETE", "/api/account")).toHaveLength(1);
+    expect(requestsOf(fetchMock, "POST", "/api/auth/logout")).toHaveLength(0);
+  });
+
+  it("shows the account-changed state for a 412", async () => {
+    mockApi({
+      onDeleteAccount: () =>
+        Response.json({ error: "expected tenant mismatch", acting_tenant: "usr_b" }, { status: 412 }),
+    });
+    await openAccount();
+
+    await confirmDelete();
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "This tab is signed in to a different account than the page expects.",
+      ),
+    );
+    expect(screen.getByText("Signed in as usr_b.")).toBeVisible();
+  });
+
+  it("keeps the page for a server error, and Retry reopens the dialog without resending", async () => {
+    const fetchMock = mockApi({
+      onDeleteAccount: () => Response.json({ error: "storage unavailable" }, { status: 503 }),
+    });
+    await openAccount();
+
+    await confirmDelete();
+
+    expect(await screen.findByText("Something went wrong on our side. storage unavailable")).toBeVisible();
+    expect(screen.getByText("Firefox (this device)")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(deleteDialog()).toBeInTheDocument();
+    expect(requestsOf(fetchMock, "DELETE", "/api/account")).toHaveLength(1);
+  });
+
+  it("shows the offline notice in place when the delete cannot reach the network", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = asRequest(input);
+        const path = new URL(request.url).pathname;
+        if (path === "/api/auth/sessions") return Response.json(listed);
+        if (path === "/api/auth/settings") return Response.json(SETTINGS);
+        if (path === "/api/account") {
+          onlineManager.setOnline(false);
+          throw new TypeError("Failed to fetch");
+        }
+        return Response.json(reader);
+      }),
+    );
+    const { queryClient } = await openAccount();
+
+    await confirmDelete();
+
+    expect(await screen.findByText("You're offline. Check your connection and try again.")).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+});
+

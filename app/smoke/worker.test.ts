@@ -290,6 +290,7 @@ describe("signed-in identity", () => {
     const html = await response.text();
     expect(html).toContain(heading("Account"));
     expect(html).toContain("Revoke all sessions");
+    expect(html).toContain("Delete account…");
     expect(html).toContain('aria-busy="true"');
     expect(
       dehydratedQueryKeys(html).filter((key) => key.startsWith('["sessions"') || key.startsWith('["settings"')),

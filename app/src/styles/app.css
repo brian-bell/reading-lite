@@ -500,6 +500,26 @@ textarea {
   accent-color: var(--accent);
 }
 
+/* Account deletion is the last section, set apart from sessions above it. */
+.account-delete {
+  margin-top: var(--space-9);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.account-delete-text {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.account-delete-step-up {
+  margin: 0 0 var(--space-4);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .session-cap-warning {
   margin: 0 0 var(--space-4);
   padding: var(--space-3) var(--space-4);
@@ -837,6 +857,12 @@ textarea {
   color: var(--bg);
 }
 
+/* A destructive action (account deletion): danger ink on the quiet button. */
+.button-danger {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
 .button:disabled,
 .button[aria-disabled="true"] {
   cursor: not-allowed;
@@ -1040,6 +1066,10 @@ textarea {
   color: var(--muted);
   font-size: 15px;
   line-height: 1.5;
+}
+
+.confirm-dialog-phrase {
+  margin-top: var(--space-4);
 }
 
 .confirm-dialog-actions {

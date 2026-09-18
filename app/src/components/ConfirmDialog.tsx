@@ -1,11 +1,11 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { focusPageHeading } from "./PageHeading";
 
 // A confirmation before a costly action (design spec, Components: "Confirm
 // dialog"; Keyboard, focus, and motion: "Dialogs are modal <dialog> elements;
 // focus returns to the opening control"). The first use is Reprocess on a
-// ready reading (#410); account deletion's typed confirmation is meant to
-// build on it.
+// ready reading (#410). Account deletion (#340.8) adds `confirmPhrase`: a
+// field the reader must type the phrase into before Confirm is enabled.
 //
 // The dialog exists only while it is open and is opened with `showModal()`, so
 // the browser makes the rest of the page inert, traps focus, and closes it on
@@ -16,7 +16,9 @@ import { focusPageHeading } from "./PageHeading";
 //
 // Initial focus is Cancel, set after `showModal()`: a paid action is never one
 // Enter away. React's `autoFocus` would not do it, because React focuses at
-// commit, before the effect has opened the dialog.
+// commit, before the effect has opened the dialog. With a phrase to type,
+// focus goes to its field instead, and Confirm stays disabled until the
+// trimmed value is exactly the phrase.
 //
 // If the owner unmounts it while it is still open — the page behind it
 // replaced by a refetch — no `close` event fires and the element that had
@@ -29,6 +31,7 @@ export function ConfirmDialog({
   title,
   children,
   confirmLabel,
+  confirmPhrase,
   onConfirm,
   onClose,
   returnFocus,
@@ -36,6 +39,8 @@ export function ConfirmDialog({
   title: string;
   children: ReactNode;
   confirmLabel: string;
+  /** When set, Confirm is enabled only once this is typed into the dialog's field. */
+  confirmPhrase?: string;
   /** Called once, after the dialog has closed and focus has returned. */
   onConfirm: () => void;
   /** Called on every close, confirmed or not; the owner unmounts the dialog. */
@@ -45,14 +50,18 @@ export function ConfirmDialog({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
+  const phraseRef = useRef<HTMLInputElement>(null);
   const titleId = useId();
   const bodyId = useId();
+  const phraseId = useId();
+  const [typed, setTyped] = useState("");
+  const confirmable = confirmPhrase === undefined || typed.trim() === confirmPhrase;
 
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
     if (!dialog.open) dialog.showModal();
-    cancelRef.current?.focus();
+    (phraseRef.current ?? cancelRef.current)?.focus();
     return () => {
       if (!dialog.open) return;
       // Removed while open: after this commit the new page is in the DOM.
@@ -84,11 +93,34 @@ export function ConfirmDialog({
       <div className="confirm-dialog-body" id={bodyId}>
         {children}
       </div>
+      {confirmPhrase !== undefined ? (
+        <div className="field confirm-dialog-phrase">
+          <label className="field-label" htmlFor={phraseId}>
+            Type {confirmPhrase} to confirm
+          </label>
+          <input
+            id={phraseId}
+            ref={phraseRef}
+            className="text-input"
+            type="text"
+            autoComplete="off"
+            autoCapitalize="none"
+            spellCheck={false}
+            value={typed}
+            onChange={(event) => setTyped(event.target.value)}
+          />
+        </div>
+      ) : null}
       <div className="confirm-dialog-actions">
         <button type="button" className="button" ref={cancelRef} onClick={() => ref.current?.close()}>
           Cancel
         </button>
-        <button type="button" className="button button-primary" onClick={() => ref.current?.close(CONFIRM)}>
+        <button
+          type="button"
+          className="button button-primary"
+          disabled={!confirmable}
+          onClick={() => ref.current?.close(CONFIRM)}
+        >
           {confirmLabel}
         </button>
       </div>

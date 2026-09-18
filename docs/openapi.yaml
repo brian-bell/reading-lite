@@ -95,7 +95,8 @@ paths:
       description: |
         Session cookie plus `X-CSRF-Token`. Requires recent magic-link
         authentication (10 minutes). Bearer 403. Body must be
-        `{ "confirm": "delete" }`.
+        `{ "confirm": "delete" }`. Optional `X-Expected-Tenant` mismatch
+        returns 412 after CSRF and before the recent-authentication check.
 
         Marks `users.status=deleting` first, then revokes every session and
         API token, sends a deletion-start security notification (no secrets)
@@ -115,6 +116,7 @@ paths:
         operations.md for confirmation rules, residue repair, and known limits.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       requestBody:
         required: true
         content:
@@ -138,6 +140,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 

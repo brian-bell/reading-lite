@@ -122,6 +122,19 @@ return path is per origin.
   the account-changed page. Offline and 5xx keep the typed address and retry
   it. The emailed link (`/auth/verify?purpose=email_change`, no `next`)
   returns to `/account/security` once confirmed.
+- **Account deletion.** The last section of `/account/security` explains the
+  seven-day grace and the immediate session/token revocation, then sends
+  `DELETE /api/account` with `{ "confirm": "delete" }` once the reader types
+  `delete` in the modal (`ConfirmDialog`'s `confirmPhrase`). The request is
+  pinned with `x-expected-tenant`, which the backend checks before recent
+  authentication. A step-up 403 shows the fresh-sign-in link
+  (`/login?step_up=1&next=/account/security`); 403 and 412 are the shared
+  state pages; offline and 5xx stay in the section, where Retry reopens the
+  dialog instead of resending. Success calls `closeAccount`
+  (`src/auth/session.ts`): the account's queries and identity are dropped
+  without a logout call and only this tab shows "Your account is being
+  deleted." at the same URL. A reload is an ordinary signed-out tab, and
+  sign-in is refused while the account is deleting.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit
@@ -385,11 +398,12 @@ CI runs the essential scope, `npm run test:browser:ci` (`e2e/scope.ts`): the
 cases marked `essential` in `e2e/coverage.ts` — the major states of each route:
 the library signed out, signed in, searched, empty, session-ended, and failed;
 sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
-Source; open Details; the account sessions list; and the public legal pages —
-in the `phone-dark` and `desktop-light` projects, so both viewports and both
-themes are still covered, plus the behaviour specs and `checks`. Reduced motion
-and zoom, the other matrix projects, and the remaining states run only in the
-full `npm run test:browser`, which is the local verification before a frontend
+Source; open Details; the account sessions list; account deletion's typed
+confirmation and closing page; and the public legal pages — in the
+`phone-dark` and `desktop-light` projects, so both viewports and both themes
+are still covered, plus the behaviour specs and `checks`. Reduced motion and
+zoom, the other matrix projects, and the remaining states run only in the full
+`npm run test:browser`, which is the local verification before a frontend
 change ships.
 
 Extending it:

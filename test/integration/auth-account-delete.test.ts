@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { SecurityMail } from "../../src/control-plane/security-mail";
-import { CSRF_HEADER } from "../../src/schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -38,6 +38,7 @@ async function request(
     cookie?: string;
     origin?: string;
     csrf?: string;
+    expectedTenant?: string;
     now?: string;
     securityMail?: SecurityMail[];
   } = {},
@@ -63,6 +64,7 @@ async function request(
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
   if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
+  if (init.expectedTenant !== undefined) headers.set(EXPECTED_TENANT_HEADER, init.expectedTenant);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -330,5 +332,53 @@ describe("DELETE /api/account", () => {
       process,
     });
     expect(acked).toBe(true);
+  });
+
+  it("returns 412 for a mismatched x-expected-tenant before recent auth, and fences nothing", async () => {
+    const session = await redeemUser("clm_acct_pin");
+    const workerEnv = env as unknown as Env;
+    const whoami = await request("/api/whoami", { cookie: session.cookie });
+    const identity = (await whoami.res.json()) as { tenant_id: string };
+    const mismatch = { error: "expected tenant mismatch", acting_tenant: identity.tenant_id };
+
+    const pinned = await request("/api/account", {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+      body: { confirm: "delete" },
+    });
+    expect(pinned.res.status).toBe(412);
+    expect(await pinned.res.json()).toEqual(mismatch);
+
+    // A stale sign-in on the wrong account is not sent to step-up first.
+    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE user_id = ?")
+      .bind(Date.parse(NOW) - 11 * 60 * 1000, session.userId)
+      .run();
+    const stale = await request("/api/account", {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+      body: { confirm: "delete" },
+    });
+    expect(stale.res.status).toBe(412);
+
+    const row = await workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
+      .bind(session.userId)
+      .first<{ status: string }>();
+    expect(row?.status).toBe("active");
+
+    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE user_id = ?")
+      .bind(Date.parse(NOW), session.userId)
+      .run();
+    const matching = await request("/api/account", {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: identity.tenant_id,
+      body: { confirm: "delete" },
+    });
+    expect(matching.res.status).toBe(200);
   });
 });

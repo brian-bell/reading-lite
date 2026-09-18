@@ -126,12 +126,15 @@ export function createApp(opts: AppOptions = {}) {
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 
   // Account deletion suppress (195a). Session cookie + CSRF (via requirePrincipal)
-  // + requireSession + requireRecentAuth + body `{ confirm: "delete" }`.
+  // + requireSession + optional x-expected-tenant pin + requireRecentAuth + body
+  // `{ confirm: "delete" }`. The pin runs before recent-auth so a tab showing
+  // another account gets 412, not a step-up for the account it isn't showing.
   // Bearer 403. Not DELETE /api/readings/:id. Founder is a normal tenant.
   app.use(
     "/api/account",
     requirePrincipal(authNowMs),
     requireSession(),
+    requireExpectedTenant(),
     requireRecentAuth(authNowMs),
   );
   app.delete("/api/account", (c) => handleDeleteAccount(c, authNowMs(), authRuntime));

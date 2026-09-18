@@ -4,8 +4,9 @@
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
-// missing reading, sign-in, save, one trail hop, Source, Details, account sessions,
-// public legal pages): CI runs
+// missing reading, sign-in, save, one trail hop, Source, Details, account
+// sessions, account deletion's confirmation and closing page, public legal
+// pages): CI runs
 // those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
@@ -15,12 +16,13 @@
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { EVIDENCE_SCOPE } from "./scope";
-import { LIBRARY_STATE_SESSIONS } from "./sessions";
+import { LIBRARY_STATE_SESSIONS, SESSION_COOKIE_VALUE } from "./sessions";
 import {
   serveDiagnosticsInBrowser,
   serveLibraryInBrowser,
   serveReadingsInBrowser,
   serveReprocessInBrowser,
+  serveAccountDeleteInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -524,6 +526,72 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await page.getByRole("button", { name: "Revoke", exact: true }).click();
       await expect(page.locator(".offline-notice-text")).toContainText("You're offline.");
       await page.locator("#main h1").focus();
+    },
+  },
+
+  // Account deletion (#340.8). The typed confirmation is a major state of an
+  // irreversible action; its keyboard walk stays inside the modal. The closing
+  // page is reached by deleting, so the case starts signed in (`session`) and
+  // ends on the signed-out shell.
+  {
+    name: "account-delete-confirm",
+    essential: true,
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+      await serveAccountDeleteInBrowser(page);
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Delete account…" }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete your account?" });
+      await expect(dialog).toBeVisible();
+      await dialog.getByLabel("Type delete to confirm").fill("delete");
+      await expect(dialog.getByRole("button", { name: "Delete account" })).toBeEnabled();
+    },
+  },
+  {
+    name: "account-delete-step-up",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+      await serveAccountDeleteInBrowser(page, {
+        status: 403,
+        json: { error: "recent authentication required" },
+      });
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Delete account…" }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete your account?" });
+      await dialog.getByLabel("Type delete to confirm").fill("delete");
+      await dialog.getByRole("button", { name: "Delete account" }).click();
+      await expect(page.getByRole("link", { name: "Request a fresh sign-in link" })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
+    name: "account-closing",
+    essential: true,
+    path: "/account/security",
+    state: "signed-out",
+    session: SESSION_COOKIE_VALUE,
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+      await serveAccountDeleteInBrowser(page);
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Delete account…" }).click();
+      const dialog = page.getByRole("dialog", { name: "Delete your account?" });
+      await dialog.getByLabel("Type delete to confirm").fill("delete");
+      await dialog.getByRole("button", { name: "Delete account" }).click();
+      await expect(page.getByRole("heading", { level: 1, name: "Your account is being deleted." })).toBeFocused();
     },
   },
 
