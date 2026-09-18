@@ -751,6 +751,31 @@ describe("pages", () => {
     expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 20]);
   });
 
+  // The app router preloads on intent. After Next, the pointer (and often
+  // focus) stay on the same control, whose href then names the following
+  // page; a loading state's shorter pager can also slide Next back under
+  // the cursor. That pass is not a request for page 3.
+  it("does not preload the following page when the pointer stays on Next", async () => {
+    backendServesPages(many);
+    const queryClient = createQueryClient(() => hrefOnScreen(router));
+    queryClient.setQueryData(whoamiQueryKey, reader);
+    const router = createRouter({
+      routeTree,
+      context: { queryClient },
+      ...plainSearch,
+      history: createMemoryHistory({ initialEntries: ["/?offset=20"] }),
+      defaultPreload: "intent",
+      defaultPreloadDelay: 0,
+      Wrap: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
+    });
+    render(<RouterProvider router={router} />);
+    await waitFor(() => expect(router.state.status).toBe("idle"));
+
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([20]);
+    await userEvent.hover(within(pager()).getByRole("link", { name: "Next" }));
+    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([20]);
+  });
+
   it("says a page past the end has nothing, with its number and a way back to the first page", async () => {
     backendServesPages(many);
     const { router } = await openTab("/?offset=100");

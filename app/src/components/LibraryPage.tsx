@@ -465,7 +465,14 @@ function Pager({ search, offset, hasMore }: { search: LibrarySearch; offset: num
   );
 }
 
-/** One step: a link while there is a page that way, and the same element disabled when there isn't. */
+/**
+ * One step: a link while there is a page that way, and the same element
+ * disabled when there isn't. Not preloaded: after a click, the pointer and
+ * focus stay on Next, whose href then names the following page, and a
+ * loading state's shorter pager can slide that control back under the
+ * cursor. That pass is not intent to read the neighbour, same as a pointer
+ * or Tab crossing a page of tag links.
+ */
 function PagerStep({ label, search }: { label: string; search: LibrarySearch | null }) {
   return (
     <Link
@@ -475,6 +482,7 @@ function PagerStep({ label, search }: { label: string; search: LibrarySearch | n
       search={search ?? {}}
       disabled={search === null}
       activeOptions={PAGE_LINK_ACTIVE}
+      preload={false}
       className="button library-pager-step"
     >
       {label}
