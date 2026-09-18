@@ -9,6 +9,7 @@ import {
   describeScope,
   incrementalScope,
   parseRefreshState,
+  scopeCostTally,
   type RefreshState,
   type ReverseMatches,
 } from "../../../scripts/corpus-lib/refresh-scope";
@@ -548,6 +549,97 @@ describe("incrementalScope", () => {
       "new",
     );
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_a"] });
+  });
+});
+
+describe("scopeCostTally", () => {
+  /** The given changed readings plus `quiet` unchanged ready ones. */
+  function corpus(changed: string[], quiet: number): RefreshRow[] {
+    return [
+      ...changed.map((id) => row(id, { updated_at: AFTER })),
+      ...Array.from({ length: quiet }, (_, i) => row(`rd_q${i}`)),
+    ];
+  }
+
+  /** A complete reverse answer: the given ids above the bound, then one below it. */
+  function near(...ids: string[]): ReverseMatches {
+    return [
+      ...ids.map((id) => ({ id, score: 0.8 })),
+      { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+    ];
+  }
+
+  // Before any query: every changed reading costs a reverse query and, being
+  // ready, a measurement. A tie with the sweep stays incremental; one more
+  // reading's worth of work tips it.
+  it.each([
+    { changed: 3, quiet: 3, full: false },
+    { changed: 3, quiet: 2, full: true },
+    { changed: 1, quiet: 1, full: false },
+    { changed: 1, quiet: 0, full: true },
+  ])("with $changed changed and $quiet quiet readings, sweeps: $full", ({ changed, quiet, full }) => {
+    const ids = Array.from({ length: changed }, (_, i) => `rd_c${i}`);
+    const verdict = scopeCostTally(corpus(ids, quiet), ids, marker()).check(0);
+    expect(verdict?.kind ?? "incremental").toBe(full ? "full" : "incremental");
+  });
+
+  it("names both costs and how far the queries got", () => {
+    const tally = scopeCostTally(corpus(["rd_a", "rd_b"], 3), ["rd_a", "rd_b"], marker());
+    expect(tally.check(0)).toBeNull();
+    tally.add(near("rd_q0", "rd_q1", "rd_q2"));
+    expect(tally.check(1)).toEqual({
+      kind: "full",
+      reason:
+        "incremental scope would cost at least 6 Vectorize queries " +
+        "(1 reverse still to run, 5 reading(s) to measure) against 5 for a full sweep " +
+        "— after 1 of 2 changed reading(s)",
+    });
+  });
+
+  // Two changed vectors reaching the same readings is one measurement each,
+  // not two: the overlap must not escalate a scope that is still narrower.
+  it("counts a reading several reverse answers reach once", () => {
+    const tally = scopeCostTally(corpus(["rd_a", "rd_b"], 3), ["rd_a", "rd_b"], marker());
+    tally.add(near("rd_a", "rd_b", "rd_q0"));
+    tally.add(near("rd_a", "rd_b", "rd_q0"));
+    expect(tally.check(2)).toBeNull();
+  });
+
+  // Only measurements planRefresh will make are a cost: not a non-ready match,
+  // not an id that has left the list, not a below-bound match, and not the
+  // matches of a saturated or vectorless answer, which escalate on their own.
+  it("counts only ready, listed, above-bound matches from a complete answer", () => {
+    const list = [...corpus(["rd_a", "rd_b"], 1), row("rd_pending", { status: "pending" })];
+    const tally = scopeCostTally(list, ["rd_a", "rd_b"], marker());
+    tally.add([
+      { id: "rd_pending", score: 0.9 },
+      { id: "rd_purged", score: 0.9 },
+      { id: "rd_q0", score: REVERSE_SCORE_BOUND - 0.01 },
+    ]);
+    tally.add(null);
+    tally.add(Array.from({ length: REVERSE_TOP_K }, () => ({ id: "rd_q0", score: 0.9 })));
+    // 1 reverse still to run + rd_a, rd_b = 3 against 3 ready: a tie. Counting
+    // any match above would make it 4 and sweep.
+    expect(tally.check(1)).toBeNull();
+  });
+
+  // A carried unmeasurable reading is measured again, so it costs one; a
+  // non-ready changed reading costs its reverse query but no measurement.
+  it("counts carried ready readings and non-ready changed ones' queries", () => {
+    const list = [
+      row("rd_changed", { status: "failed", updated_at: AFTER }),
+      row("rd_stuck"),
+      row("rd_q0"),
+    ];
+    // 1 reverse + rd_stuck = 2 against 2 ready: a tie, so still incremental.
+    expect(
+      scopeCostTally(list, ["rd_changed"], marker({ unmeasurable_ids: ["rd_stuck"] })).check(0),
+    ).toBeNull();
+    // With rd_q0 also stuck, 1 + 2 = 3 against 2.
+    expect(
+      scopeCostTally(list, ["rd_changed"], marker({ unmeasurable_ids: ["rd_stuck", "rd_q0"] }))
+        .check(0)?.kind,
+    ).toBe("full");
   });
 });
 

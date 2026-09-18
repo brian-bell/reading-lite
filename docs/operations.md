@@ -1629,6 +1629,22 @@ narrowed scope, that rate is the number to watch, and a corpus that escalates
 every night should be run as `--full` outright rather than paying the reverse
 queries first.
 
+It also sweeps once narrowing stops paying. Every reverse query and every
+measurement is one Vectorize query, and a sweep is one per ready reading. Before
+each reverse query, the first included, the pass compares the reverse queries
+it has still to make plus the ready readings already known to be in scope
+(changed, carried forward, or brought in by a reverse answer, each counted
+once) with the ready corpus, and sweeps as soon as the first is larger. Queries
+already made are spent either way and do not count. A tie stays incremental,
+which keeps a quiet night whose only scope is the carried unmeasurable readings
+out of the zero-measured-sweep check below. A bulk ingest or mass reprocess
+that already outweighs the corpus therefore sweeps without any reverse query,
+and the reason names both costs (`Scope: full — incremental scope would cost
+at least 812 Vectorize queries (412 reverse still to run, 400 reading(s) to
+measure) against 553 for a full sweep — after 0 of 412 changed reading(s)`).
+Manifest reads are not counted, which tips close calls toward the sweep.
+`--limit` takes no part in the comparison and caps whichever plan results.
+
 An incremental report is a statement about its scope, not about the corpus: a
 persistent flag on a reading nobody touched, the backfill's 394
 `connection_below_floor` rows, say, stays invisible until that reading enters

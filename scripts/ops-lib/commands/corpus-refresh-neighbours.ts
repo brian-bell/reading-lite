@@ -48,6 +48,7 @@ import {
   changedSince,
   describeScope,
   incrementalScope,
+  scopeCostTally,
   parseRefreshState,
   type RefreshScope,
   type RefreshState,
@@ -353,9 +354,15 @@ async function resolveScope(args: {
 
   const reverse = new Map<string, ReverseMatches>();
   const statusById = new Map(items.map((row) => [row.id, row.status]));
+  // Checked before every query, the first included: a bulk ingest that already
+  // outweighs the sweep escalates without making any, and one that grows past
+  // it partway through stops making them there.
+  const cost = scopeCostTally(items, base.changed, marker);
   let consecutiveFailures = 0;
   let attempted = 0;
   for (const id of base.changed) {
+    const cheaper = cost.check(attempted);
+    if (cheaper !== null) return cheaper;
     attempted++;
     // Every changed reading is queried, whatever its status says. Status is not
     // a statement about vector ownership — a reprocess-in-flight `pending` row
@@ -391,6 +398,7 @@ async function resolveScope(args: {
         io.stderr(`  ! no reverse neighbourhood for ready reading ${id}`);
       }
       reverse.set(id, parsed);
+      cost.add(parsed);
     } catch (e) {
       // One failure does not end the loop, because the reason is meant to carry
       // how many changed readings saturated, and abandoning it would report
@@ -1048,6 +1056,11 @@ status the marker saw that has since left the list, a failed reverse query, a
 changed ready reading with no vector to scope from, or a reverse neighbourhood
 that came back full at topK with no match below the bound. Purges are caught by name, not by row count, so a day that ingests as
 many readings as it purges still escalates.
+It also sweeps once narrowing costs more than sweeping: before each reverse
+query, the reverse queries still to run plus the ready readings known to be in
+scope are compared with the number of ready readings, and the pass sweeps as
+soon as the first is larger (a tie stays incremental). A bulk ingest that
+outweighs the corpus therefore sweeps without making any reverse query.
 --full measures every ready reading, as this command always did by default. It
 is now the explicit weekly sweep, and an incremental report is a statement about
 its scope rather than about the corpus: a persistent flag on a reading nobody
