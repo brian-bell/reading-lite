@@ -270,6 +270,7 @@ export const ListIndexItemSchema = z.object({
   status: ManifestStatusSchema,
   novelty_verdict: NoveltyVerdictSchema.optional(),
   similarity: SimilaritySnapshotSchema.optional(),
+  source_date: z.string().date().optional(),
   created_at: z.string().datetime(),
   updated_at: z.string().datetime().optional(),
   error: ManifestErrorSchema.optional(),

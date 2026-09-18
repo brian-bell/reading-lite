@@ -80,6 +80,20 @@ describe("ReadingStore — manifests", () => {
     await store.writeManifest(prefix, m);
     const read = await store.readManifest(prefix);
     expect(read).toEqual(m);
+    expect(read?.source_date).toBeUndefined();
+  });
+
+  it("round-trips an optional source_date and keeps a sibling without one parseable", async () => {
+    const store = new ReadingStore(env.READINGS_BUCKET);
+    const dated = emptyManifest({ id: "rd_dated", source_date: "2024-03-15" });
+    const undated = emptyManifest({ id: "rd_undated", created_at: "2026-04-26T20:00:01.000Z" });
+    await store.writeManifest(buildKeyPrefix(dated.id, dated.created_at), dated);
+    await store.writeManifest(buildKeyPrefix(undated.id, undated.created_at), undated);
+
+    expect(await store.readManifest(buildKeyPrefix(dated.id, dated.created_at))).toEqual(dated);
+    const readUndated = await store.readManifest(buildKeyPrefix(undated.id, undated.created_at));
+    expect(readUndated).toEqual(undated);
+    expect(readUndated && "source_date" in readUndated).toBe(false);
   });
 
   it("returns null when manifest is missing", async () => {

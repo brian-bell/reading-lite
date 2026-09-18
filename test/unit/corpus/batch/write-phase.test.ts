@@ -240,6 +240,19 @@ describe("writeResults — success path", () => {
     expect(m.enrichment_degradation).toEqual(degradation);
   });
 
+  it("writes a prior source_date from the sidecar onto a ready manifest", async () => {
+    const r2 = fakeR2();
+    await writeResults(
+      sidecar([sidecarTarget({ sourceDate: "2024-03-15" })]),
+      [succeeded("rd_a")],
+      deps(r2, fakeVectorize()),
+    );
+    const m: Manifest = ManifestSchema.parse(
+      JSON.parse(r2.store.get("readings/2026/01/01T000000Z-rd_a/manifest.json")!),
+    );
+    expect(m.source_date).toBe("2024-03-15");
+  });
+
   it("writes a ready manifest with the resolved reading fields", async () => {
     const r2 = fakeR2();
     const vec = fakeVectorize();
@@ -253,6 +266,7 @@ describe("writeResults — success path", () => {
     expect(m.content_type).toBe("text/html");
     expect(m.content_bytes).toBe(42);
     expect(m.enrichment_degradation).toBeUndefined();
+    expect("source_date" in m).toBe(false);
     expect(m.created_at).toBe("2026-01-01T00:00:00.000Z");
     expect(m.updated_at).toBe(NOW);
     // openai_embedding_tokens = query (sidecar, 50) + tldr (embedMany, 8).

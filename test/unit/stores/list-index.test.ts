@@ -395,6 +395,18 @@ describe("similarity snapshot projection", () => {
     expect("similarity" in item).toBe(false);
   });
 
+  it("carries source_date onto the list row and omits it when absent", () => {
+    const withField = manifestToIndexItem(
+      { ...base, source_date: "2024-03-15" } as never,
+      "readings/x",
+    );
+    expect(withField.source_date).toBe("2024-03-15");
+
+    const without = manifestToIndexItem(base as never, "readings/x");
+    expect(without.source_date).toBeUndefined();
+    expect("source_date" in without).toBe(false);
+  });
+
   it("carries enrichment_degradation onto the list row and omits it when absent", () => {
     const degradation = {
       source: "youtube" as const,

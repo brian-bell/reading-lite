@@ -125,6 +125,19 @@ describe("sidecarTargetFor — enrichment_degradation", () => {
   });
 });
 
+describe("sidecarTargetFor — source_date", () => {
+  it("copies a prior source_date onto the sidecar target", () => {
+    const target = sidecarTargetFor(summarizeTarget({ manifest: { source_date: "2024-03-15" } }));
+    expect(target.sourceDate).toBe("2024-03-15");
+  });
+
+  it("omits sourceDate when the prior manifest has none", () => {
+    const target = sidecarTargetFor(summarizeTarget());
+    expect(target.sourceDate).toBeUndefined();
+    expect("sourceDate" in target).toBe(false);
+  });
+});
+
 describe("submitBatch", () => {
   it("creates a batch with one request per target, custom_id = reading id, params = realtime body", async () => {
     const batch = fakeBatch();

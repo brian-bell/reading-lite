@@ -51,6 +51,19 @@ describe("ManifestSchema", () => {
     expect(ManifestSchema.parse(baseReady)).toEqual(baseReady);
   });
 
+  it("accepts an optional source_date and keeps existing readings without one", () => {
+    expect(ManifestSchema.parse(baseReady).source_date).toBeUndefined();
+    expect("source_date" in ManifestSchema.parse(baseReady)).toBe(false);
+    expect(
+      ManifestSchema.parse({ ...baseReady, source_date: "2024-03-15" }).source_date,
+    ).toBe("2024-03-15");
+    expect(() =>
+      ManifestSchema.parse({ ...baseReady, source_date: "2024-03-15T00:00:00.000Z" }),
+    ).toThrow();
+    expect(() => ManifestSchema.parse({ ...baseReady, source_date: "yesterday" })).toThrow();
+    expect(() => ManifestSchema.parse({ ...baseReady, source_date: "2024-13-01" })).toThrow();
+  });
+
   it("accepts optional YouTube enrichment_degradation and rejects a bad tier", () => {
     const degradation = {
       source: "youtube" as const,

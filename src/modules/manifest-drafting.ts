@@ -166,9 +166,10 @@ export function importPending(
  * Reprocess: the two-branch transformation intake stamps before re-enqueueing.
  * A ready prior keeps its full summary visible under the running attempt
  * (spread + active_attempt + updated_at); a non-ready prior resets to a
- * skeleton pending — identity, source_type, title, and last_attempt kept, the
- * empty-content placeholder restored. The branch is a total function of the
- * prior's status; WHICH manifest to reprocess stays with the caller.
+ * skeleton pending — identity, source_type, title, source_date, and
+ * last_attempt kept, the empty-content placeholder restored. The branch is a
+ * total function of the prior's status; WHICH manifest to reprocess stays
+ * with the caller.
  */
 export function reprocessPending(
   prior: Manifest,
@@ -188,6 +189,7 @@ export function reprocessPending(
           active_attempt: active,
           ...(prior.last_attempt === undefined ? {} : { last_attempt: prior.last_attempt }),
           ...(prior.title === undefined ? {} : { title: prior.title }),
+          ...(prior.source_date === undefined ? {} : { source_date: prior.source_date }),
           ...pendingContent(),
           created_at: prior.created_at,
           updated_at: now,
@@ -285,6 +287,13 @@ export interface ReadyFacts {
    * strips it to summary shape.
    */
   attempt: ProcessingAttemptSummary | null;
+  /**
+   * Prior publication date of the source, carried from the current/prior
+   * manifest. Unlike tensions (ingest never emits those), a stored date must
+   * survive a successful process/reprocess until a later extractor replaces
+   * it. Undefined means none was stored.
+   */
+  source_date?: string;
 }
 
 /** fetched_at and updated_at are both stamped `now`. Throws unless the passed
@@ -312,6 +321,7 @@ export function readyManifest(facts: ReadyFacts, now: string): Manifest {
       : { connections_neighbourhood_ids: facts.neighbourhoodIds }),
     summary_markdown: facts.summary.summary_markdown,
     ...facts.content,
+    ...(facts.source_date === undefined ? {} : { source_date: facts.source_date }),
     fetched_at: now,
     created_at: facts.identity.createdAt,
     updated_at: now,

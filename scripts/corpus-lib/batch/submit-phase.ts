@@ -321,6 +321,7 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   // omits the field). Reusing existing extracted.md keeps the prior signal.
   const degradation = fresh?.enrichment_degradation ?? (fresh ? undefined : m.enrichment_degradation);
   if (degradation !== undefined) out.enrichmentDegradation = degradation;
+  if (m.source_date !== undefined) out.sourceDate = m.source_date;
   return out;
 }
 

@@ -179,6 +179,11 @@ export async function processReading(
       return;
     }
 
+    // source_date is not produced by extract/summarize. Resolve it here, before
+    // leases and paid stages, so a fail-closed prior-manifest read cannot burn
+    // spend. The cached value is reused at the ready draft.
+    const source_date = await sourceDateFromPrior(reader, args);
+
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
     // terminal write. Finish recovery without ever acquiring a new work hold.
@@ -338,6 +343,7 @@ export async function processReading(
             queryEmbed.usage.total_tokens + tldrEmbed.usage.total_tokens,
         },
         attempt,
+        ...(source_date === undefined ? {} : { source_date }),
       },
       services.now(),
     );
@@ -819,6 +825,26 @@ async function markFailed(
   // Intentionally do NOT change the by-url pointer here. URL submission claims
   // ownership eagerly; a failed owner stays re-submittable because POST
   // resolves failed ownership by reprocessing this same reading id.
+}
+
+/** Carry a stored publication date onto the ready draft. Exported so tests
+ *  can pin fail-closed read errors without running the full process pipeline. */
+export async function sourceDateFromPrior(
+  reader: Pick<ReadingStore, "readManifest">,
+  args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
+): Promise<string | undefined> {
+  let current: Manifest | null;
+  try {
+    current = await reader.readManifest(args.keyPrefix);
+  } catch (error) {
+    // A throw is not "no stored date". Swallowing it would let readyManifest
+    // omit source_date and commit ready, permanently dropping a prior date
+    // on failed-prior reprocess / import-over (no preserveReadyManifest).
+    const preserved = args.preserveReadyManifest?.source_date;
+    if (preserved !== undefined) return preserved;
+    throw error;
+  }
+  return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }
 
 async function resolveSourceTypeOnFailure(

@@ -549,6 +549,60 @@ describe("readyManifest", () => {
     expect("enrichment_degradation" in manifest).toBe(false);
   });
 
+  it("carries a prior source_date onto the ready draft and omits it when absent", () => {
+    const facts = {
+      identity: IDENTITY,
+      sourceType: "url" as const,
+      summary: SUMMARY,
+      content: {
+        content_type: "text/html",
+        content_status: "captured" as const,
+        content_bytes: 1,
+        content_sha256: "e".repeat(64),
+      },
+      usage: USAGE,
+      attempt: null,
+    };
+    expect(readyManifest({ ...facts, source_date: "2024-03-15" }, NOW).source_date).toBe(
+      "2024-03-15",
+    );
+    expect("source_date" in readyManifest(facts, NOW)).toBe(false);
+  });
+
+  it("a stored source_date survives reprocess pending then readyManifest", () => {
+    const prior: Manifest = { ...READY_PRIOR, source_date: "2024-03-15" };
+    const readyDraft = reprocessPending(prior, ATTEMPT_REF, NOW).manifest;
+    const failedDraft = reprocessPending(
+      { ...prior, status: "failed", error: { code: "BadStatusError", message: "502" } },
+      ATTEMPT_REF,
+      NOW,
+    ).manifest;
+
+    expect(readyDraft.source_date).toBe("2024-03-15");
+    expect(failedDraft.source_date).toBe("2024-03-15");
+    expect(failedDraft).not.toHaveProperty("tldr");
+
+    const facts = {
+      identity: IDENTITY,
+      sourceType: "url" as const,
+      summary: SUMMARY,
+      content: {
+        content_type: "text/html",
+        content_status: "captured" as const,
+        content_bytes: 1,
+        content_sha256: "e".repeat(64),
+      },
+      usage: USAGE,
+      attempt: null,
+    };
+    expect(readyManifest({ ...facts, source_date: readyDraft.source_date }, NOW).source_date).toBe(
+      "2024-03-15",
+    );
+    expect(readyManifest({ ...facts, source_date: failedDraft.source_date }, NOW).source_date).toBe(
+      "2024-03-15",
+    );
+  });
+
   it("refuses a non-succeeded or unfinished attempt", () => {
     const base = {
       identity: IDENTITY,

@@ -2372,6 +2372,12 @@ components:
           $ref: "#/components/schemas/Sha256Hex"
         enrichment_degradation:
           $ref: "#/components/schemas/EnrichmentDegradation"
+        source_date:
+          type: string
+          format: date
+          description: >
+            Publication date of the source itself (YYYY-MM-DD), not when the
+            reading was ingested. Absent on existing readings and when unknown.
         fetched_at:
           type: string
           format: date-time
@@ -2418,6 +2424,12 @@ components:
           $ref: "#/components/schemas/NoveltyVerdict"
         similarity:
           $ref: "#/components/schemas/SimilaritySnapshot"
+        source_date:
+          type: string
+          format: date
+          description: >
+            Publication date of the source itself (YYYY-MM-DD), not when the
+            reading was ingested. Absent on existing readings and when unknown.
         created_at:
           type: string
           format: date-time

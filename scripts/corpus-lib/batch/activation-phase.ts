@@ -308,7 +308,7 @@ function buildPendingManifest(target: ExtractedTarget, now: string): Manifest {
 // sidecarTargetFor). Built fresh rather than spread from `m` so stale summary and
 // error fields never leak into the pending; the terminal write rebuilds the full
 // ready manifest, and on failure preserveReadyManifest rolls a ready reading
-// forward. created_at is preserved from `m`.
+// forward. created_at and source_date are preserved from `m`.
 function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: string): Manifest {
   const fresh = target.fresh;
   const markdownBytes = new TextEncoder().encode(target.markdown).byteLength;
@@ -331,6 +331,10 @@ function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: 
     content_sha256: fresh?.content_sha256 ?? m.content_sha256,
     extracted_bytes: markdownBytes,
     ...preservedReadySnapshotField(m),
+    // Publication date is durable metadata, not a per-attempt judgement: re-carry
+    // it like created_at so a recover flip doesn't drop the stored date (the
+    // sidecar reads source_date off this pending manifest).
+    ...(m.source_date === undefined ? {} : { source_date: m.source_date }),
     created_at: m.created_at,
     updated_at: now,
   });
