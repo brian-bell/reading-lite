@@ -145,7 +145,7 @@ describe("coordinated production deployment workflows", () => {
     expect(checkout?.with?.ref).toBe("${{ steps.release.outputs.sha }}");
     expect(build?.env?.CLOUDFLARE_ENV).toBe("production");
     expect(build?.["working-directory"]).toBe("app");
-    expect(build?.run).toContain('test "$name" = "reading-lite-app"');
+    expect(build?.run).toContain("node scripts/check-build.ts production");
     expect(deploy?.["working-directory"]).toBe("app");
     expectBoundaryCheck(deploy?.run, "npx wrangler deploy");
     expect(appSteps.indexOf(smoke!)).toBeGreaterThan(appSteps.indexOf(deploy!));
@@ -165,7 +165,7 @@ describe("staging frontend deployment workflow", () => {
     expect(Object.keys(workflow.on ?? {})).toEqual(["workflow_dispatch"]);
     expect(workflow.concurrency?.group).not.toBe(productionReleaseLock.group);
     expect(build?.env?.CLOUDFLARE_ENV).toBe("staging");
-    expect(build?.run).toContain('test "$name" = "reading-lite-app-staging"');
+    expect(build?.run).toContain("node scripts/check-build.ts staging");
     expect(deploy?.["working-directory"]).toBe("app");
     expect(smoke?.run).toContain("https://next-staging.readinglite.ai");
     expect(commands(workflow)).not.toMatch(/production|deploy worker|deploy web/);

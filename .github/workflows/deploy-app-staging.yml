@@ -46,8 +46,9 @@ jobs:
           CLOUDFLARE_ENV: staging
         run: |
           npm run build
-          name="$(node -p 'require("./dist/server/wrangler.json").name')"
-          test "$name" = "reading-lite-app-staging" || { echo "build selected Worker '$name', expected reading-lite-app-staging"; exit 1; }
+          # The built config is what deploys: check its environment, routes,
+          # and BACKEND binding against wrangler.jsonc and the backend's.
+          node scripts/check-build.ts staging
       - name: Deploy the staging frontend
         working-directory: app
         env:
