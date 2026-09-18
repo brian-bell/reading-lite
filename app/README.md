@@ -114,7 +114,14 @@ return path is per origin.
   (Cancel, Off, or Discard after a failed save of it closes it); while it is
   on, each change saves at once; every digest save sends the full body,
   `notify_immediate` included, so turning it off keeps the hour, weekday, and
-  time zone.
+  time zone. Email change posts `/api/auth/email-change` (pinned; the backend
+  checks the pin before recent-auth) and shows the SPA's generic "check your
+  inbox". Its 401 or 403 is the recent-auth gate, so the section offers a
+  fresh sign-in link (`/login?step_up=1&next=/account/security`) instead of
+  the permission page; a 403 whose whoami re-read finds another account is
+  the account-changed page. Offline and 5xx keep the typed address and retry
+  it. The emailed link (`/auth/verify?purpose=email_change`, no `next`)
+  returns to `/account/security` once confirmed.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

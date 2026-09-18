@@ -524,9 +524,11 @@ paths:
         other-session redeem does not swap. Does not consult signup
         eligibility. Does not change staging `AUTH_MAIL_ALLOWLIST`.
         Click/open tracking is a Resend domain setting (off by default), not a
-        send-payload field.
+        send-payload field. Optional `X-Expected-Tenant` mismatch returns 412
+        after CSRF and before the recent-auth check, and sends no link.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       requestBody:
         required: true
         content:
@@ -550,6 +552,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorMessage"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 

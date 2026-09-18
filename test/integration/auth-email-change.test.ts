@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { SecurityMail } from "../../src/control-plane/security-mail";
-import { CSRF_HEADER } from "../../src/schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -28,6 +28,7 @@ async function request(
     cookie?: string;
     origin?: string;
     csrf?: string;
+    expectedTenant?: string;
     now?: string;
     securityMail?: SecurityMail[];
     sendMagicLink?: (message: MagicLinkMail) => Promise<void>;
@@ -56,6 +57,7 @@ async function request(
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
   if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
+  if (init.expectedTenant !== undefined) headers.set(EXPECTED_TENANT_HEADER, init.expectedTenant);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -307,6 +309,33 @@ describe("verified email change", () => {
     });
     expect(stale.res.status).toBe(403);
     expect(await stale.res.json()).toEqual({ error: "recent authentication required" });
+  });
+
+  it("returns 412 for a mismatched x-expected-tenant and sends no link", async () => {
+    const session = await redeemUser("pinned-changer@test.example", "clm_pinned_req");
+    const whoami = await request("/api/whoami", { cookie: session.cookie });
+    const { tenant_id: tenantId } = (await whoami.res.json()) as { tenant_id: string };
+
+    const mismatched = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+      body: { email: "pinned-later@test.example" },
+    });
+    expect(mismatched.res.status).toBe(412);
+    expect(await mismatched.res.json()).toEqual({ error: "expected tenant mismatch", acting_tenant: tenantId });
+    expect(mismatched.sent).toEqual([]);
+
+    const pinned = await request("/api/auth/email-change", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: tenantId,
+      body: { email: "pinned-later@test.example" },
+    });
+    expect(pinned.res.status).toBe(200);
+    expect(pinned.sent).toHaveLength(1);
   });
 
   it("rejects bearer callers and does not reveal occupancy", async () => {

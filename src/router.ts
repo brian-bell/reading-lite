@@ -105,7 +105,12 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/api/auth/sessions", (c) => handleListSessions(c, authNowMs()));
   app.post("/api/auth/sessions/revoke-all", (c) => handleRevokeAllSessions(c, authNowMs(), authRuntime));
   app.delete("/api/auth/sessions/:id", (c) => handleRevokeSession(c, authNowMs()));
-  app.use("/api/auth/email-change", requirePrincipal(authNowMs), requireRecentAuth(authNowMs));
+  app.use(
+    "/api/auth/email-change",
+    requirePrincipal(authNowMs),
+    requireExpectedTenant(),
+    requireRecentAuth(authNowMs),
+  );
   app.post("/api/auth/email-change", (c) => handleEmailChangeRequest(c, authNowMs(), authRuntime));
   app.use("/api/auth/tokens", requirePrincipal(authNowMs), requireSession());
   app.use("/api/auth/tokens/*", requirePrincipal(authNowMs), requireSession());

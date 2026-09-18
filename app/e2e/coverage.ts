@@ -454,6 +454,26 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   {
+    name: "account-email-step-up",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+      await page.route("**/api/auth/email-change", (route) =>
+        route.fulfill({ status: 403, json: { error: "recent authentication required" } }),
+      );
+    },
+    // The recent-auth refusal is a fresh sign-in link, not the permission page.
+    prepare: async (page) => {
+      await page.getByRole("textbox", { name: "New email" }).fill("new@example.com");
+      await page.getByRole("button", { name: "Send confirmation" }).click();
+      await expect(page.getByRole("link", { name: "Request a fresh sign-in link" })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
     name: "account-digest-draft",
     path: "/account/security",
     state: "signed-in",
