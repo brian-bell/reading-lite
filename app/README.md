@@ -108,9 +108,11 @@ return path is per origin.
   `src/library-search.ts` snaps `offset` as the current SPA does (parseInt,
   down to a 20-row page, the first page written without it) but keeps the
   URL's own string, so no spelling redirects. Previous and Next are links to
-  the neighbouring page; an offset past the end offers the first page. The
-  browser-evidence stub adds 24 generated rows past the fixture pack's 19 for
-  pages two and three (`e2e/library-page.js`); the pack is unchanged.
+  the neighbouring page and are not preloaded, so a pointer remaining on Next
+  after a step does not fetch the following page; an offset past the end
+  offers the first page. The browser-evidence stub adds 24 generated rows
+  past the fixture pack's 19 for pages two and three (`e2e/library-page.js`);
+  the pack is unchanged.
   Each card is a title link (the URL when there is no title) stretched over
   the card, the summary lead clamped at three lines, and the hostname; a
   reading that is not simply ready carries a text badge above the title
