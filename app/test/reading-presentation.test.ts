@@ -4,6 +4,7 @@ import {
   degradationNotice,
   hostnameOf,
   noveltyPanel,
+  publishedOn,
   savedOn,
   sourceLabel,
   summaryBodyBelowLead,
@@ -33,9 +34,16 @@ describe("the metadata line", () => {
     expect(savedOn("2026-09-07T09:30:00.000Z")).toBe("Saved 7 September 2026");
   });
 
+  it("reads a date-only source_date as a published date in UTC", () => {
+    // Midnight UTC must not drift a calendar day in a west-of-UTC zone.
+    expect(publishedOn("2024-03-15")).toBe("Published 15 March 2024");
+  });
+
   it("says nothing when there is no date, or the date is unreadable", () => {
     expect(savedOn(undefined)).toBeUndefined();
     expect(savedOn("the other day")).toBeUndefined();
+    expect(publishedOn(undefined)).toBeUndefined();
+    expect(publishedOn("the other day")).toBeUndefined();
   });
 
   it("calls out imported Markdown and nothing else", () => {

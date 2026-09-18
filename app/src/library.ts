@@ -28,6 +28,7 @@ export const LibraryRowSchema = z.looseObject({
   title: absent(z.string()),
   tldr: absent(z.string()),
   tags: absent(z.array(z.string())),
+  source_date: absent(z.string()),
   created_at: absent(z.string()),
   error: absent(ReadingErrorSchema),
   active_attempt: absent(ProcessingAttemptSchema),

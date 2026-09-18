@@ -161,6 +161,7 @@ export const ReadingSchema = z.looseObject({
   orgs: absent(z.array(z.string())),
   source_type: absent(z.string()),
   content_status: absent(z.string()),
+  source_date: absent(z.string()),
   created_at: absent(z.string()),
   updated_at: absent(z.string()),
   novelty_verdict: absent(z.string()),

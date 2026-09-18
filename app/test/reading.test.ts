@@ -57,6 +57,13 @@ describe("readingFromResponse", () => {
     expect(result.state === "ready" ? result.reading.tensions : "kept").toBeUndefined();
   });
 
+  it("reads an optional source_date and treats null as absent", () => {
+    const dated = readingFromResponse(200, { ...READY, source_date: "2024-03-15" });
+    expect(dated.state === "ready" && dated.reading.source_date).toBe("2024-03-15");
+    const cleared = readingFromResponse(200, { ...READY, source_date: null });
+    expect(cleared).toEqual({ state: "ready", reading: READY });
+  });
+
   it("reads keywords, people, and organizations for the Details section", () => {
     const result = readingFromResponse(200, pack.readings.rd_FXATTENT01);
     expect(result.state).toBe("ready");

@@ -154,6 +154,15 @@ describe("a ready reading", () => {
     expect(heading()).toBe("A quieter internet is a choice we can make");
     expect(screen.getByText("fieldnotes.example")).toBeInTheDocument();
     expect(screen.getByText("Saved 7 September 2026")).toBeInTheDocument();
+    expect(screen.queryByText(/^Published /)).not.toBeInTheDocument();
+  });
+
+  it("shows the published date alongside the saved date", async () => {
+    backendAnswers(200, { ...readings[ATTENTION], source_date: "2024-03-15" });
+    await openTab(`/readings/${ATTENTION}`);
+
+    expect(screen.getByText("Published 15 March 2024")).toBeInTheDocument();
+    expect(screen.getByText("Saved 7 September 2026")).toBeInTheDocument();
   });
 
   it("names imported Markdown in the metadata line", async () => {
