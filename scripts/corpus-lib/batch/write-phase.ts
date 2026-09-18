@@ -478,7 +478,13 @@ async function writeNormalizedResults(
       ? rollForward(target.preserveReadyManifest, attempt, finishedAt)
       : failedManifest(
           target,
-          { sourceType: target.sourceType, error, attempt, content: contentFactsOf(target) },
+          {
+            sourceType: target.sourceType,
+            error,
+            attempt,
+            content: contentFactsOf(target),
+            ...(target.sourceDate === undefined ? {} : { source_date: target.sourceDate }),
+          },
           finishedAt,
         );
     await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });

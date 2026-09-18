@@ -107,6 +107,7 @@ export async function processReading(
   let readingSlotConsumed = false;
   let leases: ProcessingLeaseHold | null = null;
   let stopHeartbeat: (() => Promise<void>) | null = null;
+  let source_date: string | undefined;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
@@ -185,9 +186,10 @@ export async function processReading(
     }
 
     // A fresh extract is authoritative; the prior fills the gap. Resolve the
-    // prior here, before leases and paid stages, so a fail-closed read cannot
-    // burn spend. Skip that read when the extract already produced a date.
-    const source_date = await sourceDateForReadyDraft(extracted, reader, args);
+    // prior here, before leases and paid stages. Skip that read when the
+    // extract already produced a date. Hoisted so a later markFailed can stamp
+    // a date this attempt already holds without a second (fallible) read.
+    source_date = await sourceDateForReadyDraft(extracted, reader, args);
 
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
@@ -424,7 +426,7 @@ export async function processReading(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, source_date);
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
@@ -475,7 +477,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e, env, tenantId);
+    await markFailed(reader, args, services, attempt, e, env, tenantId, source_date);
   }
 }
 
@@ -529,7 +531,7 @@ async function recoverOrphanedLeases(
   await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args),
     retired ? "retired_attempt" : "defer_expired");
   await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
-  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, manifest.source_date);
   // markFailed is defensive elsewhere and can swallow an R2 write failure.
   // Retirement must keep its recovery delivery until terminalization sticks.
   try {
@@ -752,7 +754,7 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId);
+  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId, existing?.source_date);
   // RateLimitedError keeps the slot held through retries; exhausting them is
   // the definitive pre-summarization failure that must release it. release is
   // a no-op if summarization already committed the reservation.
@@ -767,6 +769,7 @@ async function markFailed(
   e: unknown,
   env: Env,
   tenantId: string,
+  sourceDate?: string,
 ): Promise<void> {
   console.error(e);
   // Same no-recreate gate as markDeadLettered: a mid-flight purge after
@@ -809,11 +812,17 @@ async function markFailed(
   }
 
   const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
+  const sourceDateOnFailure = sourceDate ?? await sourceDateFromPrior(reader, args);
   // content omitted → the empty-content placeholder with content_status
   // "failed": on this path extraction may never have happened.
   const manifest = failedManifest(
     args,
-    { sourceType: sourceTypeOnFailure, error, attempt },
+    {
+      sourceType: sourceTypeOnFailure,
+      error,
+      attempt,
+      ...(sourceDateOnFailure === undefined ? {} : { source_date: sourceDateOnFailure }),
+    },
     services.now(),
   );
   // We're already on the failure path inside the queue consumer — a transient
@@ -846,8 +855,11 @@ export async function sourceDateForReadyDraft(
   );
 }
 
-/** Carry a stored publication date onto the ready draft. Exported so tests
- *  can pin fail-closed read errors without running the full process pipeline. */
+/** Carry a stored publication date onto the ready or failed draft. Exported
+ *  so tests can pin prior-read errors without running the full process
+ *  pipeline. A throw is not "no stored date", but rethrowing it would land
+ *  in markFailed and write a dateless failed terminal — strictly worse than
+ *  proceeding undated on failed-prior reprocess / import-over. */
 export async function sourceDateFromPrior(
   reader: Pick<ReadingStore, "readManifest">,
   args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
@@ -856,12 +868,10 @@ export async function sourceDateFromPrior(
   try {
     current = await reader.readManifest(args.keyPrefix);
   } catch (error) {
-    // A throw is not "no stored date". Swallowing it would let readyManifest
-    // omit source_date and commit ready, permanently dropping a prior date
-    // on failed-prior reprocess / import-over (no preserveReadyManifest).
     const preserved = args.preserveReadyManifest?.source_date;
     if (preserved !== undefined) return preserved;
-    throw error;
+    console.error(error);
+    return undefined;
   }
   return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }

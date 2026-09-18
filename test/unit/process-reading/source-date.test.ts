@@ -64,19 +64,22 @@ describe("sourceDateFromPrior", () => {
     ).resolves.toBe("2024-03-15");
   });
 
-  it("fails closed on a prior-manifest read error when no preserved date can recover it", async () => {
+  it("proceeds undated on a prior-manifest read error when no preserved date can recover it", async () => {
     const error = new Error("R2 hiccup");
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(
       sourceDateFromPrior(reader(async () => {
         throw error;
       }), args()),
-    ).rejects.toBe(error);
+    ).resolves.toBeUndefined();
 
     await expect(
       sourceDateFromPrior(reader(async () => {
         throw error;
       }), args({ preserveReadyManifest: pending({ status: "ready" }) })),
-    ).rejects.toBe(error);
+    ).resolves.toBeUndefined();
+    expect(consoleErr).toHaveBeenCalled();
+    consoleErr.mockRestore();
   });
 });
 
@@ -160,15 +163,16 @@ describe("extractedFromMarkdown — source_date from front-matter", () => {
 });
 
 describe("processReading — source_date is resolved before paid stages", () => {
-  function job() {
-    return {
-      id: "rd_TEST",
-      url: "https://example.com/x",
-      urlHash: "a".repeat(64),
-      createdAt: "2026-04-26T20:00:00.000Z",
-      keyPrefix: PREFIX,
-      source: { kind: "markdown" as const, markdown: "# Title\n\nbody" },
-    };
+  const identity = {
+    id: "rd_TEST",
+    url: "https://example.com/x",
+    urlHash: "a".repeat(64),
+    createdAt: "2026-04-26T20:00:00.000Z",
+    keyPrefix: PREFIX,
+  };
+
+  function markdownJob() {
+    return { ...identity, source: { kind: "markdown" as const, markdown: "# Title\n\nbody" } };
   }
 
   function envWith(bucket: R2Bucket): Env {
@@ -189,10 +193,117 @@ describe("processReading — source_date is resolved before paid stages", () => 
     } as unknown as Env;
   }
 
-  it("a post-extract prior-manifest read throw fails closed without calling paid fetch", async () => {
+  function memoryBucket(body: string) {
+    const written: Manifest[] = [];
+    const bucket = {
+      get: vi.fn(async (key: string) => {
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+        }
+        return null;
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          written.push(JSON.parse(String(value)));
+        }
+      }),
+      head: vi.fn(async () => null),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+    return { bucket, written };
+  }
+
+  it("a failed reprocess of a dated pending keeps source_date", async () => {
+    const { bucket, written } = memoryBucket(JSON.stringify(pending({ source_date: "2024-03-15" })));
+    const services: Services = {
+      fetch: vi.fn(async () => {
+        throw new Error("network down");
+      }) as unknown as typeof fetch,
+      lookup: PUBLIC_LOOKUP,
+      now: () => "2026-04-26T20:00:01.000Z",
+      newId: () => "rd_TEST",
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      processReading(
+        { ...identity, trigger: "reprocess" as const },
+        envWith(bucket),
+        services,
+        founderTenant(),
+      ),
+    ).resolves.toBeUndefined();
+
+    consoleErr.mockRestore();
+    const failed = written.find((manifest) => manifest.status === "failed");
+    expect(failed?.source_date).toBe("2024-03-15");
+  });
+
+  it("a later failure keeps a date already resolved when the prior re-read would drop it", async () => {
+    const dated = JSON.stringify(pending({ source_date: "2024-03-15" }));
+    const undated = JSON.stringify(pending());
+    let extractedWritten = false;
+    let manifestGetsAfterExtract = 0;
+    const written: Manifest[] = [];
+    const bucket = {
+      get: vi.fn(async (key: string) => {
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          const body = (() => {
+            if (!extractedWritten) return dated;
+            manifestGetsAfterExtract += 1;
+            // 1: unpaid ownership re-check after extract writes.
+            // 2: sourceDateForReadyDraft — this is the date the attempt holds.
+            // Later gets (markFailed) return an undated pending so a re-read
+            // would drop the field; the hoisted value must still land.
+            return manifestGetsAfterExtract > 2 ? undated : dated;
+          })();
+          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+        }
+        return null;
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          written.push(JSON.parse(String(value)));
+        }
+      }),
+      head: vi.fn(async () => null),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+
+    const services: Services = {
+      fetch: vi.fn<typeof fetch>(),
+      lookup: PUBLIC_LOOKUP,
+      now: () => "2026-04-26T20:00:01.000Z",
+      newId: () => "rd_TEST",
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      processReading(
+        {
+          ...markdownJob(),
+          attemptStartedAt: "2026-04-25T19:00:00.000Z",
+        },
+        envWith(bucket),
+        services,
+        founderTenant(),
+      ),
+    ).resolves.toBeUndefined();
+
+    consoleErr.mockRestore();
+    expect(extractedWritten).toBe(true);
+    const failed = written.find((manifest) => manifest.status === "failed");
+    expect(failed?.source_date).toBe("2024-03-15");
+  });
+
+  it("a post-extract prior-manifest read throw proceeds undated without marking failed", async () => {
     const body = JSON.stringify(pending({ source_date: "2024-03-15" }));
     let extractedWritten = false;
     let manifestGetsAfterExtract = 0;
+    const written: Manifest[] = [];
     const bucket = {
       get: vi.fn(async (key: string) => {
         if (typeof key === "string" && key.endsWith("/manifest.json")) {
@@ -200,7 +311,6 @@ describe("processReading — source_date is resolved before paid stages", () => 
             manifestGetsAfterExtract += 1;
             // 1: unpaid ownership re-check after extract writes.
             // 2: sourceDateForReadyDraft → sourceDateFromPrior, hoisted before leases/paid stages.
-            // Later gets (markFailed) must succeed so the consumer can finish.
             if (manifestGetsAfterExtract === 2) throw new Error("R2 hiccup");
           }
           return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
@@ -209,7 +319,9 @@ describe("processReading — source_date is resolved before paid stages", () => 
       }),
       put: vi.fn(async (key: string, value: unknown) => {
         if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
-        void value;
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          written.push(JSON.parse(String(value)));
+        }
       }),
       head: vi.fn(async () => null),
       delete: vi.fn(),
@@ -226,12 +338,13 @@ describe("processReading — source_date is resolved before paid stages", () => 
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(
-      processReading(job(), envWith(bucket), services, founderTenant()),
-    ).resolves.toBeUndefined();
+      processReading(markdownJob(), envWith(bucket), services, founderTenant()),
+    ).rejects.toThrow("defer_paid_work");
 
     expect(extractedWritten).toBe(true);
     expect(manifestGetsAfterExtract).toBeGreaterThan(1);
     expect(fetchFn).not.toHaveBeenCalled();
+    expect(written.some((manifest) => manifest.status === "failed")).toBe(false);
     expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/R2 hiccup/);
     consoleErr.mockRestore();
   });
