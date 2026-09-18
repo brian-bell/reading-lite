@@ -10,8 +10,9 @@ import { readabilityFromHtml } from "../../../src/modules/extractor";
 
 const URL = "https://example.com/a";
 
-const HTML_ARTICLE = `<!doctype html>
-<html><head><title>Hello World</title></head>
+function articleHtml(headExtra = ""): string {
+  return `<!doctype html>
+<html><head><title>Hello World</title>${headExtra}</head>
 <body>
   <header><nav>nav</nav></header>
   <main>
@@ -23,6 +24,9 @@ const HTML_ARTICLE = `<!doctype html>
   </main>
   <footer>footer</footer>
 </body></html>`;
+}
+
+const HTML_ARTICLE = articleHtml();
 
 // Minimal reduction of the docs.spring.io page from issue #18: content with no
 // <body> wrapper, which makes Readability walk past <html> to null and throw.
@@ -37,6 +41,31 @@ describe("readabilityFromHtml", () => {
     expect(article?.title).toBe("Hello World");
     expect(article?.markdown).toContain("first paragraph");
     expect(article?.markdown).not.toContain("nav");
+    expect(article?.publishedTime).toBeUndefined();
+  });
+
+  it("surfaces article:published_time as publishedTime", () => {
+    const html = articleHtml(
+      `<meta property="article:published_time" content="2024-03-15T08:00:00-05:00">`,
+    );
+    const article = readabilityFromHtml(html, URL);
+
+    expect(article?.salvaged).toBe(false);
+    expect(article?.publishedTime).toBe("2024-03-15T08:00:00-05:00");
+  });
+
+  it("surfaces JSON-LD datePublished as publishedTime", () => {
+    const jsonLd = JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "NewsArticle",
+      headline: "Hello World",
+      datePublished: "2024-06-01T12:00:00.000Z",
+    });
+    const html = articleHtml(`<script type="application/ld+json">${jsonLd}</script>`);
+    const article = readabilityFromHtml(html, URL);
+
+    expect(article?.salvaged).toBe(false);
+    expect(article?.publishedTime).toBe("2024-06-01T12:00:00.000Z");
   });
 
   it("reports the raw-DOM fallback as salvaged", () => {
@@ -46,6 +75,7 @@ describe("readabilityFromHtml", () => {
     expect(article?.salvaged).toBe(true);
     expect(article?.markdown).toContain("property value");
     expect(article?.markdown).not.toContain("var x=1");
+    expect(article?.publishedTime).toBeUndefined();
   });
 
   it("returns null when Readability crashes and there is nothing to salvage", () => {
