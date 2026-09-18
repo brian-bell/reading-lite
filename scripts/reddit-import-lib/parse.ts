@@ -4,6 +4,7 @@ export interface RedditImportRequest {
   source_url: string;
   markdown: string;
   title?: string;
+  source_date?: string;
 }
 
 // Turn a raw Reddit listing `.json` payload (the 2-element [post, comments]
@@ -21,5 +22,6 @@ export function buildRedditImport(url: string, jsonText: string): RedditImportRe
     source_url: url,
     markdown: article.markdown,
     ...(article.title ? { title: article.title } : {}),
+    ...(article.source_date === undefined ? {} : { source_date: article.source_date }),
   };
 }

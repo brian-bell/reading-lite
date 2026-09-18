@@ -37,6 +37,19 @@ const REDDIT_THREAD_JSON = JSON.stringify([
   },
 ]);
 
+const NOW = Date.parse("2026-09-18T12:00:00.000Z");
+
+function threadWithPost(post: Record<string, unknown>): string {
+  return JSON.stringify([
+    {
+      kind: "Listing",
+      data: {
+        children: [{ kind: "t3", data: { title: "Dated thread", selftext: "body", ...post } }],
+      },
+    },
+  ]);
+}
+
 describe("Reddit URL detection", () => {
   it("recognizes Reddit thread and comment URLs", () => {
     expect(
@@ -127,5 +140,47 @@ describe("redditListingToMarkdown", () => {
     expect(redditListingToMarkdown("not json")).toBeNull();
     expect(redditListingToMarkdown("[]")).toBeNull();
     expect(redditListingToMarkdown(JSON.stringify([{ kind: "Listing", data: { children: [] } }]))).toBeNull();
+  });
+
+  it("sets source_date from the post created_utc as the UTC calendar date", () => {
+    const out = redditListingToMarkdown(threadWithPost({ created_utc: 1710460800 }), { nowMs: NOW });
+
+    expect(out?.source_date).toBe("2024-03-15");
+    expect(out?.markdown).toContain("# Dated thread");
+  });
+
+  it.each([
+    ["missing", {}],
+    ["null", { created_utc: null }],
+    ["non-numeric", { created_utc: "1700000000" }],
+    ["zero", { created_utc: 0 }],
+    ["negative", { created_utc: -1 }],
+    ["future", { created_utc: 1789776000 }],
+    ["too large to be a unix second", { created_utc: 1e20 }],
+  ] as const)("omits source_date when created_utc is %s, without failing", (_label, post) => {
+    const out = redditListingToMarkdown(threadWithPost(post), { nowMs: NOW });
+
+    expect(out?.markdown).toContain("# Dated thread");
+    expect("source_date" in (out ?? {})).toBe(false);
+  });
+
+  it("does not take source_date from a comment created_utc", () => {
+    const json = JSON.stringify([
+      {
+        kind: "Listing",
+        data: { children: [{ kind: "t3", data: { title: "Dated thread", selftext: "body" } }] },
+      },
+      {
+        kind: "Listing",
+        data: {
+          children: [{ kind: "t1", data: { body: "later comment", created_utc: 1710460800, score: 1 } }],
+        },
+      },
+    ]);
+
+    const out = redditListingToMarkdown(json, { nowMs: NOW });
+
+    expect(out?.markdown).toContain("later comment");
+    expect("source_date" in (out ?? {})).toBe(false);
   });
 });

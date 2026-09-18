@@ -86,8 +86,8 @@ export interface ExtractedContent {
   title?: string;
   // Publication date of the source (UTC YYYY-MM-DD). HTML from Readability's
   // publishedTime; X from the first rendered post's created_at; YouTube from
-  // watch-page datePublished/uploadDate (meta or JSON-LD). Absent when
-  // missing or implausible.
+  // watch-page datePublished/uploadDate (meta or JSON-LD); Reddit from the
+  // listing post's created_utc. Absent when missing or implausible.
   source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
   // crashed and the raw-DOM salvage recovered the text. Absent for every other
