@@ -240,6 +240,65 @@ describe("processReading — source_date is resolved before paid stages", () => 
     expect(failed?.source_date).toBe("2024-03-15");
   });
 
+  it("a later failure keeps a date already resolved when the prior re-read would drop it", async () => {
+    const dated = JSON.stringify(pending({ source_date: "2024-03-15" }));
+    const undated = JSON.stringify(pending());
+    let extractedWritten = false;
+    let manifestGetsAfterExtract = 0;
+    const written: Manifest[] = [];
+    const bucket = {
+      get: vi.fn(async (key: string) => {
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          const body = (() => {
+            if (!extractedWritten) return dated;
+            manifestGetsAfterExtract += 1;
+            // 1: unpaid ownership re-check after extract writes.
+            // 2: sourceDateForReadyDraft — this is the date the attempt holds.
+            // Later gets (markFailed) return an undated pending so a re-read
+            // would drop the field; the hoisted value must still land.
+            return manifestGetsAfterExtract > 2 ? undated : dated;
+          })();
+          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
+        }
+        return null;
+      }),
+      put: vi.fn(async (key: string, value: unknown) => {
+        if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
+        if (typeof key === "string" && key.endsWith("/manifest.json")) {
+          written.push(JSON.parse(String(value)));
+        }
+      }),
+      head: vi.fn(async () => null),
+      delete: vi.fn(),
+      list: vi.fn(async () => ({ objects: [], truncated: false })),
+    } as unknown as R2Bucket;
+
+    const services: Services = {
+      fetch: vi.fn<typeof fetch>(),
+      lookup: PUBLIC_LOOKUP,
+      now: () => "2026-04-26T20:00:01.000Z",
+      newId: () => "rd_TEST",
+    };
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await expect(
+      processReading(
+        {
+          ...markdownJob(),
+          attemptStartedAt: "2026-04-25T19:00:00.000Z",
+        },
+        envWith(bucket),
+        services,
+        founderTenant(),
+      ),
+    ).resolves.toBeUndefined();
+
+    consoleErr.mockRestore();
+    expect(extractedWritten).toBe(true);
+    const failed = written.find((manifest) => manifest.status === "failed");
+    expect(failed?.source_date).toBe("2024-03-15");
+  });
+
   it("a post-extract prior-manifest read throw proceeds undated without marking failed", async () => {
     const body = JSON.stringify(pending({ source_date: "2024-03-15" }));
     let extractedWritten = false;

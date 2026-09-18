@@ -107,6 +107,7 @@ export async function processReading(
   let readingSlotConsumed = false;
   let leases: ProcessingLeaseHold | null = null;
   let stopHeartbeat: (() => Promise<void>) | null = null;
+  let source_date: string | undefined;
 
   try {
     // A purged reading must not get ANY object recreated — not even this
@@ -186,8 +187,9 @@ export async function processReading(
 
     // A fresh extract is authoritative; the prior fills the gap. Resolve the
     // prior here, before leases and paid stages. Skip that read when the
-    // extract already produced a date.
-    const source_date = await sourceDateForReadyDraft(extracted, reader, args);
+    // extract already produced a date. Hoisted so a later markFailed can stamp
+    // a date this attempt already holds without a second (fallible) read.
+    source_date = await sourceDateForReadyDraft(extracted, reader, args);
 
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
@@ -424,7 +426,7 @@ export async function processReading(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, source_date);
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
@@ -475,7 +477,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e, env, tenantId);
+    await markFailed(reader, args, services, attempt, e, env, tenantId, source_date);
   }
 }
 
@@ -529,7 +531,7 @@ async function recoverOrphanedLeases(
   await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args),
     retired ? "retired_attempt" : "defer_expired");
   await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
-  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId);
+  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, manifest.source_date);
   // markFailed is defensive elsewhere and can swallow an R2 write failure.
   // Retirement must keep its recovery delivery until terminalization sticks.
   try {
@@ -752,7 +754,7 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId);
+  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId, existing?.source_date);
   // RateLimitedError keeps the slot held through retries; exhausting them is
   // the definitive pre-summarization failure that must release it. release is
   // a no-op if summarization already committed the reservation.
@@ -767,6 +769,7 @@ async function markFailed(
   e: unknown,
   env: Env,
   tenantId: string,
+  sourceDate?: string,
 ): Promise<void> {
   console.error(e);
   // Same no-recreate gate as markDeadLettered: a mid-flight purge after
@@ -809,7 +812,7 @@ async function markFailed(
   }
 
   const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
-  const sourceDateOnFailure = await sourceDateFromPrior(reader, args);
+  const sourceDateOnFailure = sourceDate ?? await sourceDateFromPrior(reader, args);
   // content omitted → the empty-content placeholder with content_status
   // "failed": on this path extraction may never have happened.
   const manifest = failedManifest(
