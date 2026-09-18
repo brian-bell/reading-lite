@@ -81,6 +81,26 @@
 //     `invalidated_by` on the marker, and the next pass sweeps on its own
 //     rather than on operator discipline.
 //
+// And the scope is only worth narrowing while it is narrower. Every reverse
+// query and every measurement is one Vectorize query, and a sweep is one per
+// ready reading. A bulk ingest or a mass reprocess can change so much that the
+// reverse queries plus the readings they bring in cost more than the sweep
+// they exist to avoid, for less coverage. `scopeCostTally` settles that with
+// one rule, checked before the first reverse query and again before each one
+// after it:
+//
+//   reverse queries not yet issued + ready readings known to be in scope
+//     > ready readings in the list   →   sweep
+//
+// Queries already issued are spent either way, so they do not count; the
+// in-scope set only grows, and overlapping reverse results count once. A tie
+// stays incremental: the two passes cost the same, and a tie is where a quiet
+// corpus whose only scope is its carried unmeasurable readings sits — a sweep
+// there would be read as a configuration failure (see the zero-measured check
+// in the command). Manifest reads are not counted, which leans the rule toward
+// sweeping, the direction that covers more. `--limit` plays no part: it
+// applies to whichever plan the scope produces.
+//
 // What is NOT deferred: a reading the rules above DO bring into scope is a
 // measurement target like any other, so its `similarity` snapshot and its list
 // row are brought current in the same pass, not just flagged for tier 2.
@@ -364,10 +384,7 @@ export function incrementalScope(
       saturated.push(id);
       continue;
     }
-    for (const match of matches) {
-      if (match.score < REVERSE_SCORE_BOUND) continue;
-      if (known.has(match.id)) scope.add(match.id);
-    }
+    for (const match of reverseScopeIds(matches, known)) scope.add(match);
   }
 
   // One reason carrying every count, rather than the first cause found: a
@@ -404,9 +421,7 @@ export function incrementalScope(
   // moves the row's timestamps, which is what `changed` reads — but a repair
   // that touches neither the list row nor the vector index does wait for the
   // weekly sweep.
-  const carried = (marker?.unmeasurable_ids ?? []).filter(
-    (id) => statusById.get(id) === "ready",
-  );
+  const carried = carriedIds(list, marker);
   for (const id of carried) scope.add(id);
 
   const changedReason = base.listUnchanged
@@ -421,6 +436,62 @@ export function incrementalScope(
     since: base.since,
     ids: [...scope].sort(),
     changed: base.changed,
+  };
+}
+
+/**
+ * Tracks what an incremental scope will cost while its reverse queries are
+ * being made, and says when a full sweep has become cheaper (the rule is in the
+ * header above). The command asks `check` before issuing each reverse query and
+ * `add`s each answer, so a scope that is no longer worth narrowing stops
+ * spending queries on it instead of finishing them first.
+ */
+export interface ScopeCostTally {
+  /** Counts the ready readings one reverse answer brings into scope. */
+  add(matches: ReverseMatches): void;
+  /**
+   * `full` when the reverse queries not yet issued plus the ready readings
+   * known to be in scope cost more than sweeping every ready reading;
+   * otherwise `null`. `asked` is how many reverse queries have been issued.
+   */
+  check(asked: number): FullScope | null;
+}
+
+export function scopeCostTally(
+  list: readonly RefreshRow[],
+  changed: readonly string[],
+  marker: RefreshState | null,
+): ScopeCostTally {
+  const known = new Set(list.map((row) => row.id));
+  const ready = new Set(list.filter((row) => row.status === "ready").map((row) => row.id));
+  // The ready ids the pass will measure, as far as is known so far. A set, so a
+  // reading several changed vectors bring in is one measurement, not several.
+  const toMeasure = new Set<string>();
+  const admit = (id: string): void => {
+    if (ready.has(id)) toMeasure.add(id);
+  };
+  for (const id of changed) admit(id);
+  for (const id of carriedIds(list, marker)) admit(id);
+  return {
+    add(matches) {
+      // A saturated or missing answer escalates on its own at the end; its
+      // matches are not a scope, so they are not a cost either.
+      if (matches === null || isSaturated(matches)) return;
+      for (const id of reverseScopeIds(matches, known)) admit(id);
+    },
+    check(asked) {
+      const remaining = changed.length - asked;
+      const incremental = remaining + toMeasure.size;
+      if (incremental <= ready.size) return null;
+      return {
+        kind: "full",
+        reason:
+          `incremental scope would cost at least ${incremental} Vectorize queries ` +
+          `(${remaining} reverse still to run, ${toMeasure.size} reading(s) to measure) ` +
+          `against ${ready.size} for a full sweep — after ${asked} of ` +
+          `${changed.length} changed reading(s)`,
+      };
+    },
   };
 }
 
@@ -452,6 +523,28 @@ function isSaturated(matches: readonly { score: number }[]): boolean {
   if (matches.length === 0) return true;
   if (matches.length < REVERSE_TOP_K) return false;
   return Math.min(...matches.map((match) => match.score)) >= REVERSE_SCORE_BOUND;
+}
+
+/**
+ * The ids one complete reverse answer brings into scope: matches at or above
+ * the bound that are still in the list.
+ */
+function reverseScopeIds(
+  matches: readonly { id: string; score: number }[],
+  known: ReadonlySet<string>,
+): string[] {
+  return matches
+    .filter((match) => match.score >= REVERSE_SCORE_BOUND && known.has(match.id))
+    .map((match) => match.id);
+}
+
+/**
+ * The marker's unmeasurable ids that are still ready — the ones a pass carries
+ * forward for retry (see incrementalScope for why only ready ones).
+ */
+function carriedIds(list: readonly RefreshRow[], marker: RefreshState | null): string[] {
+  const ready = new Set(list.filter((row) => row.status === "ready").map((row) => row.id));
+  return (marker?.unmeasurable_ids ?? []).filter((id) => ready.has(id));
 }
 
 /**

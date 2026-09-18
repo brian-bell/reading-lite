@@ -916,9 +916,16 @@ describe("ops corpus refresh-neighbours", () => {
         key_prefix: `readings/rd_${i}`,
         updated_at: "2026-08-21T12:00:00.000Z",
       }));
+      // Enough quiet readings that the narrowed scope stays the cheaper pass,
+      // so it is the failure budget that stops the queries, not the cost rule.
+      const quiet = Array.from({ length: 20 }, (_, i) => ({
+        ...READY,
+        id: `rd_quiet_${i}`,
+        key_prefix: `readings/rd_quiet_${i}`,
+      }));
       const { deps, calls, lines } = makeDeps({
-        state: { ...MARKER, list_ids: changed.map((row) => row.id) },
-        items: changed,
+        state: { ...MARKER, list_ids: [...changed, ...quiet].map((row) => row.id) },
+        items: [...changed, ...quiet],
         queryThrow: () => new Error("401"),
       });
       await corpusRefreshNeighboursCommand.run(
@@ -931,6 +938,73 @@ describe("ops corpus refresh-neighbours", () => {
       // failures would inflate the rate the reason exists to make trustworthy.
       expect(lines.join("\n")).toContain(
         "Scope: full — 3 reverse-neighbour queries failed in a row after 3 of 10 changed reading(s)",
+      );
+    });
+
+    // A bulk ingest: every ready reading changed, so the reverse queries alone
+    // plus measuring the changed readings cost more than sweeping. The pass
+    // sweeps without making a single reverse query.
+    it("sweeps without reverse queries when the changed set already outweighs the corpus", async () => {
+      const changed = Array.from({ length: 10 }, (_, i) => ({
+        ...READY,
+        id: `rd_${i}`,
+        key_prefix: `readings/rd_${i}`,
+        updated_at: "2026-08-21T12:00:00.000Z",
+      }));
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, list_ids: changed.map((row) => row.id) },
+        items: changed,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", "global", "--since-last-run"],
+        deps,
+      );
+      expect(code).toBe(0);
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K)).toEqual([]);
+      expect(calls.queries).toHaveLength(10);
+      const reason =
+        "incremental scope would cost at least 20 Vectorize queries " +
+        "(10 reverse still to run, 10 reading(s) to measure) against 10 for a full sweep " +
+        "— after 0 of 10 changed reading(s)";
+      expect(lines.join("\n")).toContain(`Scope: full — ${reason}`);
+      expect(JSON.parse(calls.reports[0]!.body).scope).toMatchObject({ kind: "full", reason });
+    });
+
+    // The first changed vector's reverse neighbourhood reaches the whole quiet
+    // corpus, so the one reverse query still to run can only add cost: the
+    // pass stops there instead of making it.
+    it("stops making reverse queries once the scope grows past the sweep", async () => {
+      const changed = ["rd_a", "rd_b"].map((id) => ({
+        ...READY,
+        id,
+        key_prefix: `readings/${id}`,
+        updated_at: "2026-08-21T12:00:00.000Z",
+      }));
+      const quiet = Array.from({ length: 4 }, (_, i) => ({
+        ...READY,
+        id: `rd_quiet_${i}`,
+        key_prefix: `readings/rd_quiet_${i}`,
+      }));
+      const { deps, calls, lines } = makeDeps({
+        state: { ...MARKER, list_ids: [...changed, ...quiet].map((row) => row.id) },
+        items: [...changed, ...quiet],
+        matchesFor: (id, topK) =>
+          topK === REVERSE_TOP_K
+            ? [
+                { id, score: 1 },
+                ...quiet.map((row) => ({ id: row.id, score: 0.8 })),
+                { id: "rd_far", score: REVERSE_SCORE_BOUND - 0.2 },
+              ]
+            : undefined,
+      });
+      await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
+      expect(calls.queries.filter((q) => q.topK === REVERSE_TOP_K).map((q) => q.id)).toEqual([
+        "rd_a",
+      ]);
+      expect(lines.join("\n")).toContain(
+        "Scope: full — incremental scope would cost at least 7 Vectorize queries " +
+        "(1 reverse still to run, 6 reading(s) to measure) against 6 for a full sweep " +
+        "— after 1 of 2 changed reading(s)",
       );
     });
 
