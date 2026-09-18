@@ -1,3 +1,4 @@
+import { sourceDateFromExtractOrPrior } from "../../../src/modules/extractor/source-date";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
 import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
 import type { ListIndexItem } from "../../../src/schemas/api";
@@ -308,10 +309,14 @@ function buildPendingManifest(target: ExtractedTarget, now: string): Manifest {
 // sidecarTargetFor). Built fresh rather than spread from `m` so stale summary and
 // error fields never leak into the pending; the terminal write rebuilds the full
 // ready manifest, and on failure preserveReadyManifest rolls a ready reading
-// forward. created_at and source_date are preserved from `m`.
+// forward. created_at is preserved from `m`. source_date follows the same
+// fresh-wins / prior-fills-gap rule as sidecarTargetFor and is persisted here
+// so an activating-window crash + extracted.md reuse (no `fresh` object) still
+// feeds the new date to the sidecar.
 function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: string): Manifest {
   const fresh = target.fresh;
   const markdownBytes = new TextEncoder().encode(target.markdown).byteLength;
+  const sourceDate = sourceDateFromExtractOrPrior(fresh?.source_date, m.source_date);
   return ManifestSchema.parse({
     id: target.target.readingId,
     url: target.target.url,
@@ -331,10 +336,7 @@ function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: 
     content_sha256: fresh?.content_sha256 ?? m.content_sha256,
     extracted_bytes: markdownBytes,
     ...preservedReadySnapshotField(m),
-    // Publication date is durable metadata, not a per-attempt judgement: re-carry
-    // it like created_at so a recover flip doesn't drop the stored date (the
-    // sidecar reads source_date off this pending manifest).
-    ...(m.source_date === undefined ? {} : { source_date: m.source_date }),
+    ...(sourceDate === undefined ? {} : { source_date: sourceDate }),
     created_at: m.created_at,
     updated_at: now,
   });

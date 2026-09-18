@@ -1,3 +1,4 @@
+import { sourceDateFromExtractOrPrior } from "../../../src/modules/extractor/source-date";
 import { buildSummarizeRequestBody } from "../../../src/modules/anthropic";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
@@ -321,7 +322,10 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
   // omits the field). Reusing existing extracted.md keeps the prior signal.
   const degradation = fresh?.enrichment_degradation ?? (fresh ? undefined : m.enrichment_degradation);
   if (degradation !== undefined) out.enrichmentDegradation = degradation;
-  if (m.source_date !== undefined) out.sourceDate = m.source_date;
+  // Same "fresh extract is authoritative" convention, but absence of a fresh
+  // date fills from the prior rather than dropping it.
+  const sourceDate = sourceDateFromExtractOrPrior(fresh?.source_date, m.source_date);
+  if (sourceDate !== undefined) out.sourceDate = sourceDate;
   return out;
 }
 

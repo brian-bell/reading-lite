@@ -3,7 +3,8 @@ import {
   activateFreshTargets,
   activateRecoverTargets,
 } from "../../../../scripts/corpus-lib/batch/activation-phase";
-import { submitBatch } from "../../../../scripts/corpus-lib/batch/submit-phase";
+import { extractTargets } from "../../../../scripts/corpus-lib/batch/extract-phase";
+import { sidecarTargetFor, submitBatch } from "../../../../scripts/corpus-lib/batch/submit-phase";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import type { ExtractedTarget, SummarizeTarget } from "../../../../scripts/corpus-lib/batch/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
@@ -517,8 +518,7 @@ describe("activateRecoverTargets", () => {
 
   // A stored publication date is durable metadata: the recover flip rebuilds the
   // pending fresh, so it must re-carry source_date the way it re-carries
-  // created_at. sidecarTargetFor reads it off this pending manifest, so dropping
-  // it here silently loses the date on the batch write phase.
+  // created_at. recoverTarget's freshHtml has no date, so this is prior-fills-gap.
   it("preserves a prior source_date on the pending flip", async () => {
     const failed = recoverManifest({ source_date: "2024-03-15" });
     const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
@@ -551,6 +551,66 @@ describe("activateRecoverTargets", () => {
 
     const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
     expect(pending.source_date).toBeUndefined();
+  });
+
+  it("keeps a fresh extract source_date after an activating-window crash rerun", async () => {
+    // Crash after activateRecoverTargets writes the pending but before the
+    // submitted sidecar is saved. extractTargets then reuses extracted.md
+    // without a `fresh` object, so the new date has to already be on the pending.
+    const batchAttemptId = "batch_550e8400-e29b-41d4-a716-446655440000";
+    const failed = recoverManifest({ source_date: "2020-01-01" });
+    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
+    const t = recoverTarget();
+    t.target.manifest = failed;
+    t.target.attemptId = batchAttemptId;
+    t.fresh = { ...freshHtml, source_date: "2024-06-01" };
+
+    await activateRecoverTargets([t], {
+      r2: fakeR2 as any,
+      model: "m",
+      now: () => NOW,
+      saveSidecar: vi.fn(async () => {}),
+    });
+
+    const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
+    expect(pending.source_date).toBe("2024-06-01");
+    expect(pending.active_attempt?.id).toBe(batchAttemptId);
+
+    const extract = vi.fn(async () => {
+      throw new Error("must not re-fetch after activating-window crash");
+    });
+    const { extracted, dropped } = await extractTargets(
+      [
+        {
+          readingId: pending.id,
+          url: pending.url,
+          urlHash: pending.url_hash,
+          keyPrefix: KEY_PREFIX,
+          createdAt: pending.created_at,
+          attemptId: "batch_aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          attemptStartedAt: NOW,
+          trigger: "reprocess",
+          manifest: pending,
+        },
+      ],
+      {
+        loadExtracted: async (kp) => fakeR2.store.get(`${kp}/extracted.md`) ?? null,
+        extract,
+      },
+    );
+
+    expect(dropped).toHaveLength(0);
+    expect(extracted).toHaveLength(1);
+    expect(extracted[0]!.fresh).toBeUndefined();
+    expect(extract).not.toHaveBeenCalled();
+
+    const sidecar = sidecarTargetFor({
+      extracted: extracted[0]!,
+      similar: [],
+      queryEmbedTokens: 12,
+      similarity: { count: 0, computed_at: NOW },
+    });
+    expect(sidecar.sourceDate).toBe("2024-06-01");
   });
 
   it("is idempotent across a re-run: single by-url, by-id, and list row", async () => {
