@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SOURCE_DATE_MIN,
+  sourceDateFromMarkdownFrontMatter,
   sourceDateFromPublishedTime,
 } from "../../../src/modules/extractor/source-date";
 
@@ -36,5 +37,77 @@ describe("sourceDateFromPublishedTime", () => {
     expect(sourceDateFromPublishedTime(SOURCE_DATE_MIN, NOW)).toBe(SOURCE_DATE_MIN);
     expect(sourceDateFromPublishedTime("1899-12-31", NOW)).toBeUndefined();
     expect(sourceDateFromPublishedTime("0001-01-01", NOW)).toBeUndefined();
+  });
+});
+
+function mdWithFrontMatter(fields: string, body = "# Title\n\nbody"): string {
+  return `---\n${fields}\n---\n${body}`;
+}
+
+describe("sourceDateFromMarkdownFrontMatter", () => {
+  it("sets source_date from an explicit front-matter field", () => {
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: 2024-03-15"), NOW)).toBe(
+      "2024-03-15",
+    );
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: 2024-03-15"), NOW)).toBe(
+      "2024-03-15",
+    );
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("date: 2024-03-15"), NOW)).toBe(
+      "2024-03-15",
+    );
+  });
+
+  it("prefers source_date over published over date", () => {
+    expect(
+      sourceDateFromMarkdownFrontMatter(
+        mdWithFrontMatter("date: 2020-01-01\npublished: 2021-01-01\nsource_date: 2024-03-15"),
+        NOW,
+      ),
+    ).toBe("2024-03-15");
+    expect(
+      sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("date: 2020-01-01\npublished: 2021-01-01"), NOW),
+    ).toBe("2021-01-01");
+  });
+
+  it("falls through a boolean published to a usable date alias", () => {
+    expect(
+      sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: true\ndate: 2024-03-15"), NOW),
+    ).toBe("2024-03-15");
+    expect(
+      sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: false\ndate: 2024-03-15"), NOW),
+    ).toBe("2024-03-15");
+  });
+
+  it("normalizes an offset timestamp to the UTC calendar date", () => {
+    expect(
+      sourceDateFromMarkdownFrontMatter(
+        mdWithFrontMatter('source_date: "2024-03-15T23:00:00-05:00"'),
+        NOW,
+      ),
+    ).toBe("2024-03-16");
+  });
+
+  it("omits source_date when front-matter is absent", () => {
+    expect(sourceDateFromMarkdownFrontMatter("# Title\n\nbody", NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter("**Date:** 2024-03-15\n\nbody", NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("title: Untitled"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter("---\nsource_date: 2024-03-15\n", NOW)).toBeUndefined();
+  });
+
+  it("omits source_date when the value is missing or implausible, without failing", () => {
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: yesterday"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: 2099-01-01"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date: 1899-12-31"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("source_date:"), NOW)).toBeUndefined();
+    expect(sourceDateFromMarkdownFrontMatter(mdWithFrontMatter("published: true"), NOW)).toBeUndefined();
+  });
+
+  it("falls through an unusable preferred key to a later alias", () => {
+    expect(
+      sourceDateFromMarkdownFrontMatter(
+        mdWithFrontMatter("source_date: not-a-date\ndate: 2024-03-15"),
+        NOW,
+      ),
+    ).toBe("2024-03-15");
   });
 });

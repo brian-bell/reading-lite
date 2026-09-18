@@ -64,7 +64,11 @@ export {
   type ResolvedAddress,
   type SafeFetchDeps,
 } from "./safe-fetch";
-export { sourceDateFromExtractOrPrior, sourceDateFromPublishedTime } from "./source-date";
+export {
+  sourceDateFromExtractOrPrior,
+  sourceDateFromMarkdownFrontMatter,
+  sourceDateFromPublishedTime,
+} from "./source-date";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
@@ -87,7 +91,8 @@ export interface ExtractedContent {
   // Publication date of the source (UTC YYYY-MM-DD). HTML from Readability's
   // publishedTime; X from the first rendered post's created_at; YouTube from
   // watch-page datePublished/uploadDate (meta or JSON-LD); Reddit from the
-  // listing post's created_utc. Absent when missing or implausible.
+  // listing post's created_utc; markdown imports from YAML front-matter
+  // `source_date` / `published` / `date`. Absent when missing or implausible.
   source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
   // crashed and the raw-DOM salvage recovered the text. Absent for every other

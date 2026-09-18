@@ -15,7 +15,12 @@ import {
   summarizeSimilarity,
 } from "./modules/stores/similarity-store";
 import { ReadingVisibility } from "./reading-visibility";
-import { extractFromUrl, sourceDateFromExtractOrPrior, type ExtractedContent } from "./modules/extractor";
+import {
+  extractFromUrl,
+  sourceDateFromExtractOrPrior,
+  sourceDateFromMarkdownFrontMatter,
+  type ExtractedContent,
+} from "./modules/extractor";
 import { embed } from "./modules/embeddings";
 import {
   summarizeReading,
@@ -907,7 +912,7 @@ async function extractSource(
       args.keyPrefix,
       services,
       "prepare_markdown",
-      () => extractedFromMarkdown(source),
+      () => extractedFromMarkdown(source, nowMs(services)),
     );
   }
 
@@ -924,10 +929,12 @@ async function extractSource(
   );
 }
 
-async function extractedFromMarkdown(
+export async function extractedFromMarkdown(
   source: Extract<ProcessReadingSource, { kind: "markdown" }>,
+  nowMs: number = Date.now(),
 ): Promise<ExtractedContent> {
   const raw = new TextEncoder().encode(source.markdown);
+  const source_date = sourceDateFromMarkdownFrontMatter(source.markdown, nowMs);
   return {
     raw,
     content_type: "text/markdown; charset=utf-8",
@@ -936,6 +943,7 @@ async function extractedFromMarkdown(
     content_sha256: await sha256Hex(source.markdown),
     markdown: source.markdown,
     title: source.title,
+    ...(source_date === undefined ? {} : { source_date }),
   };
 }
 

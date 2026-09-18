@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { processReading, sourceDateForReadyDraft, sourceDateFromPrior } from "../../../src/process-reading";
+import {
+  extractedFromMarkdown,
+  processReading,
+  sourceDateForReadyDraft,
+  sourceDateFromPrior,
+} from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
 import type { Manifest } from "../../../src/schemas/manifest";
@@ -115,6 +120,42 @@ describe("sourceDateForReadyDraft", () => {
         args(),
       ),
     ).resolves.toBe("2024-06-01");
+  });
+});
+
+const MARKDOWN_NOW = Date.parse("2026-09-18T12:00:00.000Z");
+
+describe("extractedFromMarkdown — source_date from front-matter", () => {
+  it("sets source_date when front-matter supplies a date", async () => {
+    const out = await extractedFromMarkdown(
+      {
+        kind: "markdown",
+        markdown: "---\nsource_date: 2024-03-15\n---\n# Title\n\nbody",
+      },
+      MARKDOWN_NOW,
+    );
+    expect(out.source_date).toBe("2024-03-15");
+    expect(out.markdown).toContain("source_date: 2024-03-15");
+  });
+
+  it("omits source_date when front-matter is absent", async () => {
+    const out = await extractedFromMarkdown(
+      { kind: "markdown", markdown: "# Title\n\nbody" },
+      MARKDOWN_NOW,
+    );
+    expect("source_date" in out).toBe(false);
+  });
+
+  it("omits source_date when the front-matter value is implausible, without failing", async () => {
+    const out = await extractedFromMarkdown(
+      {
+        kind: "markdown",
+        markdown: "---\nsource_date: yesterday\n---\n# Title\n\nbody",
+      },
+      MARKDOWN_NOW,
+    );
+    expect(out.content_status).toBe("captured");
+    expect("source_date" in out).toBe(false);
   });
 });
 
