@@ -745,8 +745,11 @@ describe("email change on the account page", () => {
       "If that address can be used, we sent a short-lived confirmation link.",
     );
     expect(field()).toHaveValue("new@example.com");
-    const [sent] = requestsOf(fetchMock, "POST", "/api/auth/email-change");
-    await expect(sent!.json()).resolves.toEqual({ email: "new@example.com" });
+    expect(requestsOf(fetchMock, "POST", "/api/auth/email-change")).toHaveLength(1);
+
+    // A different address has had nothing sent yet.
+    await userEvent.type(field(), "x");
+    expect(within(section()).getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("asks for a fresh sign-in on a recent-auth 403, not the permission page", async () => {

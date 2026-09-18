@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useRouter } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { accountViewOf, readRefusedBy, type AccountRefusal, type AccountView } from "../account-state";
 import { requestEmailChange } from "../api/email-change";
@@ -82,7 +82,7 @@ export function AccountPage() {
   const [digestDraft, setDigestDraft] = useState<DigestDraft | null>(null);
   // An email-change request refused for the account, not the address: the
   // page's own state, like a refused read.
-  const [emailRefusal, setEmailRefusal] = useState<AccountRefusal | undefined>(undefined);
+  const [emailRefusal, setEmailRefusal] = useState<EmailRefusal | undefined>(undefined);
 
   const emailChange = useMutation({
     mutationFn: (email: string) => requestEmailChange(queryClient, email, expectedTenant),
@@ -230,6 +230,9 @@ export function AccountPage() {
             emailChange.reset();
             emailChange.mutate(email);
           },
+          onEdit: () => {
+            if (!emailChange.isPending) emailChange.reset();
+          },
           onRetry: () => {
             if (emailChange.variables !== undefined) emailChange.mutate(emailChange.variables);
           },
@@ -261,6 +264,9 @@ function failureOf(error: unknown): Failure {
   return view.kind === "server-error" ? view : { kind: "offline" };
 }
 
+/** Email change refuses the account only by it having changed (a same-reader 403 is step-up). */
+type EmailRefusal = Extract<AccountRefusal, { kind: "account-changed" }>;
+
 type PageView =
   | { kind: "forbidden" }
   | { kind: "account-changed"; actingTenant?: string }
@@ -275,12 +281,11 @@ type PageView =
 function pageViewOf(
   sessions: AccountView<SessionsList>,
   settings: AccountView<UserSettings>,
-  emailChange: AccountRefusal | undefined,
+  emailChange: EmailRefusal | undefined,
 ): PageView {
   for (const view of [sessions, settings]) {
     if (view.kind === "forbidden") return { kind: "forbidden" };
   }
-  if (emailChange?.kind === "forbidden") return emailChange;
   for (const view of [sessions, settings]) {
     if (view.kind === "account-changed") return view;
   }
@@ -294,6 +299,8 @@ interface EmailActions {
   outcome: EmailChangeOutcome | undefined;
   failure: Failure | undefined;
   onSend: (email: string) => void;
+  /** The address changed: what was said about the last one no longer applies. */
+  onEdit: () => void;
   /** Sends the failed request again, with the address it was for. */
   onRetry: () => void;
 }
@@ -393,7 +400,7 @@ function pageFor(
  * stays through every outcome, so an offline or failed request can be sent
  * again as it was.
  */
-function EmailSection({ sending, outcome, failure, onSend, onRetry }: EmailActions) {
+function EmailSection({ sending, outcome, failure, onSend, onEdit, onRetry }: EmailActions) {
   const id = useId();
   const [email, setEmail] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -421,7 +428,7 @@ function EmailSection({ sending, outcome, failure, onSend, onRetry }: EmailActio
       ) : null}
       {outcome?.kind === "step-up" ? (
         <p className="form-error" role="alert">
-          Recent sign-in required. <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a
+          Recent sign-in required. <a href={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</a> to confirm a
           sensitive change.
         </p>
       ) : null}
@@ -447,7 +454,10 @@ function EmailSection({ sending, outcome, failure, onSend, onRetry }: EmailActio
             spellCheck={false}
             required
             value={email}
-            onChange={(event) => setEmail(event.currentTarget.value)}
+            onChange={(event) => {
+              setEmail(event.currentTarget.value);
+              onEdit();
+            }}
             aria-invalid={invalid ? true : undefined}
             aria-describedby={invalid ? `${id}-email-error` : undefined}
           />
