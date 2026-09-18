@@ -243,6 +243,15 @@ export function expectVisibleFocusOnEveryStop(stops: TabStop[]): void {
 export function expectNoFocusTrap(stops: TabStop[]): void {
   const inOrder = stops.map((stop) => stop.documentIndex).filter((index) => index >= 0);
   expect([...inOrder].sort((a, b) => a - b)).toEqual(inOrder);
-  const repeated = stops.slice(0, -1).filter((stop, i) => stop.signature === stops[i + 1].signature);
-  expect(repeated.map((stop) => stop.signature), "focus never sticks on one element").toEqual([]);
+  // Same accessible name twice in a row is not a trap: legal pages link
+  // "Privacy" or the operator address more than once. Stuck focus is the
+  // same document position visited twice.
+  const stuck = stops.slice(0, -1).filter((stop, i) => {
+    const next = stops[i + 1];
+    return stop.documentIndex >= 0 && stop.documentIndex === next.documentIndex;
+  });
+  expect(
+    stuck.map((stop) => stop.signature),
+    "focus never sticks on one element",
+  ).toEqual([]);
 }

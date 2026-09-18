@@ -16,7 +16,7 @@ describe("isBackendPath", () => {
     },
   );
 
-  it.each(["/", "/apis", "/apiary", "/healthz", "/health/", "/readings/rd_1", "/save", "/m", "/mc"])(
+  it.each(["/", "/apis", "/apiary", "/healthz", "/health/", "/readings/rd_1", "/save", "/m", "/mc", "/terms", "/privacy", "/dmca"])(
     "leaves %s to the frontend",
     (pathname) => {
       expect(isBackendPath(pathname)).toBe(false);
@@ -62,5 +62,15 @@ describe("withResponsePolicy", () => {
     const response = withResponsePolicy(new Response(null, { status: 307, headers: { Location: "/" } }));
     expect(response.status).toBe(307);
     expect(response.headers.get("Location")).toBe("/");
+  });
+
+  it.each(["/terms", "/privacy", "/dmca"])("leaves %s off private, no-store", (pathname) => {
+    const original = new Response("<!doctype html>", {
+      headers: { "Content-Type": "text/html", "Cache-Control": "private, no-store" },
+    });
+    const response = withResponsePolicy(original, pathname);
+    expect(response.headers.get("Cache-Control")).toBeNull();
+    expect(response.headers.get("Content-Security-Policy")).toBe(CONTENT_SECURITY_POLICY);
+    expect(response.headers.get("Content-Type")).toBe("text/html");
   });
 });

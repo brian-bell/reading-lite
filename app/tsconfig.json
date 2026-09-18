@@ -13,7 +13,9 @@
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    // scripts/ run under Node type stripping, which needs the .ts extension.
+    "allowImportingTsExtensions": true
   },
-  "include": ["src", "test", "smoke", "config", "e2e", "vite.config.ts", "vitest.config.ts", "vitest.smoke.config.ts", "playwright.config.ts"]
+  "include": ["src", "test", "smoke", "config", "scripts", "e2e", "vite.config.ts", "vitest.config.ts", "vitest.smoke.config.ts", "playwright.config.ts"]
 }

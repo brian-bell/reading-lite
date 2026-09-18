@@ -3,6 +3,7 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import { getLoginOptions, requestLoginLink } from "../api/auth";
 import { rememberReturnPath } from "../auth/return-path";
 import { whoamiQueryOptions } from "../identity-query";
+import { LoginLegalLinks } from "./LegalPages";
 import { PageHeading } from "./PageHeading";
 import { TurnstileWidget } from "./TurnstileWidget";
 
@@ -40,6 +41,7 @@ export function SignInPage({ next, stepUp }: { next?: string; stepUp?: boolean }
         <p className="auth-lede">We’ll email you a sign-in link. No password needed.</p>
       )}
       <SignInForm next={next} lockedEmail={lockedEmail} />
+      <LoginLegalLinks />
     </div>
   );
 }

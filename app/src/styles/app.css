@@ -324,7 +324,14 @@ textarea {
   margin: 0 0 var(--space-2);
 }
 
+.shell-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .shell-main {
+  flex: 1;
   min-width: 0;
 }
 
@@ -346,6 +353,71 @@ textarea {
 /* Headings take focus after route changes only so screen readers announce the page. */
 .page-title[tabindex="-1"]:focus {
   outline: none;
+}
+
+.legal-page {
+  max-width: 42rem;
+}
+
+.legal-section {
+  margin-bottom: var(--space-7);
+}
+
+.legal-section h2 {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 1.15rem;
+  font-weight: 400;
+  line-height: 1.3;
+}
+
+.legal-section p,
+.legal-section li {
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.legal-section ul {
+  margin: 0 0 var(--space-3);
+  padding-left: 1.2em;
+}
+
+.legal-page a,
+.login-legal-links a,
+.site-footer a {
+  color: var(--accent);
+}
+
+.legal-cross-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.site-footer {
+  padding: var(--space-4) var(--space-7);
+  background: var(--surface);
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+
+.site-footer nav,
+.login-legal-links nav,
+.legal-cross-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.login-legal-links {
+  margin-top: var(--space-7);
+}
+
+.login-legal-links p {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 /* ---- Account ---------------------------------------------------------- */
@@ -1923,6 +1995,10 @@ textarea {
 
   .page {
     padding: var(--space-5) var(--space-4) var(--space-7);
+  }
+
+  .site-footer {
+    padding: var(--space-4);
   }
 
   .page-title {

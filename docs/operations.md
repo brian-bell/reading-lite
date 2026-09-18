@@ -950,7 +950,10 @@ Deploying the frontend:
 - **Production.** The **Deploy production SPA** workflow has a second job that
   builds `app/` with `CLOUDFLARE_ENV=production` on Node 22 and runs
   `wrangler deploy` for `reading-lite-app` from the same released SHA, with the
-  same stale-`main` refusal. It does not depend on the SPA job, and a failure
+  same stale-`main` refusal. Between build and deploy,
+  `app/scripts/check-build.ts` refuses a build whose environment, name, routes,
+  or `BACKEND` binding differ from that environment of `app/wrangler.jsonc`, or
+  that binds another environment's backend; the staging workflow runs it too. It does not depend on the SPA job, and a failure
   there does not block the SPA. Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute`), then run the

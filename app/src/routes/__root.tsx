@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { AppFrame } from "../components/AppFrame";
 import { useThemePreference } from "../components/use-theme-preference";
 import { whoamiQueryOptions } from "../identity-query";
+import { isPublicLegalPath } from "../legal";
 import type { RouterContext } from "../router";
 import stylesUrl from "../styles/app.css?url";
 import { getThemePreference } from "../theme-preference";
@@ -13,7 +14,12 @@ export const Route = createRootRouteWithContext<RouterContext>()({
   // Identity for the account menu, read during the server render and
   // dehydrated with this request's QueryClient. prefetchQuery never throws: an
   // unavailable backend renders the shell without identity instead of failing.
-  loader: ({ context }) => context.queryClient.prefetchQuery(whoamiQueryOptions()),
+  // Public legal pages skip this so they contain no identity and may be
+  // prerendered (ADR 0003).
+  loader: ({ context, location }) => {
+    if (isPublicLegalPath(location.pathname)) return;
+    return context.queryClient.prefetchQuery(whoamiQueryOptions());
+  },
   head: () => ({
     meta: [
       { charSet: "utf-8" },

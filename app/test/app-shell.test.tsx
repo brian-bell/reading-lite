@@ -33,6 +33,9 @@ async function renderShell(
     createRoute({ getParentRoute: () => rootRoute, path: "/save", component: () => <h1>Save reading</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => <h1>Sign in</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/auth/verify", component: () => <h1>Complete sign-in</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/terms", component: () => <h1>Terms of Service</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/privacy", component: () => <h1>Privacy Policy</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/dmca", component: () => <h1>Copyright Complaints</h1> }),
   ];
   const router = createRouter({
     routeTree: rootRoute.addChildren(routes),
@@ -68,6 +71,15 @@ describe("AppShell", () => {
     const nav = screen.getByRole("navigation", { name: "Main" });
     expect(within(nav).getByRole("link", { name: /Library/ })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: /Save reading/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("links to the public legal pages from the footer", async () => {
+    await renderShell();
+    const footer = screen.getByRole("contentinfo");
+    const nav = within(footer).getByRole("navigation", { name: "Legal" });
+    expect(within(nav).getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms");
+    expect(within(nav).getByRole("link", { name: "Privacy" })).toHaveAttribute("href", "/privacy");
+    expect(within(nav).getByRole("link", { name: "Copyright" })).toHaveAttribute("href", "/dmca");
   });
 
   it("puts the System/Light/Dark control inside the navigation", async () => {

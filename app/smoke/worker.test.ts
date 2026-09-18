@@ -76,6 +76,10 @@ describe("rendered pages", () => {
     expect(html).toMatch(/<html lang="en">/);
     expect(html).toContain('<nav aria-label="Main">');
     expect(html).toContain("Skip to content");
+    expect(html).toMatch(/<nav aria-label="Legal">/);
+    expect(html).toContain('href="/terms"');
+    expect(html).toContain('href="/privacy"');
+    expect(html).toContain('href="/dmca"');
     // Signed out, the library renders the sign-in form in place, and reads no rows.
     expect(html).toContain(heading("Sign in"));
     expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["library"'))).toEqual([]);
@@ -102,6 +106,38 @@ describe("rendered pages", () => {
     expect([302, 307]).toContain(response.status);
     expect(new URL(response.headers.get("Location") ?? "", origin).pathname).toBe("/");
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+});
+
+describe("public legal pages", () => {
+  const PAGES = [
+    ["/terms", "Terms of Service", "About these terms"],
+    ["/privacy", "Privacy Policy", "Who is responsible"],
+    ["/dmca", "Copyright Complaints", "Report a copyright concern"],
+  ] as const;
+
+  it.each(PAGES)("server-renders %s signed out, without private no-store or identity", async (path, title, section) => {
+    const response = await request(path, { headers: { Cookie: "__Host-session=session-a" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
+    expect(response.headers.get("Cache-Control")).not.toBe("private, no-store");
+    expect(response.headers.get("Cache-Control") ?? "").not.toMatch(/no-store/);
+    expect(response.headers.get("Content-Security-Policy")).toBe("img-src 'self' https: data:");
+    const html = await response.text();
+    expect(html).toContain(heading(title));
+    expect(html).toContain(section);
+    expect(html).toContain("Last updated: September 5, 2026");
+    expect(html).toContain('href="mailto:operator@readinglite.app"');
+    // Reachable with a session cookie, but the HTML carries no identity.
+    expect(html).not.toContain("Account menu");
+    expect(html).not.toContain("reader-a@example.com");
+    expect(html).not.toContain("csrf-token-for-a");
+    expect(dehydratedQueryKeys(html)).not.toContain('["whoami"]');
+    expect(html).toContain("account-sign-in");
+    const footer = /<footer class="site-footer">[\s\S]*?<\/footer>/.exec(html)?.[0] ?? "";
+    expect(footer).toContain('href="/terms"');
+    expect(footer).toContain('href="/privacy"');
+    expect(footer).toContain('href="/dmca"');
   });
 });
 
