@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import { useId, useRef, useState, type RefObject } from "react";
+import { useId, useMemo, useRef, useState, type RefObject } from "react";
 import { accountViewOf, readRefusedBy, type AccountView } from "../account-state";
 import { saveSettings } from "../api/settings";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
@@ -15,6 +15,7 @@ import {
   DIGEST_WEEKDAY_OPTIONS,
   listIanaTimeZones,
   scheduleOf,
+  turnsDigestOn,
   type DigestDraft,
   type DigestSchedule,
 } from "../digest";
@@ -162,21 +163,33 @@ export function AccountPage() {
   const shown = storedSettings ? { ...storedSettings, ...unsaved } : undefined;
 
   function changeDigestSchedule(patch: Partial<DigestSchedule>) {
-    if (!shown || save.isPending) return;
-    const change = changeDigest(shown, digestDraft, patch);
+    if (!storedSettings || !shown || save.isPending) return;
+    const change = changeDigest(storedSettings, shown, digestDraft, patch);
     if (change.kind === "draft") setDigestDraft(change.draft);
-    else saveSetting(change.body);
+    else if (change.kind === "cancel") cancelDigestDraft();
+    else if (change.kind === "save") saveSetting(change.body);
   }
 
   function saveDigestDraft() {
     if (shown && digestDraft) saveSetting(digestBody(shown, digestDraft));
   }
 
-  // Cancel drops the draft and any failed save of it, which would otherwise
-  // keep showing the digest as on.
+  // A failed save of the draft, which would otherwise keep the digest showing
+  // as on. A failed save of anything else is left for its own Discard.
+  const draftSaveFailed =
+    saveFailure !== undefined && storedSettings !== undefined && turnsDigestOn(storedSettings, save.variables);
+
+  // Cancel, and choosing Off, drop the draft and any failed save of it.
   function cancelDigestDraft() {
     setDigestDraft(null);
-    if (saveFailure) save.reset();
+    if (draftSaveFailed) save.reset();
+  }
+
+  // Discard puts back the stored settings: after a failed draft save, that
+  // closes the draft too.
+  function discardSave() {
+    save.reset();
+    if (draftSaveFailed) setDigestDraft(null);
   }
 
   return (
@@ -202,7 +215,7 @@ export function AccountPage() {
           onCancelDigestDraft: cancelDigestDraft,
           onRetry: () => void settingsQuery.refetch(),
           onRetrySave: retrySave,
-          onDiscard: () => save.reset(),
+          onDiscard: discardSave,
         },
       })}
     </PageStateFocus>
@@ -425,6 +438,7 @@ function DigestScheduleFields({
   onCancelDraft: () => void;
 }) {
   const id = useId();
+  const zones = useMemo(() => listIanaTimeZones(schedule.time_zone), [schedule.time_zone]);
   return (
     <div className="settings-group" role="group" aria-labelledby={`${id}-heading`}>
       <h3 id={`${id}-heading`} className="settings-group-title">
@@ -462,7 +476,7 @@ function DigestScheduleFields({
                 onChange={(event) => onChange({ time_zone: event.currentTarget.value })}
                 disabled={saving}
               >
-                {listIanaTimeZones(schedule.time_zone).map((zone) => (
+                {zones.map((zone) => (
                   <option key={zone} value={zone}>
                     {zone}
                   </option>
@@ -510,20 +524,20 @@ function DigestScheduleFields({
           </>
         ) : null}
       </div>
+      {/* Always in the page, so the draft's sentence is announced when it
+          arrives (a region inserted with its text is generally not). */}
+      <p className="session-meta" role="status">
+        {drafting ? "Digest stays off until you save. Confirm time zone, hour, and weekday in this save." : null}
+      </p>
       {drafting ? (
-        <>
-          <p className="session-meta" role="status">
-            Digest stays off until you save. Confirm time zone, hour, and weekday in this save.
-          </p>
-          <div className="form-actions digest-actions">
-            <button type="button" className="button button-primary" onClick={onSaveDraft} disabled={saving}>
-              Save digest
-            </button>
-            <button type="button" className="button" onClick={onCancelDraft} disabled={saving}>
-              Cancel
-            </button>
-          </div>
-        </>
+        <div className="form-actions digest-actions">
+          <button type="button" className="button button-primary" onClick={onSaveDraft} disabled={saving}>
+            Save digest
+          </button>
+          <button type="button" className="button" onClick={onCancelDraft} disabled={saving}>
+            Cancel
+          </button>
+        </div>
       ) : (
         <p className="session-meta">
           Daily or weekly digest of new ready readings. Off skips digest mail. Independent of immediate email.

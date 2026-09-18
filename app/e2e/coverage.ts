@@ -413,7 +413,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
       await expect(page.getByRole("button", { name: "Revoke this device" })).toBeVisible();
-      await expect(page.getByRole("status")).toContainText("10-session limit");
+      await expect(page.getByRole("region", { name: "Sessions" }).getByRole("status")).toContainText("10-session limit");
       await expect(page.getByRole("checkbox", { name: "Email me when a reading is ready" })).toBeChecked();
     },
   },

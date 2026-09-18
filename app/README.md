@@ -111,9 +111,10 @@ return path is per origin.
   keep the reader's unsaved choice; Retry sends the save again and Discard puts
   back the stored settings. The digest schedule (`src/digest.ts`) follows the
   SPA: turning it on from off opens a draft that saves only on Save digest
-  (Cancel discards it, and any failed save of it); while it is on, each change
-  saves at once; every digest save sends the full body, `notify_immediate`
-  included, so turning it off keeps the hour, weekday, and time zone.
+  (Cancel, Off, or Discard after a failed save of it closes it); while it is
+  on, each change saves at once; every digest save sends the full body,
+  `notify_immediate` included, so turning it off keeps the hour, weekday, and
+  time zone.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

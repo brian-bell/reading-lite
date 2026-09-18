@@ -67,25 +67,38 @@ export function digestBody(settings: UserSettings, schedule: DigestSchedule): Se
   return { notify_immediate: settings.notify_immediate, ...schedule };
 }
 
-export type DigestChange = { kind: "draft"; draft: DigestDraft | null } | { kind: "save"; body: SettingsBody };
+export type DigestChange =
+  | { kind: "draft"; draft: DigestDraft }
+  | { kind: "cancel" }
+  | { kind: "none" }
+  | { kind: "save"; body: SettingsBody };
 
 /**
- * What one change to a digest control does, given the settings on screen and
- * the draft, if any: edit (or drop) the draft, or save at once.
+ * What one change to a digest control does: edit the draft, drop it (as
+ * Cancel does), or save at once. Whether the digest is on is the stored
+ * settings' answer, as in the SPA; the values carried into a draft or a save
+ * are the ones on screen (`shown`), so a change that failed to save is not
+ * lost by the next one.
  */
 export function changeDigest(
-  settings: UserSettings,
+  stored: UserSettings,
+  shown: UserSettings,
   draft: DigestDraft | null,
   patch: Partial<DigestSchedule>,
 ): DigestChange {
   if (draft) {
-    if (patch.digest_cadence === "off") return { kind: "draft", draft: null };
+    if (patch.digest_cadence === "off") return { kind: "cancel" };
     return { kind: "draft", draft: { ...draft, ...patch } as DigestDraft };
   }
-  if (settings.digest_cadence === "off") {
+  if (stored.digest_cadence === "off") {
     const cadence = patch.digest_cadence;
-    if (cadence === undefined || cadence === "off") return { kind: "draft", draft: null };
-    return { kind: "draft", draft: { ...scheduleOf(settings), ...patch, digest_cadence: cadence } };
+    if (cadence === undefined || cadence === "off") return { kind: "none" };
+    return { kind: "draft", draft: { ...scheduleOf(shown), ...patch, digest_cadence: cadence } };
   }
-  return { kind: "save", body: digestBody(settings, { ...scheduleOf(settings), ...patch }) };
+  return { kind: "save", body: digestBody(shown, { ...scheduleOf(shown), ...patch }) };
+}
+
+/** Whether a save body is a draft's: it turns on a digest stored as off. */
+export function turnsDigestOn(stored: UserSettings, body: SettingsBody | undefined): boolean {
+  return stored.digest_cadence === "off" && body?.digest_cadence !== undefined && body.digest_cadence !== "off";
 }
