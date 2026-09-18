@@ -24,4 +24,29 @@ describe("buildRedditImport", () => {
     expect(buildRedditImport("https://www.reddit.com/r/x/comments/1", "<html>challenge</html>")).toBeNull();
     expect(buildRedditImport("https://www.reddit.com/r/x/comments/1", "{}")).toBeNull();
   });
+
+  it("forwards source_date from the listing post created_utc", () => {
+    const json = JSON.stringify([
+      {
+        kind: "Listing",
+        data: {
+          children: [
+            {
+              kind: "t3",
+              data: { title: "Dated thread", selftext: "body", created_utc: 1710460800 },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const req = buildRedditImport("https://www.reddit.com/r/x/comments/1", json);
+    expect(req?.source_date).toBe("2024-03-15");
+  });
+
+  it("omits source_date when created_utc is absent", () => {
+    const req = buildRedditImport("https://www.reddit.com/r/x/comments/1", THREAD_JSON);
+    expect(req).not.toBeNull();
+    expect("source_date" in req!).toBe(false);
+  });
 });

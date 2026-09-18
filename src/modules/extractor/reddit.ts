@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sourceDateFromPublishedTime } from "./source-date";
 
 // Match any reddit.com web subdomain (www, old, np, m, i, sh, new, amp, ...)
 // plus the redd.it shortlink host. Reddit keeps adding share/desktop hosts
@@ -40,6 +41,9 @@ const Post = z
     permalink: z.string().optional(),
     score: z.number().optional(),
     num_comments: z.number().optional(),
+    // Seconds since epoch on the t3 post. Unknown so a string/null cannot fail
+    // the extract — missing or implausible values omit source_date instead.
+    created_utc: z.unknown().optional(),
   })
   .passthrough();
 
@@ -73,11 +77,12 @@ const RedditThread = z.array(Listing);
 export interface RedditMarkdown {
   markdown: string;
   title: string;
+  source_date?: string;
 }
 
 export function redditListingToMarkdown(
   jsonText: string,
-  opts?: { maxComments?: number },
+  opts?: { maxComments?: number; nowMs?: number },
 ): RedditMarkdown | null {
   let parsed: unknown;
   try {
@@ -130,5 +135,23 @@ export function redditListingToMarkdown(
 
   const markdown = parts.join("\n\n").trim();
   if (!markdown) return null;
-  return { markdown, title: p.title };
+  // Same drop rules as HTML/X/YouTube. created_utc is seconds since epoch on
+  // the t3 post; missing or implausible omits the field rather than failing.
+  const source_date = sourceDateFromCreatedUtc(p.created_utc, opts?.nowMs ?? Date.now());
+  return {
+    markdown,
+    title: p.title,
+    ...(source_date === undefined ? {} : { source_date }),
+  };
+}
+
+function sourceDateFromCreatedUtc(createdUtc: unknown, nowMs: number): string | undefined {
+  if (typeof createdUtc !== "number" || !Number.isFinite(createdUtc) || createdUtc <= 0) {
+    return undefined;
+  }
+  try {
+    return sourceDateFromPublishedTime(new Date(createdUtc * 1000).toISOString(), nowMs);
+  } catch {
+    return undefined;
+  }
 }
