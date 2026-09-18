@@ -18,6 +18,12 @@ export function hostnameOf(url: string): string {
   }
 }
 
+/** `source_date` → "Published 15 March 2024". Omitted when the source has no date. */
+export function publishedOn(sourceDate: string | undefined): string | undefined {
+  const formatted = dateOn(sourceDate);
+  return formatted ? `Published ${formatted}` : undefined;
+}
+
 /** `created_at` → "Saved 7 September 2026". Omitted when the manifest has no date. */
 export function savedOn(createdAt: string | undefined): string | undefined {
   const formatted = dateOn(createdAt);
@@ -25,9 +31,9 @@ export function savedOn(createdAt: string | undefined): string | undefined {
 }
 
 /**
- * An ISO timestamp → "7 September 2026", or nothing for a missing or unparseable
- * one. A fixed locale and zone, so the server render and the browser agree and
- * hydration does not swap the text under the reader.
+ * An ISO timestamp or date-only `YYYY-MM-DD` → "7 September 2026", or nothing
+ * for a missing or unparseable one. UTC, so a calendar date does not drift a
+ * day west of Greenwich, and the server render and the browser agree.
  */
 export function dateOn(iso: string | undefined): string | undefined {
   if (!iso) return undefined;

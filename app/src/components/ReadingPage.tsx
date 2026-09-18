@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { whoamiQueryKey, type Identity } from "../identity";
-import { hostnameOf, savedOn, sourceLabel } from "../reading-presentation";
+import { hostnameOf, publishedOn, savedOn, sourceLabel } from "../reading-presentation";
 import { readingQueryOptions } from "../reading-query";
 import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
@@ -174,6 +174,7 @@ function ReadingSurface({
   announcement: Said | null;
   reprocess: Reprocess;
 }) {
+  const published = publishedOn(reading.source_date);
   const saved = savedOn(reading.created_at);
   const source = sourceLabel(reading.source_type);
   const context = hasRelationships(reading);
@@ -212,6 +213,7 @@ function ReadingSurface({
           <PageHeading>{reading.title ?? reading.url}</PageHeading>
           <p className="reading-meta">
             <span>{hostnameOf(reading.url)}</span>
+            {published ? <span>{published}</span> : null}
             {saved ? <span>{saved}</span> : null}
             {source ? <span>{source}</span> : null}
           </p>

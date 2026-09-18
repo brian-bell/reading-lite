@@ -26,6 +26,13 @@ describe("libraryFromResponse", () => {
     );
   });
 
+  it("reads an optional source_date on a row and treats null as absent", () => {
+    const dated = libraryFromResponse(200, { ...PAGE, readings: [{ ...ROW, source_date: "2024-03-15" }] });
+    expect(dated.state === "ready" && dated.page.readings[0]!.source_date).toBe("2024-03-15");
+    const cleared = libraryFromResponse(200, { ...PAGE, readings: [{ ...ROW, source_date: null }] });
+    expect(cleared.state === "ready" && cleared.page.readings[0]!.source_date).toBeUndefined();
+  });
+
   it("normalises a null field to an absent one", () => {
     const result = libraryFromResponse(200, { ...PAGE, readings: [{ ...ROW, title: null, tags: null }] });
     expect(result.state === "ready" && result.page.readings[0]).not.toHaveProperty("title", null);

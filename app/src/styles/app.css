@@ -832,8 +832,9 @@ textarea {
   }
 }
 
-/* Hostname, saved date, and "Imported Markdown", separated by a rule rather
-   than punctuation so each part is its own element for a screen reader. */
+/* Hostname, published date, saved date, and "Imported Markdown", separated
+   by a rule rather than punctuation so each part is its own element for a
+   screen reader. */
 .reading-meta {
   display: flex;
   flex-wrap: wrap;
