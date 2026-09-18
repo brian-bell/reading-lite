@@ -99,9 +99,10 @@ return path is per origin.
   account's sessions. Notifications read `GET /api/auth/settings` (zod-parsed,
   `src/settings.ts`) and save with `POST /api/auth/settings`, pinned the same
   way. A 403 or 412 from any read or write on the page is the whole page's
-  state; a failed settings read or save stays in the Notifications section
-  (offline notice or server error), keeps the reader's unsaved choice on
-  screen, and its Retry sends the failed save again.
+  state. A failed settings read stays in the Notifications section (offline
+  notice or server error). A failed save is a notice above the controls, which
+  keep the reader's unsaved choice; Retry sends the save again and Discard puts
+  back the stored settings.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

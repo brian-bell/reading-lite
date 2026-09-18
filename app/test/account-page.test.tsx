@@ -314,6 +314,7 @@ describe("the account page", () => {
       vi.fn(async (input: RequestInfo | URL) => {
         const request = asRequest(input);
         const path = new URL(request.url).pathname;
+        if (path === "/api/auth/settings") return Response.json(SETTINGS);
         if (path === "/api/auth/sessions" && request.method === "GET") {
           if (status === 503) {
             status = 200;
@@ -370,6 +371,7 @@ describe("the account page", () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const request = asRequest(input);
       const path = new URL(request.url).pathname;
+      if (path === "/api/auth/settings") return Response.json(SETTINGS);
       if (path === "/api/auth/sessions" && request.method === "GET") return Response.json(listed);
       if (request.method === "DELETE") {
         onlineManager.setOnline(false);
@@ -487,6 +489,8 @@ describe("notification settings on the account page", () => {
 
     const section = screen.getByRole("region", { name: "Notifications" });
     expect(await within(section).findByText("control plane unavailable")).toBeVisible();
+    expect(within(section).getByText(/Your change wasn't saved/)).toBeVisible();
+    expect(toggle()).not.toBeChecked();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
 
     await userEvent.click(within(section).getByRole("button", { name: "Retry" }));
@@ -498,7 +502,7 @@ describe("notification settings on the account page", () => {
     await expect(saves[1]!.json()).resolves.toEqual({ notify_immediate: false });
   });
 
-  it("keeps the unsaved choice and shows the offline notice when a save fails offline", async () => {
+  it("keeps the unsaved choice through a save that fails offline, and Discard puts back the stored one", async () => {
     mockApi({
       onSaveSettings: () => {
         onlineManager.setOnline(false);
@@ -511,11 +515,14 @@ describe("notification settings on the account page", () => {
     await userEvent.click(toggle());
 
     const section = screen.getByRole("region", { name: "Notifications" });
-    expect(
-      await within(section).findByText("You're offline. Check your connection and try again."),
-    ).toBeVisible();
+    expect(await within(section).findByText("You're offline. Your change wasn't saved.")).toBeVisible();
     expect(toggle()).not.toBeChecked();
     expect(within(section).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+
+    await userEvent.click(within(section).getByRole("button", { name: "Discard" }));
+
+    expect(toggle()).toBeChecked();
+    expect(within(section).queryByText(/Your change wasn't saved/)).not.toBeInTheDocument();
   });
 
   it.each([

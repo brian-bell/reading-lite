@@ -97,13 +97,15 @@ export function AccountPage() {
   // page), and Retry reads the list again: the failure may mean it is stale.
   const revokeError = isUnauthorized(revoke.error) ? null : revoke.error;
   const sessionsView = accountViewOf({ data, error: revokeError ?? error, fetchStatus });
-  // A failed save is shown as the settings' own failure, the same way.
-  const saveError = isUnauthorized(save.error) ? null : save.error;
+  // A failed save is not a failed read: the controls stay up with the
+  // reader's choice on them, and the failure is a notice above them.
   const settingsView = accountViewOf({
     data: settingsQuery.data,
-    error: saveError ?? settingsQuery.error,
+    error: settingsQuery.error,
     fetchStatus: settingsQuery.fetchStatus,
   });
+  const saveError = isUnauthorized(save.error) ? null : save.error;
+  const saveFailure = saveError == null ? undefined : failureOf(saveError);
   const view = pageViewOf(sessionsView, settingsView);
   const busy = revoke.isPending;
 
@@ -118,15 +120,10 @@ export function AccountPage() {
     revoke.mutate(target);
   }
 
-  // Retry after a failed save sends it again, so the change the reader made
-  // is not lost to a dropped connection; after a failed read, it reads again.
-  function retrySettings() {
-    if (saveError != null && save.variables !== undefined) {
-      save.mutate(save.variables);
-      return;
-    }
-    save.reset();
-    void settingsQuery.refetch();
+  // Retry after a failed save sends the same change again; Discard puts the
+  // controls back to the stored settings.
+  function retrySave() {
+    if (save.variables !== undefined) save.mutate(save.variables);
   }
 
   function saveSetting(body: SettingsBody) {
@@ -137,7 +134,7 @@ export function AccountPage() {
 
   // While a save is in flight, or after one failed, the controls show what
   // the reader asked for rather than snapping back to the stored value.
-  const unsaved = save.isPending || saveError != null ? save.variables : undefined;
+  const unsaved = save.isPending || saveFailure !== undefined ? save.variables : undefined;
 
   return (
     <PageStateFocus kind={view.kind}>
@@ -154,12 +151,23 @@ export function AccountPage() {
           view: settingsView,
           unsaved,
           saving: save.isPending,
+          saveFailure,
           onSave: saveSetting,
-          onRetry: retrySettings,
+          onRetry: () => void settingsQuery.refetch(),
+          onRetrySave: retrySave,
+          onDiscard: () => save.reset(),
         },
       })}
     </PageStateFocus>
   );
+}
+
+type Failure = { kind: "offline" } | { kind: "server-error"; message: string };
+
+/** How a write that threw reads: offline, or the retryable server error. */
+function failureOf(error: unknown): Failure {
+  const view = accountViewOf<never>({ data: undefined, error, fetchStatus: "idle" });
+  return view.kind === "server-error" ? view : { kind: "offline" };
 }
 
 type PageView =
@@ -188,8 +196,12 @@ interface SettingsActions {
   view: AccountView<UserSettings>;
   unsaved: SettingsBody | undefined;
   saving: boolean;
+  saveFailure: Failure | undefined;
   onSave: (body: SettingsBody) => void;
+  /** Reads the settings again after a failed read. */
   onRetry: () => void;
+  onRetrySave: () => void;
+  onDiscard: () => void;
 }
 
 function pageFor(
@@ -264,10 +276,19 @@ function pageFor(
 
 /**
  * Immediate email (#340.6.1), as the SPA's notify-immediate section. The
- * section carries its read's loading, offline, and server-error states itself;
- * a refusal never reaches here (pageViewOf).
+ * section carries its read's loading, offline, and server-error states, and a
+ * failed save's, itself; a refusal never reaches here (pageViewOf).
  */
-function NotificationsSection({ view, unsaved, saving, onSave, onRetry }: SettingsActions) {
+function NotificationsSection({
+  view,
+  unsaved,
+  saving,
+  saveFailure,
+  onSave,
+  onRetry,
+  onRetrySave,
+  onDiscard,
+}: SettingsActions) {
   const stored = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
   const shown = stored ? { ...stored, ...unsaved } : undefined;
   return (
@@ -276,7 +297,23 @@ function NotificationsSection({ view, unsaved, saving, onSave, onRetry }: Settin
         Notifications
       </h2>
       {view.kind === "loading" ? <LoadingRegion /> : null}
-      {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
+      {saveFailure ? (
+        <InlineNotice
+          message={
+            saveFailure.kind === "offline"
+              ? "You're offline. Your change wasn't saved."
+              : "Something went wrong on our side. Your change wasn't saved."
+          }
+          onAction={onRetrySave}
+        >
+          {saveFailure.kind === "server-error" ? <p className="form-hint">{saveFailure.message}</p> : null}
+          <button type="button" className="button" onClick={onDiscard}>
+            Discard
+          </button>
+        </InlineNotice>
+      ) : view.kind === "offline" ? (
+        <OfflineNotice onRetry={onRetry} />
+      ) : null}
       {view.kind === "server-error" ? (
         <InlineNotice message="Something went wrong on our side." onAction={onRetry}>
           <p className="form-hint">{view.message}</p>

@@ -20,13 +20,11 @@ export const UserSettingsSchema = z.looseObject({
   digest_hour_local: z.number().int(),
   digest_weekday: z.number().int(),
 });
-export interface UserSettings {
-  notify_immediate: boolean;
-  digest_cadence: DigestCadence;
-  time_zone: string;
-  digest_hour_local: number;
-  digest_weekday: number;
-}
+/** The fields this app reads; the schema lets the rest pass through. */
+export type UserSettings = Pick<
+  z.infer<typeof UserSettingsSchema>,
+  "notify_immediate" | "digest_cadence" | "time_zone" | "digest_hour_local" | "digest_weekday"
+>;
 
 /**
  * POST /api/auth/settings (PostAuthSettingsBodySchema). `notify_immediate` is
