@@ -514,6 +514,45 @@ describe("activateRecoverTargets", () => {
     },
   );
 
+
+  // A stored publication date is durable metadata: the recover flip rebuilds the
+  // pending fresh, so it must re-carry source_date the way it re-carries
+  // created_at. sidecarTargetFor reads it off this pending manifest, so dropping
+  // it here silently loses the date on the batch write phase.
+  it("preserves a prior source_date on the pending flip", async () => {
+    const failed = recoverManifest({ source_date: "2024-03-15" });
+    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
+    const t = recoverTarget();
+    t.target.manifest = failed;
+
+    const result = await activateRecoverTargets([t], {
+      r2: fakeR2 as any,
+      model: "m",
+      now: () => NOW,
+      saveSidecar: vi.fn(async () => {}),
+    });
+
+    const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
+    expect(pending.source_date).toBe("2024-03-15");
+    // the in-memory activated target feeds sidecarTargetFor downstream
+    expect(result.activated[0]!.target.manifest.source_date).toBe("2024-03-15");
+  });
+
+  it("omits source_date on the pending flip when the prior has none", async () => {
+    const failed = recoverManifest();
+    const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
+
+    await activateRecoverTargets([recoverTarget()], {
+      r2: fakeR2 as any,
+      model: "m",
+      now: () => NOW,
+      saveSidecar: vi.fn(async () => {}),
+    });
+
+    const pending = ManifestSchema.parse(JSON.parse(fakeR2.store.get(`${KEY_PREFIX}/manifest.json`)!));
+    expect(pending.source_date).toBeUndefined();
+  });
+
   it("is idempotent across a re-run: single by-url, by-id, and list row", async () => {
     const failed = recoverManifest();
     const fakeR2 = r2({ [`${KEY_PREFIX}/manifest.json`]: JSON.stringify(failed) });
