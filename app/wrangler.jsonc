@@ -29,7 +29,8 @@
 // to the backend's own /api/* routes. test/backend-bindings.test.ts fails when
 // an environment's BACKEND service binding names another environment's backend
 // or another entrypoint. Environments do not inherit bindings: repeat BACKEND
-// in each one.
+// in each one. The deploy workflows run scripts/check-build.ts on the built
+// config, so a build for the wrong environment or backend never deploys.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reading-lite-app-dev",

@@ -48,7 +48,11 @@ return path is per origin.
   `wrangler.jsonc` names the backend Worker of the same environment and its
   `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
   through Wrangler and fails on a crossed binding or a missing entrypoint.
-  Environments do not inherit bindings.
+  Environments do not inherit bindings. Both deploy workflows then run
+  `node scripts/check-build.ts <env>` on the built `dist/server/wrangler.json`,
+  which is what `wrangler deploy` uploads: it must target that environment,
+  match `wrangler.jsonc` on name, routes, services, and `workers_dev`/
+  `preview_urls`, and pass the same binding guard.
 - **Identity.** Server renders read `whoami` through `BACKEND`
   (`src/identity-query.ts`), forwarding only the incoming `Cookie` header and
   host; the browser calls same-origin `/api/whoami`. Both map the response in

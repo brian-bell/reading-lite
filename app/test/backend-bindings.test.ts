@@ -1,11 +1,15 @@
 // @vitest-environment node
-import { unstable_readConfig } from "wrangler";
 import { describe, expect, it } from "vitest";
 import {
   BACKEND_BINDING,
   BACKEND_ENTRYPOINT,
   ENVIRONMENTS,
   checkBackendBindings,
+  checkBuiltConfig,
+  readEnvironment,
+  readEnvironments,
+  type BuiltConfigView,
+  type DeployedConfigView,
   type EnvironmentLabel,
   type WorkerConfigView,
 } from "../config/backend-bindings";
@@ -83,43 +87,48 @@ describe("checkBackendBindings", () => {
   });
 });
 
-describe("checked-in Wrangler configs", () => {
-  function read(configPath: string): Record<EnvironmentLabel, WorkerConfigView> {
-    const views = {} as Record<EnvironmentLabel, WorkerConfigView>;
-    for (const { label, env } of ENVIRONMENTS) {
-      // Wrangler's published Config type references a package it doesn't ship,
-      // so narrow the two fields read here explicitly.
-      const config: { name?: string; services?: WorkerConfigView["services"] } = unstable_readConfig(
-        { config: configPath, env },
-        { hideWarnings: true },
-      );
-      views[label] = {
-        name: config.name ?? "",
-        services: (config.services ?? []).map(({ binding, service, entrypoint }) => ({
-          binding,
-          service,
-          ...(entrypoint === undefined ? {} : { entrypoint }),
-        })),
-      };
-    }
-    return views;
-  }
+describe("checkBuiltConfig", () => {
+  const source: DeployedConfigView = {
+    ...frontendBinding("production", "reading-lite"),
+    routes: [{ pattern: "next.readinglite.ai/*", zone_name: "readinglite.ai" }],
+    workers_dev: false,
+    preview_urls: false,
+  };
+  const built: BuiltConfigView = { ...source, targetEnvironment: "production" };
 
+  it("accepts a build of the environment it was checked against", () => {
+    expect(checkBuiltConfig("production", built, source, backend)).toEqual([]);
+  });
+
+  it.each<[string, BuiltConfigView, RegExp]>([
+    ["built for another environment", { ...built, targetEnvironment: "staging" }, /production.*targets.*staging/],
+    ["built from the top-level config", { ...built, targetEnvironment: undefined }, /production.*targets.*top level/],
+    ["renamed", { ...built, name: "reading-lite-app-staging" }, /production.*built name/],
+    ["routed to another host", { ...built, routes: [{ pattern: "readinglite.ai/*", zone_name: "readinglite.ai" }] }, /production.*built routes/],
+    ["published on workers.dev", { ...built, workers_dev: true }, /production.*built workers_dev/],
+    [
+      "bound to another environment's backend",
+      { ...built, services: frontendBinding("production", "reading-lite-staging").services },
+      /production: BACKEND binds "reading-lite-staging", expected "reading-lite"/,
+    ],
+  ])("rejects a build %s", (_label, candidate, error) => {
+    expect(checkBuiltConfig("production", candidate, source, backend).join("\n")).toMatch(error);
+  });
+});
+
+describe("checked-in Wrangler configs", () => {
   it("bind every frontend environment to the backend of the same environment", () => {
-    const backendViews = read("../wrangler.toml");
+    const backendViews = readEnvironments("../wrangler.toml");
     expect(backendViews.staging.name).toBe("reading-lite-staging");
     expect(backendViews.production.name).toBe("reading-lite");
-    expect(checkBackendBindings(read("wrangler.jsonc"), backendViews)).toEqual([]);
+    expect(checkBackendBindings(readEnvironments("wrangler.jsonc"), backendViews)).toEqual([]);
   });
 
   // Wrangler defaults workers_dev to true, so an environment that omits it
   // (including a bare deploy of the local config) would be publicly reachable
   // before any route is added deliberately.
   it.each(ENVIRONMENTS)("keep the $label frontend off workers.dev and preview URLs", ({ env }) => {
-    const config: { workers_dev?: boolean; preview_urls?: boolean } = unstable_readConfig(
-      { config: "wrangler.jsonc", env },
-      { hideWarnings: true },
-    );
+    const config = readEnvironment("wrangler.jsonc", env);
     expect(config.workers_dev).toBe(false);
     expect(config.preview_urls).toBe(false);
   });

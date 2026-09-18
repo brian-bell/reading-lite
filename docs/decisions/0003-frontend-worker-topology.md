@@ -157,6 +157,12 @@ same in both frontends, so those links work before and after cutover.
 - Phase 5 adds the frontend to the `deploy-production-release` concurrency group
   and the same-SHA artifact chain, alongside or in place of the SPA deploy, with
   the same stale-`main` refusal.
+  > **Delivered by the 2026-09-13 amendment** (#398): the frontend job already
+  > runs in that group, from the released SHA, with that refusal, alongside the
+  > SPA job. Phase 5 adds only a check that the built config targets its own
+  > environment and backend (`app/scripts/check-build.ts`, 2026-09-18). Whether
+  > the frontend replaces the SPA deploy is decided at the apex cutover and
+  > the SPA's retirement, not here.
 
 ## Consequences
 
