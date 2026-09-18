@@ -454,6 +454,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   {
+    name: "account-digest-draft",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    // Weekly from off opens the draft: every schedule control plus Save digest.
+    prepare: async (page) => {
+      await page.getByRole("combobox", { name: "Cadence" }).selectOption("weekly");
+      await expect(page.getByRole("combobox", { name: "Weekday" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Save digest" })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
     name: "account-settings-server-error",
     path: "/account/security",
     state: "signed-in",
