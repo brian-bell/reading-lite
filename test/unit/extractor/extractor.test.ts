@@ -602,6 +602,7 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.markdown).toContain("## Transcript");
     expect(out.markdown).toContain("hello there friends");
     expect(out.enrichment_degradation).toBeUndefined();
+    expect("source_date" in out).toBe(false);
     // Never routed through the generic Readability path.
     expect(calls).toContain(OEMBED);
   });
@@ -794,6 +795,7 @@ describe("extractFromUrl — YouTube", () => {
       tier: "watch_page",
       code: "YoutubeEnrichmentParseError",
     });
+    expect("source_date" in out).toBe(false);
   });
 
   it("records transcript degradation when timedtext is empty or unparseable", async () => {
@@ -809,6 +811,90 @@ describe("extractFromUrl — YouTube", () => {
     expect(out.content_status).toBe("captured");
     expect(out.title).toBe("Greeting World");
     expect(out.markdown).toContain("A short description of the talk.");
+    expect(out.markdown).not.toContain("## Transcript");
+    expect(out.enrichment_degradation).toMatchObject({
+      source: "youtube",
+      tier: "transcript",
+      code: "YoutubeEnrichmentParseError",
+    });
+    expect("source_date" in out).toBe(false);
+  });
+
+  it("sets source_date from watch-page datePublished as the UTC calendar date", async () => {
+    // 23:00 on 15 March in UTC−5 is 04:00 on 16 March UTC.
+    const html = WATCH_HTML.replace(
+      "</head>",
+      `<meta itemprop="datePublished" content="2024-03-15T23:00:00-05:00"></head>`,
+    );
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: html },
+      [timedtextJson3Url(CAPTION_BASE)]: {
+        headers: { "content-type": "application/json" },
+        body: TIMEDTEXT_JSON3,
+      },
+    });
+
+    const out = await extractFromUrl(WATCH, {
+      fetch: fetchFn,
+      ...deps,
+      now: () => Date.parse("2026-09-18T12:00:00.000Z"),
+    });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.source_date).toBe("2024-03-16");
+    expect(out.enrichment_degradation).toBeUndefined();
+  });
+
+  it("omits source_date when the watch-page date is implausible, without failing", async () => {
+    const html = WATCH_HTML.replace(
+      "</head>",
+      `<meta itemprop="uploadDate" content="2099-01-01T00:00:00.000Z"></head>`,
+    );
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: html },
+      [timedtextJson3Url(CAPTION_BASE)]: {
+        headers: { "content-type": "application/json" },
+        body: TIMEDTEXT_JSON3,
+      },
+    });
+
+    const out = await extractFromUrl(WATCH, {
+      fetch: fetchFn,
+      ...deps,
+      now: () => Date.parse("2026-09-18T12:00:00.000Z"),
+    });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.title).toBe("Greeting World");
+    expect("source_date" in out).toBe(false);
+    expect(out.enrichment_degradation).toBeUndefined();
+  });
+
+  it("keeps source_date when transcript enrichment degrades", async () => {
+    const html = WATCH_HTML.replace(
+      "</head>",
+      `<script type="application/ld+json">${JSON.stringify({
+        "@type": "VideoObject",
+        uploadDate: "2024-06-01T12:00:00.000Z",
+      })}</script></head>`,
+    );
+    const timedtext = timedtextJson3Url(CAPTION_BASE);
+    const fetchFn = fakeFetch({
+      [OEMBED]: { headers: { "content-type": "application/json" }, body: OEMBED_JSON },
+      [WATCH]: { headers: { "content-type": "text/html; charset=utf-8" }, body: html },
+      [timedtext]: { headers: { "content-type": "application/json" }, body: "{}" },
+    });
+
+    const out = await extractFromUrl(WATCH, {
+      fetch: fetchFn,
+      ...deps,
+      now: () => Date.parse("2026-09-18T12:00:00.000Z"),
+    });
+
+    expect(out.content_status).toBe("captured");
+    expect(out.source_date).toBe("2024-06-01");
     expect(out.markdown).not.toContain("## Transcript");
     expect(out.enrichment_degradation).toMatchObject({
       source: "youtube",
