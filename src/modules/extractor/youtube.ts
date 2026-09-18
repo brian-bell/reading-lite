@@ -2,7 +2,8 @@
 // generic Readability path returns nothing. Instead we build summarizable
 // markdown from YouTube's public oEmbed endpoint (title + author — the reliable
 // floor) plus best-effort enrichment scraped from the watch page
-// (`ytInitialPlayerResponse`: description + caption tracks) and the timedtext
+// (`ytInitialPlayerResponse`: description + caption tracks, and
+// `datePublished` / `uploadDate` in meta or JSON-LD) and the timedtext
 // transcript. See plan 010 / issue #17.
 
 import { z } from "zod";
@@ -328,4 +329,75 @@ export function timedtextToText(body: string): string {
   }
 
   return "";
+}
+
+function parseHtmlTagAttrs(tag: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  const body = tag.replace(/^<\/?[a-zA-Z][\w:-]*/i, "").replace(/\/?>$/, "");
+  const attrRe = /([^\s=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+  for (const match of body.matchAll(attrRe)) {
+    attrs[match[1]!.toLowerCase()] = decodeEntities(match[2] ?? match[3] ?? match[4] ?? "");
+  }
+  return attrs;
+}
+
+function metaPublishedTimes(html: string): string[] {
+  const datePublished: string[] = [];
+  const uploadDate: string[] = [];
+  for (const match of html.matchAll(/<meta\b[^>]*>/gi)) {
+    const attrs = parseHtmlTagAttrs(match[0]!);
+    const key = (attrs.itemprop ?? attrs.property ?? attrs.name ?? "").trim().toLowerCase();
+    const content = attrs.content?.trim();
+    if (!content) continue;
+    if (key === "datepublished") datePublished.push(content);
+    else if (key === "uploaddate") uploadDate.push(content);
+  }
+  return [...datePublished, ...uploadDate];
+}
+
+function collectJsonLdPublishedTimes(value: unknown, out: string[], depth = 0): void {
+  if (depth > 8 || out.length >= 8) return;
+  if (Array.isArray(value)) {
+    for (const item of value) collectJsonLdPublishedTimes(item, out, depth + 1);
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  const obj = value as Record<string, unknown>;
+  for (const key of ["datePublished", "uploadDate"] as const) {
+    const candidate = obj[key];
+    if (typeof candidate === "string" && candidate.trim()) out.push(candidate.trim());
+  }
+  for (const nested of Object.values(obj)) {
+    if (nested && typeof nested === "object") collectJsonLdPublishedTimes(nested, out, depth + 1);
+  }
+}
+
+function jsonLdPublishedTimes(html: string): string[] {
+  const out: string[] = [];
+  for (const match of html.matchAll(/<script\b[^>]*>/gi)) {
+    const openTag = match[0]!;
+    if (!/\btype\s*=\s*(["']?)application\/ld\+json\b/i.test(openTag)) continue;
+    const start = match.index! + openTag.length;
+    const rest = html.slice(start);
+    const close = rest.search(/<\/script>/i);
+    if (close < 0) continue;
+    const body = rest.slice(0, close).trim();
+    if (!body) continue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(body);
+    } catch {
+      continue;
+    }
+    collectJsonLdPublishedTimes(raw, out);
+  }
+  return out;
+}
+
+// Best-effort watch-page scrape: `datePublished` / `uploadDate` from meta tags
+// (itemprop, property, or name) then JSON-LD. oEmbed has no upload date, so
+// this is the only hosted source. Callers run each candidate through
+// sourceDateFromPublishedTime and omit the field when none survive.
+export function parseWatchPagePublishedTimes(html: string): string[] {
+  return [...metaPublishedTimes(html), ...jsonLdPublishedTimes(html)];
 }

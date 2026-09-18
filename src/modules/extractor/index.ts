@@ -35,6 +35,7 @@ import {
   parseOembed,
   parsePlayerResponse,
   parseVideoId,
+  parseWatchPagePublishedTimes,
   timedtextJson3Url,
   timedtextToText,
 } from "./youtube";
@@ -84,7 +85,8 @@ export interface ExtractedContent {
   markdown?: string;
   title?: string;
   // Publication date of the source (UTC YYYY-MM-DD). HTML from Readability's
-  // publishedTime; X from the first rendered post's created_at. Absent when
+  // publishedTime; X from the first rendered post's created_at; YouTube from
+  // watch-page datePublished/uploadDate (meta or JSON-LD). Absent when
   // missing or implausible.
   source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
@@ -187,8 +189,8 @@ const YOUTUBE_WATCH_HEADERS = {
 
 // Tiered YouTube extraction: oEmbed is the required floor (title + author, and a
 // 429 here surfaces RateLimitedError so the queue retries); the watch-page
-// description/captions and the timedtext transcript are best-effort enrichment
-// that degrade to the floor rather than fail the reading.
+// description/captions/source_date and the timedtext transcript are best-effort
+// enrichment that degrade to the floor rather than fail the reading.
 //
 // The one exception is BlockedHostError: a tampered player response steering
 // egress at a private address is a finding worth surfacing, not an enrichment
@@ -209,15 +211,17 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
   const oembed = parseOembed(new TextDecoder("utf-8").decode(oembedRaw.raw));
   if (!oembed) throw new BadStatusError(oembedUrl(videoId), 502);
 
-  // Tier 2 — watch page (best-effort): description + caption tracks.
+  // Tier 2 — watch page (best-effort): description + caption tracks + date.
   let description: string | undefined;
   let captionBaseUrl: string | undefined;
   let watchRaw: Uint8Array | undefined;
+  let watchHtml: string | undefined;
   let enrichment_degradation: EnrichmentDegradation | undefined;
   try {
     const watch = await fetchBounded(watchUrl, deps, { headers: { ...YOUTUBE_WATCH_HEADERS } });
     watchRaw = watch.raw;
-    const player = parsePlayerResponse(new TextDecoder("utf-8").decode(watch.raw));
+    watchHtml = new TextDecoder("utf-8").decode(watch.raw);
+    const player = parsePlayerResponse(watchHtml);
     if (!player) {
       throw new YoutubeEnrichmentParseError("watch page did not contain a player response");
     }
@@ -227,6 +231,23 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     if (isTerminalFetchGuardError(e)) throw e;
     console.warn(`youtube watch-page enrichment failed for ${watchUrl}:`, e);
     enrichment_degradation = { source: "youtube", tier: "watch_page", ...normalizeEnrichmentError(e) };
+  }
+
+  // Same drop rules as HTML/X. A missing or implausible date omits the field
+  // rather than failing the extract — modeled on transcript miss, except a
+  // date-only gap is not an oEmbed-floor miss, so it does not write
+  // enrichment_degradation (those tiers mean watch_page/transcript).
+  let source_date: string | undefined;
+  if (watchHtml !== undefined) {
+    try {
+      const nowMs = deps.now?.() ?? Date.now();
+      for (const candidate of parseWatchPagePublishedTimes(watchHtml)) {
+        source_date = sourceDateFromPublishedTime(candidate, nowMs);
+        if (source_date !== undefined) break;
+      }
+    } catch (e) {
+      console.warn(`youtube source_date scrape failed for ${watchUrl}:`, e);
+    }
   }
 
   // Tier 3 — transcript (best-effort): first caption track, json3.
@@ -267,6 +288,7 @@ async function extractYoutube(url: string, deps: ExtractorDeps): Promise<Extract
     content_status: "captured",
     markdown,
     title: oembed.title,
+    ...(source_date === undefined ? {} : { source_date }),
     ...(enrichment_degradation === undefined ? {} : { enrichment_degradation }),
   };
 }

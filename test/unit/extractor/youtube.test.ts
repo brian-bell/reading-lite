@@ -6,6 +6,7 @@ import {
   parseOembed,
   parsePlayerResponse,
   parseVideoId,
+  parseWatchPagePublishedTimes,
   timedtextToText,
   youtubeWatchUrlVariants,
 } from "../../../src/modules/extractor/youtube";
@@ -141,6 +142,48 @@ describe("timedtextToText", () => {
   it("returns empty string for unparseable input", () => {
     expect(timedtextToText("")).toBe("");
     expect(timedtextToText("garbage")).toBe("");
+  });
+});
+
+describe("parseWatchPagePublishedTimes", () => {
+  it("reads datePublished then uploadDate from meta, regardless of attribute order", () => {
+    const html = `
+      <meta content="2024-03-15T08:00:00-05:00" itemprop="datePublished">
+      <meta itemprop="uploadDate" content="2024-03-14">
+    `;
+    expect(parseWatchPagePublishedTimes(html)).toEqual([
+      "2024-03-15T08:00:00-05:00",
+      "2024-03-14",
+    ]);
+  });
+
+  it("reads datePublished / uploadDate from JSON-LD, including @graph", () => {
+    const jsonLd = JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        { "@type": "WebPage" },
+        {
+          "@type": "VideoObject",
+          datePublished: "2024-06-01T12:00:00.000Z",
+          uploadDate: "2024-06-01",
+        },
+      ],
+    });
+    const html = `<script type="application/ld+json">${jsonLd}</script>`;
+    expect(parseWatchPagePublishedTimes(html)).toEqual(["2024-06-01T12:00:00.000Z", "2024-06-01"]);
+  });
+
+  it("prefers meta over JSON-LD and skips unparseable JSON-LD", () => {
+    const html =
+      `<meta itemprop="datePublished" content="2024-03-15">` +
+      `<script type="application/ld+json">not json</script>` +
+      `<script type="application/ld+json">${JSON.stringify({ uploadDate: "2024-06-01" })}</script>`;
+    expect(parseWatchPagePublishedTimes(html)).toEqual(["2024-03-15", "2024-06-01"]);
+  });
+
+  it("returns an empty list when neither meta nor JSON-LD carries a date", () => {
+    expect(parseWatchPagePublishedTimes("<html><body>no dates</body></html>")).toEqual([]);
+    expect(parseWatchPagePublishedTimes("")).toEqual([]);
   });
 });
 
