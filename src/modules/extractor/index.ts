@@ -24,6 +24,7 @@ import {
 import { isRedditThreadUrl } from "./reddit";
 import { readBoundedBody, sha256Bytes } from "./response-bytes";
 import { assertSafeUrl, safeFetch, type LookupFn } from "./safe-fetch";
+import { sourceDateFromPublishedTime } from "./source-date";
 import { extractXThread, isXPostUrl } from "./x";
 import {
   buildYoutubeMarkdown,
@@ -62,6 +63,7 @@ export {
   type ResolvedAddress,
   type SafeFetchDeps,
 } from "./safe-fetch";
+export { sourceDateFromPublishedTime } from "./source-date";
 
 export interface ExtractorDeps {
   fetch: typeof fetch;
@@ -81,6 +83,9 @@ export interface ExtractedContent {
   content_sha256: string;
   markdown?: string;
   title?: string;
+  // Publication date of the source (UTC YYYY-MM-DD). HTML branch only, from
+  // Readability's publishedTime. Absent when missing or implausible.
+  source_date?: string;
   // Which path produced `markdown` on the HTML branch: true when Readability
   // crashed and the raw-DOM salvage recovered the text. Absent for every other
   // content type — a text/JSON capture has no Readability verdict to report.
@@ -135,12 +140,17 @@ export async function extractFromUrl(url: string, deps: ExtractorDeps): Promise<
     const html = new TextDecoder("utf-8").decode(raw);
     const article = readabilityFromHtml(html, url);
     if (article && article.markdown.trim().length > 0) {
+      const source_date = sourceDateFromPublishedTime(
+        article.publishedTime,
+        deps.now?.() ?? Date.now(),
+      );
       return {
         ...base,
         content_status: "captured",
         markdown: article.markdown,
         title: article.title,
         salvaged: article.salvaged,
+        ...(source_date === undefined ? {} : { source_date }),
       };
     }
     return { ...base, content_status: "raw_only" };
@@ -311,6 +321,9 @@ export interface ArticleFromHtml extends Article {
   // false: Readability parsed the article. true: Readability threw and the
   // raw-DOM salvage below recovered the text, boilerplate and all.
   salvaged: boolean;
+  // Readability's publishedTime string when present. Not normalized; callers
+  // that persist a date run it through sourceDateFromPublishedTime.
+  publishedTime?: string;
 }
 
 // The HTML→markdown rules, single-homed. Exported for the local extraction
@@ -373,7 +386,7 @@ function rawDomToMarkdown(html: string): Article | null {
   return { markdown, title };
 }
 
-function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
+function readabilityFromHtmlUnsafe(html: string, url: string): (Article & { publishedTime?: string }) | null {
   // Inject a <base> into <head> so Readability resolves relative links against
   // the source URL. Skip the injection when the page already has its own
   // <base> (so we don't override the page's intent) or has no <head> at all.
@@ -398,7 +411,12 @@ function readabilityFromHtmlUnsafe(html: string, url: string): Article | null {
   const markdown = turndown.turndown(contentDoc.body as unknown as Parameters<TurndownService["turndown"]>[0]).trim();
   if (markdown.length === 0) return null;
 
-  return { markdown, title: article.title?.trim() || undefined };
+  const publishedTime = article.publishedTime?.trim() || undefined;
+  return {
+    markdown,
+    title: article.title?.trim() || undefined,
+    ...(publishedTime === undefined ? {} : { publishedTime }),
+  };
 }
 
 function makeTurndown(): TurndownService {

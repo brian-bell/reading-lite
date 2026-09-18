@@ -47,6 +47,10 @@ const HTML_ARTICLE = `<!doctype html>
   <footer>footer</footer>
 </body></html>`;
 
+function htmlWithPublishedTime(content: string): string {
+  return HTML_ARTICLE.replace("</head>", `<meta property="article:published_time" content="${content}"></head>`);
+}
+
 describe("extractFromUrl", () => {
   it("routes X status links away from generic HTML extraction", async () => {
     const fetchFn = vi.fn(async () => {
@@ -85,6 +89,38 @@ describe("extractFromUrl", () => {
     // Which path produced the article. The Worker ignores it; the extraction
     // agent tiers on it (salvage-only static output is what earns a render).
     expect(out.salvaged).toBe(false);
+    expect("source_date" in out).toBe(false);
+  });
+
+  it("copies a Readability publishedTime onto source_date as the UTC calendar date", async () => {
+    // 23:00 on 15 March in UTC−5 is 04:00 on 16 March UTC.
+    const html = htmlWithPublishedTime("2024-03-15T23:00:00-05:00");
+    const fetchFn = fakeFetch({
+      "https://example.com/dated": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: html,
+      },
+    });
+    const out = await extractFromUrl("https://example.com/dated", {
+      ...extractorDeps(fetchFn, { now: () => Date.parse("2026-09-18T12:00:00.000Z") }),
+    });
+    expect(out.content_status).toBe("captured");
+    expect(out.source_date).toBe("2024-03-16");
+  });
+
+  it("omits source_date when publishedTime is in the future", async () => {
+    const html = htmlWithPublishedTime("2099-01-01T00:00:00.000Z");
+    const fetchFn = fakeFetch({
+      "https://example.com/future": {
+        headers: { "content-type": "text/html; charset=utf-8" },
+        body: html,
+      },
+    });
+    const out = await extractFromUrl("https://example.com/future", {
+      ...extractorDeps(fetchFn, { now: () => Date.parse("2026-09-18T12:00:00.000Z") }),
+    });
+    expect(out.content_status).toBe("captured");
+    expect("source_date" in out).toBe(false);
   });
 
   // Minimal reduction of the docs.spring.io page from issue #18: content
