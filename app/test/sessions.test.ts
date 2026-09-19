@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { ApiError } from "../src/api/errors";
 import {
   revokeFromResponse,
   sessionHeading,
@@ -19,52 +18,17 @@ const session = (over: Partial<SessionListItem> = {}): SessionListItem => ({
   ...over,
 });
 
-const listed = {
-  sessions: [session({ current: true })],
-  session_cap_warning: null,
-};
+// The account page's tests own the list read end to end: the list on 200, and
+// 401, 403, 412, and a 5xx's message as the page shows them. These cover only
+// what no page test reaches.
 
 describe("sessionsFromResponse", () => {
-  it("returns the list on 200", () => {
-    expect(sessionsFromResponse(200, listed)).toEqual({ state: "ready", value: listed });
-  });
-
-  it("maps 403 and 412 to their states rather than a throw", () => {
-    expect(sessionsFromResponse(403, { error: "forbidden" })).toEqual({ state: "forbidden" });
-    expect(sessionsFromResponse(412, { error: "expected tenant mismatch", acting_tenant: "usr_b" })).toEqual({
-      state: "account-changed",
-      acting_tenant: "usr_b",
-    });
-  });
-
-  it("throws a 401 so the session-ended machinery sees it", () => {
-    expect(() => sessionsFromResponse(401, { error: "unauthorized" })).toThrow(ApiError);
-    try {
-      sessionsFromResponse(401, { error: "unauthorized" });
-    } catch (error) {
-      expect(error).toMatchObject({ status: 401, message: "unauthorized" });
-    }
-  });
-
-  it("throws the backend's message for a 5xx", () => {
-    try {
-      sessionsFromResponse(503, { error: "storage unavailable" });
-      expect.unreachable();
-    } catch (error) {
-      expect(error).toMatchObject({ status: 503, message: "storage unavailable" });
-    }
-  });
-
   it("throws for an unexpected body", () => {
     expect(() => sessionsFromResponse(200, { sessions: "nope" })).toThrow(/unexpected body/);
   });
 });
 
 describe("revokeFromResponse", () => {
-  it("is revoked on 200", () => {
-    expect(revokeFromResponse(200, { ok: true }, "failed to revoke session")).toEqual({ kind: "revoked" });
-  });
-
   it("maps 403 and 412 to their states", () => {
     expect(revokeFromResponse(403, { error: "forbidden" }, "failed to revoke session")).toEqual({
       kind: "forbidden",
