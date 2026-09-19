@@ -336,7 +336,11 @@ function CreateTokenForm({
       setFieldError("scopes");
       return;
     }
-    const expires = tokenExpiryFrom(expiry, Date.now());
+    // A part-filled date field reports an empty value, which would otherwise
+    // read as "no expiry" and quietly give the default 90 days.
+    const expires = expiryRef.current?.validity.badInput
+      ? ({ kind: "invalid" } as const)
+      : tokenExpiryFrom(expiry, Date.now());
     if (expires.kind !== "default" && expires.kind !== "at") {
       setFieldError(expires.kind);
       return;
@@ -387,7 +391,7 @@ function CreateTokenForm({
       ) : null}
       {outcome?.kind === "invalid" ? (
         <p className="form-error" role="alert">
-          The token wasn't created. Check the name and scopes, then try again.
+          The token wasn't created. Check the name, scopes, and expiry, then try again.
         </p>
       ) : null}
       <form

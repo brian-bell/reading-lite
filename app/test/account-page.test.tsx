@@ -1047,7 +1047,7 @@ describe("API tokens on the account page", () => {
     await userEvent.click(createButton());
 
     expect(await within(section()).findByRole("alert")).toHaveTextContent(
-      "The token wasn't created. Check the name and scopes, then try again.",
+      "The token wasn't created. Check the name, scopes, and expiry, then try again.",
     );
     expect(nameField()).toHaveValue("CI");
   });

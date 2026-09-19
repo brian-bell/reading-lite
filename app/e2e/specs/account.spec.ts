@@ -171,6 +171,16 @@ test("sends the expiry a reader picks in the browser's own date field", async ({
   const sent = creates[0]!.postDataJSON() as { expires_at_ms: number };
   expect(sent.expires_at_ms).toBe(await page.evaluate((value) => Date.parse(value), picked));
 
+  // Part of a date reads as an empty value; it must not become the default.
+  await expiry.fill("");
+  await expiry.focus();
+  await page.keyboard.type("1231");
+  await tokens.getByRole("textbox", { name: "Name" }).fill("Half");
+  await tokens.getByRole("button", { name: "Create token" }).click();
+  await expect(tokens.getByText("Enter a valid expiry.")).toBeVisible();
+  await expect(expiry).toBeFocused();
+  expect(creates).toHaveLength(1);
+
   await expiry.fill("2000-01-01T00:00");
   await tokens.getByRole("textbox", { name: "Name" }).fill("Old");
   await tokens.getByRole("button", { name: "Create token" }).click();
