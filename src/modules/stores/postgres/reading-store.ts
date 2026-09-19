@@ -149,8 +149,9 @@ export class PgReadingStore {
   }
 
   // The current revision's keys are authoritative. A reading that was never
-  // published has no revision; its keys follow the writers' spelling under the
-  // stored key_prefix, which is how /content finds them today.
+  // published has no revision: its content is wherever its latest capturing
+  // attempt put it, or, for an imported reading no attempt has touched, at the
+  // legacy spelling under the stored key_prefix.
   async contentKeys(id: string): Promise<ContentKeys | null> {
     const [row] = await this.sql.query<{
       key_prefix: string;
@@ -169,6 +170,16 @@ export class PgReadingStore {
     if (!row) return null;
     if (row.has_revision) {
       return { rawKey: row.raw_key!, extractedKey: row.extracted_key, contentType: row.content_type };
+    }
+    // Never published, but an attempt captured content under its revision keys.
+    const [captured] = await this.sql.query<{ raw_key: string; extracted_key: string | null }>(
+      `SELECT raw_key, extracted_key FROM reading_attempts
+       WHERE tenant_id = $1 AND reading_id = $2 AND raw_key IS NOT NULL
+       ORDER BY started_at DESC, id DESC LIMIT 1`,
+      [this.tenantId, id],
+    );
+    if (captured) {
+      return { rawKey: captured.raw_key, extractedKey: captured.extracted_key, contentType: row.content_type };
     }
     const layout = r2KeyLayout("");
     return {

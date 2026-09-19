@@ -228,6 +228,18 @@ export const json = (value: unknown | null): string | null => (value === null ? 
 export async function writeReadingRows(tx: SqlQuery, rows: ReadingRows): Promise<void> {
   const r = rows.reading;
   await tx.query("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [r.tenant_id, r.id]);
+  await insertReading(tx, r);
+  if (rows.ownsUrl) {
+    await tx.query("INSERT INTO reading_urls (tenant_id, url_hash, reading_id) VALUES ($1, $2, $3)", [
+      r.tenant_id, r.url_hash, r.id,
+    ]);
+  }
+  if (rows.revision) await insertRevision(tx, r.tenant_id, r.id, rows.revision);
+  await insertRelationships(tx, r.tenant_id, r.id, rows.relationships);
+  if (rows.embedding) await upsertEmbedding(tx, r.tenant_id, r.id, rows.embedding);
+}
+
+export async function insertReading(tx: SqlQuery, r: ReadingRow): Promise<void> {
   await tx.query(
     `INSERT INTO readings (
        tenant_id, id, key_prefix, url, url_hash, status, source_type, title, tldr,
@@ -248,14 +260,6 @@ export async function writeReadingRows(tx: SqlQuery, rows: ReadingRows): Promise
       json(r.active_attempt), json(r.last_attempt), r.current_revision_id,
     ],
   );
-  if (rows.ownsUrl) {
-    await tx.query("INSERT INTO reading_urls (tenant_id, url_hash, reading_id) VALUES ($1, $2, $3)", [
-      r.tenant_id, r.url_hash, r.id,
-    ]);
-  }
-  if (rows.revision) await insertRevision(tx, r.tenant_id, r.id, rows.revision);
-  await insertRelationships(tx, r.tenant_id, r.id, rows.relationships);
-  if (rows.embedding) await upsertEmbedding(tx, r.tenant_id, r.id, rows.embedding);
 }
 
 export async function insertRevision(tx: SqlQuery, tenantId: string, readingId: string, v: RevisionRow): Promise<void> {

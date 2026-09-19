@@ -32,12 +32,13 @@ CREATE INDEX reading_attempts_recent ON reading_attempts (tenant_id, reading_id,
 
 -- Durable job intent. The row commits with the claim or the reprocess that
 -- asked for the work, before the queue send, so a failed send leaves a
--- recoverable record. `payload` is the queue message body.
+-- recoverable record (`send_failed`). `payload` is the queue message body.
+-- Only the reading DLQ marks a job `dead`.
 CREATE TABLE reading_jobs (
   tenant_id text NOT NULL,
   reading_id text NOT NULL,
   attempt_id text NOT NULL,
-  state text NOT NULL CHECK (state IN ('queued', 'sent', 'done', 'dead')),
+  state text NOT NULL CHECK (state IN ('queued', 'sent', 'done', 'dead', 'send_failed')),
   payload jsonb NOT NULL,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
