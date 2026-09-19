@@ -42,8 +42,10 @@ is installed.
 ```sh
 npm ci
 cp .dev.vars.example .dev.vars   # first setup only
-npm run dev                     # local D1 setup, founder bootstrap, Worker :8787
-npm run seed:local              # seed the accepted-state fixture pack into local R2
+docker compose up -d --wait postgres  # local/test Postgres :54329 (npm run dev starts it too)
+npm run dev                     # local Postgres + D1 setup, founder bootstrap, Worker :8787
+npm run seed:local              # seed the accepted-state fixture pack into local R2 and Postgres
+npm run ops -- db migrate       # plan PostgreSQL migrations (db/migrations/); --execute applies
 npm run fixtures:app            # regenerate app/'s browser-evidence fixture snapshot
 npm run test:quiet              # preferred; same suite as npm test
 npm run types:check             # verify checked-in Wrangler runtime types
@@ -107,6 +109,7 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
 | Digests | `src/digest-pipeline.ts`, control-plane digest ledger, `src/modules/digest-*` |
 | Provider and extraction adapters | `src/modules/{extractor,embeddings,summarizer,openai-summarizer,anthropic,http-retry}/` |
 | R2 and Vectorize | `src/modules/stores/`, especially `layout.ts` for keys |
+| PostgreSQL (candidate branch, [ADR 0005](docs/decisions/0005-postgresql-storage.md)) | `src/modules/db/sql.ts`, `src/modules/stores/postgres/`, `db/migrations/`, `scripts/pg-lib/` |
 | Operator commands | `scripts/ops.ts`, `scripts/ops-lib/registry.ts`, `scripts/ops-lib/commands/`, shared `scripts/*-lib/` |
 | Contracts and SPA | `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, `web/` |
 | New frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
@@ -129,6 +132,13 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
   this must precede the terminal manifest too: clearing `active_attempt` first
   makes a ledger failure impossible to recover by ordinary queue retry. D1
   failure blocks publication and purge; do not swallow it as bookkeeping.
+- The runtime is never split between stores. The PostgreSQL read stores are
+  built and tested but unwired; reads and writes switch together in slice 1b.
+  Add no dual-write or fallback code. Construct them with `pgReadingStoreFor`
+  and `pgSimilarityStoreFor` from a validated `TenantContext`; every query is
+  scoped by `tenant_id`. Session state does not survive Hyperdrive, so use
+  `SET LOCAL` inside `sql.transaction`. `reading_embeddings` deliberately has
+  no HNSW index. Never edit an applied file in `db/migrations/`.
 - Keep embedding vectors at 1536 dimensions unless deliberately re-embedding
   into a fresh index. Provider selection and model/effort validation fail closed;
   preserve Anthropic's cached system/tool prefix and its snapshot tests.
@@ -158,6 +168,11 @@ on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue/Vectorize;
 integration tests inject `installQueueStub()` and `installVectorizeStub()`.
+The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
+migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
+unreachable, and tests never connect to Neon. PostgreSQL store tests mint a
+tenant id per test (`test/helpers/pg-fixtures.ts`) because every file shares
+that database; migration-runner tests create scratch databases.
 Do not drain a queue before asserting an active pending state.
 
 Give each behavior one test owner; don't re-assert the same case at unit and

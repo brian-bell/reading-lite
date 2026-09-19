@@ -6,7 +6,10 @@
 > retired. See [current architecture](../architecture.md) and
 > [account deletion](../operations.md#account-deletion).
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded at cutover by
+  [ADR 0005](0005-postgresql-storage.md) (2026-09-19), which moves embeddings
+  to pgvector with row-level tenant scoping. Still describes production until
+  `reading-lite-gh350`.
 - **Date:** 2026-08-23
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-s1k.6.1`
