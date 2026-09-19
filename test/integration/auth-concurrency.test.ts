@@ -4,11 +4,14 @@
 // per transaction), and only the locks keep the outcome what D1 gave.
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { tearDownAccount, type AccountTeardownResult } from "../../src/control-plane/account-teardown";
 import { issueEmailChangeChallenge, issueLoginChallenge } from "../../src/control-plane/challenges";
 import { parseAuthRootSecret } from "../../src/control-plane/crypto";
 import { parseSessionId, parseUserId } from "../../src/control-plane/ids";
 import { redeemLoginChallenge } from "../../src/control-plane/redeem";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 import { ensureUserWithDefaults, issueSessionForClaim } from "../../src/control-plane/sessions";
+import { interceptSql, type SqlResponse } from "../helpers/sql-faults";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
 
@@ -199,5 +202,89 @@ describe("email change under parallel redeems", () => {
     expect(await db().first("SELECT state FROM auth_challenges WHERE id = ?", loser.challengeId)).toEqual({
       state: "revoked",
     });
+  });
+});
+
+// A force-wipe that lands mid-login. Redemption locks the challenge row and
+// then the user row; teardown locks the user row and then deletes that same
+// challenge. Opposite orders are a deadlock PostgreSQL resolves by aborting
+// one of them, so both paths take the challenge lock first.
+describe("teardown racing a login redemption", () => {
+  const EMAIL = "racer@test.example";
+
+  /** Waits until some other backend on this database is blocked on a lock. */
+  async function waitForBlockedBackend(): Promise<void> {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const blocked = await db().first<{ count: string }>(
+        `SELECT count(*)::text AS count FROM pg_stat_activity
+          WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+      );
+      if (Number(blocked?.count ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error("no backend ever blocked on a lock");
+  }
+
+  it("does not deadlock when the account is torn down between eligibility and the session lock", async () => {
+    const userId = await ensureUserWithDefaults(db(), {
+      emailCanonical: EMAIL,
+      emailDisplay: EMAIL,
+      nowMs: NOW_MS,
+    });
+    const issued = await issueLoginChallenge(db(), {
+      emailCanonical: EMAIL,
+      emailDisplayRequested: EMAIL,
+      nowMs: NOW_MS,
+      authRoot: authRoot(),
+    });
+    if (issued.kind !== "issued") throw new Error("expected a challenge");
+
+    const race: { teardown?: Promise<AccountTeardownResult> } = {};
+    // The redeem has already read the user as active; it is about to lock it.
+    // The force-wipe lands in exactly that window.
+    const spy = interceptSql(/SELECT id FROM users WHERE id = \$1 FOR UPDATE/, async (): Promise<SqlResponse> => {
+      if (race.teardown) return "pass";
+      await db().batch([
+        {
+          sql: "UPDATE users SET status = 'deleting', deleting_at = ?, updated_at = ? WHERE id = ?",
+          params: [toTimestamp(NOW_MS), toTimestamp(NOW_MS), userId],
+        },
+        {
+          sql: `INSERT INTO wipe_progress (tenant_id, phase, updated_at, completed_at)
+                VALUES (?, 'done', ?, ?)`,
+          params: [userId, toTimestamp(NOW_MS), toTimestamp(NOW_MS)],
+        },
+      ]);
+      // No guard namespaces: this test is about lock order, and a real
+      // Durable Object purge would leave storage behind in this isolated
+      // project. `account-deletion-guard-storage` owns the purge itself.
+      race.teardown = tearDownAccount(db(), { ...env, TENANT_USAGE_GUARD: undefined, GLOBAL_USAGE_GUARD: undefined }, {
+        tenantId: userId,
+        nowMs: NOW_MS + 1,
+        prefixVerdict: async () => "empty",
+      });
+      // Let teardown reach its locks and block on this redemption's challenge.
+      await waitForBlockedBackend();
+      return "pass";
+    });
+
+    try {
+      const redeemed = await redeemLoginChallenge(db(), {
+        credential: issued.credential,
+        redemptionId: "clm_teardown_race",
+        nowMs: NOW_MS + 1,
+        authRoot: authRoot(),
+        userAgentLabel: "test",
+      });
+      expect(redeemed.kind).toBe("ok");
+      expect(await race.teardown!).toEqual({ kind: "torn_down", tenantId: userId, rowsDeleted: expect.any(Number) });
+    } finally {
+      spy.mockRestore();
+      await race.teardown?.catch(() => undefined);
+    }
+
+    // Teardown ran last, so the account and the session it raced are both gone.
+    expect(await db().all("SELECT id FROM users WHERE id = ?", userId)).toEqual([]);
+    expect(await db().all("SELECT id FROM sessions WHERE user_id = ?", userId)).toEqual([]);
   });
 });

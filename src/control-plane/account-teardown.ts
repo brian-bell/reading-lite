@@ -40,7 +40,10 @@
  *    tick can no longer enumerate, because the hard delete removes the tenant
  *    from `listDeletingUsers`.
  * 4. **The rows last, in one transaction that locks before it acts.** It locks
- *    the `users` row and the `wipe_progress` row FOR UPDATE, re-asserts the
+ *    this account's `auth_challenges` rows, then the `users` row and the
+ *    `wipe_progress` row FOR UPDATE — challenges first because a login
+ *    redemption takes them in that order, and the opposite order would make
+ *    the two transactions a deadlock cycle. It re-asserts the
  *    gate on what it locked (still `deleting`, wipe still complete), and only
  *    then deletes, children before parents. D1 had no locks, so every
  *    statement of its batch carried the gate as an EXISTS guard; here the
@@ -107,13 +110,13 @@ export type AccountTeardownResult =
   /** Objects remain under the tenant prefix, or we could not confirm. */
   | { kind: "prefix_not_empty"; verdict: PrefixVerdict }
   /**
-   * The account left `deleting` between the status read and the final
-   * transaction. Nothing was deleted: the locked re-check refused.
+ * The account left `deleting` between the status read and the final
+ * transaction. Nothing was deleted: the locked re-check refused.
    */
   | { kind: "reactivated" }
   /**
-   * A concurrent tick reopened the wipe between the gate read and the final
-   * transaction. Same story: nothing was deleted.
+ * A concurrent tick reopened the wipe between the gate read and the final
+ * transaction. Same story: nothing was deleted.
    */
   | { kind: "wipe_reopened" };
 
@@ -223,6 +226,14 @@ export async function tearDownAccount(
 
   // (4) The rows, in one transaction that locks, re-checks, then deletes.
   return db.transaction(async (tx) => {
+    // Challenges before the user row, because that is the order a login takes:
+    // `redeemLoginChallenge` locks the challenge and only then locks `users`
+    // (`issueSessionForClaim`). Locking `users` first here would make the two
+    // transactions a cycle, and PostgreSQL would resolve it by aborting one of
+    // them — a login or this teardown, at random. `ORDER BY id` keeps two
+    // teardowns from doing the same to each other.
+    const challenges = accountChallenges(tenantId, addresses[0]!);
+    await tx.all(`SELECT id FROM ${challenges.from} ORDER BY id FOR UPDATE`, ...challenges.params);
     const locked = await tx.first<{ status: string }>("SELECT status FROM users WHERE id = ? FOR UPDATE", tenantId);
     // Another delivery got there first and finished the job.
     if (!locked) return { kind: "already_torn_down" };
@@ -329,6 +340,48 @@ async function addressesEverUsed(
 }
 
 /**
+ * The `auth_challenges` rows this account owns: one predicate, used twice —
+ * to lock the rows at the top of the final transaction and to delete them
+ * inside it. They must stay identical, or the lock would miss a row the delete
+ * still takes, which is the deadlock the lock exists to prevent.
+ *
+ * Three arms, and each one catches rows the others miss. Nothing else
+ * ever deletes from `auth_challenges` (there is no TTL prune), so a row
+ * missed here is a permanent record of a deleted account's address.
+ *
+ * One shape is knowingly missed: a login challenge that was issued and
+ * then superseded at signup, on an address the account has since changed
+ * away from. It has `user_id IS NULL` and `completed_user_id IS NULL`, so
+ * no arm reaches it. It is not swept by address because, on a *released*
+ * address, a NULL-owner row may equally belong to somebody signing up
+ * there now, and deleting theirs is the worse error.
+ *
+ * `user_id` is this account's own challenges, including an `email_change`
+ * aimed at some other address. `completed_user_id` is the signup
+ * challenge that created the account. The NULL-owner arm frees the
+ * `auth_challenges_one_issued` slot for the released address, and is
+ * bound to the CURRENT address only: while a live user owns an address,
+ * a login challenge for it carries that user's id, never NULL, so on the
+ * current address no such row can be anyone else's.
+ *
+ * Deliberately NOT "every row matching the address": that would also
+ * destroy a different, live user's in-flight `email_change` challenge
+ * targeting it.
+ */
+function accountChallenges(
+  tenantId: TenantId,
+  emailCanonical: string,
+): { from: string; params: unknown[] } {
+  return {
+    from: `auth_challenges
+             WHERE user_id = ?
+                OR completed_user_id = ?
+                OR (email_canonical = ? AND user_id IS NULL)`,
+    params: [tenantId, tenantId, emailCanonical],
+  };
+}
+
+/**
  * Account-owned control-plane rows, children before parents. Run inside the
  * final transaction, after it has locked and re-checked the gate.
  *
@@ -371,6 +424,7 @@ function teardownStatements(
 ): Array<{ sql: string; params: unknown[] }> {
   // The account's current address is always first (see `addressesEverUsed`).
   const emailCanonical = addresses[0]!;
+  const challenges = accountChallenges(tenantId, emailCanonical);
   return [
     {
       sql: `DELETE FROM api_token_scopes
@@ -380,33 +434,9 @@ function teardownStatements(
     { sql: "DELETE FROM api_tokens WHERE user_id = ?", params: [tenantId] },
     { sql: "DELETE FROM sessions WHERE user_id = ?", params: [tenantId] },
     {
-      // Three arms, and each one catches rows the others miss. Nothing else
-      // ever deletes from `auth_challenges` (there is no TTL prune), so a row
-      // missed here is a permanent record of a deleted account's address.
-      //
-      // One shape is knowingly missed: a login challenge that was issued and
-      // then superseded at signup, on an address the account has since changed
-      // away from. It has `user_id IS NULL` and `completed_user_id IS NULL`, so
-      // no arm reaches it. It is not swept by address because, on a *released*
-      // address, a NULL-owner row may equally belong to somebody signing up
-      // there now, and deleting theirs is the worse error.
-      //
-      // `user_id` is this account's own challenges, including an `email_change`
-      // aimed at some other address. `completed_user_id` is the signup
-      // challenge that created the account. The NULL-owner arm frees the
-      // `auth_challenges_one_issued` slot for the released address, and is
-      // bound to the CURRENT address only: while a live user owns an address,
-      // a login challenge for it carries that user's id, never NULL, so on the
-      // current address no such row can be anyone else's.
-      //
-      // Deliberately NOT "every row matching the address": that would also
-      // destroy a different, live user's in-flight `email_change` challenge
-      // targeting it.
-      sql: `DELETE FROM auth_challenges
-             WHERE user_id = ?
-                OR completed_user_id = ?
-                OR (email_canonical = ? AND user_id IS NULL)`,
-      params: [tenantId, tenantId, emailCanonical],
+      // The predicate, and why it has three arms, is `accountChallenges`.
+      sql: `DELETE FROM ${challenges.from}`,
+      params: challenges.params,
     },
     { sql: "DELETE FROM digest_deliveries WHERE user_id = ?", params: [tenantId] },
     { sql: "DELETE FROM relationship_refresh_jobs WHERE tenant_id = ?", params: [tenantId] },
