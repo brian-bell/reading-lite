@@ -2523,6 +2523,9 @@ npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to pre
 
 ## Seeding local R2
 
+`npm run seed:local` also seeds [local Postgres](#local-postgres) with the same
+pack; the R2 steps below are unchanged.
+
 To exercise the read path or the SPA against real data locally, stop
 `wrangler dev`, seed, then start `npm run dev` again.
 
@@ -2575,6 +2578,60 @@ re-seeding replaces them. A minimal `ready` reading needs:
 
 `key_prefix` already begins with `readings/`; do not prepend it again.
 `/lookup` requires the by-url pointer and does not discover pointerless readings.
+
+## Local Postgres
+
+The storage migration ([ADR 0005](decisions/0005-postgresql-storage.md)) adds
+PostgreSQL 18 with pgvector 0.8.x beside R2. On the `epic/postgres-storage`
+candidate branch no runtime path reads it yet, but the Worker test suite,
+`npm run dev`, and `npm run seed:local` all need one. Tests never connect to
+Neon.
+
+The supported local server is the docker-compose `postgres` service
+(`pgvector/pgvector:0.8.1-pg18`), published on host port **54329** so it cannot
+collide with a Postgres you already run:
+
+```sh
+docker compose up -d --wait postgres   # npm run dev does this for you
+docker compose stop postgres           # data persists in the postgres_data volume
+docker compose down -v                 # also deletes it
+```
+
+| Who | Database | How it connects |
+|---|---|---|
+| `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then the D1 steps. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
+| `npm run seed:local` | `reading_lite` | After seeding R2 it migrates, then writes the fixture pack as rows for the local founder's tenant id, with deterministic vectors. Re-running replaces the pack's rows. |
+| `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. The run always forces the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
+| CI Worker job | `reading_lite_test` | A service container; `TEST_DATABASE_URL` points both pools at it. The ops job has no Postgres, so no test it runs may need a database. |
+
+To use your own server instead, set `READING_LITE_DATABASE_URL` (shell or
+`.dev.vars`) for `npm run dev` and `seed:local`, and `TEST_DATABASE_URL` for
+tests. Dev setup then starts nothing. It is deliberately not `DATABASE_URL`,
+which many shells already export for another project: dev setup migrates and
+seeds whatever this names. The Worker does not read it: also export
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` with the same value,
+or `wrangler dev` keeps using port 54329. Two checkouts cannot both publish
+port 54329; run the service from one of them, since they can share it.
+
+Migrations live in `db/migrations/` (`migrations/` stays D1's) and are
+forward-only. Plan first, against a **direct** connection string, never a
+Hyperdrive one:
+
+```sh
+DATABASE_URL=postgres://reading_lite:reading_lite@127.0.0.1:54329/reading_lite \
+  npm run ops -- db migrate              # lists applied and pending; changes nothing
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- db migrate --database-url-env NEON_DEV_DATABASE_URL --execute
+```
+
+The runner refuses when an applied file has changed or disappeared, so never
+edit an applied migration; add the next number. On a local database the fix
+for drift from branch-hopping is `docker compose down -v` and a fresh start.
+
+`ops deploy worker` refuses any environment whose `wrangler.toml` section binds
+Hyperdrive until `POSTGRES_CUTOVER_ENABLED` for that environment is true in
+`scripts/ops-lib/postgres-cutover.ts`. Create Hyperdrive configs with query
+caching disabled; see the ADR.
 
 ## Paid-work policy and accounting
 

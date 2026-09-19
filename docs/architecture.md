@@ -190,6 +190,14 @@ do not reach that retained copy. Removing the pin after new tenant writes land
 hides those readings behind the global snapshot. Rollback then needs a freeze
 and reverse reconciliation, or explicit acceptance of that loss.
 
+On the `epic/postgres-storage` candidate branch, `src/modules/db/sql.ts` and
+`src/modules/stores/postgres/` hold the PostgreSQL seam and read stores that
+replace this layout at cutover
+([ADR 0005](decisions/0005-postgresql-storage.md)). They are built from the
+same validated `TenantContext`, scope every query by `tenant_id`, and return
+the same `ListIndexItem` and `Manifest` shapes. No runtime path constructs them
+until reads and writes switch together.
+
 A namespaced query cannot see unnamespaced vectors. Any future storage migration
 must verify both R2 and Vectorize before activation. The founder migration
 command is retired; see the [historical cutover](founder-cutover.md).

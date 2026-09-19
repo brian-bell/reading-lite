@@ -18,7 +18,7 @@ Work in the current reading-lite checkout. Read its `AGENTS.md` and `app/README.
    npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174
    ```
 
-   This applies local D1 migrations and bootstraps the local founder. The URL override makes magic links return to the new frontend instead of the legacy SPA on 5173.
+   This starts and migrates local Postgres (`docker compose up -d --wait postgres`, host port **54329**), applies local D1 migrations, and bootstraps the local founder. Docker must be running; if `READING_LITE_DATABASE_URL` is set in the shell or `.dev.vars`, setup starts nothing and migrates that server instead. The URL override makes magic links return to the new frontend instead of the legacy SPA on 5173.
 5. Start the frontend in a separate persistent exec session with working directory `app/`:
 
    ```sh
@@ -51,10 +51,17 @@ When the user wants sample readings, read `docs/design/connected/fixture-pack.md
 npm run seed:local
 ```
 
-The pack writes 18 authored sample readings into local R2, with ready, pending, and failed states. It replaces the local list index with fixture rows: do not reseed automatically on every startup or overwrite a populated custom library without accounting for the user's intent. Wait for the seeder's read-back verification and verify a ready reading through the running backend. The baseline detail link is `http://127.0.0.1:5174/readings/rd_FXATTENT01`. Refresh the browser after seeding; restart the backend only if necessary. The pending fixture ages out after 15 minutes.
+The pack writes 18 authored sample readings into local R2, with ready, pending, and failed states, then writes the same pack into local Postgres for the local founder's tenant (so run `npm run dev` once first). It replaces the local list index with fixture rows: do not reseed automatically on every startup or overwrite a populated custom library without accounting for the user's intent. Wait for the seeder's read-back verification and verify a ready reading through the running backend. The baseline detail link is `http://127.0.0.1:5174/readings/rd_FXATTENT01`. Refresh the browser after seeding; restart the backend only if necessary. The pending fixture ages out after 15 minutes.
 
 Local dev has no Queue or Vectorize: submit/import/reprocess return 503 and vector similarity is empty. Seeding supplies UI data without provider calls. Keep all operations local; no production reads, writes, or deployment are needed.
 
+## Postgres troubleshooting
+
+- `Could not start local Postgres`: Docker is not running, or another checkout already publishes port 54329 (`docker ps --filter publish=54329`). Checkouts can share one running service; do not start a second.
+- `Migration drift` after switching branches: the local database has a migration this branch does not. It holds only seed data, so reset it with `docker compose down -v`, then start again and reseed.
+- `npm test` failing at once with `Test Postgres is unreachable`: start the service; tests use the separate `reading_lite_test` database and never touch dev data.
+- See `docs/operations.md#local-postgres` for self-managed servers.
+
 ## Stop
 
-Stop both owned dev sessions with Ctrl-C when available. If session handles are unavailable, inspect listeners and their parent process commands/cwds; send TERM to this checkout's Vite and Wrangler CLI processes so their children shut down too. Do not use broad `pkill node`/`pkill workerd` commands. Confirm that both ports are no longer listening, and investigate surviving owned children before declaring shutdown complete. Preserve `.dev.vars`, dependencies, and local seeded data for the next run.
+Stop both owned dev sessions with Ctrl-C when available. If session handles are unavailable, inspect listeners and their parent process commands/cwds; send TERM to this checkout's Vite and Wrangler CLI processes so their children shut down too. Do not use broad `pkill node`/`pkill workerd` commands. Confirm that both ports are no longer listening, and investigate surviving owned children before declaring shutdown complete. Preserve `.dev.vars`, dependencies, and local seeded data for the next run. Leave the `postgres` container running unless the user asks to stop everything (`docker compose stop postgres` keeps its data); never run `docker compose down -v` without being asked.

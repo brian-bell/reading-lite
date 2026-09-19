@@ -6,7 +6,11 @@
 > and global budgets in one GlobalUsageGuard ledger; vector isolation follows
 > [ADR 0002](0002-vectorize-namespace-isolation.md).
 
-- **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23)
+- **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23);
+  storage parts (tenant R2 key roots as the isolation boundary for reading
+  state) superseded at cutover by
+  [ADR 0005](0005-postgresql-storage.md) (2026-09-19). The control-plane
+  decisions stand.
 - **Date:** 2026-08-16
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-s1k.1`
