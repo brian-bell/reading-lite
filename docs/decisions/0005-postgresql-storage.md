@@ -368,7 +368,11 @@ outside the transaction that acts on it.
   statement of their transaction, before any reading row is locked or written.
   FOR SHARE, not FOR UPDATE, so a tenant's readings still claim and publish in
   parallel while `DELETE /api/account`'s status UPDATE waits for all of them.
-  The lock order is tenant row, then reading row, in every verb.
+  Where both are taken the order is tenant row, then reading row. The verbs
+  that only touch a reading that already exists — `fail`, `purge` and
+  `replacePublishedIf` — take no tenant lock: the wipe deletes the reading
+  rows before teardown deletes `users`, so there is nothing left for them to
+  act on. A new verb that CREATES a row needs the lock.
 - **What each verb does with it.** A claim for an inactive tenant commits
   nothing — no reading, URL row, attempt or job — and reports
   `tenant_inactive`, which the router answers 403, the same body the

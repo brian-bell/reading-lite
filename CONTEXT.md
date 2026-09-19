@@ -123,8 +123,9 @@ submit, a markdown import, or a lookup. It lives in
   serializes against them: a claim that lands after the flip writes no rows,
   and a publish that holds the lock first completes whole. An ineligible
   tenant's reading is stored without an embedding, never searchable, and a
-  deleting tenant's copy goes with the wipe. Wipe of the tenant's reading rows (embeddings with
-  them) and then its R2 prefix is a deferred shared-queue job plus the */15
+  deleting tenant's copy goes with the wipe. Wipe of the tenant's reading rows
+  (embeddings with them) and then its R2 prefix is a deferred shared-queue job
+  plus the */15
   cron sweep, honoring a 7-day `deleting_at` grace unless the job payload sets
   `force` (grace gates *new* wipes; cron resumes in-progress/leftover and
   preserves `force` from the wipe record).

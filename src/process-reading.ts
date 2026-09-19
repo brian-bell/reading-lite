@@ -933,9 +933,9 @@ async function tenantAllowsSpend(io: AttemptIo, tenantId: string): Promise<boole
   }
 }
 
-// Post-CAS and DLQ mark path. Confirmed deleting/missing → false. Lookup
-// throw → true (fail-open): the DLQ never retries, and a post-CAS retry
-// cannot republish.
+// The DLQ mark path, its only caller: publication decides eligibility inside
+// its own transaction now. Confirmed deleting/missing → false. Lookup throw →
+// true (fail-open), because the DLQ never retries.
 async function tenantConfirmedAllowsVisibility(io: AttemptIo, tenantId: string): Promise<boolean> {
   try {
     return await lookupTenantActive(io, tenantId);

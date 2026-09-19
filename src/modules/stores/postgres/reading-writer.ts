@@ -10,8 +10,9 @@
 // updates the same row, so it waits behind an in-flight claim or publish and
 // every later one sees `deleting`: the before/after eligibility checks the
 // consumer used to make around publish, and the compensation for the window
-// between them, are gone. The lock order is tenant row, then reading row,
-// everywhere.
+// between them, are gone. Where both locks are taken the order is tenant row,
+// then reading row. The verbs that only act on a reading that already exists
+// take no tenant lock; a verb that CREATES a row needs it.
 //
 // The deletion fence is the row itself. A purged reading has no row, the lock
 // finds nothing, and the verb reports that nothing was committed. Child rows
@@ -380,11 +381,6 @@ export class PgReadingWriter {
       await tx.query("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [this.tenantId, id]);
       return { kind: "purged", keyPrefix: row.key_prefix, urlReleased: url.length > 0, embeddingRemoved };
     });
-  }
-
-  // Compensation for a tenant that stopped being eligible around a publish.
-  async removeEmbedding(id: string): Promise<void> {
-    await this.deleteEmbedding(this.sql, id);
   }
 
   // Account wipe: every reading row the tenant owns, children by cascade.
