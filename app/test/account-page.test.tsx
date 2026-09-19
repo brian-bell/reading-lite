@@ -205,6 +205,10 @@ async function openAccount(identity: Identity | null = reader) {
   return { router, queryClient };
 }
 
+function hereDialog() {
+  return screen.queryByRole("dialog", { name: "Sign out of this browser?" });
+}
+
 function dialog() {
   return screen.queryByRole("dialog", { name: "Revoke all browser sessions?" });
 }
@@ -299,16 +303,31 @@ describe("the account page", () => {
     expect(screen.getByRole("button", { name: "Revoke this device" })).toBeDisabled();
   });
 
-  it("revoking this device signs the reader out and sends them to sign in", async () => {
+  it("revoking this device confirms, then signs the reader out and sends them to sign in", async () => {
     mockApi({ listed: { sessions: [HERE], session_cap_warning: null } });
     const { router, queryClient } = await openAccount();
     expect(await screen.findByText("Firefox (this device)")).toBeVisible();
 
-    await userEvent.click(screen.getByRole("button", { name: "Revoke this device" }));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke this device" }));
+    fireEvent.click(within(hereDialog()!).getByRole("button", { name: "Revoke this device" }));
 
     await waitFor(() => expect(router.state.location.href).toBe("/login?next=%2Faccount%2Fsecurity"));
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Sign in");
     expect(queryClient.getQueryData(whoamiQueryKey)).toBeNull();
+  });
+
+  it("sends nothing when revoking this device is cancelled, and returns focus", async () => {
+    const fetchMock = mockApi({ listed: { sessions: [HERE, PHONE], session_cap_warning: null } });
+    const { router } = await openAccount();
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Revoke this device" }));
+    await userEvent.click(within(hereDialog()!).getByRole("button", { name: "Cancel" }));
+
+    expect(hereDialog()).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Revoke this device" })).toHaveFocus();
+    expect(requestsOf(fetchMock, "DELETE", "/api/auth/sessions/")).toHaveLength(0);
+    expect(router.state.location.href).toBe("/account/security");
   });
 
   it("revoke-all confirms, then signs the reader out everywhere", async () => {
@@ -490,6 +509,7 @@ describe("the account page", () => {
   // event, so nothing tells the owner it closed. Retry must not bring it back.
   it.each([
     ["Revoke all sessions", "Revoke all browser sessions?"],
+    ["Revoke this device", "Sign out of this browser?"],
     ["Delete account…", "Delete your account?"],
   ])("does not reopen the %s dialog after a state page replaced it", async (trigger, title) => {
     let status = 200;

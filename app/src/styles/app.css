@@ -663,6 +663,21 @@ textarea {
   line-height: 1.5;
 }
 
+/* A label and its pending text share one cell (PendingLabel), so the button
+   is as wide as the longer and doesn't shift when it changes. */
+.label-swap {
+  display: inline-grid;
+}
+
+.label-swap > span {
+  grid-area: 1 / 1;
+  text-align: center;
+}
+
+.label-swap > [aria-hidden="true"] {
+  visibility: hidden;
+}
+
 .session-revoked,
 .session-expired {
   opacity: 0.7;
