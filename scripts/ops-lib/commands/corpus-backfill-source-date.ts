@@ -10,6 +10,10 @@
 // Execute re-reads the live manifest immediately before put and merges only
 // source_date onto that object. The classify-pass snapshot is never written
 // back. Resumable and idempotent: a dated reading is left alone.
+//
+// Storage: same --via / credential auto-select as refresh-neighbours, via
+// chooseR2Backend. S3 keys alone take the direct path — this command never
+// queries Vectorize, so CORPUS_CF_API_TOKEN is not required.
 
 import {
   classifySourceDateCandidate,
@@ -18,23 +22,32 @@ import {
 } from "../../corpus-lib/backfill-source-date";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
+import { loadDotVars } from "../../lib/dotvars";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import {
+  chooseR2Backend,
+  describeBackend,
+  type BackendChoice,
+  type CorpusObjectR2,
+  type NeighboursBackend,
+} from "../neighbours-r2";
 import { requireOperatorTenant } from "../tenant-flag";
 
 const layout = r2KeyLayout();
 const HTML_EXT = "html";
 
-export interface CorpusBackfillSourceDateR2 {
-  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
-  readManifest: (keyPrefix: string, deps: R2Deps) => Promise<any | null>;
-  readRawHtml: (keyPrefix: string, deps: R2Deps) => Promise<string | null>;
-  putManifest: (keyPrefix: string, body: unknown, deps: R2Deps) => Promise<void>;
-  writeListIndex: (items: ListItem[], deps: R2Deps) => Promise<void>;
-}
+export type CorpusBackfillSourceDateR2 = CorpusObjectR2;
 
 export interface CorpusBackfillSourceDateDeps extends BaseDeps {
   r2: CorpusBackfillSourceDateR2;
+  /**
+   * The direct (S3/REST) path, built lazily so a wrangler run resolves no
+   * credentials. Absent means this environment has no direct path (tests).
+   */
+  directR2?: () => CorpusBackfillSourceDateR2;
+  /** Credentials consulted to auto-select a backend. Default: none. */
+  storageVars?: () => Record<string, string | undefined>;
   now: () => number;
   // Injected so tests can throw from classify without a pathological HTML
   // fixture. Production uses classifyStoredHtml.
@@ -43,6 +56,7 @@ export interface CorpusBackfillSourceDateDeps extends BaseDeps {
 
 interface Opts {
   tenant?: string;
+  via?: NeighboursBackend;
   only: string[];
   bucket: string;
   remote: boolean;
@@ -63,11 +77,20 @@ function parseArgs(argv: string[]): Opts {
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
+    else if (a === "--via") opts.via = parseVia(requireValue(argv[++i], a));
     else if (a === "--limit") opts.limit = parsePositiveInt(requireValue(argv[++i], a));
     else if (a.startsWith("--")) throw new UsageError(`unknown flag: ${a}`);
     else opts.only.push(a);
   }
+  if (opts.via === "direct" && !opts.remote) {
+    throw new UsageError("--via direct cannot be combined with --local");
+  }
   return opts;
+}
+
+function parseVia(raw: string): NeighboursBackend {
+  if (raw === "wrangler" || raw === "direct") return raw;
+  throw new UsageError(`--via "${raw}" is not one of: direct, wrangler`);
 }
 
 function requireValue(v: string | undefined, flag: string): string {
@@ -81,12 +104,33 @@ function parsePositiveInt(raw: string): number {
   return n;
 }
 
+function selectStorage(
+  opts: Opts,
+  deps: CorpusBackfillSourceDateDeps,
+): { choice: BackendChoice; storage: CorpusBackfillSourceDateR2 } {
+  const requested = chooseR2Backend({
+    ...(opts.via === undefined ? {} : { via: opts.via }),
+    local: !opts.remote,
+    vars: deps.storageVars?.() ?? {},
+  });
+  const direct = deps.directR2;
+  if (requested.backend !== "direct") return { choice: requested, storage: deps.r2 };
+  if (direct === undefined) {
+    return {
+      choice: { backend: "wrangler", reason: `${requested.reason}, but no direct client available` },
+      storage: deps.r2,
+    };
+  }
+  return { choice: requested, storage: direct() };
+}
+
 async function runCorpusBackfillSourceDate(
   argv: string[],
   deps: CorpusBackfillSourceDateDeps,
 ): Promise<number> {
   const opts = parseArgs(argv);
-  const { io, r2 } = deps;
+  const { io } = deps;
+  const { choice, storage: r2 } = selectStorage(opts, deps);
   const inspectHtml = deps.classifyHtml ?? classifyStoredHtml;
   const tenant = requireOperatorTenant(opts.tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
@@ -96,6 +140,7 @@ async function runCorpusBackfillSourceDate(
   const only = opts.only.length > 0 ? new Set(opts.only) : null;
   const scoped = only === null ? items : items.filter((i) => only.has(i.id));
 
+  for (const line of describeBackend(choice)) io.stdout(line);
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
   io.stdout(`Corpus: ${items.length} readings`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}\n`);
@@ -254,6 +299,13 @@ Options:
   --limit <n>         Cap how many readings are inspected this pass.
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
+  --via <path>        Storage path: 'direct' (R2 over S3 or the Cloudflare
+                      REST API) or 'wrangler' (a child process per call).
+                      Default: direct when CORPUS_R2_* keys or a Cloudflare
+                      API token are present, wrangler otherwise. S3 keys
+                      alone are enough — this command does not query Vectorize.
+                      --local always uses wrangler; --via direct --local is a
+                      usage error. The chosen path is printed in the header.
   --local             Use the local miniflare bucket.
   --execute           Write manifests and flush the list index.
   --help              Show this message.`,
@@ -269,7 +321,40 @@ Options:
       putManifest: async (kp, body, d) => (await import("../../corpus-lib/wrangler-put")).putManifest(kp, body, d),
       writeListIndex: async (items, d) => (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items, d),
     },
+    directR2: () => {
+      let built: CorpusBackfillSourceDateR2 | undefined;
+      const lazy = async (): Promise<CorpusBackfillSourceDateR2> => {
+        if (built === undefined) built = await buildDirectR2();
+        return built;
+      };
+      return {
+        readListIndex: async (d) => (await lazy()).readListIndex(d),
+        readManifest: async (kp, d) => (await lazy()).readManifest(kp, d),
+        readRawHtml: async (kp, d) => (await lazy()).readRawHtml(kp, d),
+        putManifest: async (kp, body, d) => (await lazy()).putManifest(kp, body, d),
+        writeListIndex: async (items, d) => (await lazy()).writeListIndex(items, d),
+      };
+    },
+    storageVars: defaultStorageVars,
     now: () => Date.now(),
   }),
   run: runCorpusBackfillSourceDate,
 };
+
+function defaultStorageVars(): Record<string, string | undefined> {
+  return {
+    ...loadDotVars(".dev.vars"),
+    ...loadDotVars(".prd.vars"),
+    ...loadDotVars(".corpus.vars"),
+    ...process.env,
+  };
+}
+
+async function buildDirectR2(): Promise<CorpusBackfillSourceDateR2> {
+  const { r2InventoryClientFromVars } = await import("../../lib/cf-clients");
+  const { directCorpusObjectR2 } = await import("../neighbours-r2");
+  const vars = defaultStorageVars();
+  return directCorpusObjectR2({
+    r2: (bucket) => r2InventoryClientFromVars(vars, bucket, globalThis.fetch),
+  });
+}
