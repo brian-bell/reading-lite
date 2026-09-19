@@ -194,7 +194,9 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
           revealed={revealed}
           onDismiss={() => {
             onDismiss();
-            (nameRef.current ?? headingRef.current)?.focus();
+            // The name field, unless the form is gone or locked at the limit.
+            const name = nameRef.current;
+            (name && !name.disabled ? name : headingRef.current)?.focus();
           }}
         />
       ) : null}

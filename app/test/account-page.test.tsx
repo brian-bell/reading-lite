@@ -1088,6 +1088,26 @@ describe("API tokens on the account page", () => {
     expect(createButton()).toBeEnabled();
   });
 
+  it("puts focus on the heading when the tenth token's value is dismissed", async () => {
+    let tokens = fullList(9);
+    mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onCreateToken: (body) => {
+        tokens = [...tokens, token({ id: "tok_new", name: body.name })];
+        return Response.json({ token: "tok_new.secret", id: "tok_new", name: body.name }, { status: 201 });
+      },
+    });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "Tenth");
+    await userEvent.click(createButton());
+    expect(await within(section()).findByText(LIMIT_WARNING)).toBeVisible();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Dismiss" }));
+
+    expect(within(section()).getByRole("heading", { name: "API tokens" })).toHaveFocus();
+  });
+
   it("says the account is at the limit when a create answers 409", async () => {
     mockApi({ onCreateToken: () => Response.json({ error: "too many active tokens" }, { status: 409 }) });
     await openAccount();
