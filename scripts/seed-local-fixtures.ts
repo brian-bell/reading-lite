@@ -12,10 +12,21 @@
 // local founder account reads global-rooted keys — exactly the keys this
 // seeder writes. Seeding overwrites index/list.json with the pack's rows only:
 // any other local reading keeps its objects but drops out of the list.
+//
+// The same pack is then written to local PostgreSQL (ADR 0005) through the
+// shared manifest-to-rows mapping, under the local founder's tenant id, with
+// deterministic vectors so similarity has something to find. Rows are
+// tenant-scoped even though local R2 keys are global-rooted.
 
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { buildLocalSeed, type LocalSeedObject } from "../test/fixtures/local-seed";
+import { buildLocalSeed, type LocalSeedObject, type LocalSeedPlan } from "../test/fixtures/local-seed";
+import { canonicalizeEmail } from "../src/control-plane/email";
+import { sqlFromConnectionString } from "../src/modules/db/sql";
+import { loadDotVars } from "./lib/dotvars";
+import { localSeedRows } from "./pg-lib/local-seed-rows";
+import { localDatabase, migrateLocalPostgres } from "./pg-lib/local-postgres";
+import { writeReadingRows } from "./pg-lib/manifest-rows";
 import { mapWithConcurrency } from "./lib/concurrency";
 import { spawnWrangler } from "./lib/wrangler-cli";
 import { isObjectNotFound } from "./corpus-lib/wrangler-r2";
@@ -92,8 +103,47 @@ function readObject(key: string): Promise<ReadResult> {
   });
 }
 
+const LOCAL_D1 = "reading-lite-control-dev";
+
+export interface PostgresSeedResult {
+  tenantId: string;
+  readings: number;
+  embeddings: number;
+}
+
+// Local rows belong to the founder that npm run dev bootstrapped into local D1.
+async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResult> {
+  const envVars = { ...loadDotVars(".dev.vars"), ...process.env };
+  const email = envVars.FOUNDER_EMAIL;
+  if (!email) throw new Error("FOUNDER_EMAIL is not set in .dev.vars");
+  const { makeWranglerD1 } = await import("./lib/founder-bootstrap");
+  const founder = await makeWranglerD1({ database: LOCAL_D1, local: true }).first<{ id: string }>(
+    "SELECT id FROM users WHERE email_canonical = ?",
+    canonicalizeEmail(email),
+  );
+  if (!founder) throw new Error("no local founder for " + email + "; run npm run dev once first");
+
+  const { url } = localDatabase(envVars);
+  await migrateLocalPostgres(url);
+  const rows = localSeedRows(plan, founder.id);
+  const sql = sqlFromConnectionString(url);
+  try {
+    await sql.transaction(async (tx) => {
+      for (const reading of rows) await writeReadingRows(tx, reading);
+    });
+  } finally {
+    await sql.end();
+  }
+  return {
+    tenantId: founder.id,
+    readings: rows.length,
+    embeddings: rows.filter((reading) => reading.embedding !== null).length,
+  };
+}
+
 export async function runSeed(
   deps: {
+    seedPostgres?: (plan: LocalSeedPlan) => Promise<PostgresSeedResult>;
     put?: (object: LocalSeedObject) => Promise<PutResult>;
     read?: (key: string) => Promise<ReadResult>;
     log?: (line: string) => void;
@@ -172,6 +222,14 @@ export async function runSeed(
     return 1;
   }
   log(`Verified ${LIST_INDEX_KEY}: ${list.items.length} rows (${plan.listIndex.items.length} fixture rows).`);
+
+  try {
+    const seeded = await (deps.seedPostgres ?? seedLocalPostgres)(plan);
+    log(`Seeded PostgreSQL: ${seeded.readings} readings, ${seeded.embeddings} vectors for tenant ${seeded.tenantId}.`);
+  } catch (error) {
+    console.error(`PostgreSQL seed failed: ${error instanceof Error ? error.message : String(error)}`);
+    return 1;
+  }
 
   const pending = plan.fixtures.find((f) => f.name === "pending");
   log("");

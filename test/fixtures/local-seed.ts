@@ -108,6 +108,27 @@ const IDS = {
 
 export const LOCAL_SEED_REMOVED_TARGET_ID = "rd_FXVANSHD01";
 
+const FIXTURE_EMBEDDING_DIM = 1536;
+
+/**
+ * A deterministic 1536-dimension vector for a fixture reading, so PostgreSQL
+ * similarity works over the pack without an embedding call. Seeded from the id
+ * alone; the shared offset puts pairwise cosine near 0.6, the range real prose
+ * embeddings occupy (see SIMILARITY_FLOOR).
+ */
+export function localSeedEmbedding(id: string): number[] {
+  // FNV-1a seed, mulberry32 stream.
+  let state = 2166136261;
+  for (let i = 0; i < id.length; i++) state = Math.imul(state ^ id.charCodeAt(i), 16777619);
+  const next = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return Array.from({ length: FIXTURE_EMBEDDING_DIM }, () => Number((next() - 0.5 + 0.35).toFixed(6)));
+}
+
 /** The reading's nth attempt id: every fixture id ends in a digit, which the ordinal replaces. */
 function attemptIdOf(readingId: string, ordinal: number): string {
   return `at_${readingId.slice(3, -1)}${ordinal}`;

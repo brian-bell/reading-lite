@@ -36,6 +36,9 @@ export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
   CONTROL_PLANE: D1Database;
+  // PostgreSQL through Hyperdrive (ADR 0005). No runtime path reads it until
+  // slice 1b switches reads and writes together.
+  HYPERDRIVE: Hyperdrive;
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingEnvelopeV1>;

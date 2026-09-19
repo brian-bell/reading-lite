@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { runFounderBootstrap } from "./lib/founder-bootstrap";
+import { COMPOSE_UP_POSTGRES } from "./pg-lib/local-postgres";
 
 export interface CloudAgentInstallDeps {
   cwd?: string;
@@ -62,6 +63,34 @@ async function setUpBeads(
   log("[cloud-agent-install] beads database ready");
 }
 
+// The Worker suite needs PostgreSQL 18 with pgvector (ADR 0005); its
+// globalSetup fails fast without one. Docker is the supported route. Like
+// beads, a failure here must not block the rest of the install.
+async function setUpPostgres(
+  envVars: Record<string, string | undefined>,
+  run: (command: string, args: string[]) => Promise<number>,
+  log: (line: string) => void,
+): Promise<void> {
+  if (envVars.TEST_DATABASE_URL?.trim()) {
+    log("[cloud-agent-install] TEST_DATABASE_URL is set; not starting Postgres");
+    return;
+  }
+  let code: number;
+  try {
+    code = await run("docker", COMPOSE_UP_POSTGRES);
+  } catch {
+    code = 127;
+  }
+  if (code === 0) {
+    log("[cloud-agent-install] Postgres ready (docker compose service on port 54329)");
+    return;
+  }
+  log(
+    "[cloud-agent-install] warning: could not start Postgres with docker compose; npm test needs PostgreSQL 18 " +
+      "with pgvector 0.8.x. Install one and set TEST_DATABASE_URL (see docs/operations.md#local-postgres)",
+  );
+}
+
 function defaultRun(command: string, args: string[]): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { stdio: "inherit", shell: false });
@@ -80,6 +109,7 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
   const founderBootstrap = deps.founderBootstrap ?? runFounderBootstrap;
 
   await setUpBeads(run, log);
+  await setUpPostgres(envVars, run, log);
 
   const stgVarsPath = path.join(cwd, ".stg.vars");
   const stgVars = renderStgVars(envVars);

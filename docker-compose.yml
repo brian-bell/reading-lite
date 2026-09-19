@@ -10,6 +10,26 @@
 # "service:backend"` on `app` instead of Compose's default per-service
 # networking, and a shared WRANGLER_REGISTRY_PATH volume.
 services:
+  # PostgreSQL 18 with pgvector, matching Neon (ADR 0005). `npm run dev` on the
+  # host starts only this service (`docker compose up -d postgres`) and reaches
+  # it on the non-default host port 54329; the backend container reaches it as
+  # postgres:5432.
+  postgres:
+    image: pgvector/pgvector:0.8.1-pg18
+    ports:
+      - "54329:5432"
+    environment:
+      POSTGRES_USER: reading_lite
+      POSTGRES_PASSWORD: reading_lite
+      POSTGRES_DB: reading_lite
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U reading_lite -d reading_lite"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   backend:
     build:
       context: .
@@ -22,8 +42,17 @@ services:
       - backend_node_modules:/workspace/node_modules
       - backend_wrangler_state:/workspace/.wrangler
       - wrangler_registry:/wrangler-registry
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       WRANGLER_REGISTRY_PATH: /wrangler-registry
+      # There is no Docker inside the container, so `npm run dev` must not try
+      # to start Postgres: READING_LITE_DATABASE_URL marks it self-managed (dev-setup still
+      # migrates it), and the Hyperdrive override points the Worker's binding
+      # at the same service instead of the host port in wrangler.toml.
+      READING_LITE_DATABASE_URL: postgres://reading_lite:reading_lite@postgres:5432/reading_lite
+      CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE: postgres://reading_lite:reading_lite@postgres:5432/reading_lite
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
@@ -54,6 +83,7 @@ services:
       MINIFLARE_REGISTRY_PATH: /wrangler-registry
 
 volumes:
+  postgres_data:
   backend_node_modules:
   app_node_modules:
   backend_wrangler_state:

@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { validateControlPlaneDeployReadiness } from "../../control-plane-env";
 import { validateTenantActivation } from "../tenant-activation-preflight";
+import { checkPostgresCutover } from "../postgres-cutover";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export type DeployEnv = "production" | "staging";
@@ -18,6 +19,7 @@ export interface DeployWorkerDeps extends BaseDeps {
   validateCandidate?: (sha: string) => Promise<void>;
   validateReadiness: typeof validateControlPlaneDeployReadiness;
   validateTenantActivation: typeof validateTenantActivation;
+  checkPostgresCutover: typeof checkPostgresCutover;
 }
 
 export function parseDeployEnv(value: unknown): DeployEnv | null {
@@ -59,6 +61,13 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   const wranglerArgs = buildWranglerArgs({ env, execute });
   if (releaseSha) wranglerArgs.push("--tag", releaseSha);
   const mode = execute ? "DEPLOY" : "PLAN";
+  // First, before anything remote: a storage-migration candidate must not
+  // reach an environment that has not been cut over (ADR 0005).
+  const cutover = deps.checkPostgresCutover(env, { execute });
+  if (!cutover.ok) {
+    deps.io.stderr(`[${mode}] PostgreSQL cutover guard: REFUSED. ${cutover.error}`);
+    if (execute) return 2;
+  }
   const readiness = deps.validateReadiness(env);
   const migrationArgs = readiness.ok
     ? buildMigrationArgs({ env, databaseName: readiness.d1.databaseName })
@@ -136,6 +145,12 @@ is imported once by founder bootstrap and is not a runtime auth fallback.
 OPENAI_API_KEY is always required; if SUMMARIZER_PROVIDER=anthropic, also set
 ANTHROPIC_API_KEY.
 
+A wrangler.toml that binds PostgreSQL (Hyperdrive) for the target environment
+is refused until POSTGRES_CUTOVER_ENABLED for that environment is true in
+scripts/ops-lib/postgres-cutover.ts (ADR 0005). Plan mode reports the refusal;
+--execute exits 2 before the preflight, migrations or upload, and also refuses
+a placeholder Hyperdrive id.
+
 --execute refuses placeholder CONTROL_PLANE D1 database IDs in wrangler.toml.
 Replace staging/production database_id after \`wrangler d1 create\`. Plan mode
 warns instead of failing.`,
@@ -151,6 +166,7 @@ warns instead of failing.`,
     },
     validateReadiness: validateControlPlaneDeployReadiness,
     validateTenantActivation,
+    checkPostgresCutover,
   }),
   run: runDeployWorker,
 };

@@ -45,6 +45,19 @@ function ownershipRank(status: ManifestStatus): number {
   return OWNERSHIP_RANK[status] ?? 0;
 }
 
+// Sorts the strongest URL owner first: ownership rank, then newest by
+// updated_at. Exported so the PostgreSQL importer ranks duplicates the same way.
+export function compareUrlOwnership(
+  a: Pick<ListIndexItem, "status" | "created_at" | "updated_at">,
+  b: Pick<ListIndexItem, "status" | "created_at" | "updated_at">,
+): number {
+  const rankDiff = ownershipRank(b.status) - ownershipRank(a.status);
+  if (rankDiff !== 0) return rankDiff;
+  const aTime = a.updated_at ?? a.created_at;
+  const bTime = b.updated_at ?? b.created_at;
+  return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
+}
+
 export function manifestToIndexItem(
   m: Manifest,
   keyPrefix: string,
@@ -292,13 +305,7 @@ export class ListIndexStore {
     // owner must beat a *newer* `failed` one — ranking purely by updated_at would
     // repair the by-url pointer to the failed duplicate and orphan the ready
     // summary by URL. Within a status class, newest-by-updated_at still wins.
-    matches.sort((a, b) => {
-      const rankDiff = ownershipRank(b.status) - ownershipRank(a.status);
-      if (rankDiff !== 0) return rankDiff;
-      const aTime = a.updated_at ?? a.created_at;
-      const bTime = b.updated_at ?? b.created_at;
-      return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
-    });
+    matches.sort(compareUrlOwnership);
     for (const item of matches) {
       const manifest = await this.readManifest(item.key_prefix);
       if (manifest?.url === url && manifest.url_hash === urlHash) {
