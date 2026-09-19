@@ -206,6 +206,8 @@ export function AccountPage() {
     setConfirmDelete(false);
   }, [replacedByState]);
   const busy = revoke.isPending || remove.isPending;
+  const revokingId =
+    revoke.isPending && revoke.variables?.kind === "one" ? revoke.variables.session.id : undefined;
   const deleteNotice = deleteNoticeOf(remove.data, remove.error);
 
   function retry() {
@@ -285,7 +287,9 @@ export function AccountPage() {
         onRevoke: (session) => send({ kind: "one", session }),
         onRetry: retry,
         revokeAllRef,
+        revokingId,
         email: {
+          current: identity?.email,
           sending: emailChange.isPending,
           outcome: emailChange.data,
           failure: emailError == null ? undefined : failureOf(emailError),
@@ -378,6 +382,8 @@ function pageViewOf(
 }
 
 interface EmailActions {
+  /** The address mail goes to now, from whoami. */
+  current: string | undefined;
   sending: boolean;
   outcome: EmailChangeOutcome | undefined;
   failure: Failure | undefined;
@@ -416,6 +422,8 @@ function pageFor(
     onRevoke: (session: SessionListItem) => void;
     onRetry: () => void;
     revokeAllRef: RefObject<HTMLButtonElement | null>;
+    /** The session whose revoke is in flight, whose button says so. */
+    revokingId: string | undefined;
     email: EmailActions;
     settings: SettingsActions;
     tokens: TokensSectionProps;
@@ -440,27 +448,35 @@ function pageFor(
       const listed = sessions.kind === "ready" || sessions.kind === "offline" ? sessions.value : undefined;
       return (
         <div className="page account-page">
-          <div className="account-head">
-            <PageHeading>Account</PageHeading>
-            <button
-              type="button"
-              className="button"
-              ref={actions.revokeAllRef}
-              onClick={actions.onConfirmAll}
-              disabled={actions.busy}
-            >
-              Revoke all sessions
-            </button>
-          </div>
+          <PageHeading>Account</PageHeading>
           <EmailSection {...actions.email} />
           <NotificationsSection {...actions.settings} />
           <section className="account-section" aria-labelledby="sessions-heading">
-            <h2 id="sessions-heading" className="account-section-title">
-              Sessions
-            </h2>
+            {/* Revoke-all sits with the sessions it ends, not at the top of the page. */}
+            <div className="account-section-head">
+              <h2 id="sessions-heading" className="account-section-title">
+                Sessions
+              </h2>
+              <button
+                type="button"
+                className="button"
+                ref={actions.revokeAllRef}
+                onClick={actions.onConfirmAll}
+                disabled={actions.busy}
+              >
+                Revoke all sessions
+              </button>
+            </div>
             {sessions.kind === "offline" ? <OfflineNotice onRetry={actions.onRetry} /> : null}
             {sessions.kind === "loading" ? <LoadingRegion /> : null}
-            {listed ? <SessionsList listed={listed} busy={actions.busy} onRevoke={actions.onRevoke} /> : null}
+            {listed ? (
+              <SessionsList
+                listed={listed}
+                busy={actions.busy}
+                revokingId={actions.revokingId}
+                onRevoke={actions.onRevoke}
+              />
+            ) : null}
           </section>
           <TokensSection {...actions.tokens} />
           <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
@@ -487,7 +503,7 @@ function pageFor(
  * stays through every outcome, so an offline or failed request can be sent
  * again as it was.
  */
-function EmailSection({ sending, outcome, failure, onSend, onEdit, onRetry }: EmailActions) {
+function EmailSection({ current, sending, outcome, failure, onSend, onEdit, onRetry }: EmailActions) {
   const id = useId();
   const [email, setEmail] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -501,6 +517,11 @@ function EmailSection({ sending, outcome, failure, onSend, onEdit, onRetry }: Em
       <h2 id={`${id}-heading`} className="account-section-title">
         Email
       </h2>
+      {current ? (
+        <p className="account-current-email">
+          Mail goes to <strong>{current}</strong>.
+        </p>
+      ) : null}
       {failure ? (
         <InlineNotice
           message={
@@ -777,10 +798,12 @@ function DigestScheduleFields({
 function SessionsList({
   listed,
   busy,
+  revokingId,
   onRevoke,
 }: {
   listed: SessionsList;
   busy: boolean;
+  revokingId: string | undefined;
   onRevoke: (session: SessionListItem) => void;
 }) {
   return (
@@ -807,7 +830,7 @@ function SessionsList({
             </div>
             {session.usable ? (
               <button type="button" className="button" onClick={() => onRevoke(session)} disabled={busy}>
-                {session.current ? "Revoke this device" : "Revoke"}
+                {session.id === revokingId ? "Revoking…" : session.current ? "Revoke this device" : "Revoke"}
               </button>
             ) : null}
           </li>

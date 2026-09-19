@@ -31,7 +31,8 @@ for (const evidence of EVIDENCE_CASES) {
       // each is the state it claims. Signed out, the way in is either the
       // navigation's link or the sign-in form rendered in place.
       if (evidence.state === "signed-in") {
-        await expect(page.getByText(SESSION_EMAIL)).toBeAttached();
+        // The account menu's, not the account page's own mention of it.
+        await expect(page.locator(".account-menu-email").getByText(SESSION_EMAIL)).toBeAttached();
         await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
       } else {
         await expect(page.locator("details.account-menu")).toHaveCount(0);

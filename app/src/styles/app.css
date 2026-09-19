@@ -422,23 +422,23 @@ textarea {
 
 /* ---- Account ---------------------------------------------------------- */
 
-/* Title and "Revoke all sessions" side by side, as the SPA's Security heading. */
-.account-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-  max-width: 68ch;
-  margin: 0 0 var(--space-5);
-}
-
-.account-head .page-title {
-  margin: 0;
-}
-
 .account-section {
   max-width: 68ch;
+}
+
+/* A section title with the action that applies to all of it, such as
+   Sessions and "Revoke all sessions"; the button wraps under on a phone. */
+.account-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.account-section-head .account-section-title {
+  margin: 0;
 }
 
 .account-section-title {
@@ -449,8 +449,31 @@ textarea {
   line-height: 1.25;
 }
 
+/* A hairline between sections, so each reads as its own group on a long page. */
 .account-section + .account-section {
-  margin-top: var(--space-6);
+  margin-top: var(--space-7);
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border);
+}
+
+.account-current-email {
+  margin: 0 0 var(--space-4);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.account-current-email strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Fields and their actions stack with room between them. */
+.email-change-form,
+.token-create-form {
+  display: grid;
+  gap: var(--space-4);
 }
 
 .settings-group {
@@ -506,11 +529,26 @@ textarea {
   margin-top: var(--space-5);
 }
 
+.token-create-form .settings-group-title {
+  margin: 0;
+}
+
+.token-create-form .form-hint {
+  margin: 0;
+}
+
 .token-scopes {
   display: grid;
-  margin: 0 0 var(--space-3);
+  min-width: 0;
+  margin: 0;
   padding: 0;
   border: 0;
+}
+
+/* A legend keeps 2 px of inline padding by default, which set it off the
+   fields' left edge. */
+.token-scopes legend {
+  padding: 0;
 }
 
 .token-reveal {
@@ -564,11 +602,9 @@ textarea {
   user-select: all;
 }
 
-/* Account deletion is the last section, set apart from sessions above it. */
-.account-delete {
+/* Account deletion is the last section, set further apart than the rest. */
+.account-section + .account-delete {
   margin-top: var(--space-9);
-  padding-top: var(--space-6);
-  border-top: 1px solid var(--border);
 }
 
 .account-delete-text {
