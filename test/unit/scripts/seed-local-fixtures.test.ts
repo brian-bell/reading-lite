@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { runSeed, type ReadResult } from "../../../scripts/seed-local-fixtures";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { replaceTenantReadings, runSeed, type ReadResult } from "../../../scripts/seed-local-fixtures";
+import { sqlFromConnectionString, type Sql } from "../../../src/modules/db/sql";
+import { manifestToRows, writeReadingRows, type ReadingRows } from "../../../scripts/pg-lib/manifest-rows";
+import type { Manifest } from "../../../src/schemas/manifest";
+import { testDatabaseUrl } from "../../helpers/test-database";
 import type { LocalSeedObject, LocalSeedPlan } from "../../fixtures/local-seed";
 
 const NOW = "2026-09-11T10:00:00.000Z";
@@ -173,5 +177,52 @@ describe("seed-local-fixtures runSeed", () => {
     } finally {
       restoreWarn();
     }
+  });
+});
+
+function failedRows(tenantId: string, id: string): ReadingRows {
+  const manifest = {
+    id,
+    url: `https://example.com/${id}`,
+    url_hash: Buffer.from(id).toString("hex").padEnd(64, "0").slice(0, 64),
+    status: "failed",
+    content_type: "text/html",
+    content_status: "failed",
+    content_bytes: 0,
+    content_sha256: "0".repeat(64),
+    created_at: "2026-09-19T00:00:00.000Z",
+    updated_at: "2026-09-19T00:00:00.000Z",
+  } satisfies Manifest;
+  return manifestToRows(manifest, { tenantId, keyPrefix: `readings/${id}`, ownsUrl: false });
+}
+
+describe("seed-local-fixtures replaceTenantReadings", () => {
+  let sql: Sql;
+  beforeAll(() => {
+    sql = sqlFromConnectionString(testDatabaseUrl());
+  });
+  afterAll(() => sql.end());
+
+  it("clears leftover tenant rows before inserting the fixture set", async () => {
+    const tenant = `usr_seed_${crypto.randomUUID()}`;
+    const other = `usr_seed_${crypto.randomUUID()}`;
+    const leftover = failedRows(tenant, "rd_leftover01");
+    const retired = failedRows(tenant, "rd_retired01");
+    const fixture = failedRows(tenant, "rd_fixture01");
+    const neighbour = failedRows(other, "rd_neighbour1");
+
+    await sql.transaction(async (tx) => {
+      await writeReadingRows(tx, leftover);
+      await writeReadingRows(tx, retired);
+      await writeReadingRows(tx, neighbour);
+    });
+    await sql.transaction((tx) => replaceTenantReadings(tx, tenant, [fixture]));
+
+    const remaining = await sql.query<{ tenant_id: string; id: string }>(
+      "SELECT tenant_id, id FROM readings WHERE tenant_id IN ($1, $2) ORDER BY id",
+      [tenant, other],
+    );
+    expect(remaining.filter((row) => row.tenant_id === tenant)).toEqual([{ tenant_id: tenant, id: "rd_fixture01" }]);
+    expect(remaining.filter((row) => row.tenant_id === other)).toEqual([{ tenant_id: other, id: "rd_neighbour1" }]);
   });
 });

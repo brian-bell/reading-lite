@@ -15,18 +15,20 @@
 //
 // The same pack is then written to local PostgreSQL (ADR 0005) through the
 // shared manifest-to-rows mapping, under the local founder's tenant id, with
-// deterministic vectors so similarity has something to find. Rows are
+// deterministic vectors so similarity has something to find. The tenant's
+// existing reading rows are deleted first so a reseed matches the R2 list
+// overwrite: leftover local or retired-fixture rows drop. Rows are
 // tenant-scoped even though local R2 keys are global-rooted.
 
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { buildLocalSeed, type LocalSeedObject, type LocalSeedPlan } from "../test/fixtures/local-seed";
 import { canonicalizeEmail } from "../src/control-plane/email";
-import { sqlFromConnectionString } from "../src/modules/db/sql";
+import { sqlFromConnectionString, type SqlQuery } from "../src/modules/db/sql";
 import { loadDotVars } from "./lib/dotvars";
 import { localSeedRows } from "./pg-lib/local-seed-rows";
 import { localDatabase, migrateLocalPostgres } from "./pg-lib/local-postgres";
-import { writeReadingRows } from "./pg-lib/manifest-rows";
+import { writeReadingRows, type ReadingRows } from "./pg-lib/manifest-rows";
 import { mapWithConcurrency } from "./lib/concurrency";
 import { spawnWrangler } from "./lib/wrangler-cli";
 import { isObjectNotFound } from "./corpus-lib/wrangler-r2";
@@ -111,6 +113,16 @@ export interface PostgresSeedResult {
   embeddings: number;
 }
 
+// seed:local replaces the tenant the way R2 overwrites index/list.json.
+export async function replaceTenantReadings(
+  tx: SqlQuery,
+  tenantId: string,
+  rows: ReadingRows[],
+): Promise<void> {
+  await tx.query("DELETE FROM readings WHERE tenant_id = $1", [tenantId]);
+  for (const reading of rows) await writeReadingRows(tx, reading);
+}
+
 // Local rows belong to the founder that npm run dev bootstrapped into local D1.
 async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResult> {
   const envVars = { ...loadDotVars(".dev.vars"), ...process.env };
@@ -128,9 +140,7 @@ async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResul
   const rows = localSeedRows(plan, founder.id);
   const sql = sqlFromConnectionString(url);
   try {
-    await sql.transaction(async (tx) => {
-      for (const reading of rows) await writeReadingRows(tx, reading);
-    });
+    await sql.transaction((tx) => replaceTenantReadings(tx, founder.id, rows));
   } finally {
     await sql.end();
   }
