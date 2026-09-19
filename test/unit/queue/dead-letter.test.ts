@@ -4,8 +4,8 @@ import { fromD1 } from "../../../src/control-plane/db";
 import { handleDeadLetter } from "../../../src/index";
 import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
+import { FOUNDER_TENANT_ID as TENANT } from "../../helpers/file-tenants";
 
-const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
 const READING_ID = "rd_0123456789";
 const JOB_URL = "https://example.com/x";

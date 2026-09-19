@@ -214,6 +214,10 @@ connection string. See [local Postgres](../operations.md#local-postgres).
 - The project is on Neon's free plan with scale-to-zero, so the first query
   after idle pays a cold start. #349 measures it; #350 decides whether
   production needs a paid plan.
-- In 1b the HTTP tests all use one fixed founder id across parallel files
-  against one shared database. 1b must choose a database per vitest worker,
-  per-file founder ids, or serial files.
+- The HTTP tests used one fixed founder id across parallel files against one
+  shared database. 1b chose **per-file tenant ids**: `test/helpers/file-tenants.ts`
+  derives the founder and second-tenant ids from the test file's path, and
+  `test/apply-control-plane.ts` deletes those tenants' rows before each test,
+  which matches the per-test rollback R2, D1 and Durable Objects already get.
+  A database per vitest worker does not fit the pool's single Hyperdrive
+  string, and serial files would give up the suite's parallelism.

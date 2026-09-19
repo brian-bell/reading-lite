@@ -465,7 +465,7 @@ function dlqMessage(): Message<unknown> {
     timestamp: new Date(),
     body: {
       version: 1,
-      tenant: { tenantId: "usr_550e8400-e29b-41d4-a716-446655440000" },
+      tenant: { tenantId: FOUNDER_TENANT_ID },
       actor: { kind: "api_token" as const, credentialId: "tok_550e8400-e29b-41d4-a716-446655440000" },
       job: args(),
     },

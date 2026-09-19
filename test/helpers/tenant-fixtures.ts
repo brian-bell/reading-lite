@@ -10,8 +10,10 @@ import {
   type ReadingStore,
 } from "../../src/modules/stores/reading-store";
 
-export const FOUNDER_TENANT_ID = "usr_550e8400-e29b-41d4-a716-446655440000";
-export const OTHER_TENANT_ID = "usr_11111111-1111-4111-8111-111111111111";
+import { FOUNDER_TENANT_ID, OTHER_TENANT_ID } from "./file-tenants";
+
+// Per test file, not fixed: see ./file-tenants.ts.
+export { FOUNDER_TENANT_ID, OTHER_TENANT_ID };
 export const OTHER_TOKEN_SECRET = "other-test-token";
 export const OTHER_TOKEN_ID = "tok_11111111-1111-4111-8111-111111111111";
 
