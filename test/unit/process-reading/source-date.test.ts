@@ -8,13 +8,11 @@ import {
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
 import type { Manifest } from "../../../src/schemas/manifest";
+import { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
+import { memoryBucket, NODE_HYPERDRIVE, nodeReadingsFor } from "../../helpers/node-readings";
 import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
 
 const PREFIX = "readings/2026/04/26T200000Z-rd_TEST";
-
-function args(over: { preserveReadyManifest?: Manifest } = {}) {
-  return { keyPrefix: PREFIX, ...over };
-}
 
 function reader(readManifest: () => Promise<Manifest | null>) {
   return { readManifest: async () => readManifest() };
@@ -37,46 +35,26 @@ function pending(over: Partial<Manifest> = {}): Manifest {
 }
 
 describe("sourceDateFromPrior", () => {
-  it("carries a date from the current pending and omits it when none is stored", async () => {
-    await expect(
-      sourceDateFromPrior(reader(async () => pending({ source_date: "2024-03-15" })), args()),
-    ).resolves.toBe("2024-03-15");
-    await expect(sourceDateFromPrior(reader(async () => pending()), args())).resolves.toBeUndefined();
-    await expect(sourceDateFromPrior(reader(async () => null), args())).resolves.toBeUndefined();
+  it("carries a date from the reading's row and omits it when none is stored", async () => {
+    await expect(sourceDateFromPrior(reader(async () => pending({ source_date: "2024-03-15" })))).resolves.toBe("2024-03-15");
+    await expect(sourceDateFromPrior(reader(async () => pending()))).resolves.toBeUndefined();
+    await expect(sourceDateFromPrior(reader(async () => null))).resolves.toBeUndefined();
   });
 
-  it("prefers the current pending over a preserved ready snapshot", async () => {
+  // A published reading stays ready through a reprocess, so its row still
+  // holds the date: there is no snapshot to fall back on, or need for one.
+  it("reads a published reading's date while it reprocesses", async () => {
     await expect(
-      sourceDateFromPrior(
-        reader(async () => pending({ source_date: "2024-03-15" })),
-        args({ preserveReadyManifest: pending({ status: "ready", source_date: "2020-01-01" }) }),
-      ),
+      sourceDateFromPrior(reader(async () => pending({ status: "ready", connections: [], source_date: "2024-03-15" }))),
     ).resolves.toBe("2024-03-15");
   });
 
-  it("recovers a preserved date when the prior-manifest read throws", async () => {
-    await expect(
-      sourceDateFromPrior(reader(async () => {
-        throw new Error("R2 hiccup");
-      }), args({
-        preserveReadyManifest: pending({ status: "ready", source_date: "2024-03-15" }),
-      })),
-    ).resolves.toBe("2024-03-15");
-  });
-
-  it("proceeds undated on a prior-manifest read error when no preserved date can recover it", async () => {
-    const error = new Error("R2 hiccup");
+  it("proceeds undated on a read error", async () => {
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(
       sourceDateFromPrior(reader(async () => {
-        throw error;
-      }), args()),
-    ).resolves.toBeUndefined();
-
-    await expect(
-      sourceDateFromPrior(reader(async () => {
-        throw error;
-      }), args({ preserveReadyManifest: pending({ status: "ready" }) })),
+        throw new Error("database hiccup");
+      })),
     ).resolves.toBeUndefined();
     expect(consoleErr).toHaveBeenCalled();
     consoleErr.mockRestore();
@@ -108,7 +86,6 @@ describe("sourceDateForReadyDraft", () => {
       sourceDateForReadyDraft(
         extracted,
         reader(async () => pending(stored === undefined ? {} : { source_date: stored })),
-        args(),
       ),
     ).resolves.toBe(want);
   });
@@ -118,9 +95,8 @@ describe("sourceDateForReadyDraft", () => {
       sourceDateForReadyDraft(
         { source_date: "2024-06-01" },
         reader(async () => {
-          throw new Error("R2 hiccup");
+          throw new Error("database hiccup");
         }),
-        args(),
       ),
     ).resolves.toBe("2024-06-01");
   });
@@ -178,10 +154,7 @@ describe("processReading — source_date is resolved before paid stages", () => 
   function envWith(bucket: R2Bucket): Env {
     return {
       READINGS_BUCKET: bucket,
-      READINGS_INDEX: {
-        upsert: vi.fn(),
-        query: vi.fn(),
-      } as unknown as VectorizeIndex,
+      HYPERDRIVE: NODE_HYPERDRIVE,
       READER_API_TOKEN: "x",
       ANTHROPIC_API_KEY: "x",
       OPENAI_API_KEY: "x",
@@ -193,29 +166,41 @@ describe("processReading — source_date is resolved before paid stages", () => 
     } as unknown as Env;
   }
 
-  function memoryBucket(body: string) {
-    const written: Manifest[] = [];
-    const bucket = {
-      get: vi.fn(async (key: string) => {
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-        }
-        return null;
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          written.push(JSON.parse(String(value)));
-        }
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
-    return { bucket, written };
+  // A pending row, and a bucket that reports when the extracted content lands:
+  // every read of the reading after that point is one the pipeline makes
+  // between extraction and its terminal write.
+  async function seeded(over: Partial<Manifest>) {
+    const state = { extractedWritten: false };
+    const bucket = memoryBucket();
+    const put = bucket.put.bind(bucket);
+    bucket.put = (async (key: string, ...rest: unknown[]) => {
+      if (key.endsWith("/extracted.md")) state.extractedWritten = true;
+      return (put as (...args: unknown[]) => Promise<unknown>)(key, ...rest);
+    }) as typeof bucket.put;
+    const readings = nodeReadingsFor(founderTenant(), bucket);
+    await readings.seed(pending(over), { keyPrefix: PREFIX });
+    return { bucket, readings, state };
+  }
+
+  // Counts the pipeline's reads of the reading once extraction has landed, and
+  // lets a test answer one of them differently.
+  function interceptReadsAfterExtract(
+    state: { extractedWritten: boolean },
+    answer: (nth: number, real: Awaited<ReturnType<PgReadingStore["loadReadingById"]>>) => Awaited<ReturnType<PgReadingStore["loadReadingById"]>>,
+  ) {
+    const real = PgReadingStore.prototype.loadReadingById;
+    let reads = 0;
+    const spy = vi.spyOn(PgReadingStore.prototype, "loadReadingById").mockImplementation(async function (this: PgReadingStore, id) {
+      const found = await real.call(this, id);
+      if (!state.extractedWritten) return found;
+      reads += 1;
+      return answer(reads, found);
+    });
+    return { spy, reads: () => reads };
   }
 
   it("a failed reprocess of a dated pending keeps source_date", async () => {
-    const { bucket, written } = memoryBucket(JSON.stringify(pending({ source_date: "2024-03-15" })));
+    const { bucket, readings } = await seeded({ source_date: "2024-03-15" });
     const services: Services = {
       fetch: vi.fn(async () => {
         throw new Error("network down");
@@ -236,43 +221,18 @@ describe("processReading — source_date is resolved before paid stages", () => 
     ).resolves.toBeUndefined();
 
     consoleErr.mockRestore();
-    const failed = written.find((manifest) => manifest.status === "failed");
-    expect(failed?.source_date).toBe("2024-03-15");
+    expect(await readings.manifest("rd_TEST")).toMatchObject({ status: "failed", source_date: "2024-03-15" });
   });
 
   it("a later failure keeps a date already resolved when the prior re-read would drop it", async () => {
-    const dated = JSON.stringify(pending({ source_date: "2024-03-15" }));
-    const undated = JSON.stringify(pending());
-    let extractedWritten = false;
-    let manifestGetsAfterExtract = 0;
-    const written: Manifest[] = [];
-    const bucket = {
-      get: vi.fn(async (key: string) => {
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          const body = (() => {
-            if (!extractedWritten) return dated;
-            manifestGetsAfterExtract += 1;
-            // 1: unpaid ownership re-check after extract writes.
-            // 2: sourceDateForReadyDraft — this is the date the attempt holds.
-            // Later gets (markFailed) return an undated pending so a re-read
-            // would drop the field; the hoisted value must still land.
-            return manifestGetsAfterExtract > 2 ? undated : dated;
-          })();
-          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-        }
-        return null;
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          written.push(JSON.parse(String(value)));
-        }
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
-
+    const { bucket, readings, state } = await seeded({ source_date: "2024-03-15" });
+    // 1: unpaid ownership re-check after extract writes.
+    // 2: sourceDateForReadyDraft — this is the date the attempt holds.
+    // Later reads (markFailed) see an undated reading, so a re-read would drop
+    // the field; the hoisted value must still land.
+    const { spy } = interceptReadsAfterExtract(state, (nth, found) =>
+      nth > 2 && found ? { ...found, manifest: { ...found.manifest, source_date: undefined } } : found,
+    );
     const services: Services = {
       fetch: vi.fn<typeof fetch>(),
       lookup: PUBLIC_LOOKUP,
@@ -294,40 +254,19 @@ describe("processReading — source_date is resolved before paid stages", () => 
     ).resolves.toBeUndefined();
 
     consoleErr.mockRestore();
-    expect(extractedWritten).toBe(true);
-    const failed = written.find((manifest) => manifest.status === "failed");
-    expect(failed?.source_date).toBe("2024-03-15");
+    spy.mockRestore();
+    expect(state.extractedWritten).toBe(true);
+    expect(await readings.manifest("rd_TEST")).toMatchObject({ status: "failed", source_date: "2024-03-15" });
   });
 
-  it("a post-extract prior-manifest read throw proceeds undated without marking failed", async () => {
-    const body = JSON.stringify(pending({ source_date: "2024-03-15" }));
-    let extractedWritten = false;
-    let manifestGetsAfterExtract = 0;
-    const written: Manifest[] = [];
-    const bucket = {
-      get: vi.fn(async (key: string) => {
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          if (extractedWritten) {
-            manifestGetsAfterExtract += 1;
-            // 1: unpaid ownership re-check after extract writes.
-            // 2: sourceDateForReadyDraft → sourceDateFromPrior, hoisted before leases/paid stages.
-            if (manifestGetsAfterExtract === 2) throw new Error("R2 hiccup");
-          }
-          return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-        }
-        return null;
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        if (typeof key === "string" && key.endsWith("/extracted.md")) extractedWritten = true;
-        if (typeof key === "string" && key.endsWith("/manifest.json")) {
-          written.push(JSON.parse(String(value)));
-        }
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
-
+  it("a post-extract prior read throw proceeds undated without marking failed", async () => {
+    const { bucket, readings, state } = await seeded({ source_date: "2024-03-15" });
+    // 1: unpaid ownership re-check after extract writes.
+    // 2: sourceDateForReadyDraft → sourceDateFromPrior, hoisted before leases/paid stages.
+    const { spy, reads } = interceptReadsAfterExtract(state, (nth, found) => {
+      if (nth === 2) throw new Error("database hiccup");
+      return found;
+    });
     const fetchFn = vi.fn<typeof fetch>();
     const services: Services = {
       fetch: fetchFn,
@@ -341,11 +280,12 @@ describe("processReading — source_date is resolved before paid stages", () => 
       processReading(markdownJob(), envWith(bucket), services, founderTenant()),
     ).rejects.toThrow("defer_paid_work");
 
-    expect(extractedWritten).toBe(true);
-    expect(manifestGetsAfterExtract).toBeGreaterThan(1);
+    spy.mockRestore();
+    expect(state.extractedWritten).toBe(true);
+    expect(reads()).toBeGreaterThan(1);
     expect(fetchFn).not.toHaveBeenCalled();
-    expect(written.some((manifest) => manifest.status === "failed")).toBe(false);
-    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/R2 hiccup/);
+    expect((await readings.manifest("rd_TEST"))?.status).toBe("pending");
+    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/database hiccup/);
     consoleErr.mockRestore();
   });
 });

@@ -106,7 +106,7 @@ async function runAttempt(
     // diagnostics. Content a prior crashed delivery of this attempt captured
     // is swept: nothing references it.
     if ((await io.readManifest()) === null) {
-      await io.discardCapturedContent();
+      await io.discardUnreferencedContent();
       await releaseReadingSlot(env, tenantId, opId);
       // A purged target cannot finish processing. Retire the attempt and
       // recover leftover capacity, retrying any unconfirmed cleanup.
@@ -126,7 +126,7 @@ async function runAttempt(
     }
     await writeAttemptSafe(io, attempt);
     if (!(await readingCanWriteAttemptArtifacts(io, args))) {
-      await io.discardCapturedContent();
+      await io.discardUnreferencedContent();
       await releaseReadingSlot(env, tenantId, opId);
       await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;
@@ -163,7 +163,7 @@ async function runAttempt(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(io, args))) {
-      await io.discardCapturedContent();
+      await io.discardUnreferencedContent();
       await releaseReadingSlot(env, tenantId, opId);
       await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;
@@ -641,7 +641,7 @@ export async function markDeadLettered(
   // No row: the reading was purged. Nothing may be recreated for it; sweep
   // what this attempt captured and let the slot go.
   if (confirmedAbsent) {
-    await io.discardCapturedContent().catch((e) => console.error(e));
+    await io.discardUnreferencedContent().catch((e) => console.error(e));
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
@@ -681,7 +681,7 @@ async function markFailed(
   // purge, so it falls through and the commit below decides under the lock.
   const purged = await io.readManifest().then((current) => current === null, () => false);
   if (purged) {
-    await io.discardCapturedContent().catch((err) => console.error(err));
+    await io.discardUnreferencedContent().catch((err) => console.error(err));
     await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
     return;
   }
@@ -720,21 +720,12 @@ async function markFailed(
   // resubmit resolves failed ownership by reprocessing this same reading id.
   try {
     await io.writer.fail(args, manifest, { allowLastAttempt: true, now: services.now(), jobState });
-    await discardUnreferencedContent(io, args);
+    // Kept only while the reading points at it: a published reading kept its
+    // revision, and a never-published one serves this attempt's bytes.
+    await io.discardUnreferencedContent();
   } catch (err) {
     console.error(err);
   }
-}
-
-// Content this attempt captured is kept only while the reading points at it:
-// a never-published reading serves its latest attempt's bytes. Otherwise (a
-// published reading kept its revision, or another attempt owns the reading)
-// nothing references it.
-async function discardUnreferencedContent(io: AttemptIo, args: ProcessReadingArgs): Promise<void> {
-  const captured = io.capturedContent();
-  if (!captured) return;
-  const current = await io.store.contentKeys(args.id);
-  if (current?.rawKey !== captured.rawKey) await io.discardCapturedContent();
 }
 
 /** Ready-draft publication date: a fresh extract is authoritative; the prior
@@ -884,7 +875,7 @@ async function publishReady(
   if (!out.committed) {
     // Purged, or another attempt owns the reading: nothing references what
     // this one captured.
-    await io.discardCapturedContent().catch((err) => console.error(err));
+    await io.discardUnreferencedContent().catch((err) => console.error(err));
     return out;
   }
   if (eligibleBefore && (await eligible())) return out;

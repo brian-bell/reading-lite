@@ -3,6 +3,7 @@ import { processReading } from "../../../src/process-reading";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
+import { memoryBucket, NODE_HYPERDRIVE, nodeReadingsFor } from "../../helpers/node-readings";
 import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
 
 function args() {
@@ -15,42 +16,27 @@ function args() {
   };
 }
 
-function pendingManifestJson(): string {
+// The state the consumer finds: intake committed a pending reading.
+async function seedPending() {
   const a = args();
-  return JSON.stringify({
-    id: a.id,
-    url: a.url,
-    url_hash: a.urlHash,
-    status: "pending",
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: a.createdAt,
-    updated_at: a.createdAt,
-  });
-}
-
-function workingBucket() {
-  const store = new Map<string, string>([
-    [`${args().keyPrefix}/manifest.json`, pendingManifestJson()],
-  ]);
-  return {
-    store,
-    bucket: {
-      get: vi.fn(async (key: string) => {
-        const body = store.get(key);
-        if (body === undefined) return null;
-        return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        store.set(key, String(value));
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket,
-  };
+  const bucket = memoryBucket();
+  const readings = nodeReadingsFor(founderTenant(), bucket);
+  await readings.seed(
+    {
+      id: a.id,
+      url: a.url,
+      url_hash: a.urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: a.createdAt,
+      updated_at: a.createdAt,
+    },
+    { keyPrefix: a.keyPrefix },
+  );
+  return { bucket, readings };
 }
 
 function statusPlane(result: { status: string } | null | "throw"): D1Database {
@@ -67,13 +53,10 @@ function statusPlane(result: { status: string } | null | "throw"): D1Database {
   } as unknown as D1Database;
 }
 
-function envWith(bucket: R2Bucket, controlPlane?: D1Database): Env {
+function envWith(bucket: R2Bucket, controlPlane: D1Database): Env {
   return {
     READINGS_BUCKET: bucket,
-    READINGS_INDEX: {
-      upsert: vi.fn(),
-      query: vi.fn(),
-    } as unknown as VectorizeIndex,
+    HYPERDRIVE: NODE_HYPERDRIVE,
     READER_API_TOKEN: "x",
     ANTHROPIC_API_KEY: "x",
     OPENAI_API_KEY: "x",
@@ -82,7 +65,7 @@ function envWith(bucket: R2Bucket, controlPlane?: D1Database): Env {
     FETCH_MAX_BYTES: "10485760",
     CORS_ALLOWED_ORIGINS: "",
     PENDING_TTL_SECONDS: "300",
-    ...(controlPlane ? { CONTROL_PLANE: controlPlane } : {}),
+    CONTROL_PLANE: controlPlane,
   } as unknown as Env;
 }
 
@@ -95,19 +78,10 @@ function services(fetchFn: typeof fetch): Services {
   };
 }
 
-function lastManifest(bucket: R2Bucket): { status: string } | null {
-  const puts = (bucket.put as ReturnType<typeof vi.fn>).mock.calls;
-  const manifestPut = puts
-    .filter(([key]) => typeof key === "string" && key.endsWith("/manifest.json"))
-    .at(-1);
-  if (!manifestPut) return null;
-  return JSON.parse(String(manifestPut[1])) as { status: string };
-}
-
 describe("processReading — tenant deletion visibility fence", () => {
   it("retries when the initial tenant-status lookup throws", async () => {
     const fetchFn = vi.fn<typeof fetch>();
-    const { bucket } = workingBucket();
+    const { bucket, readings } = await seedPending();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
@@ -124,36 +98,25 @@ describe("processReading — tenant deletion visibility fence", () => {
     expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/D1 hiccup/);
     consoleErr.mockRestore();
     expect(fetchFn).not.toHaveBeenCalled();
-    expect(lastManifest(bucket)).toBeNull();
+    // Not failed: the queue retry can still do the work.
+    expect((await readings.manifest("rd_TEST"))?.status).toBe("pending");
   });
 
-  it("skips spend when the tenant is confirmed deleting", async () => {
+  it.each([
+    { name: "the tenant is confirmed deleting", row: { status: "deleting" } },
+    { name: "the user row is confirmed missing", row: null },
+  ])("skips spend and writes nothing when $name", async ({ row }) => {
     const fetchFn = vi.fn<typeof fetch>();
-    const { bucket, store } = workingBucket();
+    const { bucket, readings } = await seedPending();
+    const before = await readings.manifest("rd_TEST");
 
     await expect(
-      processReading(
-        args(),
-        envWith(bucket, statusPlane({ status: "deleting" })),
-        services(fetchFn),
-        founderTenant(),
-      ),
+      processReading(args(), envWith(bucket, statusPlane(row)), services(fetchFn), founderTenant()),
     ).resolves.toBeUndefined();
 
     expect(fetchFn).not.toHaveBeenCalled();
-    expect(lastManifest(bucket)).toBeNull();
-    expect(JSON.parse(store.get(`${args().keyPrefix}/manifest.json`)!).status).toBe("pending");
-  });
-
-  it("skips spend when the user row is confirmed missing", async () => {
-    const fetchFn = vi.fn<typeof fetch>();
-    const { bucket } = workingBucket();
-
-    await expect(
-      processReading(args(), envWith(bucket, statusPlane(null)), services(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
-
-    expect(fetchFn).not.toHaveBeenCalled();
-    expect(lastManifest(bucket)).toBeNull();
+    expect(await readings.manifest("rd_TEST")).toEqual(before);
+    expect(await readings.writer.listAttempts("rd_TEST")).toEqual([]);
+    expect((await bucket.list()).objects).toEqual([]);
   });
 });

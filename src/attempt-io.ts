@@ -90,12 +90,19 @@ export class AttemptIo {
     return this.rawKey === null ? null : { rawKey: this.rawKey, extractedKey: this.extractedKey };
   }
 
-  // An attempt that lost its reading (purged, or taken over) deletes what it
-  // captured. Nothing references these keys: only a publish would have.
-  async discardCapturedContent(): Promise<void> {
-    await this.content.deletePrefix(
-      `${this.args.keyPrefix}/${REVISIONS_PREFIX}${resolveAttemptId(this.args)}`,
-    );
+  // An attempt that lost its reading (purged, taken over, or failed beside a
+  // published revision) deletes what it captured, because nothing references
+  // it. The check is here, not at the call sites, because getting it wrong
+  // destroys published content: a redelivered message for an attempt that
+  // already published reaches the same "this attempt may not write" exits, and
+  // its revision prefix is the live content. A never-published reading also
+  // serves its latest attempt's bytes. So: sweep only when the reading is gone
+  // or points somewhere else.
+  async discardUnreferencedContent(): Promise<void> {
+    const prefix = `${this.args.keyPrefix}/${REVISIONS_PREFIX}${resolveAttemptId(this.args)}/`;
+    const current = await this.store.contentKeys(this.args.id);
+    if (current?.rawKey.startsWith(prefix)) return;
+    await this.content.deletePrefix(prefix);
   }
 
   private async recordContent(): Promise<void> {
