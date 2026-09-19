@@ -266,7 +266,13 @@ export async function tearDownAccount(
       "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
       tenantId,
     );
-    if (left && left.remaining > 0) return { kind: "rows_remain", remaining: left.remaining };
+    // Fail closed, like the prefix verdict above. `count(*)` always returns a
+    // row, so a missing one means the seam is broken rather than that the
+    // tenant is clean — and this is the one question teardown must not guess
+    // at, because the delete it gates is irreversible. Throwing leaves every
+    // row in place for the next tick, which is what the caller expects.
+    if (!left) throw new Error(`account_teardown could not count readings for ${tenantId}`);
+    if (left.remaining > 0) return { kind: "rows_remain", remaining: left.remaining };
     let rowsDeleted = 0;
     for (const statement of teardownStatements(tenantId, addresses)) {
       rowsDeleted += (await tx.run(statement.sql, ...statement.params)).changes;

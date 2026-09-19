@@ -430,12 +430,22 @@ async function fanOutWith(
         // prefix, tells "never wiped" from "already wiped".
         if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (stored.completedAtMs !== null) {
-        // Finished. Reopen only if objects turned up under the prefix after the
-        // fact; otherwise hand the tenant to control-plane teardown (S4). Once
-        // that succeeds this tenant leaves `listDeletingUsers` and is never
+        // Finished. Reopen if anything the wipe owns turned up after the fact —
+        // objects under the prefix, or reading rows a writer committed past the
+        // fence. Rows have to count on their own: teardown refuses while any
+        // stand (`rows_remain`), and if only objects reopened the wipe, a
+        // tenant with a clean prefix and one stray row would be handed to
+        // teardown, refused, and handed back on every tick forever, with
+        // nothing in the system able to delete that row.
+        //
+        // Otherwise hand the tenant to control-plane teardown (S4). Once that
+        // succeeds this tenant leaves `listDeletingUsers` and is never
         // enumerated again (finding F10). Teardown is deliberately not run
-        // while leftover objects are reopening the wipe.
-        if (!(await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env))) {
+        // while leftovers are reopening the wipe.
+        const leftover =
+          (await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env)) ||
+          (await tenantHasReadingRows(db, tenantId));
+        if (!leftover) {
           await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
           continue;
         }
@@ -530,9 +540,12 @@ async function runAccountWipeJob(
   const maxObjectPages = deps.maxObjectPages ?? ACCOUNT_WIPE_DEFAULT_OBJECT_PAGES;
 
   const stored = await readWipeProgress(db, tenantId);
+  // Same question fan-out asks, and for the same reason: a finished wipe with
+  // rows or objects left is a wipe to reopen, not one to report complete.
   const leftover =
     stored !== null && stored.completedAtMs !== null
-      ? await prefixHasObjects(env.READINGS_BUCKET, keyRoot)
+      ? (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) ||
+        (await tenantHasReadingRows(db, tenantId))
       : false;
   const resuming = wipeNeedsResume(stored, leftover);
   const force = envelope.force || stored?.force === true;
@@ -548,7 +561,8 @@ async function runAccountWipeJob(
     progress = emptyWipeProgress(now(), force);
   } else if (stored.completedAtMs !== null) {
     if (!leftover) {
-      // Already wiped and nothing came back. Report the stored outcome and
+      // Already wiped and neither rows nor objects came back. Report the
+      // stored outcome and
       // leave the completion record untouched: it is evidence now, not a
       // resume point, and rewriting it would move `completed_at`.
       return { kind: "complete", rows_deleted: 0, objects_deleted: stored.objectsDeleted };
@@ -672,15 +686,18 @@ async function runAccountWipeJob(
   }
 
   // Completion has to mean the tenant's rows are gone, not that a DELETE
-  // reported a count. The sweep above committed; this asks the table. A row
-  // that appears between the two is a writer that got past the fence later
-  // than any sweep can cover, so the delivery fails and retries rather than
-  // recording a completion teardown would then hard-delete the account on.
+  // reported a count. The sweep above committed; this asks the table, and does
+  // it in the same transaction as the terminal CAS so that a row committed
+  // between the two cannot still produce a completion record. A row that
+  // appears at all is a writer that got past the fence later than any sweep
+  // can cover, so the delivery fails and retries rather than recording a
+  // completion teardown would then hard-delete the account on.
   const completedAtMs = now();
-  const remaining = await countTenantReadings(sql, tenantId);
-  if (remaining > 0) throw new AccountWipeRowsRemainingError(tenantId, remaining);
-
-  const done = await writer.complete(progress, completedAtMs, false);
+  const done = await sql.transaction(async (tx) => {
+    const remaining = await countTenantReadings(tx, tenantId);
+    if (remaining > 0) throw new AccountWipeRowsRemainingError(tenantId, remaining);
+    return writer.complete(progress, completedAtMs, false, fromSql(tx));
+  });
   return { kind: "complete", rows_deleted: rowsDeleted, objects_deleted: done.objectsDeleted };
 }
 
@@ -749,6 +766,22 @@ export async function handleAccountWipeDeadLetter(msg: {
   } finally {
     msg.ack();
   }
+}
+
+/**
+ * Reading rows the tenant still owns, as a yes/no.
+ *
+ * Fail-closed: an answer we could not read counts as "yes". Both callers use
+ * it to decide whether a finished wipe comes back for another pass, and
+ * another pass is idempotent, where wrongly concluding "nothing left" hands
+ * the tenant to a teardown that will refuse it forever.
+ */
+async function tenantHasReadingRows(db: ControlPlaneDb, tenantId: TenantId): Promise<boolean> {
+  const row = await db.first<{ remaining: number }>(
+    "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
+    tenantId,
+  );
+  return !row || row.remaining > 0;
 }
 
 async function prefixHasObjects(bucket: R2Bucket, keyRoot: string): Promise<boolean> {

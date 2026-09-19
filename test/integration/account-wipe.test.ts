@@ -704,6 +704,30 @@ describe("account teardown from cron fan-out (195 S4)", () => {
   // A wipe redelivered after teardown must not recreate a progress row for an
   // account that is gone: it would sit unfinished forever, enumerated by
   // nothing.
+  // A writer that got past the fence can leave a reading row without leaving
+  // an object — its bytes were swept with the prefix, or it never wrote any.
+  // Teardown refuses such a tenant (`rows_remain`) and nothing else deletes
+  // the row, so if only objects reopened the wipe this tenant would be handed
+  // to teardown, refused, and handed back on every tick forever.
+  it("reopens the wipe for a leftover row even when the prefix is clean", async () => {
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    await seedProgress({ phase: "done", completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
+    // A row with no objects under the tenant root.
+    await testReadingsFor(otherTenant()).seedListItems([listItem(ID_B)]);
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+
+    await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS });
+
+    // Reopened rather than torn down: the record is live again and a delivery
+    // is queued to clear the row.
+    expect(queued).toHaveLength(1);
+    const reopened = await readProgress();
+    expect(reopened).toMatchObject({ phase: "rows", completedAtMs: null, firstCompletedAtMs: NOW_MS });
+
+    expect((await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps())).kind).toBe("complete");
+    expect(await readingIds()).toEqual([]);
+  });
+
   it("refuses to recreate a progress row for a torn-down tenant", async () => {
     await completedWipe();
     await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS + 1 });
