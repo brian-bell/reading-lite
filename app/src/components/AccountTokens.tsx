@@ -7,7 +7,9 @@ import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
   datetimeLocalValue,
+  nextUsableTokenExpiryMs,
   TOKEN_EXPIRY_ERRORS,
+  TOKEN_LIMIT,
   TOKEN_LIMIT_WARNING,
   TOKEN_MAX_TTL_MS,
   TOKEN_NAME_MAX,
@@ -17,6 +19,7 @@ import {
   tokensQueryKey,
   tokenStatus,
   tokenTimes,
+  usableTokenCount,
   withRevokedTokens,
   type TokenCreateBody,
   type TokenCreateOutcome,
@@ -67,6 +70,10 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
   const tokensKey = tokensQueryKey(identity?.user_id ?? "");
   const [revokedIds, setRevokedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [confirming, setConfirming] = useState<{ token: TokenListItem; opener: HTMLElement } | null>(null);
+  // The tokens query never goes stale. A cached `usable` flag stays true after
+  // expires_at_ms, so re-evaluate the cap from wall clock and tick when the
+  // next one expires — including after navigating away and back.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -95,7 +102,29 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
   }, [settled, revokedIds]);
 
   const listed = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
-  const shown = listed ? withRevokedTokens(listed, revokedIds, Date.now()) : undefined;
+  const shown = listed ? withRevokedTokens(listed, revokedIds, nowMs) : undefined;
+  const usable = shown ? usableTokenCount(shown) : 0;
+  const atLimit = usable >= TOKEN_LIMIT;
+  const nextExpiryMs = shown ? nextUsableTokenExpiryMs(shown) : undefined;
+  useEffect(() => {
+    if (nextExpiryMs == null) return;
+    // Browsers store setTimeout delays as a signed 32-bit int; a 90-day token
+    // would overflow and fire immediately. Tick at the clamp and reschedule.
+    const delay = Math.min(2_147_483_647, Math.max(0, nextExpiryMs - Date.now()));
+    const timer = window.setTimeout(() => setNowMs(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [nextExpiryMs, nowMs]);
+
+  // Reaching the limit while the list is up (a 409's reread) disables the
+  // form, and a browser drops focus from a control that becomes disabled:
+  // keep it in the section, on the heading just above the warning. A page
+  // that loads already at the limit leaves focus where the load put it.
+  const loaded = shown !== undefined;
+  const wasLoaded = useRef(false);
+  useEffect(() => {
+    if (atLimit && wasLoaded.current && document.activeElement === document.body) headingRef.current?.focus();
+    if (loaded) wasLoaded.current = true;
+  }, [atLimit, loaded]);
   // A 401 is the shell's page, so it is not repeated here.
   const failure = revoke.error == null || isUnauthorized(revoke.error) ? undefined : failureOf(revoke.error);
   const busy = revoke.isPending;
@@ -113,6 +142,11 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
         API tokens
       </h2>
       {view.kind === "loading" ? <LoadingRegion /> : null}
+      {atLimit ? (
+        <p className="session-cap-warning" role="status">
+          {TOKEN_LIMIT_WARNING}
+        </p>
+      ) : null}
       {failure ? (
         <InlineNotice
           message={
@@ -174,11 +208,21 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
           revealed={revealed}
           onDismiss={() => {
             onDismiss();
-            (nameRef.current ?? headingRef.current)?.focus();
+            // The name field, unless the form is gone or locked at the limit.
+            const name = nameRef.current;
+            (name && !name.disabled ? name : headingRef.current)?.focus();
           }}
         />
       ) : null}
-      {shown ? <CreateTokenForm onRetry={onRetry} onCreated={onReveal} nameRef={nameRef} /> : null}
+      {shown ? (
+        <CreateTokenForm
+          onRetry={onRetry}
+          onCreated={onReveal}
+          nameRef={nameRef}
+          usable={usable}
+          atLimit={atLimit}
+        />
+      ) : null}
       {confirming ? (
         <ConfirmDialog
           title="Revoke this API token?"
@@ -264,16 +308,22 @@ function isExpiryProblem(error: FieldError): error is ExpiryProblem {
 /**
  * Name and scopes, as the SPA's create form (`onCreateToken`): every scope
  * starts selected, and a blank name or no scope is refused before any
- * request. A created token's value goes to `onCreated`.
+ * request. A created token's value goes to `onCreated`. At the token limit
+ * every control is disabled, as the SPA's are, and the section says why.
  */
 function CreateTokenForm({
   onRetry,
   onCreated,
   nameRef,
+  usable,
+  atLimit,
 }: {
   onRetry: () => void;
   onCreated: (token: RevealedToken) => void;
   nameRef: RefObject<HTMLInputElement | null>;
+  /** Usable tokens in the list, which a 409's message is about. */
+  usable: number;
+  atLimit: boolean;
 }) {
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
@@ -305,6 +355,9 @@ function CreateTokenForm({
         queryClient.setQueryData<TokensResult>(tokensKey, readRefusedBy(result));
         return;
       }
+      // At the limit by the backend's count: read the list, whose count then
+      // shows the section's warning and disables the form.
+      if (result.kind === "limit") await queryClient.invalidateQueries({ queryKey: tokensKey });
       if (result.kind !== "created") return;
       setName("");
       setScopes(new Set(TOKEN_SCOPES));
@@ -321,11 +374,21 @@ function CreateTokenForm({
     if (fieldError !== null && isExpiryProblem(fieldError)) expiryRef.current?.focus();
   }, [fieldError]);
 
+  // A 409's message is about the count it was refused at: once the list's
+  // count moves (the reread after it, or a revoke), the section's own
+  // warning, or its absence, says where the account stands.
+  const { reset: resetCreate } = create;
+  const refusedAtLimit = create.data?.kind === "limit";
+  useEffect(() => {
+    if (refusedAtLimit) resetCreate();
+    // Only a change in the count clears it, not the refusal arriving.
+  }, [usable]);
+
   const failure = create.error == null || isUnauthorized(create.error) ? undefined : failureOf(create.error);
   const outcome = create.data;
 
   function submit() {
-    if (create.isPending) return;
+    if (create.isPending || atLimit) return;
     const trimmed = name.trim();
     if (trimmed === "" || trimmed.length > TOKEN_NAME_MAX) {
       setFieldError("name");
@@ -384,7 +447,7 @@ function CreateTokenForm({
       {outcome?.kind === "step-up" ? (
         <StepUpNotice lead="Recent sign-in required. The token wasn't created." />
       ) : null}
-      {outcome?.kind === "limit" ? (
+      {outcome?.kind === "limit" && !atLimit ? (
         <p className="form-error" role="alert">
           {TOKEN_LIMIT_WARNING}
         </p>
@@ -417,6 +480,7 @@ function CreateTokenForm({
             type="text"
             maxLength={TOKEN_NAME_MAX}
             autoComplete="off"
+            disabled={atLimit}
             value={name}
             onChange={(event) => {
               setName(event.currentTarget.value);
@@ -433,6 +497,7 @@ function CreateTokenForm({
         </div>
         <fieldset
           className="token-scopes"
+          disabled={atLimit}
           aria-invalid={fieldError === "scopes" ? true : undefined}
           aria-describedby={fieldError === "scopes" ? `${id}-scopes-error` : undefined}
         >
@@ -464,6 +529,7 @@ function CreateTokenForm({
               ref={expiryRef}
               className="text-input"
               type="datetime-local"
+              disabled={atLimit}
               min={datetimeLocalValue(Date.now())}
               max={datetimeLocalValue(Date.now() + TOKEN_MAX_TTL_MS)}
               value={expiry}
@@ -475,7 +541,12 @@ function CreateTokenForm({
               aria-describedby={expiryError ? `${id}-expiry-error` : `${id}-expiry-hint`}
             />
             {canPick ? (
-              <button type="button" className="button" onClick={() => expiryRef.current?.showPicker()}>
+              <button
+                type="button"
+                className="button"
+                disabled={atLimit}
+                onClick={() => expiryRef.current?.showPicker()}
+              >
                 Choose date
               </button>
             ) : null}
@@ -491,7 +562,7 @@ function CreateTokenForm({
           )}
         </div>
         <div className="form-actions">
-          <button type="submit" className="button button-primary" disabled={create.isPending}>
+          <button type="submit" className="button button-primary" disabled={atLimit || create.isPending}>
             Create token
           </button>
         </div>

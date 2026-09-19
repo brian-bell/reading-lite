@@ -28,6 +28,7 @@ import {
   serveSettingsInBrowser,
   serveTokensInBrowser,
   E2E_TOKEN_SECRET,
+  E2E_TOKENS,
   serveSourceInBrowser,
 } from "./test";
 
@@ -612,6 +613,26 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await tokens.getByRole("textbox", { name: "Name" }).fill("CI");
       await tokens.getByRole("button", { name: "Create token" }).click();
       await expect(tokens.getByRole("link", { name: "Request a fresh sign-in link" })).toBeVisible();
+    },
+  },
+  {
+    name: "account-token-limit",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page, {
+        json: {
+          tokens: Array.from({ length: 10 }, (_, i) => ({ ...E2E_TOKENS.tokens[0]!, id: `tok_${i}`, name: `Job ${i + 1}` })),
+        },
+      });
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const tokens = page.getByRole("region", { name: "API tokens" });
+      await expect(tokens.getByRole("status").filter({ hasText: "10-token limit" })).toBeVisible();
+      await expect(tokens.getByRole("button", { name: "Create token" })).toBeDisabled();
     },
   },
   {

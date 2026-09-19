@@ -8,6 +8,8 @@ import {
   tokenRevokeFromResponse,
   tokensFromResponse,
   tokenStatus,
+  nextUsableTokenExpiryMs,
+  usableTokenCount,
   withRevokedTokens,
   type TokenListItem,
 } from "../src/tokens";
@@ -18,7 +20,7 @@ const token = (over: Partial<TokenListItem> = {}): TokenListItem => ({
   format: "standard",
   scopes: ["readings:read"],
   created_at_ms: 1,
-  expires_at_ms: 2,
+  expires_at_ms: 4_102_444_800_000,
   revoked_at_ms: null,
   last_used_at_ms: null,
   usable: true,
@@ -131,6 +133,44 @@ describe("withRevokedTokens", () => {
       ["tok_b", true, null],
       ["tok_c", false, 3],
     ]);
+  });
+
+  it("treats a cached usable token as expired once now reaches expires_at_ms", () => {
+    const listed = { tokens: [token({ expires_at_ms: 10 })] };
+
+    expect(withRevokedTokens(listed, new Set(), 9).tokens[0]).toMatchObject({ usable: true, revoked_at_ms: null });
+    expect(withRevokedTokens(listed, new Set(), 10).tokens[0]).toMatchObject({ usable: false, revoked_at_ms: null });
+  });
+});
+
+describe("usableTokenCount", () => {
+  it("counts only tokens that still work", () => {
+    const listed = {
+      tokens: [token(), token({ usable: false }), token({ usable: false, revoked_at_ms: 1 }), token()],
+    };
+    expect(usableTokenCount(listed)).toBe(2);
+  });
+
+  it("drops a token from the cap once the overlay marks it expired", () => {
+    const listed = {
+      tokens: [token({ expires_at_ms: 10 }), token({ id: "tok_2", expires_at_ms: 20 })],
+    };
+    expect(usableTokenCount(withRevokedTokens(listed, new Set(), 10))).toBe(1);
+  });
+});
+
+describe("nextUsableTokenExpiryMs", () => {
+  it("is the soonest expiry among tokens that still count toward the cap", () => {
+    const listed = {
+      tokens: [
+        token({ id: "tok_later", expires_at_ms: 30 }),
+        token({ id: "tok_soon", expires_at_ms: 10 }),
+        token({ id: "tok_gone", usable: false, expires_at_ms: 5 }),
+      ],
+    };
+    expect(nextUsableTokenExpiryMs(listed)).toBe(10);
+    expect(nextUsableTokenExpiryMs(withRevokedTokens(listed, new Set(), 10))).toBe(30);
+    expect(nextUsableTokenExpiryMs({ tokens: [] })).toBeUndefined();
   });
 });
 

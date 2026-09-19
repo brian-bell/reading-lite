@@ -16,6 +16,9 @@
 // Expiry (#340.7.5): the browser's own datetime-local field, read in its time
 // zone, becomes the expires_at_ms sent; a past one is refused in the form.
 //
+// Limit (#340.7.6): a 409 rereads the list, whose ten usable tokens lock the
+// form; focus the browser drops from the disabled Create stays in the section.
+//
 // Step-up (#340.7.4): a create refused for a stale sign-in links to sign-in
 // with the email locked, in a real browser. The return to the account page is
 // test/sign-in-flow.test.tsx's.
@@ -25,6 +28,7 @@ import { harnessBaseUrl } from "../harness";
 import { SESSION_EMAIL } from "../sessions";
 import {
   E2E_TOKEN_SECRET,
+  E2E_TOKENS,
   serveAccountDeleteInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -187,6 +191,34 @@ test("sends the expiry a reader picks in the browser's own date field", async ({
   await expect(tokens.getByText("Expiry must be in the future.")).toBeVisible();
   await expect(expiry).toBeFocused();
   expect(creates).toHaveLength(1);
+});
+
+test("keeps focus in the section when a 409 locks the create form", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  await serveSessionsInBrowser(page);
+  // Another tab took the last slot: nine here, ten once the 409 is reread.
+  let usable = 9;
+  await page.route("**/api/auth/tokens**", async (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      usable = 10;
+      await route.fulfill({ status: 409, json: { error: "too many active tokens" } });
+      return;
+    }
+    const tokens = Array.from({ length: usable }, (_, i) => ({ ...E2E_TOKENS.tokens[0]!, id: `tok_${i}`, name: `Job ${i}` }));
+    await route.fulfill({ status: 200, json: { tokens } });
+  });
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+
+  await tokens.getByRole("textbox", { name: "Name" }).fill("CI");
+  await tokens.getByRole("button", { name: "Create token" }).focus();
+  await page.keyboard.press("Enter");
+
+  await expect(tokens.getByRole("status").filter({ hasText: "10-token limit" })).toBeVisible();
+  await expect(tokens.getByRole("button", { name: "Create token" })).toBeDisabled();
+  await expect(tokens.getByRole("heading", { name: "API tokens" })).toBeFocused();
 });
 
 test("follows a token create's step-up link to sign-in with the email locked", async ({ page, baseURL }) => {
