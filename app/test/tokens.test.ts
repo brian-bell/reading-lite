@@ -54,6 +54,7 @@ describe("tokenCreateFromResponse", () => {
       { kind: "created", id: "tok_1", name: "CI", secret: "tok_1.abc" },
     ],
     [400, { error: "invalid body" }, { kind: "invalid" }],
+    [409, { error: "too many active tokens" }, { kind: "limit" }],
     [403, { error: "recent authentication required" }, { kind: "step-up" }],
     [403, { error: "forbidden" }, { kind: "forbidden" }],
     [412, { error: "expected tenant mismatch", acting_tenant: "usr_b" }, { kind: "account-changed", actingTenant: "usr_b" }],
@@ -63,7 +64,6 @@ describe("tokenCreateFromResponse", () => {
 
   it.each([
     [401, { error: "unauthorized" }, "unauthorized"],
-    [409, { error: "too many active tokens" }, "too many active tokens"],
     [503, null, "failed to create token"],
     [201, { id: "tok_1" }, "token create returned an unexpected body"],
   ])("throws %i", (status, body, message) => {

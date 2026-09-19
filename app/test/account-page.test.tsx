@@ -928,6 +928,58 @@ describe("API tokens on the account page", () => {
     expect(screen.queryByText("tok_new.secret")).not.toBeInTheDocument();
   });
 
+  it("keeps the value on screen when the list read after the create fails", async () => {
+    let reads = 0;
+    mockApi({
+      onListTokens: () => {
+        reads += 1;
+        return reads === 1
+          ? Response.json({ tokens: [] })
+          : Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByText("control plane unavailable")).toBeVisible();
+    expect(within(section()).getByText("tok_new.secret")).toBeVisible();
+    expect(within(section()).getByRole("button", { name: "Copy" })).toBeVisible();
+  });
+
+  it("keeps the value through a page state and shows it again after Retry", async () => {
+    mockApi({ onDelete: () => Response.json({ error: "control plane unavailable" }, { status: 503 }) });
+    await openAccount();
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+    await within(section()).findByText("tok_new.secret");
+
+    // A failed session revoke replaces the whole page with its server error.
+    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Something went wrong on our side."),
+    );
+    expect(screen.queryByText("tok_new.secret")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await within(section()).findByText("tok_new.secret")).toBeVisible();
+  });
+
+  it("says the account is at the limit when a create answers 409", async () => {
+    mockApi({ onCreateToken: () => Response.json({ error: "too many active tokens" }, { status: 409 }) });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByRole("alert")).toHaveTextContent(
+      "This account is at the 10-token limit. Revoke a token before creating another.",
+    );
+    expect(within(section()).queryByText(/went wrong/)).not.toBeInTheDocument();
+  });
+
   it("copies the value to the clipboard", async () => {
     mockApi();
     await openAccount();

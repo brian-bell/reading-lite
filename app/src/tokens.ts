@@ -59,6 +59,12 @@ export interface TokenCreateBody {
   scopes: TokenScope[];
 }
 
+/** Usable tokens an account may hold (MAX_ACTIVE_TOKENS in the control plane). */
+export const TOKEN_LIMIT = 10;
+
+/** The SPA's words for an account at the limit. */
+export const TOKEN_LIMIT_WARNING = `This account is at the ${TOKEN_LIMIT}-token limit. Revoke a token before creating another.`;
+
 /** The backend's longest token name (PostAuthTokensBodySchema). */
 export const TOKEN_NAME_MAX = 80;
 
@@ -72,7 +78,8 @@ const RECENT_AUTH_REQUIRED = "recent authentication required";
 
 /**
  * What POST /api/auth/tokens answered. `created` carries the token's secret,
- * the one time the backend returns it. 400 is `invalid`; a 403 that names
+ * the one time the backend returns it. 400 is `invalid`, and 409 is `limit`
+ * (the account already has TOKEN_LIMIT usable tokens); a 403 that names
  * recent authentication is `step-up` (a sign-in from the last ten minutes is
  * needed), and any other 403 or a 412 refuses the account. A 401 and anything
  * else throw.
@@ -81,6 +88,7 @@ export type TokenCreateOutcome =
   | { kind: "created"; id: string; name: string; secret: string }
   | { kind: "invalid" }
   | { kind: "step-up" }
+  | { kind: "limit" }
   | AccountRefusal;
 
 export function tokenCreateFromResponse(status: number, body: unknown): TokenCreateOutcome {
@@ -90,6 +98,7 @@ export function tokenCreateFromResponse(status: number, body: unknown): TokenCre
     return { kind: "created", id: parsed.data.id, name: parsed.data.name, secret: parsed.data.token };
   }
   if (status === 400) return { kind: "invalid" };
+  if (status === 409) return { kind: "limit" };
   if (status === 403) return messageOf(body) === RECENT_AUTH_REQUIRED ? { kind: "step-up" } : { kind: "forbidden" };
   if (status === 412) return { kind: "account-changed", actingTenant: actingTenantOf(body) };
   throw new ApiError(status, messageOf(body) ?? "failed to create token");
