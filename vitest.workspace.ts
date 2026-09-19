@@ -41,10 +41,23 @@ export default [
   defineWorkersProject({
     test: {
       name: "workers",
-      // Lease acquire/presentLease add DO round-trips on every processReading.
-      // GitHub Actions workers-pool regularly exceeds Vitest's 5s default
-      // (two-tenant save-to-ready and MCP import+poll timed out at 5000ms).
-      testTimeout: 20_000,
+      // Lease acquire/presentLease add DO round-trips on every processReading,
+      // and since the control plane moved to PostgreSQL (ADR 0005) every
+      // request in this pool also makes real database round-trips. GitHub
+      // Actions runs the result about 10x slower than a developer machine:
+      // comparing the same 347 tests locally against run 35476189924, the
+      // median is 9.9x and the tail reaches 30x, while `transform` and
+      // `collect` — the pure-CPU phases — are only ~2x apart. The gap is I/O
+      // against the service-container database, not the runner's CPU.
+      //
+      // That first pushed this past Vitest's 5s default (two-tenant
+      // save-to-ready and MCP import+poll timed out at 5000ms), and then past
+      // 20s: on that run 14 tests took over 15s and the slowest to pass took
+      // 21.5s, so the ceiling was inside the normal spread rather than above
+      // it. 60s sits clear of the observed tail. Raise it again only for a
+      // measured shift like this one; a single test that suddenly needs more
+      // is a bug in the test, not a slow runner.
+      testTimeout: 60_000,
       include: ["test/integration/**/*.test.ts", ...WORKERS_RUNTIME_UNIT_TESTS],
       exclude: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
@@ -80,7 +93,8 @@ export default [
   defineWorkersProject({
     test: {
       name: "workers-do-storage",
-      testTimeout: 20_000,
+      // Same runner arithmetic as the `workers` project above.
+      testTimeout: 60_000,
       include: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
