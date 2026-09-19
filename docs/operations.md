@@ -1991,7 +1991,10 @@ without another paid judgement. `--limit` caps judgement and healing actions.
 Provider errors and lost CAS races leave the reading ready and never blind-write
 over newer state. The price estimate uses a four-UTF-8-bytes-per-token
 approximation, a 256-output-token assumption, and the dated price table printed
-by the command; it is a planning estimate, not a bill. Execute mode prints the
+by the command; it is a planning estimate, not a bill. Execute mode admits
+each judgement against the spend caps, billed to `--billing-tenant` (default a
+real `--tenant`; see [paid spend](paid-provider-spend.md#synchronous-operator-clients)),
+and prints the
 tokens the provider reported for each judgement and a run total (`Usage: …`),
 counted as soon as the call returns so a judgement that is billed but then
 fails to write still appears. The reasoning column is the reasoning share of
@@ -2420,6 +2423,17 @@ for a manual reconcile. Anthropic pre-submit and OpenAI `activating` sidecars
 also require manual reconcile. If a batch fails, the write phase releases the
 eager by-url claim only when the pointer still exactly matches the failed target.
 
+**Spend.** `--execute` admits each provider batch against the payer's and the
+global daily spend caps before the first pending sidecar, and settles it from
+the downloaded results. The payer defaults to a real `--tenant`;
+`--tenant global` needs `--billing-tenant usr_…`. A resume settles against the
+tenant its sidecar recorded and refuses a different `--billing-tenant`. The
+authority follows `--bucket`, so a bucket with no mapped environment cannot
+execute. A budget denial writes no sidecar; rerun once the cap allows it. A
+resume after the operation record's retention (admission day plus one UTC day)
+logs the maximum as permanently held and still writes its results. See
+[operator provider batches](paid-provider-spend.md#operator-provider-batches).
+
 Claim, release, and crash-resume semantics are specified in
 `scripts/corpus-lib/batch/activation-phase.ts`, `write-phase.ts`,
 `prepare-fresh-markdown.ts`, and `openai-reconcile.ts`; `run.ts`'s header
@@ -2460,7 +2474,8 @@ npx tsx .agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts 
 ```
 
 Plans by default (prints the readings × candidates matrix and a conservative
-cost ceiling). `--execute` is the only paid path. Production is GET-only: no
+cost ceiling). `--execute` is the only paid path and requires `--env` and
+`--billing-tenant`, whose spend caps admit each request. Production is GET-only: no
 `/reprocess`, no manifest/vector/list writes, no wrangler or production config
 change. Anthropic effort is optional; omit `--anthropic-effort` to run Sonnet
 once with no effort field. See `.agents/skills/compare-summary-effort/SKILL.md`.
@@ -2569,6 +2584,9 @@ writes require `--execute --acknowledge-guard-version <current row version>`
 and production also requires `--confirm-production`. See
 [the paid-work operator runbook](paid-provider-spend.md#operator-policy-and-accounting)
 for setup, exact commands, version/retry semantics, and accounting limitations.
+Paid operator commands bill `--billing-tenant` through the `OperatorSpend`
+entrypoint; the [dispatch inventory](paid-provider-spend.md#operator-dispatch-inventory)
+lists each one and its payer.
 
 ## Orphaned in-flight processing leases
 
@@ -2587,7 +2605,8 @@ Find the attempt and rows with `system status --env … --tenant usr_… --detai
 lease records carry `attemptId`, `tenantId` on global rows, and
 `heartbeatOverdueMs`. The command plans by default; `--execute` re-observes and
 submits the expected expiries through the service-binding-only
-`OperatorLeaseClear` entrypoint. The read-only `OperatorStatus` never mutates.
+`OperatorLeaseClear` entrypoint. The read-only `OperatorStatus` never mutates,
+and `OperatorSpend` reaches only the four spend verbs.
 Observations and responses contain no dispatch fences or reading content.
 
 Both automatic and operator recovery use the global guard's `recover_leases`

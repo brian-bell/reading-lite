@@ -2,8 +2,9 @@
 
 Issue #200 covers source embedding, OpenAI/Anthropic summarization, and summary
 embedding in the hosted reading consumer, plus hosted relationship judgements.
-Operator clients are covered below: [synchronous](#synchronous-operator-clients)
-and [provider batches](#operator-provider-batches).
+Operator clients are covered below: the [inventory](#operator-dispatch-inventory),
+[synchronous](#synchronous-operator-clients) clients, and
+[provider batches](#operator-provider-batches).
 
 `src/control-plane/paid-dispatch.ts` wraps each provider adapter's fetch inside
 its HTTP retry loop. It bounds the complete request, then asks the existing
@@ -76,8 +77,9 @@ and dispatch authorization. Denial defers the same reading attempt through
 The plan-first `system policy` and read-only `system status` operator commands
 inspect policy/accounting, set budgets, and disable/re-enable paid work (see below).
 `scripts/ops-lib/policy-contract.ts` enforces the command safety contract. Policy
-changes never release uncertain charges. Operator-tool enforcement and broader
-recovery workflows are deferred.
+changes never release uncertain charges. Paid operator commands are admitted by
+the same authority ([inventory](#operator-dispatch-inventory)); broader recovery
+workflows are deferred.
 
 The single-authority RPC verbs are `reserve_spend`, `mark_spend_dispatched`,
 `release_spend`, and `settle_spend`. Requests carry tenant id, operation id, and
@@ -151,6 +153,24 @@ in-flight provider calls. Re-enabling allows normal retries of deferred attempts
 it does not enqueue recovery jobs. Neither action releases leases, refunds
 uncertain charges, changes reading attempts, nor resets daily accounting.
 
+### Operator dispatch inventory
+
+Every operator path that pays a provider, and who is charged. "Per attempt"
+means one operation per provider HTTP attempt, as in hosted processing. The
+payer's daily cap and the global cap both admit each operation. Plan mode
+reaches none of these providers.
+
+| Path | Provider request | Operation | Payer and authority |
+| --- | --- | --- | --- |
+| `corpus backfill-vectors` | Synchronous OpenAI embeddings | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--bucket` |
+| `corpus refresh-connections`, `corpus refresh-tensions` | Synchronous OpenAI Responses or Anthropic Messages judgements | Per attempt | As above |
+| `corpus ingest`, `corpus recover --batch` | OpenAI Batch or Anthropic Message Batches summaries, plus synchronous OpenAI embeddings | One per provider batch; embeddings per attempt | As above; a resume pays with the tenant its sidecar recorded |
+| `eval summarizer`, compare-summary-effort script | Synchronous OpenAI or Anthropic summaries | Per attempt | `--billing-tenant` required; authority from `--env` |
+| `corpus recover` without `--batch`, `reading submit`, `import …`, `staging smoke`, `extract agent` | None from the operator: the hosted consumer calls the provider | Hosted, per attempt | The bearer token's tenant; `--billing-tenant` does not apply |
+
+`--tenant global` is a storage selector, not a payer, so it always needs
+`--billing-tenant` to execute paid work.
+
 ### Synchronous operator clients
 
 `corpus backfill-vectors`, `corpus refresh-connections`, `corpus refresh-tensions`,
@@ -158,7 +178,8 @@ uncertain charges, changes reading attempts, nor resets daily accounting.
 fetch in the same `createPaidFetch`, inside the client's retry loop, in their
 `--execute` branch only. A plan opens no spend session. The verbs travel over
 the `OperatorSpend` service binding (`scripts/system-lib/spend.ts`, one
-`getPlatformProxy` session per run), which accepts exactly `reserve_spend`,
+`getPlatformProxy` session per run through the dedicated
+`scripts/system-lib/wrangler-spend.toml`), which accepts exactly `reserve_spend`,
 `mark_spend_dispatched`, `release_spend`, and `settle_spend` and forwards them
 to the same GlobalUsageGuard singleton. A budget denial, an unreachable
 authority or undeployed entrypoint, and a request the price catalog cannot

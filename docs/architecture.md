@@ -283,10 +283,15 @@ constructors with hosted processing. `run.ts` documents phase ordering;
 `prepare.ts`, `extract-phase.ts`, and `activation-phase.ts` handle recovery;
 `prepare-fresh-markdown.ts` and `run-fresh-markdown.ts` handle new Markdown.
 The sidecar records provider/model and progress so resume does not create a
-second batch. See [batch operations](operations.md#provider-batch-apis).
+second batch, and `spend.ts` bounds, admits, and settles each batch as one
+spend operation that the sidecar carries. See
+[batch operations](operations.md#provider-batch-apis).
 
 `OperatorStatus` exposes private accounting and quota inspection through a
-service binding, with no public admin route. `system policy` uses the tested
+service binding, with no public admin route. `OperatorSpend` is the paid
+operator commands' equivalent for the four spend verbs, reached through
+`scripts/system-lib/wrangler-spend.toml` and wrapped by
+`ops-lib/operator-spend.ts`. `system policy` uses the tested
 `ops-lib/policy-contract.ts`. `staging prepare-context` builds local fixture
 packets; it does not apply them remotely. Their guides are
 [paid spend](paid-provider-spend.md) and [context preparation](staging-context-copy.md).
