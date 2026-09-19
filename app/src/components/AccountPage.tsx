@@ -98,6 +98,9 @@ export function AccountPage() {
   const settingsQuery = useQuery(settingsQueryOptions(queryClient, identity));
   const tokensQuery = useQuery(tokensQueryOptions(queryClient, identity));
   const [confirmAll, setConfirmAll] = useState(false);
+  // This device's session, while the reader is asked whether to sign it out.
+  const [confirmHere, setConfirmHere] = useState<SessionListItem | null>(null);
+  const hereRef = useRef<HTMLButtonElement>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
   const deleteRef = useRef<HTMLButtonElement>(null);
@@ -203,6 +206,7 @@ export function AccountPage() {
   useEffect(() => {
     if (!replacedByState) return;
     setConfirmAll(false);
+    setConfirmHere(null);
     setConfirmDelete(false);
   }, [replacedByState]);
   const busy = revoke.isPending || remove.isPending;
@@ -284,7 +288,13 @@ export function AccountPage() {
         onConfirmAll: () => setConfirmAll(true),
         onCloseConfirm: () => setConfirmAll(false),
         onRevokeAll: () => send({ kind: "all" }),
-        onRevoke: (session) => send({ kind: "one", session }),
+        // Revoking this device signs the reader out, so it is confirmed first,
+        // as revoke-all is; another session goes in one click.
+        onRevoke: (session) => (session.current ? setConfirmHere(session) : send({ kind: "one", session })),
+        confirmHere,
+        onCloseConfirmHere: () => setConfirmHere(null),
+        onRevokeHere: (session) => send({ kind: "one", session }),
+        hereRef,
         onRetry: retry,
         revokeAllRef,
         revokingId,
@@ -420,6 +430,10 @@ function pageFor(
     onCloseConfirm: () => void;
     onRevokeAll: () => void;
     onRevoke: (session: SessionListItem) => void;
+    confirmHere: SessionListItem | null;
+    onCloseConfirmHere: () => void;
+    onRevokeHere: (session: SessionListItem) => void;
+    hereRef: RefObject<HTMLButtonElement | null>;
     onRetry: () => void;
     revokeAllRef: RefObject<HTMLButtonElement | null>;
     /** The session whose revoke is in flight, whose button says so. */
@@ -475,6 +489,7 @@ function pageFor(
                 busy={actions.busy}
                 revokingId={actions.revokingId}
                 onRevoke={actions.onRevoke}
+                hereRef={actions.hereRef}
               />
             ) : null}
           </section>
@@ -489,6 +504,19 @@ function pageFor(
               returnFocus={() => actions.revokeAllRef.current}
             >
               <p>This signs you out everywhere.</p>
+            </ConfirmDialog>
+          ) : null}
+          {actions.confirmHere ? (
+            <ConfirmDialog
+              title="Sign out of this browser?"
+              confirmLabel="Revoke this device"
+              onConfirm={() => {
+                if (actions.confirmHere) actions.onRevokeHere(actions.confirmHere);
+              }}
+              onClose={actions.onCloseConfirmHere}
+              returnFocus={() => actions.hereRef.current}
+            >
+              <p>This browser's session ends now. You'll need a new sign-in link to come back.</p>
             </ConfirmDialog>
           ) : null}
         </div>
@@ -800,11 +828,14 @@ function SessionsList({
   busy,
   revokingId,
   onRevoke,
+  hereRef,
 }: {
   listed: SessionsList;
   busy: boolean;
   revokingId: string | undefined;
   onRevoke: (session: SessionListItem) => void;
+  /** This device's Revoke button, where focus returns from its dialog. */
+  hereRef: RefObject<HTMLButtonElement | null>;
 }) {
   return (
     <>
@@ -829,7 +860,13 @@ function SessionsList({
               </p>
             </div>
             {session.usable ? (
-              <button type="button" className="button" onClick={() => onRevoke(session)} disabled={busy}>
+              <button
+                type="button"
+                className="button"
+                ref={session.current ? hereRef : undefined}
+                onClick={() => onRevoke(session)}
+                disabled={busy}
+              >
                 {session.id === revokingId ? "Revoking…" : session.current ? "Revoke this device" : "Revoke"}
               </button>
             ) : null}
