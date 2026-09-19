@@ -846,12 +846,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          description: Owner pointer still initializing
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InitializingConflict"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
@@ -1235,14 +1229,12 @@ components:
             error: auth misconfigured
     IntakeConflict:
       description: |
-        Owner still initializing, active attempt in progress, or markdown
-        content unavailable for the requested operation.
+        Active attempt in progress, or markdown content unavailable for the
+        requested operation.
       content:
         application/json:
           schema:
-            oneOf:
-              - $ref: "#/components/schemas/InitializingConflict"
-              - $ref: "#/components/schemas/ErrorMessage"
+            $ref: "#/components/schemas/ErrorMessage"
     Unavailable:
       description: |
         Queue unbound, claim/activation contention, or queue send failure
@@ -1298,20 +1290,6 @@ components:
           const: expected tenant mismatch
         acting_tenant:
           type: string
-
-    InitializingConflict:
-      type: object
-      additionalProperties: false
-      required: [error, id, poll]
-      properties:
-        error:
-          type: string
-          const: reading owner is still initializing
-        id:
-          type: string
-        poll:
-          type: string
-          description: Relative poll path, e.g. `/api/readings/{id}`
 
     UnavailableError:
       type: object
