@@ -65,10 +65,11 @@ matches. List, detail, content, lookup, and `q` text search work with
 [seeded local data](docs/operations.md#seeding-local-r2). Integration tests cover
 the processing pipeline with queue, Vectorize, and provider fakes.
 
-The `web/` SPA above is being replaced by a TanStack Start frontend in
-[app/](app/README.md), on its own Worker at `next.readinglite.ai`; it runs
-locally on `:5174` against the same backend. `web/` stays live until that
-rollout's observation period ends (see [ADR
+The `web/` SPA above has been replaced by a TanStack Start frontend in
+[app/](app/README.md), on its own Worker, which serves `readinglite.ai`,
+`readinglite.app`, and the staging hosts; it runs locally on `:5174` against
+the same backend. `web/` stays deployed to Pages as the rollback target until
+that rollout's observation period ends (see [ADR
 0003](docs/decisions/0003-frontend-worker-topology.md)). Run both together
 locally with the
 [reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) skill.

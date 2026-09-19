@@ -678,9 +678,12 @@ an existing SPA build.
 Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
 bootstrap of `dev-local-token`).
 
-The SPA is served from Cloudflare Pages on the same hostname as the Worker;
-Worker routes are scoped to `/api/*`, `/health`, and `/mcp*` so Pages handles every other
-path. Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
+The legacy SPA is served from Cloudflare Pages on the same hostname as the
+Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
+`app/` frontend Worker's `host/*` route handles every other path on the
+staging and production hosts, ahead of Pages, which stays bound as the
+rollback target (see [New-frontend preview hosts](#new-frontend-preview-hosts)).
+Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
 does not 404. Staging canonical host is `https://staging.readinglite.ai`;
 `https://staging.readinglite.app` also serves. The staging SPA is the Pages
 **preview** deployment created by `ops deploy web --branch staging` on project
@@ -922,8 +925,8 @@ intentional:
 
 ### New-frontend preview hosts
 
-The TanStack Start frontend in `app/` is served ahead of cutover on one preview
-host per environment ([ADR 0003](decisions/0003-frontend-worker-topology.md)):
+The TanStack Start frontend in `app/` was first served ahead of cutover on one
+preview host per environment ([ADR 0003](decisions/0003-frontend-worker-topology.md)):
 `next.readinglite.ai` (production) and `next-staging.readinglite.ai`
 (staging). `next-staging` is a first-level subdomain on purpose, so the zone's
 Universal SSL certificate covers it. Each host needs a proxied DNS record

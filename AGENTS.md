@@ -1,6 +1,8 @@
 # AGENTS.md - reading-lite
 
-Personal reading service on Cloudflare Workers with a React SPA in `web/`.
+Personal reading service on Cloudflare Workers. The TanStack Start frontend in
+`app/` serves the public hosts; the legacy React SPA in `web/` stays deployed to
+Pages as the rollback target.
 Intake claims a URL, writes a pending R2 manifest, and enqueues `READING_JOBS`.
 The consumer extracts, embeds, finds related readings, summarizes, and publishes
 the terminal manifest, list row, and vector.
@@ -203,7 +205,7 @@ Reddit and full YouTube recovery use local import skills; X threads older than
 seven days fail the recent-search path. See [source recovery](docs/operations.md#sources-that-need-a-local-skill).
 
 Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
-(to its `next.readinglite.ai` preview host) under a shared
+(`readinglite.ai`, `readinglite.app`, and `next.readinglite.ai`) under a shared
 release lock with stale-commit checks. Worker deployment applies pending D1
 migrations before upload. The workflow checks unfinished wipes and wipe queues;
 a direct `ops deploy worker` invocation does not run that separate wipe check.
