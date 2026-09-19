@@ -14,6 +14,10 @@ import {
   type CorpusBackfillVectorsDeps,
 } from "../../../scripts/ops-lib/commands/corpus-backfill-vectors";
 import {
+  corpusBackfillSourceDateCommand,
+  type CorpusBackfillSourceDateDeps,
+} from "../../../scripts/ops-lib/commands/corpus-backfill-source-date";
+import {
   corpusNormalizeTagsCommand,
   type CorpusNormalizeTagsDeps,
 } from "../../../scripts/ops-lib/commands/corpus-normalize-tags";
@@ -767,6 +771,169 @@ describe("ops corpus backfill-vectors", () => {
   it("rejects --local because Vectorize has no local store", async () => {
     const { deps } = makeDeps();
     await expect(corpusBackfillVectorsCommand.run(["--tenant", "global", "--local"], deps)).rejects.toThrow(UsageError);
+  });
+});
+
+describe("ops corpus backfill-source-date", () => {
+  const NOW = Date.parse("2026-09-18T12:00:00.000Z");
+  const DATED_HTML = `<!doctype html>
+<html><head><title>Hello World</title>
+<meta property="article:published_time" content="2024-03-15T08:00:00-05:00">
+</head>
+<body>
+<main><article>
+<h1>Hello World</h1>
+<p>This is the first paragraph. It contains enough words to be picked up by readability as the main content body.</p>
+<p>This is a second paragraph with more substantial body text so that the article passes the readability threshold for length.</p>
+</article></main>
+</body></html>`;
+  const UNDATED_HTML = `<!doctype html>
+<html><head><title>Hello World</title></head>
+<body>
+<main><article>
+<h1>Hello World</h1>
+<p>This is the first paragraph. It contains enough words to be picked up by readability as the main content body.</p>
+<p>This is a second paragraph with more substantial body text so that the article passes the readability threshold for length.</p>
+</article></main>
+</body></html>`;
+
+  const ITEM: ListItem = {
+    id: "rd_r", url: "https://example.com/a", status: "ready",
+    created_at: "2026-08-01T00:00:00.000Z", key_prefix: "readings/rd_r",
+  };
+
+  const BASE_MANIFEST = {
+    id: "rd_r", url: "https://example.com/a", url_hash: "a".repeat(64), status: "ready",
+    created_at: "2026-08-01T00:00:00.000Z", updated_at: "2026-08-01T00:00:00.000Z",
+    content_type: "text/html", content_status: "captured",
+    content_bytes: 10, content_sha256: "b".repeat(64),
+    source_type: "url" as const,
+    title: "Hello World",
+  };
+
+  function makeDeps(opts: {
+    items?: ListItem[];
+    manifest?: Record<string, unknown> | null;
+    rawHtml?: string | null;
+  } = {}) {
+    const { io: cio, lines } = io();
+    const calls = { rawReads: 0, puts: [] as Record<string, unknown>[], indexWrites: 0 };
+    const deps: CorpusBackfillSourceDateDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async () => opts.items ?? [ITEM],
+        readManifest: async () => opts.manifest === undefined ? { ...BASE_MANIFEST } : opts.manifest,
+        readRawHtml: async () => {
+          calls.rawReads++;
+          return opts.rawHtml === undefined ? DATED_HTML : opts.rawHtml;
+        },
+        putManifest: async (_kp, body) => {
+          calls.puts.push(body as Record<string, unknown>);
+        },
+        writeListIndex: async () => {
+          calls.indexWrites++;
+        },
+      },
+      now: () => NOW,
+    };
+    return { deps, lines, calls };
+  }
+
+  it("plan mode reports would-gain and writes nothing", async () => {
+    const { deps, lines, calls } = makeDeps();
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(0);
+    expect(calls.rawReads).toBe(1);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    const text = lines.join("\n");
+    expect(text).toContain("Would gain a date: 1");
+    expect(text).toContain("Already dated: 0");
+    expect(text).toContain("Skipped (markdown): 0");
+    expect(text).toContain("No raw HTML: 0");
+    expect(text).toContain("PLAN — nothing changed");
+  });
+
+  it("skips markdown-imported readings without reading raw HTML", async () => {
+    const { deps, lines, calls } = makeDeps({
+      manifest: { ...BASE_MANIFEST, source_type: "markdown", content_type: "text/markdown" },
+    });
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global"], deps);
+    expect(code).toBe(0);
+    expect(calls.rawReads).toBe(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(lines.join("\n")).toContain("Skipped (markdown): 1");
+    expect(lines.join("\n")).toContain("Would gain a date: 0");
+  });
+
+  it("skips a reading that already has source_date and does not overwrite", async () => {
+    const { deps, lines, calls } = makeDeps({
+      manifest: { ...BASE_MANIFEST, source_date: "2020-01-01" },
+    });
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(0);
+    expect(calls.rawReads).toBe(0);
+    expect(calls.puts).toHaveLength(0);
+    expect(calls.indexWrites).toBe(0);
+    expect(lines.join("\n")).toContain("Already dated: 1");
+  });
+
+  it("--execute writes only source_date when stored HTML has a date", async () => {
+    const { deps, calls } = makeDeps();
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(0);
+    expect(calls.puts).toHaveLength(1);
+    expect(calls.puts[0]?.source_date).toBe("2024-03-15");
+    expect(calls.puts[0]?.title).toBe("Hello World");
+    expect(calls.puts[0]?.updated_at).toBe("2026-08-01T00:00:00.000Z");
+    expect(calls.indexWrites).toBe(1);
+  });
+
+  it("writes nothing when raw HTML is absent or unparseable", async () => {
+    const missing = makeDeps({ rawHtml: null });
+    expect(await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], missing.deps)).toBe(0);
+    expect(missing.calls.puts).toHaveLength(0);
+    expect(missing.calls.indexWrites).toBe(0);
+    expect(missing.lines.join("\n")).toContain("No raw HTML: 1");
+    expect(missing.lines.join("\n")).toContain("Would gain a date: 0");
+
+    const junk = makeDeps({ rawHtml: UNDATED_HTML });
+    expect(await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], junk.deps)).toBe(0);
+    expect(junk.calls.puts).toHaveLength(0);
+    expect(junk.lines.join("\n")).toContain("Unparseable: 1");
+  });
+
+  it("fills only the selected tenant when ids overlap", async () => {
+    const tenant = "usr_11111111-1111-4111-8111-111111111111";
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const roots = [`u/${tenant}/`, `u/${other}/`];
+    const lists = new Map<string, ListItem[]>(roots.map((root) => [root, [structuredClone(ITEM)]]));
+    const manifests = new Map<string, Map<string, Record<string, unknown>>>(
+      roots.map((root) => [root, new Map([[ITEM.key_prefix, { ...BASE_MANIFEST }]])]),
+    );
+    const raw = new Map(roots.map((root) => [root, DATED_HTML]));
+    const { io: cio } = io();
+    const deps: CorpusBackfillSourceDateDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async (d) => lists.get(d.keyRoot)!,
+        readManifest: async (prefix, d) => manifests.get(d.keyRoot)!.get(prefix) ?? null,
+        readRawHtml: async (_prefix, d) => raw.get(d.keyRoot) ?? null,
+        putManifest: async (prefix, body, d) => {
+          manifests.get(d.keyRoot)!.set(prefix, body as typeof BASE_MANIFEST);
+        },
+        writeListIndex: async (items, d) => {
+          lists.set(d.keyRoot, items);
+        },
+      },
+      now: () => NOW,
+    };
+
+    expect(await corpusBackfillSourceDateCommand.run(["--tenant", tenant, "--execute"], deps)).toBe(0);
+    expect(manifests.get(roots[0])!.get(ITEM.key_prefix)?.source_date).toBe("2024-03-15");
+    expect(lists.get(roots[0])?.[0]?.source_date).toBe("2024-03-15");
+    expect(manifests.get(roots[1])!.get(ITEM.key_prefix)?.source_date).toBeUndefined();
+    expect(lists.get(roots[1])?.[0]?.source_date).toBeUndefined();
   });
 });
 
