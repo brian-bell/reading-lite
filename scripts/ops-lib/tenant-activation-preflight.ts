@@ -15,7 +15,6 @@ export interface TenantDeployTarget {
   bucket: string;
   jurisdiction: string;
   index: string;
-  databaseId: string;
 }
 export interface TenantActivationReadiness { ok: boolean; message: string }
 type Request = (path: string, body?: unknown) => Promise<unknown>;
@@ -28,10 +27,9 @@ const versionSchema = z.object({
   metadata: z.object({ created_on: timestamp }),
   resources: z.object({ bindings: z.array(z.object({ name: text, type: text }).passthrough()) }),
 });
-const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
 
 export async function inspectTenantActivation(
-  target: TenantDeployTarget, request: Request, nowMs: number,
+  target: TenantDeployTarget, request: Request,
 ): Promise<TenantActivationReadiness> {
   if (!target.enabled) return { ok: true, message: "tenant mode is not requested" };
   let reason: string;
@@ -54,9 +52,8 @@ export async function inspectTenantActivation(
     }
     const bucket = binding("READINGS_BUCKET", "r2_bucket");
     if (bucket.bucket_name !== target.bucket || (bucket.jurisdiction ?? "") !== target.jurisdiction ||
-        binding("READINGS_INDEX", "vectorize").index_name !== target.index ||
-        binding("CONTROL_PLANE", "d1").id !== target.databaseId) {
-      throw new Error("target R2, Vectorize, or D1 bindings differ from the active tenant-mode Worker");
+        binding("READINGS_INDEX", "vectorize").index_name !== target.index) {
+      throw new Error("target R2 or Vectorize bindings differ from the active tenant-mode Worker");
     }
     const r2 = z.object({ creation_date: timestamp }).parse(await request(`r2/buckets/${encodeURIComponent(target.bucket)}`));
     const vector = z.object({ created_on: timestamp }).parse(await request(`vectorize/v2/indexes/${encodeURIComponent(target.index)}`));
@@ -71,19 +68,12 @@ export async function inspectTenantActivation(
     reason = error instanceof z.ZodError ? "invalid or incomplete Cloudflare activation metadata" :
       error instanceof Error ? error.message : "activation inspection failed";
   }
-  let eligibility: string;
-  try {
-    const result = z.array(z.object({ success: z.literal(true), results: z.array(z.object({ id: text })) })).length(1).parse(
-      await request(`d1/database/${encodeURIComponent(target.databaseId)}/query`, {
-        sql: "SELECT id FROM users WHERE status = 'deleting' AND deleting_at_ms IS NOT NULL AND deleting_at_ms <= ? ORDER BY id",
-        params: [nowMs - GRACE_MS],
-      }),
-    );
-    const ids = result[0]!.results.map(row => row.id);
-    eligibility = `${ids.length} deletion-eligible tenants at activation: ${ids.join(", ") || "none"}`;
-  } catch {
-    eligibility = "deletion eligibility unavailable; inspect the target D1 users table before acknowledging activation";
-  }
+  // Deletion eligibility used to come from a D1 query here. The control plane
+  // is on PostgreSQL now (ADR 0005) and this preflight holds only Cloudflare
+  // API credentials, so the operator reads it themselves before acknowledging.
+  const eligibility =
+    "deletion eligibility not read here; check deleting tenants past their grace period " +
+    "in the target PostgreSQL control plane before acknowledging activation";
   return { ok: false, message: `${reason}; ${eligibility}` };
 }
 
@@ -98,14 +88,13 @@ export async function readTenantDeployTarget(env: DeployEnvName): Promise<Tenant
     if (found.length !== 1) throw new Error(`target ${name} binding is missing or ambiguous`);
     return found[0]!;
   };
-  if (!enabled) return { enabled, worker: config.name ?? "", accountId: "", bucket: "", jurisdiction: "", index: "", databaseId: "" };
+  if (!enabled) return { enabled, worker: config.name ?? "", accountId: "", bucket: "", jurisdiction: "", index: "" };
   const bucket = one(z.array(z.object({ binding: text, bucket_name: text, jurisdiction: z.string().optional() })).parse(config.r2_buckets), "READINGS_BUCKET");
   return {
     enabled, worker: text.parse(config.name),
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID || config.account_id || "",
     bucket: text.parse(bucket.bucket_name), jurisdiction: bucket.jurisdiction ?? "",
     index: text.parse(one(z.array(z.object({ binding: text, index_name: text })).parse(config.vectorize), "READINGS_INDEX").index_name),
-    databaseId: text.parse(one(z.array(z.object({ binding: text, database_id: text })).parse(config.d1_databases), "CONTROL_PLANE").database_id),
   };
 }
 
@@ -132,7 +121,7 @@ export async function validateTenantActivation(env: DeployEnvName): Promise<Tena
     const target = await readTenantDeployTarget(env);
     if (!target.enabled) return { ok: true, message: "tenant mode is not requested" };
     const { accountId, auth } = await resolveActivationAuth(target.accountId);
-    return await inspectTenantActivation(target, cloudflareActivationRequest(accountId, auth, target.jurisdiction), Date.now());
+    return await inspectTenantActivation(target, cloudflareActivationRequest(accountId, auth, target.jurisdiction));
   } catch (error) {
     return { ok: false, message: error instanceof z.ZodError ?
       "activation target is incomplete; check CLOUDFLARE_ACCOUNT_ID and target bindings; deletion eligibility unavailable" :

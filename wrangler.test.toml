@@ -54,12 +54,6 @@ AUTH_RATE_GLOBAL_MAX = "10000"
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-test"
 
-[[d1_databases]]
-binding = "CONTROL_PLANE"
-database_name = "reading-lite-control-test"
-database_id = "00000000-0000-0000-0000-000000000099"
-migrations_dir = "migrations"
-
 [[durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"

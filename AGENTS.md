@@ -43,7 +43,7 @@ is installed.
 npm ci
 cp .dev.vars.example .dev.vars   # first setup only
 docker compose up -d --wait postgres  # local/test Postgres :54329 (npm run dev starts it too)
-npm run dev                     # local Postgres + D1 setup, founder bootstrap, Worker :8787
+npm run dev                     # local Postgres setup, founder bootstrap, Worker :8787
 npm run seed:local              # seed the accepted-state fixture pack into local R2 and Postgres
 npm run ops -- db migrate       # plan PostgreSQL migrations (db/migrations/); --execute applies
 npm run fixtures:app            # regenerate app/'s browser-evidence fixture snapshot
@@ -103,7 +103,9 @@ run exits 1 with every test passing, or the run dies on an EPIPE. After
 switching Node versions in a tree whose `node_modules` was installed under
 another one, run `npm rebuild better-sqlite3` — otherwise the Node-pool suites
 that open a SQLite fixture fail on the native module's ABI, not on their
-assertions.
+assertions. Those fixtures are the last of D1: the runtime, its tests and
+`npm run dev` no longer bind or migrate a D1 database, and `migrations/`
+describes only the live control plane that reading-lite-gh348 imports from.
 
 ## Where to work
 
@@ -114,7 +116,7 @@ assertions.
 | Intake and processing | `src/intake/`, `src/process-reading.ts`, `src/attempt-ownership.ts` |
 | Publication and purge | `src/modules/stores/postgres/reading-writer.ts`, `src/attempt-io.ts`, `src/reading-purge.ts` |
 | Tenant auth, quotas, leases, spend | `src/control-plane/`, `src/modules/paid-pricing/` |
-| Account deletion | `src/account-wipe.ts`, control-plane `wipe-progress.ts`, `vector-ledger.ts`, `account-teardown.ts` |
+| Account deletion | `src/account-wipe.ts`, control-plane `wipe-progress.ts`, `account-teardown.ts` |
 | Digests | `src/digest-pipeline.ts`, control-plane digest ledger, `src/modules/digest-*` |
 | Provider and extraction adapters | `src/modules/{extractor,embeddings,summarizer,openai-summarizer,anthropic,http-retry}/` |
 | Reading storage ([ADR 0005](docs/decisions/0005-postgresql-storage.md)) | `src/modules/db/`, `src/modules/stores/postgres/`, `db/migrations/`, `scripts/pg-lib/` |
@@ -268,9 +270,12 @@ seven days fail the recent-search path. See [source recovery](docs/operations.md
 
 Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
 (`readinglite.ai`, `readinglite.app`, and `next.readinglite.ai`) under a shared
-release lock with stale-commit checks. Worker deployment applies pending D1
-migrations before upload. The workflow checks unfinished wipes and wipe queues;
-a direct `ops deploy worker` invocation does not run that separate wipe check.
+release lock with stale-commit checks. Worker deployment no longer deploys
+schema: apply PostgreSQL migrations with `ops db migrate` against the target
+database first (`ops deploy worker` folds that in at reading-lite-gh347.4). The
+workflow checks unfinished wipes and wipe queues, reading `wipe_progress` from
+PostgreSQL over the `PRODUCTION_DATABASE_URL` secret; a direct
+`ops deploy worker` invocation does not run that separate wipe check.
 See [deploying](docs/operations.md#deploying) for secrets, guards, and exceptions.
 
 `.cursor/environment.json` installs both npm projects and runs

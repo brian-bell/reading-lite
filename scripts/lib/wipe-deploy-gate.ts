@@ -1,10 +1,15 @@
 // Read-only production rollout speed bump. Unfinished records remain blockers
 // even when stale: cron resumes them. Completed records and users.status alone
 // do not indicate a running wipe. This snapshot does not lock out cron/new jobs.
+//
+// The record count comes from the control plane's PostgreSQL database over a
+// direct connection string (ADR 0005); the queue backlogs still come from the
+// Cloudflare API, which is where queues live.
 import { z } from "zod";
+import { sqlFromConnectionString } from "../../src/modules/db/sql";
 
 export const UNFINISHED_WIPES_SQL =
-  "SELECT count(*) AS unfinished FROM wipe_progress WHERE completed_at_ms IS NULL";
+  "SELECT count(*) AS unfinished FROM wipe_progress WHERE completed_at IS NULL";
 const queueNames = ["reading-lite-wipe", "reading-lite-wipe-dlq"] as const;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const envelope = z.object({
@@ -19,30 +24,41 @@ const envelope = z.object({
 });
 const queueList = z.array(z.object({ queue_name: z.string(), queue_id: z.string().regex(/^[a-f0-9]{32}$/) }));
 
+/**
+ * How many wipes the control plane still owes, read over a direct connection.
+ *
+ * Read-only by construction: the count runs in a read-only transaction, so a
+ * gate that is handed a writable credential still cannot write with it.
+ */
+export async function countUnfinishedWipes(databaseUrl: string): Promise<number> {
+  const sql = sqlFromConnectionString(databaseUrl);
+  try {
+    const rows = await sql.transaction((tx) => tx.query(UNFINISHED_WIPES_SQL), { readOnly: true });
+    return count.parse(z.tuple([z.object({ unfinished: z.unknown() })]).parse(rows)[0].unfinished);
+  } finally {
+    await sql.end();
+  }
+}
+
 export async function checkWipeDeployGate(deps: {
   accountId: string;
   token: string;
-  databaseId: string;
+  unfinishedWipes: () => Promise<number>;
   fetch: typeof fetch;
 }): Promise<{ unfinished: number; queues: Record<string, number> }> {
-  if (!deps.accountId || !deps.token || !deps.databaseId) throw new Error("Missing Cloudflare wipe gate credentials/configuration");
+  if (!deps.accountId || !deps.token) throw new Error("Missing Cloudflare wipe gate credentials/configuration");
   const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(deps.accountId)}`;
-  async function request(path: string, sql?: string) {
+  async function request(path: string) {
     const response = await deps.fetch(`${base}${path}`, {
-      method: sql ? "POST" : "GET",
+      method: "GET",
       headers: { Authorization: `Bearer ${deps.token}`, "Content-Type": "application/json" },
-      ...(sql ? { body: JSON.stringify({ sql }) } : {}),
       signal: AbortSignal.timeout(30_000),
     });
     // Do not echo API response bodies, which may include tenant data.
-    if (!response.ok) throw new Error(`Wipe deploy gate ${path}: HTTP ${response.status}; verify D1/Queues read access`);
+    if (!response.ok) throw new Error(`Wipe deploy gate ${path}: HTTP ${response.status}; verify Queues read access`);
     return envelope.parse(await response.json());
   }
-  const d1 = await request(`/d1/database/${encodeURIComponent(deps.databaseId)}/query`, UNFINISHED_WIPES_SQL);
-  const [{ results: [{ unfinished }] }] = z.tuple([z.object({
-    success: z.literal(true),
-    results: z.tuple([z.object({ unfinished: count })]),
-  })]).parse(d1.result);
+  const unfinished = count.parse(await deps.unfinishedWipes());
   const found: z.infer<typeof queueList> = [];
   for (let page = 1; ; page++) {
     if (page > 100) throw new Error("Wipe deploy gate queue pagination exceeded 100 pages");

@@ -142,12 +142,6 @@ RETRY_MAX_DELAY_MS = "8000"
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite"
 
-[[d1_databases]]
-binding = "CONTROL_PLANE"
-database_name = "reading-lite-control-dev"
-database_id = "00000000-0000-0000-0000-000000000001"
-migrations_dir = "migrations"
-
 # PostgreSQL through Hyperdrive (ADR 0005). Locally Hyperdrive is a passthrough
 # to the docker-compose `postgres` service (`npm run dev` starts and migrates
 # it). No runtime path reads PostgreSQL until slice 1b. `ops deploy worker`
@@ -338,13 +332,6 @@ bucket_name = "reading-lite-staging"
 [[env.staging.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite-staging"
-
-# Replace database_id after `wrangler d1 create reading-lite-control-staging`.
-[[env.staging.d1_databases]]
-binding = "CONTROL_PLANE"
-database_name = "reading-lite-control-staging"
-database_id = "a29af3ca-280c-443e-9edd-7acec745698c"
-migrations_dir = "migrations"
 
 # Placeholder until #349 creates the staging config against the Neon rehearsal
 # branch. Create every Hyperdrive config with query caching DISABLED: cached
@@ -610,12 +597,6 @@ bucket_name = "reading-lite"
 [[env.production.vectorize]]
 binding = "READINGS_INDEX"
 index_name = "reading-lite"
-
-[[env.production.d1_databases]]
-binding = "CONTROL_PLANE"
-database_name = "reading-lite-control"
-database_id = "23c5298d-42b0-42fc-8a77-bef441ee712e"
-migrations_dir = "migrations"
 
 # Placeholder until #350 creates the production config against the Neon main
 # branch, with query caching DISABLED (ADR 0005).

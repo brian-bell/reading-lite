@@ -153,31 +153,3 @@ export async function withControlPlane<T>(
     await sql.end();
   }
 }
-
-// D1 has no interactive transactions, so `transaction` runs `work` on the same
-// handle. Only operator scripts still reach D1 (retired in 1c.5); the runtime
-// is on PostgreSQL.
-export function fromD1(d1: D1Database): ControlPlaneDb {
-  const db: ControlPlaneDb = {
-    async first<T>(sql: string, ...params: unknown[]) {
-      return (await d1.prepare(sql).bind(...params).first<T>()) ?? null;
-    },
-    async all<T>(sql: string, ...params: unknown[]) {
-      const result = await d1.prepare(sql).bind(...params).all<T>();
-      return result.results;
-    },
-    async batch(statements) {
-      if (statements.length === 0) return [];
-      const results = await d1.batch(
-        statements.map((statement) => d1.prepare(statement.sql).bind(...statement.params)),
-      );
-      return results.map((result) => ({ changes: result.meta.changes ?? 0 }));
-    },
-    async run(sql, ...params) {
-      const result = await d1.prepare(sql).bind(...params).run();
-      return { changes: result.meta.changes ?? 0 };
-    },
-    transaction: (work) => work(db),
-  };
-  return db;
-}
