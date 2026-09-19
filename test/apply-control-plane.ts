@@ -3,8 +3,35 @@ import { beforeEach } from "vitest";
 import { bootstrapFounder } from "../src/control-plane/bootstrap";
 import { parseAuthRootSecret } from "../src/control-plane/crypto";
 import { fromD1 } from "../src/control-plane/db";
-import { sqlFor } from "../src/modules/db/sql";
+import { sqlFor, sqlFromConnectionString } from "../src/modules/db/sql";
+import {
+  databaseOf,
+  fileDatabaseName,
+  quoteIdentifier,
+  templateDatabaseName,
+  withDatabase,
+} from "./helpers/file-database";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID } from "./helpers/file-tenants";
+
+// This file's own PostgreSQL database (see helpers/file-database.ts). The
+// local Hyperdrive proxy connects to whichever database the client names, so
+// the clone is reached by rewriting the binding's connection string.
+const boundConnection = env.HYPERDRIVE.connectionString;
+const baseDatabase = databaseOf(boundConnection);
+const fileDatabase = fileDatabaseName(baseDatabase, crypto.randomUUID());
+const admin = sqlFromConnectionString(withDatabase(boundConnection, "postgres"));
+try {
+  await admin.query(
+    `CREATE DATABASE ${quoteIdentifier(fileDatabase)} TEMPLATE ${quoteIdentifier(templateDatabaseName(baseDatabase))}`,
+  );
+} finally {
+  await admin.end();
+}
+env.HYPERDRIVE = {
+  ...env.HYPERDRIVE,
+  database: fileDatabase,
+  connectionString: withDatabase(boundConnection, fileDatabase),
+};
 
 await applyD1Migrations(env.CONTROL_PLANE, env.TEST_MIGRATIONS);
 await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
@@ -16,9 +43,10 @@ await bootstrapFounder(fromD1(env.CONTROL_PLANE), {
     secret: parseAuthRootSecret(env.AUTH_ROOT_SECRET),
     version: 1,
   },
-  // One founder per test file, so parallel files never share PostgreSQL rows
-  // (see helpers/file-tenants.ts). D1 is per-test storage, so the token id can
-  // stay fixed.
+  // One founder id per test file (see helpers/file-tenants.ts). It predates
+  // the per-file database above, which now keeps parallel files apart on its
+  // own, so these ids can go back to fixed ones. D1 is per-test storage, so
+  // the token id is already fixed.
   newUserId: () => FOUNDER_TENANT_ID,
   newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
 });

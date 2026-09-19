@@ -181,10 +181,15 @@ on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 integration tests inject `installQueueStub()` and `installVectorizeStub()`.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
 migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
-unreachable, and tests never connect to Neon. Every file shares that database
-and the pool does not roll it back, so the fixed founder and second tenant get
-per-file ids (`test/helpers/file-tenants.ts`) and are cleared before each test;
-store tests mint a tenant per test (`test/helpers/pg-fixtures.ts`). Seed and
+unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL
+back, so each workers-pool file gets its own database, cloned from a migrated
+template with `env.HYPERDRIVE` pointed at the clone
+(`test/helpers/file-database.ts`); pass `env` to the Worker rather than using
+`SELF`, which still sees the base database. The fixed founder and second tenant
+are cleared before each test; store tests mint a tenant per test
+(`test/helpers/pg-fixtures.ts`). Node-pool tests share the base database: wrap
+control-plane ones in `useRolledBackSql()` (`test/helpers/pg-rollback.ts`), which
+rolls each test back and turns nested transactions into savepoints. Seed and
 inspect reading state through `test/helpers/test-readings.ts` (workers) or
 `node-readings.ts` (Node pool); migration-runner tests create scratch databases.
 Do not drain a queue before asserting an active pending state.

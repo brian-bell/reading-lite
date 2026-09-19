@@ -13,6 +13,7 @@
 
 import pg from "pg";
 
+const OID_INT8 = 20;
 const OID_DATE = 1082;
 const OID_TIMESTAMPTZ = 1184;
 
@@ -21,9 +22,20 @@ const OID_TIMESTAMPTZ = 1184;
 // is strings: `source_date` is YYYY-MM-DD and every timestamp is ISO-8601 UTC
 // with milliseconds, matching services.now().
 const parseTimestamptz = pg.types.getTypeParser(OID_TIMESTAMPTZ) as (value: string) => Date;
+
+// pg returns int8 as a string because it can exceed a double. The domain's
+// bigints (microdollar ceilings, identity ids) are numbers and nowhere near
+// 2^53, so parse them, and refuse a value that would silently lose precision.
+export function parseInt8(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new RangeError(`int8 value ${value} does not fit a JavaScript number`);
+  return parsed;
+}
+
 const types = {
   getTypeParser(oid: number, format?: string) {
     if (format !== "binary") {
+      if (oid === OID_INT8) return parseInt8;
       if (oid === OID_DATE) return (value: string) => value;
       if (oid === OID_TIMESTAMPTZ) return (value: string) => parseTimestamptz(value).toISOString();
     }
@@ -35,6 +47,9 @@ export type SqlRow = Record<string, unknown>;
 
 export interface SqlQuery {
   query<Row extends SqlRow = SqlRow>(text: string, values?: unknown[]): Promise<Row[]>;
+  // Runs a statement for its effect and returns how many rows it touched: the
+  // compare-and-set answer, where zero means a sibling won.
+  execute(text: string, values?: unknown[]): Promise<number>;
 }
 
 export interface TransactionOptions {
@@ -57,13 +72,19 @@ export function sqlFromConnectionString(connectionString: string): Sql {
     const result = await client.query(text, values);
     return result.rows;
   };
+  const execute: SqlQuery["execute"] = async (text, values) => {
+    await connected();
+    const result = await client.query(text, values);
+    return result.rowCount ?? 0;
+  };
 
   return {
     query,
+    execute,
     async transaction(run, opts = {}) {
       await query(opts.readOnly ? "BEGIN READ ONLY" : "BEGIN");
       try {
-        const out = await run({ query });
+        const out = await run({ query, execute });
         await query("COMMIT");
         return out;
       } catch (error) {
@@ -134,6 +155,7 @@ export function sqlSession(open: () => Sql, opts: SqlSessionOptions = {}): Sql {
   return {
     query: <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) =>
       run((sql) => sql.query<Row>(text, values)),
+    execute: (text, values) => run((sql) => sql.execute(text, values)),
     transaction: (callback, txOpts) => run((sql) => sql.transaction(callback, txOpts)),
     async end() {
       await queue;
