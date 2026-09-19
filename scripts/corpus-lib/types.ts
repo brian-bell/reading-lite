@@ -9,6 +9,7 @@ export interface ListItem {
   updated_at?: string;
   key_prefix: string;
   title?: string;
+  source_date?: string;
   error?: { code?: string; stage?: string; message?: string };
   active_attempt?: { stage?: string; trigger?: string; status?: string };
   last_attempt?: { stage?: string; trigger?: string };

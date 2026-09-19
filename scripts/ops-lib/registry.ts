@@ -31,6 +31,7 @@ import { corpusRefreshNeighboursCommand } from "./commands/corpus-refresh-neighb
 import { corpusRefreshConnectionsCommand } from "./commands/corpus-refresh-connections";
 import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions";
 import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
+import { corpusBackfillSourceDateCommand } from "./commands/corpus-backfill-source-date";
 import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
 import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
@@ -85,6 +86,7 @@ export const defaultRegistry: Registry = {
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
     corpusBackfillVectorsCommand,
+    corpusBackfillSourceDateCommand,
     corpusNormalizeTagsCommand,
     corpusPurgeConnectionsCommand,
     corpusRebuildListCommand,

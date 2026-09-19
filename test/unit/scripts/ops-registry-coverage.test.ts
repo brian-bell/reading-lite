@@ -33,6 +33,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "refresh-connections",
     "refresh-tensions",
     "backfill-vectors",
+    "backfill-source-date",
     "normalize-tags",
     "purge-connections",
     "rebuild-list",
