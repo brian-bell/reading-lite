@@ -58,12 +58,15 @@ describe("PostgreSQL migration runner", () => {
     await client.end();
   });
 
-  it("refuses when an applied file changed, disappeared, or a pending one is older", async () => {
+  it("refuses when an applied file changed, was renamed, disappeared, or a pending one is older", async () => {
     const client = await freshDatabase();
     const applied = [file("0002", "second", "CREATE TABLE a (id int)")];
     await migrate(client, applied);
     await expect(migrate(client, [file("0002", "second", "CREATE TABLE a (id bigint)")])).rejects.toBeInstanceOf(
       MigrationDriftError,
+    );
+    await expect(migrate(client, [file("0002", "renamed", "CREATE TABLE a (id int)")])).rejects.toThrow(
+      /0002_second was renamed to 0002_renamed/,
     );
     await expect(migrate(client, [])).rejects.toBeInstanceOf(MigrationDriftError);
     await expect(migrate(client, [file("0001", "late", "SELECT 1"), ...applied])).rejects.toBeInstanceOf(
