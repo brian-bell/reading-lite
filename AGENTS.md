@@ -85,9 +85,14 @@ Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
 file. Generation excludes bindings; keep the application `Env` in `src/index.ts`.
 
-`npm run dev`, `types:generate`, `types:check`, and `app/` need Node 22.12+;
-`engines.node` (`>=22.0.0`) is only the install and ops floor. See
-[operator Node](docs/operations.md#operator-node).
+| Path | Supported Node | How Wrangler is launched |
+| --- | --- | --- |
+| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
+| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
+| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
+
+`app/` also needs Node 22.12+. `engines.node` (`>=22.0.0`) is only the install
+and ops floor. See [operator Node](docs/operations.md#operator-node).
 
 ## Where to work
 

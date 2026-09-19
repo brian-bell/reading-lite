@@ -27,8 +27,14 @@ automatic fallback. See [configuration](docs/configuration.md).
 
 ## Local development
 
-Use Node 22.12 or newer ([operator Node](docs/operations.md#operator-node)).
-In the repository root:
+| Path | Supported Node | How Wrangler is launched |
+| --- | --- | --- |
+| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
+| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
+| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
+
+Use Node 22.12 or newer for local development
+([operator Node](docs/operations.md#operator-node)). In the repository root:
 
 ```sh
 npm ci
