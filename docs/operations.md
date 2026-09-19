@@ -682,7 +682,7 @@ The legacy SPA is served from Cloudflare Pages on the same hostname as the
 Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
 `app/` frontend Worker's `host/*` route handles every other path on the
 staging and production hosts, ahead of Pages, which stays bound as the
-rollback target (see [New-frontend preview hosts](#new-frontend-preview-hosts)).
+rollback target (see [New-frontend hosts](#new-frontend-hosts)).
 Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
 does not 404. Staging canonical host is `https://staging.readinglite.ai`;
 `https://staging.readinglite.app` also serves. The staging SPA is the Pages
@@ -923,51 +923,50 @@ intentional:
   that use a retired hostname as an example URL rather than a live host.
 - This dual-serve runbook's S9 captain checklist.
 
-### New-frontend preview hosts
+### New-frontend hosts
 
-The TanStack Start frontend in `app/` was first served ahead of cutover on one
-preview host per environment ([ADR 0003](decisions/0003-frontend-worker-topology.md)):
-`next.readinglite.ai` (production) and `next-staging.readinglite.ai`
-(staging). `next-staging` is a first-level subdomain on purpose, so the zone's
-Universal SSL certificate covers it. Each host needs a proxied DNS record
-(`AAAA 100::`). No Pages custom domain is attached.
+The TanStack Start frontend in `app/` ([ADR 0003](decisions/0003-frontend-worker-topology.md))
+owns `host/*` on these hosts, ahead of any Pages custom domain there. The
+backend of the same environment keeps the more specific `/api/*`, `/health`,
+and (on the public hosts) `/mcp*` routes from `wrangler.toml`, and the frontend
+answers backend paths with 404 instead of proxying them.
 
-On each host the frontend Worker owns `host/*`, and the backend keeps the more
-specific `/api/*` and `/health` routes from `wrangler.toml`. There is no
-`/mcp*` route; the frontend answers `/mcp*` with 404. Both origins are in
-`PUBLIC_WEB_ORIGINS`, so a sign-in started there is mailed back there. Sessions
-are host-scoped as elsewhere, so each preview host needs its own sign-in.
-Emitted links still follow `WEB_BASE_URL`. The backend routes and allowlist
-entry must be live before the frontend route, or `/api/*` on that host reaches
-the frontend and returns 404. Both hosts and their allowlist entries are
-retired after the Phase 5 cutover.
+| Worker | Hosts | Pages |
+| --- | --- | --- |
+| `reading-lite-app` (production) | `readinglite.ai`, `readinglite.app` (apex cutover, reading-lite-gh340.4, 2026-09-19); preview `next.readinglite.ai` | Still bound on the apex hosts as the rollback target |
+| `reading-lite-app-staging` | `staging.readinglite.ai`, `staging.readinglite.app` (staging switch, #339, 2026-09-16); preview `next-staging.readinglite.ai` | Still bound on the staging hosts as the rollback target |
+
+The preview hosts have no Pages attachment and no `/mcp*` route. Each needs a
+proxied DNS record (`AAAA 100::`); `next-staging` is a first-level subdomain so
+the zone's Universal SSL certificate covers it. Their origins are in
+`PUBLIC_WEB_ORIGINS`, so a sign-in started there is mailed back there;
+other emitted links still follow `WEB_BASE_URL`. Sessions are host-scoped as
+elsewhere. Both preview hosts and their allowlist
+entries are to be retired now that the cutover is done. On any new host, the
+backend routes and allowlist entry must be live before the frontend route, or
+`/api/*` there reaches the frontend and returns 404.
 
 Deploying the frontend:
 
 - **Production.** The **Deploy production SPA** workflow has a second job that
   builds `app/` with `CLOUDFLARE_ENV=production` on Node 22 and runs
   `wrangler deploy` for `reading-lite-app` from the same released SHA, with the
-  same stale-`main` refusal. Between build and deploy,
-  `app/scripts/check-build.ts` refuses a build whose environment, name, routes,
-  or `BACKEND` binding differ from that environment of `app/wrangler.jsonc`, or
-  that binds another environment's backend; the staging workflow runs it too. It does not depend on the SPA job, and a failure
-  there does not block the SPA. Rerun that job to redeploy. Since the Phase 5
-  apex cutover (reading-lite-gh340.4, 2026-09-19) the same deploy also owns
-  `readinglite.ai/*` and `readinglite.app/*`, ahead of the Pages custom domains
-  that stay bound there; the SPA job keeps deploying to Pages so the rollback
-  target stays current. The job smoke-checks all three production hosts.
+  same stale-`main` refusal. It does not depend on the SPA job, so a failure
+  there leaves the previous frontend version serving and does not block the
+  SPA, which keeps deploying to Pages so the rollback target stays current.
+  Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
-  Since the Phase 4 staging switch (#339, 2026-09-16) the same deploy also
-  owns `staging.readinglite.ai/*` and `staging.readinglite.app/*`, ahead of
-  the Pages custom domains that stay bound there. The workflow smoke-checks all
-  three hosts.
-- **Smoke check.** Both end with `app/scripts/smoke-host.sh <https://host>`,
-  which also runs by hand from any machine. It passes only when `/health` is
-  `ok` and a signed-out `/api/whoami` is a JSON 401 from the backend, and `/`
-  comes from the frontend (`Cache-Control: private, no-store`, which Pages does
-  not send).
+- **Build check.** Both workflows run `app/scripts/check-build.ts` between
+  build and deploy. It refuses a build whose environment, name, routes, or
+  `BACKEND` binding differ from that environment of `app/wrangler.jsonc`, or
+  that binds another environment's backend.
+- **Smoke check.** Both workflows run `app/scripts/smoke-host.sh <https://host>`
+  on every host of their environment; it also runs by hand from any machine.
+  It passes only when `/health` is `ok` and a signed-out `/api/whoami` is a
+  JSON 401 from the backend, and `/` comes from the frontend
+  (`Cache-Control: private, no-store`, which Pages does not send).
 - **Rollback.** Delete the host's frontend route in the dashboard, or
   `wrangler rollback` the frontend Worker to its previous version. Neither
   affects the backend. On the staging and apex hosts, deleting the `/*` route

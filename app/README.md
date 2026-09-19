@@ -25,7 +25,7 @@ Build a deployable environment with `CLOUDFLARE_ENV=staging` or
 release (apex cutover, reading-lite-gh340.4); staging deploys to
 `next-staging.readinglite.ai`, `staging.readinglite.ai`, and
 `staging.readinglite.app` by manual dispatch. See
-[New-frontend preview hosts](../docs/operations.md#new-frontend-preview-hosts).
+[New-frontend hosts](../docs/operations.md#new-frontend-hosts).
 
 To sign in locally, request a link at `http://127.0.0.1:5174/login` and open
 `verify_url` from `/api/dev/mailbox?email=…` on the backend. The backend builds

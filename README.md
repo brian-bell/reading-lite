@@ -2,8 +2,8 @@
 
 Save a URL and get a summary, connections to earlier readings, and a verdict
 on whether it adds something new to your library. Reading Lite stores captured
-content and summaries in Cloudflare R2, with a Worker for processing and a React
-app for reading, searching, and managing your account.
+content and summaries in Cloudflare R2, with a Worker for processing and a
+TanStack Start frontend for reading, searching, and managing your account.
 
 The canonical host is [readinglite.ai](https://readinglite.ai).
 [readinglite.app](https://readinglite.app) also serves the app. Browser
@@ -17,7 +17,7 @@ and captured content. Search matches titles, TL;DRs, URLs, and keywords; tag
 chips filter the list. The app refreshes queries after submit and reprocess but
 does not poll pending readings. Refresh to see a later result.
 
-The Security page manages sessions, API tokens, account deletion, immediate
+The account page manages sessions, API tokens, account deletion, immediate
 notification mail, and daily or weekly digests. Digest cadence `off` disables
 digests independently of immediate notifications.
 
@@ -27,37 +27,32 @@ automatic fallback. See [configuration](docs/configuration.md).
 
 ## Local development
 
-| Path | Supported Node | How Wrangler is launched |
-| --- | --- | --- |
-| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
-| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
-
-Use Node 22.12 or newer for `npm run dev`. `npm run ops` runs on Node 22;
-see [operator Node](docs/operations.md#operator-node).
-
+Use Node 22.12 or newer ([operator Node](docs/operations.md#operator-node)).
 In the repository root:
 
 ```sh
 npm ci
 cp .dev.vars.example .dev.vars   # first setup only; preserve an existing file
-npm run dev
+npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174
 ```
 
 This applies local D1 migrations, imports `dev-local-token` as the founder
 bearer, and starts the Worker at `http://127.0.0.1:8787`. The example provider
-keys are placeholders. In a second terminal:
+keys are placeholders. The `--var` makes sign-in links point at the frontend;
+without it they point at the legacy SPA's `:5173`. In a second terminal:
 
 ```sh
-cd web
+cd app
 npm ci
 npm run dev
 ```
 
-Open `http://127.0.0.1:5173`. Vite proxies `/api` and `/health` to the Worker.
-Request a magic link in the app, then retrieve it from
+Open `http://127.0.0.1:5174`; its dev server proxies `/api` to the Worker.
+Request a magic link, then retrieve it from
 `http://127.0.0.1:8787/api/dev/mailbox?email=<your-email>` on loopback.
-`LOCAL_MAIL_SINK=1` keeps local login mail in that outbox.
+`LOCAL_MAIL_SINK=1` keeps local login mail in that outbox. The
+[reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) skill runs
+both for you.
 
 Local R2 starts empty. Local development has no Queue or Vectorize binding, so
 submit, import, and reprocess return 503, and vector similarity returns no
@@ -65,14 +60,9 @@ matches. List, detail, content, lookup, and `q` text search work with
 [seeded local data](docs/operations.md#seeding-local-r2). Integration tests cover
 the processing pipeline with queue, Vectorize, and provider fakes.
 
-The `web/` SPA above has been replaced by a TanStack Start frontend in
-[app/](app/README.md), on its own Worker, which serves `readinglite.ai`,
-`readinglite.app`, and the staging hosts; it runs locally on `:5174` against
-the same backend. `web/` stays deployed to Pages as the rollback target until
-that rollout's observation period ends (see [ADR
-0003](docs/decisions/0003-frontend-worker-topology.md)). Run both together
-locally with the
-[reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) skill.
+The legacy `web/` SPA (`cd web && npm ci && npm run dev`, on `:5173`) stays
+deployed to Pages as the rollback target until the rollout's observation period
+ends ([ADR 0003](docs/decisions/0003-frontend-worker-topology.md)).
 
 ## Verification
 
@@ -80,14 +70,12 @@ locally with the
 npm run test:quiet
 npm run types:check
 npm run typecheck
-cd web
-npm test
-npm run build
 ```
 
 `test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
 Workers-pool log noise filtered. CI uses `npm test`. There is no lint script.
-The SPA build includes its TypeScript check.
+The frontends have their own checks: [app/README.md](app/README.md) for `app/`,
+and `npm test` plus `npm run build` in `web/`.
 
 Worker runtime types are checked in as `worker-configuration.d.ts`. Run
 `npm run types:generate` after changing Wrangler or the compatibility date/flags

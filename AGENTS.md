@@ -2,10 +2,10 @@
 
 Personal reading service on Cloudflare Workers. The TanStack Start frontend in
 `app/` serves the public hosts; the legacy React SPA in `web/` stays deployed to
-Pages as the rollback target.
-Intake claims a URL, writes a pending R2 manifest, and enqueues `READING_JOBS`.
-The consumer extracts, embeds, finds related readings, summarizes, and publishes
-the terminal manifest, list row, and vector.
+Pages as the rollback target. Intake claims a URL, writes a pending R2
+manifest, and enqueues `READING_JOBS`. The consumer extracts, embeds, finds
+related readings, summarizes, and publishes the terminal manifest, list row,
+and vector.
 
 Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
@@ -69,9 +69,9 @@ There is no lint script. Full Worker verification is `npm test`,
 plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
 `build`, `test:smoke`, and `test:browser` in `app/`. CI runs Worker and Node
 tests, SPA tests/build, the `app/` checks and its browser-evidence job, and
-the Ops CLI job on Node 22. The browser-evidence
-job runs `test:browser:ci`, the essential subset; run the full `test:browser`
-locally before shipping a frontend change. On pull requests each job runs only
+the Ops CLI job, all on Node 22. The browser-evidence job runs
+`test:browser:ci`, the essential subset; run the full `test:browser` locally
+before shipping a frontend change. On pull requests each job runs only
 for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
 update that map when a suite starts reading a new path. Unmapped paths run
 everything. Pushes to main run every job, and documentation-only pushes skip
@@ -85,14 +85,9 @@ Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
 file. Generation excludes bindings; keep the application `Env` in `src/index.ts`.
 
-| Path | Supported Node | How Wrangler is launched |
-| --- | --- | --- |
-| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
-| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
-
-`engines.node` (`>=22.0.0`) is the install and ops floor, not a `npm run dev`
-guarantee. See [operator Node](docs/operations.md#operator-node).
+`npm run dev`, `types:generate`, `types:check`, and `app/` need Node 22.12+;
+`engines.node` (`>=22.0.0`) is only the install and ops floor. See
+[operator Node](docs/operations.md#operator-node).
 
 ## Where to work
 
@@ -147,7 +142,8 @@ guarantee. See [operator Node](docs/operations.md#operator-node).
   a confirmed-empty prefix immediately before its D1 batch. Read the
   [deletion rules](docs/operations.md#account-deletion) before touching this path.
 - Do not remove `nodejs_compat`. Keep bearer material out of browser storage.
-  The SPA invalidates queries after writes but does not poll pending manifests.
+  Both frontends invalidate queries after writes but do not poll pending
+  manifests.
 
 ## Tests and local limits
 
