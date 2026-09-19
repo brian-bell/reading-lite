@@ -1,7 +1,9 @@
 # Architecture
 
-Reading Lite runs on one Cloudflare Worker plus managed D1, Durable Objects,
-R2, Vectorize, and Queues. The Worker owns `/api/*`, `/health`, and `/mcp*`;
+Reading Lite runs on one Cloudflare Worker plus PostgreSQL with pgvector
+(through Hyperdrive), D1, Durable Objects, R2, and Queues. Reading state and
+embeddings live in PostgreSQL; captured content stays in R2
+([ADR 0005](decisions/0005-postgresql-storage.md)). The Worker owns `/api/*`, `/health`, and `/mcp*`;
 the TanStack Start frontend in `app/`, a separate Worker, handles the other
 routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). Cloudflare
 Pages still serves the legacy React SPA in `web/` on the same hosts as the
@@ -15,29 +17,27 @@ rollback target.
 HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
 `importMarkdown`, and `reprocess`, including URL claims and activation.
 
-1. Resolve the tenant's by-url owner. Return an existing ready/pending reading;
-   reuse the ID of a failed reading.
-2. Claim the URL before writing the pending manifest and enqueuing the attempt.
-   `activateAttempt` owns the write/enqueue order and rollback to failed when
-   activation cannot finish. New work returns 202 with a poll URL.
-3. `processReading` checks purge, tenant, and attempt ownership before spending
-   or writing artifacts. It extracts the source and stores raw/captured content.
+1. Resolve the URL's owner: one read of the tenant's `reading_urls` row.
+   Return an existing ready/pending reading; reuse the ID of a failed one.
+2. Commit the claim in one transaction: the reading, its unique URL row, the
+   attempt, and a `queued` job row. A concurrent submission of the same URL
+   waits on the unique key and then finds the winner, so duplicates converge on
+   one reading and an owner is never half-written. `activateAttempt` writes
+   import content under the attempt's revision keys, then enqueues; a failure
+   there rolls the reading back to a retryable failure and marks the job
+   `send_failed`. New work returns 202 with a poll URL.
+3. `processReading` checks the reading's row, tenant, and attempt ownership
+   before spending or writing. It extracts the source and stores raw and
+   captured content under `{key_prefix}/revisions/{attemptId}/`.
 4. Acquire tenant/global processing leases. Embed the source, query related
-   readings, summarize, then embed the TL;DR. Supported checkpoints avoid
-   repeating completed provider stages on recovery.
-5. Record the reading ID as live in D1 `vector_ledger`, then commit the terminal
-   manifest. Recheck tenant eligibility and the per-reading purge tombstone
-   (`index/deleted/{id}`) immediately before by-url reclaim, the terminal
-   write, and publish. A confirmed tombstone skips those writes (see
-   [reprocessing and recovery](#reprocessing-and-recovery)). Otherwise publish
-   the list row, then the vector. Confirm URL ownership as part of the
-   terminal write path.
-6. Recheck deletion eligibility after publish. `users.status=deleting`
-   compensates with `visibility.removeForDeletedTenant` so a missing list row
-   cannot skip the vector delete. A confirmed purge tombstone does not run
-   that compensation — it is a write fence, not a second purge. Send any
-   eligible immediate notification after publication; mail failure does not
-   fail a ready reading.
+   readings, summarize, then embed the TL;DR. The paid checkpoint on the
+   attempt row avoids repeating completed provider stages on recovery.
+5. Publish in one transaction (see below). Tenant eligibility is D1 state, so
+   it is checked immediately before and again immediately after.
+6. If the tenant stopped being eligible in between, compensate in the same
+   consumer: a `deleting` tenant's reading is removed outright, any other
+   ineligible tenant's loses its embedding. Send any eligible immediate
+   notification after publication; mail failure does not fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -93,113 +93,104 @@ overdue rows; see [operations](operations.md#orphaned-in-flight-processing-lease
 
 ### Publication and failure ordering
 
-`src/attempt-ownership.ts` supplies the shared ownership verdict.
-`commitTerminalManifest` chooses publish, remove, or restore;
-`ReadingVisibility` owns list/vector reconciliation. These writes span services
-and are not atomic. Publication errors after the terminal manifest are logged
-and contained so they cannot overwrite a ready result with failed.
+`PgReadingWriter.publish` (`src/modules/stores/postgres/reading-writer.ts`) is
+one transaction, and its order is the contract: lock the reading row, verify
+attempt ownership (`src/attempt-ownership.ts`), settle URL ownership, then
+write the revision, the reading, its relationships, the embedding, and the
+attempt and job rows. Nothing is written before ownership is settled, and a
+reader never sees a summary without its content keys or a vector for a reading
+that is not ready. Only the URL's owner is searchable: a duplicate that does
+not own its URL is stored without an embedding. `test/integration/postgres/
+reading-writer.test.ts` pins lost ownership, rollback, and the fence.
 
-The ledger write must occur before the terminal manifest. A ready manifest
-clears `active_attempt`, so putting the ledger write inside the later
-`ReadingVisibility.publish` would make a ledger failure's retry exit without
-republishing. In its current position, `VectorLedgerWriteError` reaches the
-consumer while the attempt can still retry. D1 is therefore a hard dependency
-of publication and single-reading purge. A D1 outage may look like a vector
-failure but must not be treated as optional bookkeeping.
+This replaces the old cross-service sequence (ledger row, terminal manifest,
+list row, vector) and its compensation paths. A publish transaction that fails
+rolls back whole and throws `PublishCommitError`; the consumer requeues rather
+than marking the reading failed, because the summary is paid for and
+checkpointed and the reading is still pending and still owned by the attempt.
 
 An upstream 429 raises `RateLimitedError`; queue retry leaves the attempt
 pending. Paid-work denial or stale processing leases defer the same attempt,
 with checkpoints and the configured defer-age bound. Other processing failures
-write a failed result, subject to the ready-reprocess preservation rule below.
-Exhausted reading retries reach the reading DLQ, which calls `markDeadLettered`
-to write a retryable failure. If that write fails, the handler logs and acks;
+write a failed result through `PgReadingWriter.fail`. Exhausted reading
+retries reach the reading DLQ, which calls `markDeadLettered`, the only path
+that marks a job `dead`. If that write fails, the handler logs and acks;
 read-time staleness annotation remains the fallback.
 
-Attempt journals live at `{key_prefix}/attempts/{attempt_id}.json`, with stage,
-timing, trigger, and sanitized errors. Processing checkpoints live at
-`{key_prefix}/processing/{attempt_id}.json`. Tenant rooting applies to both.
+The consumer and the scheduled jobs use `sqlSessionFor`: one client reused
+while it keeps being used, replaced after 10 seconds idle (a provider call) or
+after any error, and ended when the work finishes. A client per statement
+would also be correct but floods the connection path where nothing pools.
+HTTP routes share one client per request (`src/modules/db/request-sql.ts`).
+Attempt journals and paid checkpoints are `reading_attempts` rows; durable job
+intent is `reading_jobs`.
 
 ## Reprocessing and recovery
 
 Supplied Markdown takes precedence over stored text and avoids fetching the
 source URL. Successful processing changes `source_type` to `markdown`; later
-source-less reprocesses reuse the stored Markdown. Failure keeps the previous
-source type. A previously ready reading restores its preserved manifest and
-records a failed last attempt.
+source-less reprocesses reuse the stored Markdown, found through the reading's
+own content keys. Failure keeps the previous source type.
 
-That preservation covers the manifest, not the earlier content writes. A failed
-reprocess can overwrite raw/extracted artifacts before restoring the old ready
-manifest, leaving its recorded size/hash inconsistent with stored content. The
-[193-v2.1 handoff](193-v2.1-handoff.md) records one observed case. Verify captured
-bytes against the manifest before copying fixtures; do not assume ready status
-proves artifact integrity.
+Every attempt writes its content under its own immutable revision prefix, so a
+reprocess can never overwrite what the published revision points at. A ready
+reading stays `ready` while it reprocesses. If the attempt fails, only the
+attempt summaries change: the previous content, summary, relationships, and
+embedding stay intact together. This closes the gap where a failed reprocess
+restored the manifest but not the content artifacts it had overwritten
+(reading-lite-psu; the [193-v2.1 handoff](193-v2.1-handoff.md) records one
+observed case in the pre-migration corpus).
 
-`src/reading-purge.ts` writes an irrevocable `index/deleted/{id}` tombstone
-after the active-attempt guard and before any delete (fail-closed on a thrown
-put), then removes the reading with vector deletion first, then its owned
-by-url pointer, list row, objects, a final sweep, and by-id pointer last. This
-supports retries after partial failure; a purge that dies right after the
-tombstone put leaves a doomed-but-present reading that only the re-issued
-DELETE finishes. Inbound connections remain until an explicit corpus sweep.
+Content a failed or superseded attempt captured is deleted once nothing
+references it. `AttemptIo.discardUnreferencedContent` checks the reading's
+current keys first, because a redelivered message for an attempt that already
+published reaches the same "may not write" exits with the live prefix.
 
-The tombstone is a write fence (issue #179), not a second purge. Writers
-recheck it — fail-open on a throwing HEAD, latched for the rest of a
-`commitTerminalManifest` call once confirmed — and skip the write: before
-`activateAttempt` puts a pending manifest or rolls a failed enqueue back,
-before by-url reclaim, the terminal write, and publish, again after the
-terminal CAS and after publish, on the lost-CAS restore, at
-`processReading`'s early returns, and before `markFailed`/`markDeadLettered`
-recreate a failed manifest. A confirmed tombstone on those consumer paths
-may also delete objects under the reading prefix (attempt residue this
-delivery wrote). It does not ungated-delete the vector, list row, or by-url
-pointer. A consumer that publishes after the purge's final sweep and then
-dies can leave a listed or searchable reading whose by-id pointer is already
-gone, so a re-issued DELETE answers `not_found`. That is last-writer-wins
-residue; repair is account wipe or corpus tooling. The missing-manifest
-purge guard treats a tombstone as purged. Tombstones are retained forever
-(the consumer they fence can wake hours later from the retry/DLQ pipeline)
-and are deleted only by the account wipe's objects phase, which covers the
-whole tenant key root.
+A never-published reading serves its latest capturing attempt's content. An
+imported reading that no attempt has touched serves the legacy spelling under
+its stored `key_prefix`, so imported content keys stay readable and
+reprocessable.
+
+`src/reading-purge.ts` deletes the reading's row in one transaction, which
+cascades to its URL ownership, revisions, relationships, embedding, attempts,
+and jobs, then deletes the R2 prefix twice. The active-attempt guard runs
+under the row lock, so a purge and an activation cannot both win. The missing
+row is the deletion fence: a late consumer's publish, failure, or attempt-log
+write finds no row and writes nothing, and it deletes what it captured itself.
+A purge that dies between the rows and the objects leaves unreachable bytes;
+the re-issued DELETE is a 404, and the account wipe removes the tenant's
+prefix. Inbound connections from other readings remain until an explicit
+corpus sweep.
 
 ## Tenant storage
 
-Hosted stores derive their scope from a validated `TenantContext`:
+Hosted stores derive their scope from a validated `TenantContext`, and every
+PostgreSQL query is `WHERE tenant_id = $1`:
 
 | Store | Location and responsibility |
 |---|---|
-| `layout.ts` | Constants, `buildKeyPrefix`, and `r2KeyLayout`, shared by Worker stores and operator scripts |
-| `reading-store.ts` | Parsed R2 codecs for manifests, content, pointers, attempts, and checkpoints |
-| `list-index.ts` | `index/list.json`, CAS updates, filtering, ownership, and rebuild |
-| `similarity-store.ts` | Vectorize queries, upserts, deletes, and namespace probes |
-| `reading-claim.ts` | `index/by-url/{sha256(url)}` ownership |
+| `postgres/reading-store.ts` | List, detail, relationship targets, URL owner, content keys |
+| `postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
+| `postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
+| `postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding and the importer |
+| `content-store.ts` | R2 bytes by relative key under the tenant root |
+| `layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
 | `staleness.ts` | Read-time stale-attempt annotation |
 | `manifest-drafting.ts` | Pure pending, rollback, and terminal manifest constructors |
 
 With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
-`key_prefix` stays relative, such as `readings/YYYY/MM/<timestamp>-<id>`.
-Vectorize uses the tenant namespace for queries and composed
-`{tenantId}:{readingId}` IDs for writes. Namespace filtering prevents a query
-from matching another tenant's vectors. IDs are index-unique, and deletion by
-ID has no namespace argument, so namespace selection alone cannot protect a
-bare-ID delete.
+`key_prefix` values and content keys stay relative, such as
+`readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
-Staging and production pin the tenant gate. Local leaves it unset to read the
-global layout. The completed founder cutover copied data and retained global
-R2 objects and unnamespaced vectors. Tenant operations, including account wipe,
-do not reach that retained copy. Removing the pin after new tenant writes land
-hides those readings behind the global snapshot. Rollback then needs a freeze
-and reverse reconciliation, or explicit acceptance of that loss.
+The R2 `ReadingStore`, `ListIndexStore`, and Vectorize `SimilarityStore` remain
+for the operator scripts, which move in a later slice, and the account wipe
+still runs its Vectorize and vector-ledger phases for vectors written before
+the cutover. No runtime reading path writes manifests, `index/list.json`,
+pointers, or Vectorize.
 
-On the `epic/postgres-storage` candidate branch, `src/modules/db/sql.ts` and
-`src/modules/stores/postgres/` hold the PostgreSQL seam and read stores that
-replace this layout at cutover
-([ADR 0005](decisions/0005-postgresql-storage.md)). They are built from the
-same validated `TenantContext`, scope every query by `tenant_id`, and return
-the same `ListIndexItem` and `Manifest` shapes. No runtime path constructs them
-until reads and writes switch together.
-
-A namespaced query cannot see unnamespaced vectors. Any future storage migration
-must verify both R2 and Vectorize before activation. The founder migration
+Staging and production pin the tenant gate. The completed founder cutover
+copied data and retained global R2 objects and unnamespaced vectors, which
+tenant operations, including account wipe, do not reach. The founder migration
 command is retired; see the [historical cutover](founder-cutover.md).
 
 ## Authentication and background jobs

@@ -1,10 +1,14 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "../../src/index";
 import { consumeRelationshipRefresh } from "../../src/relationship-refresh";
 import { processRelationshipJudge } from "../../src/relationship-judge";
-import { testReadingStore, FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
-import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import { founderTenant, FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
+import { PgReadingWriter } from "../../src/modules/stores/postgres/reading-writer";
+import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
 import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
 import { deleteRefreshJob } from "../../src/control-plane/relationship-refresh-jobs";
@@ -21,6 +25,23 @@ let runtime: Env;
 let services: Services;
 let provider: ReturnType<typeof vi.fn<typeof fetch>>;
 let original: Manifest;
+
+// The tests arrange and inspect readings by key prefix, as they did when a
+// reading was a manifest object. A reading is rows now, so these verbs resolve
+// the prefix to its id and go through the row-backed facade. `writeManifest`
+// rewrites attempt state in place when the reading exists, so a test that
+// simulates a concurrent reprocess does not also wipe the reading's children.
+const idOf = (prefix: string) => prefix.slice(prefix.lastIndexOf("-") + 1);
+function testStore() {
+  const readings = testReadingsFor(founderTenant());
+  return {
+    readings,
+    readManifest: (prefix: string) => readings.manifest(idOf(prefix)),
+    writeManifest: (prefix: string, manifest: Manifest) => readings.seed(manifest, { keyPrefix: prefix }),
+    findListIndexItem: async (readingId: string) => (await readings.store.relationshipTargets([readingId]))[0] ?? null,
+  };
+}
+
 function response() {
   return Response.json({ status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify({ novelty_verdict: "familiar", connections: [{ id: other, reason: "Related evidence" }] }) }] }], usage: { input_tokens: 100, output_tokens: 30 } });
 }
@@ -32,24 +53,32 @@ beforeEach(async () => {
   services = { fetch: provider, now: () => new Date().toISOString(), newId: () => crypto.randomUUID(), lookup: async () => [] };
   original = { id, url: "https://example.com/reading", url_hash: "a".repeat(64), status: "ready", title: "Reading", tldr: "Stored summary", summary_markdown: "Original summary", tags: ["test"], novelty_verdict: "novel", connections: [], content_type: "text/html", content_status: "captured", content_bytes: 100, content_sha256: "b".repeat(64), created_at: createdAt, updated_at: createdAt };
   const neighbour = { ...original, id: other, url: "https://example.com/neighbour", url_hash: "c".repeat(64) };
-  const store = testReadingStore(env);
-  for (const m of [original, neighbour]) {
-    const prefix = buildKeyPrefix(m.id, createdAt);
-    await store.writeManifest(prefix, m);
-    await store.writeByIdPointer(m.id, { id: m.id, key_prefix: prefix });
-    await store.appendOrReplaceListIndexItem(manifestToIndexItem(m, prefix));
-  }
+  const store = testStore();
+  for (const m of [original, neighbour]) await store.writeManifest(buildKeyPrefix(m.id, createdAt), m);
+  // Neighbourhoods come from pgvector now. These tests are about what the judge
+  // does with a neighbourhood, so they keep scripting one through the
+  // Vectorize-shaped double on `runtime`, and this adapter feeds the judge from
+  // it. The similarity store has its own suite.
+  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation(async (readingId, topK) => {
+    const index = runtime.READINGS_INDEX as unknown as {
+      getByIds: (ids: string[]) => Promise<unknown[]>;
+      queryById: (id: string, options: { topK: number }) => Promise<{ matches: { id: string; score: number }[] }>;
+    };
+    if ((await index.getByIds([`${FOUNDER_TENANT_ID}:${readingId}`])).length === 0) return null;
+    const { matches } = await index.queryById(readingId, { topK });
+    return matches.map(match => ({ id: match.id.slice(match.id.indexOf(":") + 1), score: match.score, url: "" }));
+  });
 });
+afterEach(() => vi.restoreAllMocks());
 
 describe("hosted relationship judge", () => {
   it("judges the fifth ready neighbour behind a stale vector", async () => {
-    const store = testReadingStore(env);
+    const store = testStore();
     const neighbours = Array.from({ length: 5 }, (_, i) => `rd_${String(i + 2).padStart(10, "0")}`);
     for (const neighbourId of neighbours) {
       const m = { ...original, id: neighbourId, url: `https://example.com/${neighbourId}` };
       const prefix = buildKeyPrefix(neighbourId, createdAt);
       await store.writeManifest(prefix, m);
-      await store.appendOrReplaceListIndexItem(manifestToIndexItem(m, prefix));
     }
     const known = neighbours.slice(0, 4);
     await store.writeManifest(keyPrefix, { ...original, novelty_verdict: "familiar",
@@ -69,9 +98,9 @@ describe("hosted relationship judge", () => {
 
   it("updates only relationships and the list verdict, and does not rebill a duplicate", async () => {
     await processRelationshipJudge(job, runtime, services);
-    const result = (await testReadingStore(env).readManifest(keyPrefix))!;
+    const result = (await testStore().readManifest(keyPrefix))!;
     expect(result).toEqual({ ...original, novelty_verdict: "familiar", connections: [{ id: other, reason: "Related evidence" }], connections_computed_at: expect.any(String), connections_neighbourhood_ids: [other] });
-    expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("familiar");
+    expect((await testStore().findListIndexItem(id))!.novelty_verdict).toBe("familiar");
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
     const checkpoint = await env.CONTROL_PLANE.prepare("SELECT result_json FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first<{ result_json: string }>();
@@ -83,74 +112,47 @@ describe("hosted relationship judge", () => {
     const calls = provider.mock.calls.length;
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledTimes(calls);
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
   it("honors spend denial before dispatch and before creating a job checkpoint", async () => {
     await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?").bind(FOUNDER_TENANT_ID).run();
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow(/spend admission/);
     expect(provider).not.toHaveBeenCalled();
     expect(await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).toMatchObject({ results: [] });
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
   it("does not write over a reprocess that wins during the provider call", async () => {
     const changed = { ...original, active_attempt: { id: "at_new", status: "running" as const, stage: "queued" as const, trigger: "reprocess" as const, started_at: new Date().toISOString() } };
-    provider.mockImplementationOnce(async () => { await testReadingStore(env).writeManifest(keyPrefix, changed); return response(); });
+    provider.mockImplementationOnce(async () => { await testStore().writeManifest(keyPrefix, changed); return response(); });
     await processRelationshipJudge(job, runtime, services);
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(changed);
-    expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("novel");
+    expect(await testStore().readManifest(keyPrefix)).toEqual(changed);
+    expect((await testStore().findListIndexItem(id))!.novelty_verdict).toBe("novel");
   });
   it("does no work while the gate is off", async () => {
     await processRelationshipJudge(job, { RELATIONSHIP_REFRESH: "0" } as Env, services);
     expect(provider).not.toHaveBeenCalled();
   });
-  it("heals a committed result after a failed list write even if a neighbour changes", async () => {
-    const bucket = env.READINGS_BUCKET;
-    const root = `u/${FOUNDER_TENANT_ID}/`;
-    let fail = true;
-    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
-      if (key === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
-        if (args[0] === `${root}index/list.json` && fail) { fail = false; throw new Error("list unavailable"); }
-        return bucket.put(...args);
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
-    await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("list unavailable");
-    expect((await testReadingStore(env).readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
-    const neighbourPrefix = buildKeyPrefix(other, createdAt);
-    const neighbour = (await testReadingStore(env).readManifest(neighbourPrefix))!;
-    await testReadingStore(env).writeManifest(neighbourPrefix, { ...neighbour, title: "Reprocessed neighbour" });
-    await processRelationshipJudge(job, runtime, services);
-    expect(provider).toHaveBeenCalledOnce();
-    expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("familiar");
-  });
-
-  it("writes no list row after losing the manifest CAS", async () => {
-    const bucket = env.READINGS_BUCKET;
+  it("applies nothing after losing the compare-and-replace", async () => {
     const winner = { ...original, title: "Concurrent update" };
+    const replace = PgReadingWriter.prototype.replacePublishedIf;
     let lost = false;
-    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
-      if (key === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
-        if (args[0].endsWith(`${keyPrefix}/manifest.json`) && !lost) {
-          lost = true;
-          await bucket.put(args[0], JSON.stringify(winner));
-          return null;
-        }
-        return bucket.put(...args);
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    vi.spyOn(PgReadingWriter.prototype, "replacePublishedIf").mockImplementation(async function (this: PgReadingWriter, ...args) {
+      if (!lost) {
+        lost = true;
+        await testStore().writeManifest(keyPrefix, winner);
+      }
+      return replace.apply(this, args);
+    });
     await processRelationshipJudge(job, runtime, services);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(winner);
-    expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("novel");
+    expect(await testStore().readManifest(keyPrefix)).toEqual(winner);
+    expect((await testStore().findListIndexItem(id))!.novelty_verdict).toBe("novel");
   });
 
   it("skips an initially purged reading before any dispatch checkpoint", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await testReadingStore(env).removeListIndexItem(id);
+    await testStore().readings.purge(id);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
     expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
@@ -166,7 +168,7 @@ describe("hosted relationship judge", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const nowIso = "2026-09-06T03:07:00.000Z";
     services.now = () => nowIso;
-    const store = testReadingStore(env);
+    const store = testStore();
     const busy = { id: "at_busy", trigger: "reprocess" as const, stage: "queued" as const, status: "running" as const, started_at: nowIso };
     if (kind === "target") await store.writeManifest(keyPrefix, { ...original, active_attempt: busy });
     else {
@@ -189,7 +191,7 @@ describe("hosted relationship judge", () => {
   ])("judges when the $kind's running attempt has expired", async ({ kind }) => {
     const nowIso = "2026-09-06T03:07:00.000Z";
     services.now = () => nowIso;
-    const store = testReadingStore(env);
+    const store = testStore();
     const zombie = { id: "at_zombie", trigger: "reprocess" as const, stage: "queued" as const, status: "running" as const, started_at: "2026-09-06T02:00:00.000Z" };
     if (kind === "target") await store.writeManifest(keyPrefix, { ...original, active_attempt: zombie });
     else {
@@ -211,7 +213,7 @@ describe("hosted relationship judge", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const nowIso = "2026-09-06T03:07:00.000Z";
     services.now = () => nowIso;
-    const store = testReadingStore(env);
+    const store = testStore();
     const busy = { id: "at_busy", trigger: "reprocess" as const, stage: "queued" as const, status: "running" as const, started_at: nowIso };
     if (kind === "target") await store.writeManifest(keyPrefix, { ...original, active_attempt: busy });
     else {
@@ -235,9 +237,9 @@ describe("hosted relationship judge", () => {
   });
 
   it("does not recreate a purged reading or its checkpoint after an in-flight call", async () => {
-    const store = testReadingStore(env);
+    const store = testStore();
     provider.mockImplementationOnce(async () => {
-      await purgeReading({ reader: store, similarity: null, deleteRefreshCheckpoint: id => deleteRefreshJob(fromD1(env.CONTROL_PLANE), FOUNDER_TENANT_ID, id) }, id, { now: services.now(), pendingTtlSeconds: 300 });
+      await purgeReading({ writer: store.readings.writer, content: store.readings.content, deleteRefreshCheckpoint: id => deleteRefreshJob(fromD1(env.CONTROL_PLANE), FOUNDER_TENANT_ID, id) }, id, { now: services.now(), pendingTtlSeconds: 300 });
       return response();
     });
     await processRelationshipJudge(job, runtime, services);
@@ -248,7 +250,7 @@ describe("hosted relationship judge", () => {
 
   it("removes a checkpoint claimed after purge has already completed", async () => {
     const db = env.CONTROL_PLANE;
-    const store = testReadingStore(env);
+    const store = testStore();
     runtime.CONTROL_PLANE = new Proxy(db, { get(target, key) {
       if (key === "prepare") return (sql: string) => {
         const statement = db.prepare(sql);
@@ -256,7 +258,7 @@ describe("hosted relationship judge", () => {
         return { bind: (...values: unknown[]) => {
           const bound = statement.bind(...values);
           return { run: async () => {
-            await purgeReading({ reader: store, similarity: null,
+            await purgeReading({ writer: store.readings.writer, content: store.readings.content,
               deleteRefreshCheckpoint: id => deleteRefreshJob(fromD1(db), FOUNDER_TENANT_ID, id),
             }, id, { now: services.now(), pendingTtlSeconds: 300 });
             return bound.run();
@@ -273,19 +275,16 @@ describe("hosted relationship judge", () => {
 
   it("retries a pre-fetch validation failure without an uncertain checkpoint", async () => {
     runtime.RETRY_MAX_ATTEMPTS = "1";
-    const bucket = env.READINGS_BUCKET;
+    // The first read of a reading after the dispatch claim exists fails.
+    const load = PgReadingStore.prototype.loadReadingById;
     let fail = true;
-    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
-      if (key === "get") return async (...args: Parameters<R2Bucket["get"]>) => {
-        if (fail && await env.CONTROL_PLANE.prepare("SELECT owner FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()) {
-          fail = false;
-          throw new Error("temporary validation failure");
-        }
-        return bucket.get(...args);
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    vi.spyOn(PgReadingStore.prototype, "loadReadingById").mockImplementation(async function (this: PgReadingStore, readingId) {
+      if (fail && await env.CONTROL_PLANE.prepare("SELECT owner FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()) {
+        fail = false;
+        throw new Error("temporary validation failure");
+      }
+      return load.call(this, readingId);
+    });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("temporary validation failure");
     expect(provider).not.toHaveBeenCalled();
     expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
@@ -327,26 +326,27 @@ describe("hosted relationship judge", () => {
     });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow(/spend admission/);
     expect(provider).toHaveBeenCalledOnce();
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
 
   it("rechecks reading ownership inside provider retries", async () => {
     provider.mockImplementationOnce(async () => {
-      await testReadingStore(env).removeListIndexItem(id);
+      await testStore().readings.purge(id);
       return new Response("temporary failure", { status: 500 });
     });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("refresh input changed");
     expect(provider).toHaveBeenCalledOnce();
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    // Purged mid-call: the retry is refused and nothing is recreated.
+    expect(await testStore().readManifest(keyPrefix)).toBeNull();
   });
 
   it("drops a result if a neighbour is purged during the call", async () => {
     provider.mockImplementationOnce(async () => {
-      await testReadingStore(env).removeListIndexItem(other);
+      await testStore().readings.purge(other);
       return response();
     });
     await processRelationshipJudge(job, runtime, services);
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
 
   it("skips a deleting founder before any spend", async () => {
@@ -387,22 +387,18 @@ describe("hosted relationship judge", () => {
 
   it("logs neighbours_changed when a neighbour version drifts before admission", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const bucket = env.READINGS_BUCKET;
     const neighbourPrefix = buildKeyPrefix(other, createdAt);
+    const load = PgReadingStore.prototype.loadReadingById;
     let captured = false;
-    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
-      if (key === "get") return async (...args: Parameters<R2Bucket["get"]>) => {
-        const result = await bucket.get(...args);
-        if (!captured && typeof args[0] === "string" && args[0].endsWith(`${neighbourPrefix}/manifest.json`)) {
-          captured = true;
-          const neighbour = (await testReadingStore(env).readManifest(neighbourPrefix))!;
-          await testReadingStore(env).writeManifest(neighbourPrefix, { ...neighbour, title: "Drifted neighbour" });
-        }
-        return result;
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    vi.spyOn(PgReadingStore.prototype, "loadReadingById").mockImplementation(async function (this: PgReadingStore, readingId) {
+      const result = await load.call(this, readingId);
+      if (!captured && readingId === other) {
+        captured = true;
+        const neighbour = (await testStore().readManifest(neighbourPrefix))!;
+        await testStore().writeManifest(neighbourPrefix, { ...neighbour, title: "Drifted neighbour" });
+      }
+      return result;
+    });
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
     expect(warn.mock.calls.map(call => String(call[0])).join("\n")).toContain("neighbours_changed");
@@ -418,7 +414,7 @@ describe("hosted relationship judge", () => {
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
     expect(provider.mock.calls[0]![0]).toBe("https://api.anthropic.com/v1/messages");
-    expect((await testReadingStore(env).readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
+    expect((await testStore().readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
   });
 
   it("retries a definitive 429 without treating it as an uncertain dispatch", async () => {
@@ -426,19 +422,19 @@ describe("hosted relationship judge", () => {
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow(/rate limited/);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledTimes(2);
-    expect((await testReadingStore(env).readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
+    expect((await testStore().readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
   });
 
   it("discards a result if a neighbour finishes reprocessing during the call", async () => {
     provider.mockImplementationOnce(async () => {
       const prefix = buildKeyPrefix(other, createdAt);
-      const neighbour = (await testReadingStore(env).readManifest(prefix))!;
-      await testReadingStore(env).writeManifest(prefix, { ...neighbour, summary_markdown: "Reprocessed content" });
+      const neighbour = (await testStore().readManifest(prefix))!;
+      await testStore().writeManifest(prefix, { ...neighbour, summary_markdown: "Reprocessed content" });
       return response();
     });
     await processRelationshipJudge(job, runtime, services);
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
-    expect((await testReadingStore(env).findListIndexItem(id))!.novelty_verdict).toBe("novel");
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
+    expect((await testStore().findListIndexItem(id))!.novelty_verdict).toBe("novel");
   });
 
   it("does not let an early duplicate bypass Retry-After", async () => {
@@ -449,23 +445,19 @@ describe("hosted relationship judge", () => {
   });
 
   it("does not apply a saved result after a neighbour version changes", async () => {
-    const bucket = env.READINGS_BUCKET;
+    const replace = PgReadingWriter.prototype.replacePublishedIf;
     let fail = true;
-    runtime.READINGS_BUCKET = new Proxy(bucket, { get(target, key) {
-      if (key === "put") return async (...args: Parameters<R2Bucket["put"]>) => {
-        if (args[0].endsWith(`${keyPrefix}/manifest.json`) && fail) { fail = false; throw new Error("manifest unavailable"); }
-        return bucket.put(...args);
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    vi.spyOn(PgReadingWriter.prototype, "replacePublishedIf").mockImplementation(async function (this: PgReadingWriter, ...args) {
+      if (fail) { fail = false; throw new Error("manifest unavailable"); }
+      return replace.apply(this, args);
+    });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("manifest unavailable");
     const prefix = buildKeyPrefix(other, createdAt);
-    const neighbour = (await testReadingStore(env).readManifest(prefix))!;
-    await testReadingStore(env).writeManifest(prefix, { ...neighbour, tldr: "Changed neighbour" });
+    const neighbour = (await testStore().readManifest(prefix))!;
+    await testStore().writeManifest(prefix, { ...neighbour, tldr: "Changed neighbour" });
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
 
   it("delays expected spend deferrals without consuming queue retries", async () => {
@@ -495,7 +487,7 @@ describe("hosted relationship judge", () => {
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
-    expect(await testReadingStore(env).readManifest(keyPrefix)).toEqual(original);
+    expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
 
 });

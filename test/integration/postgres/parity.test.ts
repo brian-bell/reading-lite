@@ -7,13 +7,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { localSeedRows } from "../../../scripts/pg-lib/local-seed-rows";
 import { writeReadingRows } from "../../../scripts/pg-lib/manifest-rows";
 import type { Sql } from "../../../src/modules/db/sql";
-import { ReadingClaim } from "../../../src/modules/reading-claim";
 import { projectRelationshipTargets, relationshipTargetIds } from "../../../src/modules/relationship-targets";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { PgReadingStore, pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
 import { pgSimilarityStoreFor } from "../../../src/modules/stores/postgres/similarity-store";
 import { ReadingStore } from "../../../src/modules/stores/reading-store";
-import { defaultServices } from "../../../src/services";
+import { sha256Hex } from "../../../src/services";
 import { buildLocalSeed } from "../../fixtures/local-seed";
 import { mintTenant, testSql } from "../../helpers/pg-fixtures";
 
@@ -83,12 +82,17 @@ describe("fixture pack parity: R2 stores vs PostgreSQL stores", () => {
   });
 
   it("resolves URL ownership identically", async () => {
-    const claim = new ReadingClaim(r2, defaultServices());
+    // R2's read-only owner resolution: the by-url pointer, honoured only when
+    // the manifest it names really is that URL's reading.
+    const r2Owner = async (url: string): Promise<string | null> => {
+      const pointer = await r2.readByUrlPointer(await sha256Hex(url));
+      if (!pointer) return null;
+      const manifest = await r2.readManifest(pointer.key_prefix);
+      return manifest?.id === pointer.id && manifest.url === url ? pointer.id : null;
+    };
     const urls = [...plan.fixtures.map((fixture) => fixture.manifest.url), "https://unclaimed.example/nothing-here"];
     for (const url of urls) {
-      const owner = await claim.resolveOwner(url, { claimColdLegacy: false, repairDamaged: false });
-      const expected = owner.kind === "owned" ? owner.pointer.id : null;
-      expect((await postgres.findOwnerByUrl(url))?.id ?? null, url).toBe(expected);
+      expect((await postgres.findOwnerByUrl(url))?.id ?? null, url).toBe(await r2Owner(url));
     }
   });
 

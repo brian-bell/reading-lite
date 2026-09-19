@@ -2,10 +2,7 @@ import { createHash } from "node:crypto";
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
-import {
-  isFreshMissingManifestPointer,
-  ownedManifestMatches,
-} from "../../../src/modules/reading-claim";
+import { isFreshMissingManifestPointer, ownedManifestMatches } from "./r2-ownership";
 import { urlHash as hashUrl } from "../url-hash";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import type { BatchActivationPolicy, ExtractedTarget, ExpectedExistingFailed } from "./types";

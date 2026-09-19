@@ -15,8 +15,8 @@ import {
   otherTenant,
   PUBLIC_LOOKUP,
   reserveReadingSlot,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -271,20 +271,21 @@ async function processReady(
   fetchFn: ReturnType<typeof makeStubFetch>,
   tenant = founderTenant(),
 ): Promise<void> {
-  const reader = testReadingStore(env, tenant);
-  await reader.writeManifest(args.keyPrefix, {
-    id: args.id,
-    url: args.url,
-    url_hash: args.urlHash,
-    status: "pending",
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: args.createdAt,
-    updated_at: args.createdAt,
-  });
-  await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
+  await testReadingsFor(tenant).seed(
+    {
+      id: args.id,
+      url: args.url,
+      url_hash: args.urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: args.createdAt,
+      updated_at: args.createdAt,
+    },
+    { keyPrefix: args.keyPrefix },
+  );
   await reserveReadingSlot(env, tenant, args);
   await processReading(args, env as unknown as Env, makeServices(fetchFn), tenant);
 }
@@ -541,20 +542,16 @@ describe("processReading immediate notification recipient", () => {
 
   it("sends to email_display and never EMAIL_TO, using the tenant list index", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const otherReader = testReadingStore(env, otherTenant());
-    await otherReader.writeListIndex({
-      version: 1,
-      items: [
-        {
-          id: "rd_OTHER",
-          key_prefix: "readings/x",
-          url: "https://example.com/other-secret",
-          title: "SECRET-OTHER-TITLE",
-          status: "ready",
-          created_at: "2026-04-01T00:00:00.000Z",
-        },
-      ],
-    });
+    await testReadingsFor(otherTenant()).seedListItems([
+      {
+        id: "rd_OTHER",
+        key_prefix: "readings/x",
+        url: "https://example.com/other-secret",
+        title: "SECRET-OTHER-TITLE",
+        status: "ready",
+        created_at: "2026-04-01T00:00:00.000Z",
+      },
+    ]);
 
     const fetchFn = makeStubFetch();
     await processReady(submitArgs("rd_MAIL01", "https://example.com/notify-me"), fetchFn);

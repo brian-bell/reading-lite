@@ -22,6 +22,17 @@ function manifest(overrides: Partial<Manifest> = {}): Manifest {
 }
 
 describe("manifestToRows", () => {
+  it("publishes under the caller's revision id and keys when the runtime supplies them", () => {
+    const revision = {
+      id: "at_1",
+      rawKey: `${INPUT.keyPrefix}/revisions/at_1/raw.pdf`,
+      extractedKey: `${INPUT.keyPrefix}/revisions/at_1/extracted.md`,
+    };
+    const rows = manifestToRows(manifest(), { ...INPUT, revision });
+    expect(rows.reading.current_revision_id).toBe("at_1");
+    expect(rows.revision).toMatchObject({ id: "at_1", raw_key: revision.rawKey, extracted_key: revision.extractedKey });
+  });
+
   it("publishes a ready manifest as a revision with relative content keys", () => {
     const rows = manifestToRows(manifest(), INPUT);
     expect(rows.reading.current_revision_id).toBe(rows.revision!.id);

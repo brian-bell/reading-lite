@@ -25,6 +25,10 @@ export const READINGS_PREFIX = "readings/";
 export const EXTRACTED_FILE = "extracted.md";
 export const RAW_PREFIX = "raw.";
 export const ATTEMPTS_PREFIX = "attempts/";
+// Immutable per-attempt content (ADR 0005). Each attempt writes its raw and
+// extracted objects under its own id and never overwrites another's, so a
+// failed reprocess leaves the published revision's content in place.
+export const REVISIONS_PREFIX = "revisions/";
 // The nightly-refresh run marker. Written only by the operator CLI
 // (`corpus refresh-neighbours`), read by nothing in the Worker — but it is a
 // corpus object under the tenant root, so its spelling belongs here with the
@@ -87,6 +91,10 @@ export interface R2KeyLayout {
   attemptsPrefix(keyPrefix: string): string;
   attemptKey(keyPrefix: string, attemptId: string): string;
   processingCheckpointKey(keyPrefix: string, attemptId: string): string;
+  // The prefix covering every attempt's content under one reading.
+  revisionsPrefix(keyPrefix: string): string;
+  revisionRawKey(keyPrefix: string, attemptId: string, ext: string): string;
+  revisionExtractedKey(keyPrefix: string, attemptId: string): string;
   byUrlKey(urlHash: string): string;
   byIdKey(id: string): string;
   // index/deleted/{id} — purge tombstone, existence-only.
@@ -113,6 +121,11 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
       abs(`${keyPrefix}/${ATTEMPTS_PREFIX}${attemptId}.json`),
     processingCheckpointKey: (keyPrefix, attemptId) =>
       abs(`${keyPrefix}/processing/${attemptId}.json`),
+    revisionsPrefix: (keyPrefix) => abs(`${keyPrefix}/${REVISIONS_PREFIX}`),
+    revisionRawKey: (keyPrefix, attemptId, ext) =>
+      abs(`${keyPrefix}/${REVISIONS_PREFIX}${attemptId}/${RAW_PREFIX}${ext}`),
+    revisionExtractedKey: (keyPrefix, attemptId) =>
+      abs(`${keyPrefix}/${REVISIONS_PREFIX}${attemptId}/${EXTRACTED_FILE}`),
     byUrlKey: (urlHash) => abs(`${BY_URL_PREFIX}${urlHash}`),
     byIdKey: (id) => abs(`${BY_ID_PREFIX}${id}`),
     deletedKey: (id) => abs(`${DELETED_PREFIX}${id}`),

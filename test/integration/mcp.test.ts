@@ -8,10 +8,7 @@ import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import {
-  buildKeyPrefix,
-  manifestToIndexItem,
-} from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { Manifest } from "../../src/schemas/manifest";
 import { CONTENT_CHUNK_BYTES } from "../../src/mcp/format";
 import {
@@ -20,8 +17,8 @@ import {
   insertSecondTenant,
   OTHER_TOKEN_SECRET,
   PUBLIC_LOOKUP,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
@@ -290,7 +287,7 @@ async function seedReady(opts: {
   tenant?: ReturnType<typeof founderTenant>;
   connections?: Manifest["connections"];
 }): Promise<void> {
-  const store = testReadingStore(env, opts.tenant ?? founderTenant());
+  const store = testReadingsFor(opts.tenant ?? founderTenant());
   const created_at = opts.createdAt ?? "2026-04-26T20:00:00.000Z";
   const prefix = buildKeyPrefix(opts.id, created_at);
   const url_hash = await sha256Hex(opts.url);
@@ -315,11 +312,7 @@ async function seedReady(opts: {
     fetched_at: created_at,
     ...(opts.connections ? { connections: opts.connections } : {}),
   };
-  await store.writeManifest(prefix, manifest);
-  await store.writeByIdPointer(opts.id, { id: opts.id, key_prefix: prefix });
-  await store.writeByUrlPointer(url_hash, { id: opts.id, key_prefix: prefix });
-  await store.writeExtracted(prefix, opts.markdown);
-  await store.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, prefix));
+  await store.seed(manifest, { keyPrefix: prefix, extracted: opts.markdown });
 }
 
 describe("POST /mcp", () => {
