@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import { useId, useMemo, useRef, useState, type RefObject } from "react";
-import { accountViewOf, readRefusedBy, type AccountView } from "../account-state";
+import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { accountViewOf, readRefusedBy, type AccountRefusal, type AccountView } from "../account-state";
+import { requestEmailChange } from "../api/email-change";
 import { saveSettings } from "../api/settings";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
 import { isUnauthorized } from "../api/errors";
+import { STEP_UP_LOGIN_HREF } from "../auth/return-path";
 import { dropSignedInAccount } from "../auth/session";
 import {
   changeDigest,
@@ -19,6 +21,7 @@ import {
   type DigestDraft,
   type DigestSchedule,
 } from "../digest";
+import type { EmailChangeOutcome } from "../email-change";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
@@ -51,15 +54,17 @@ import {
   ServerError,
 } from "./ReadingStates";
 
-// The account page (#340.1, #340.6; Phase 5 of #340). Session management —
-// the list, a single revoke, and revoke-all — and notification settings match
-// the SPA (`web/src/App.tsx`); the common states are the acceptance matrix's,
-// shared with the library and save. A 403 or 412 from any of the page's reads
-// or writes is the whole page's state; a failed settings read or save stays
-// inside its own section so the sessions list keeps working. Revoking this
-// device, or every session, drops the account without calling logout — the
-// cookie is already cleared — and the signed-in guard sends the reader to
-// sign in.
+// The account page (#340.1, #340.6; Phase 5 of #340). Email change,
+// notification settings, and session management — the list, a single revoke,
+// and revoke-all — match the SPA (`web/src/App.tsx`); the common states are
+// the acceptance matrix's, shared with the library and save. A 403 or 412
+// that refuses the account (from a read, a settings save, or an email-change
+// request) is the whole page's state; a failed settings or email-change
+// request stays inside its own section so the rest of the page keeps working,
+// and an email change's recent-auth 403 is the fresh sign-in message there.
+// Revoking this device, or every session, drops the account without calling
+// logout — the cookie is already cleared — and the signed-in guard sends the
+// reader to sign in.
 
 type RevokeTarget = { kind: "one"; session: SessionListItem } | { kind: "all" };
 
@@ -75,6 +80,18 @@ export function AccountPage() {
   const [confirmAll, setConfirmAll] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
   const [digestDraft, setDigestDraft] = useState<DigestDraft | null>(null);
+  // An email-change request refused for the account, not the address: the
+  // page's own state, like a refused read.
+  const [emailRefusal, setEmailRefusal] = useState<EmailRefusal | undefined>(undefined);
+
+  const emailChange = useMutation({
+    mutationFn: (email: string) => requestEmailChange(queryClient, email, expectedTenant),
+    networkMode: "always",
+    retry: 0,
+    onSuccess: (outcome) => {
+      if (outcome.kind === "account-changed") setEmailRefusal(outcome);
+    },
+  });
 
   const revoke = useMutation({
     mutationFn: async (target: RevokeTarget): Promise<{ target: RevokeTarget; outcome: RevokeOutcome }> => {
@@ -129,7 +146,8 @@ export function AccountPage() {
   });
   const saveError = isUnauthorized(save.error) ? null : save.error;
   const saveFailure = saveError == null ? undefined : failureOf(saveError);
-  const view = pageViewOf(sessionsView, settingsView);
+  const emailError = isUnauthorized(emailChange.error) ? null : emailChange.error;
+  const view = pageViewOf(sessionsView, settingsView, emailRefusal);
   const busy = revoke.isPending;
 
   function retry() {
@@ -203,6 +221,22 @@ export function AccountPage() {
         onRevoke: (session) => send({ kind: "one", session }),
         onRetry: retry,
         revokeAllRef,
+        email: {
+          sending: emailChange.isPending,
+          outcome: emailChange.data,
+          failure: emailError == null ? undefined : failureOf(emailError),
+          onSend: (email) => {
+            if (emailChange.isPending) return;
+            emailChange.reset();
+            emailChange.mutate(email);
+          },
+          onEdit: () => {
+            if (!emailChange.isPending) emailChange.reset();
+          },
+          onRetry: () => {
+            if (emailChange.variables !== undefined) emailChange.mutate(emailChange.variables);
+          },
+        },
         settings: {
           view: settingsView,
           shown,
@@ -230,6 +264,9 @@ function failureOf(error: unknown): Failure {
   return view.kind === "server-error" ? view : { kind: "offline" };
 }
 
+/** Email change refuses the account only by it having changed (a same-reader 403 is step-up). */
+type EmailRefusal = Extract<AccountRefusal, { kind: "account-changed" }>;
+
 type PageView =
   | { kind: "forbidden" }
   | { kind: "account-changed"; actingTenant?: string }
@@ -241,15 +278,31 @@ type PageView =
  * it is about the account rather than one section; a failed sessions list is
  * too, as it was before the page had other sections.
  */
-function pageViewOf(sessions: AccountView<SessionsList>, settings: AccountView<UserSettings>): PageView {
+function pageViewOf(
+  sessions: AccountView<SessionsList>,
+  settings: AccountView<UserSettings>,
+  emailChange: EmailRefusal | undefined,
+): PageView {
   for (const view of [sessions, settings]) {
     if (view.kind === "forbidden") return { kind: "forbidden" };
   }
   for (const view of [sessions, settings]) {
     if (view.kind === "account-changed") return view;
   }
+  if (emailChange?.kind === "account-changed") return emailChange;
   if (sessions.kind === "server-error") return sessions;
   return { kind: "sections", sessions };
+}
+
+interface EmailActions {
+  sending: boolean;
+  outcome: EmailChangeOutcome | undefined;
+  failure: Failure | undefined;
+  onSend: (email: string) => void;
+  /** The address changed: what was said about the last one no longer applies. */
+  onEdit: () => void;
+  /** Sends the failed request again, with the address it was for. */
+  onRetry: () => void;
 }
 
 interface SettingsActions {
@@ -280,6 +333,7 @@ function pageFor(
     onRevoke: (session: SessionListItem) => void;
     onRetry: () => void;
     revokeAllRef: RefObject<HTMLButtonElement | null>;
+    email: EmailActions;
     settings: SettingsActions;
   },
 ) {
@@ -313,6 +367,7 @@ function pageFor(
               Revoke all sessions
             </button>
           </div>
+          <EmailSection {...actions.email} />
           <NotificationsSection {...actions.settings} />
           <section className="account-section" aria-labelledby="sessions-heading">
             <h2 id="sessions-heading" className="account-section-title">
@@ -337,6 +392,95 @@ function pageFor(
       );
     }
   }
+}
+
+/**
+ * Change email (#340.6.2), as the SPA's form: the new address, then a
+ * generic "check your inbox" once the request is accepted. The typed address
+ * stays through every outcome, so an offline or failed request can be sent
+ * again as it was.
+ */
+function EmailSection({ sending, outcome, failure, onSend, onEdit, onRetry }: EmailActions) {
+  const id = useId();
+  const [email, setEmail] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const invalid = outcome?.kind === "invalid";
+  // Acceptance matrix, Invalid input: the reason under the field, and focus on it.
+  useEffect(() => {
+    if (invalid) inputRef.current?.focus();
+  }, [invalid, outcome]);
+  return (
+    <section className="account-section" aria-labelledby={`${id}-heading`}>
+      <h2 id={`${id}-heading`} className="account-section-title">
+        Email
+      </h2>
+      {failure ? (
+        <InlineNotice
+          message={
+            failure.kind === "offline"
+              ? "You're offline. The confirmation link wasn't sent."
+              : "Something went wrong on our side. The confirmation link wasn't sent."
+          }
+          onAction={onRetry}
+        >
+          {failure.kind === "server-error" ? <p className="form-hint">{failure.message}</p> : null}
+        </InlineNotice>
+      ) : null}
+      {outcome?.kind === "step-up" ? (
+        <p className="form-error" role="alert">
+          Recent sign-in required. <a href={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</a> to confirm a
+          sensitive change.
+        </p>
+      ) : null}
+      <form
+        className="email-change-form"
+        noValidate
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSend(email);
+        }}
+      >
+        <div className="field">
+          <label className="field-label" htmlFor={`${id}-email`}>
+            New email
+          </label>
+          <input
+            id={`${id}-email`}
+            ref={inputRef}
+            className="text-input"
+            type="email"
+            name="email"
+            autoComplete="email"
+            spellCheck={false}
+            required
+            value={email}
+            onChange={(event) => {
+              setEmail(event.currentTarget.value);
+              onEdit();
+            }}
+            aria-invalid={invalid ? true : undefined}
+            aria-describedby={invalid ? `${id}-email-error` : undefined}
+          />
+          {invalid ? (
+            <p id={`${id}-email-error`} className="field-error">
+              Enter a valid email address.
+            </p>
+          ) : null}
+        </div>
+        <div className="form-actions">
+          <button type="submit" className="button button-primary" disabled={sending}>
+            Send confirmation
+          </button>
+        </div>
+      </form>
+      {/* Always in the page, so the confirmation is announced when it arrives. */}
+      <p className="form-status" role="status">
+        {outcome?.kind === "sent"
+          ? "If that address can be used, we sent a short-lived confirmation link. Open it in this browser to finish."
+          : null}
+      </p>
+    </section>
+  );
 }
 
 /**

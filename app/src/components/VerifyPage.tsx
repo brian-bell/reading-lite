@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { redeemLoginLink } from "../api/auth";
 import { fetchIdentity } from "../api/client";
 import { ApiError } from "../api/errors";
-import { consumeReturnPath } from "../auth/return-path";
+import { ACCOUNT_SECURITY_PATH, consumeReturnPath } from "../auth/return-path";
 import { completeSignIn } from "../auth/session";
 import { whoamiQueryKey } from "../identity";
 import { PageHeading } from "./PageHeading";
@@ -80,7 +80,12 @@ export function VerifyPage({ next, purpose }: { next?: string; purpose?: string 
       await redeemLoginLink(queryClient, credential, redemptionId.current);
       held.current = "";
       if (!(await completeSignIn(queryClient))) throw new Error("failed to complete sign-in");
-      await navigate({ href: consumeReturnPath(next), replace: true });
+      // The emailed email-change link carries no `next`; it was asked for on
+      // the account page, so that is where confirming it returns.
+      await navigate({
+        href: consumeReturnPath(next ?? (emailChange ? ACCOUNT_SECURITY_PATH : undefined)),
+        replace: true,
+      });
     } catch (e) {
       if (emailChange && e instanceof ApiError && (e.status === 401 || e.status === 403)) {
         setError(EMAIL_CHANGE_HINT);

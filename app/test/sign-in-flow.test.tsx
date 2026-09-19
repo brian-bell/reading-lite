@@ -133,13 +133,18 @@ const loginVerifyRoute = createRoute({
 });
 const authedRoute = createRoute({ getParentRoute: () => rootRoute, id: "_authed", beforeLoad: requireSignedIn });
 const readingRoute = createRoute({ getParentRoute: () => authedRoute, path: "/readings/$id", component: ReadingProbe });
+const accountRoute = createRoute({
+  getParentRoute: () => authedRoute,
+  path: "/account/security",
+  component: () => <PageHeading>Account</PageHeading>,
+});
 const routeTree = rootRoute.addChildren([
   indexRoute,
   saveRoute,
   loginRoute,
   authVerifyRoute,
   loginVerifyRoute,
-  authedRoute.addChildren([readingRoute]),
+  authedRoute.addChildren([readingRoute, accountRoute]),
 ]);
 
 async function openTab(path: string, identity: Identity | null | "unavailable") {
@@ -318,6 +323,21 @@ describe("the sign-in loop", () => {
       return call!;
     });
     expect(redeem.headers.get(CSRF_HEADER)).toBe("csrf-a");
+  });
+
+  // The emailed link carries no `next`, and was asked for on the account page
+  // (#340.6.2): confirming it goes back there, not to a path another request
+  // left in storage.
+  it("returns to the account page after an email change is confirmed", async () => {
+    stubBackend({
+      "GET /api/whoami": () => Response.json(readerA),
+      "POST /api/auth/redeem": () => Response.json({ ok: true }),
+    });
+    localStorage.setItem(LOGIN_NEXT_STORAGE_KEY, "/save");
+    const { router } = await openTab(`/auth/verify?purpose=email_change#${CREDENTIAL}`, readerA);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/account/security"));
+    expect(localStorage.getItem(LOGIN_NEXT_STORAGE_KEY)).toBeNull();
   });
 
   it("asks for the signed-in browser before confirming an email change", async () => {

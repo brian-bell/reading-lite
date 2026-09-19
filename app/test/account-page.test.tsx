@@ -118,6 +118,7 @@ function mockApi(options?: {
   settings?: unknown;
   settingsStatus?: number;
   onSaveSettings?: (body: Record<string, unknown>) => Response | Promise<Response>;
+  onEmailChange?: (body: { email: string }) => Response;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -131,6 +132,10 @@ function mockApi(options?: {
     }
     if (path === "/api/auth/sessions" && request.method === "GET") {
       return Response.json(options?.listed ?? listed, { status: options?.listStatus ?? 200 });
+    }
+    if (path === "/api/auth/email-change" && request.method === "POST") {
+      const body = (await request.clone().json()) as { email: string };
+      return options?.onEmailChange?.(body) ?? Response.json({ ok: true });
     }
     if (path === "/api/auth/settings" && request.method === "GET") {
       return Response.json(options?.settings ?? SETTINGS, { status: options?.settingsStatus ?? 200 });
@@ -714,5 +719,114 @@ describe("the digest schedule on the account page", () => {
 
     expect(screen.getByText("control plane unavailable")).toBeVisible();
     expect(screen.getByRole("checkbox", { name: "Email me when a reading is ready" })).not.toBeChecked();
+  });
+});
+
+// Email change (#340.6.2): the request, the check-your-inbox confirmation, the
+// recent-auth step-up, and the common states. Outcome mapping and the request
+// shape are email-change.test.ts's.
+describe("email change on the account page", () => {
+  const field = () => screen.getByRole("textbox", { name: "New email" });
+  const send = () => screen.getByRole("button", { name: "Send confirmation" });
+  const section = () => screen.getByRole("region", { name: "Email" });
+
+  async function requestChange(address = "new@example.com") {
+    await userEvent.type(field(), address);
+    await userEvent.click(send());
+  }
+
+  it("sends the new address and says to check the inbox, keeping what was typed", async () => {
+    const fetchMock = mockApi();
+    await openAccount();
+
+    await requestChange();
+
+    expect(await within(section()).findByRole("status")).toHaveTextContent(
+      "If that address can be used, we sent a short-lived confirmation link.",
+    );
+    expect(field()).toHaveValue("new@example.com");
+    expect(requestsOf(fetchMock, "POST", "/api/auth/email-change")).toHaveLength(1);
+
+    // A different address has had nothing sent yet.
+    await userEvent.type(field(), "x");
+    expect(within(section()).getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("asks for a fresh sign-in on a recent-auth 403, not the permission page", async () => {
+    mockApi({ onEmailChange: () => Response.json({ error: "recent authentication required" }, { status: 403 }) });
+    const { queryClient } = await openAccount();
+
+    await requestChange();
+
+    expect(await within(section()).findByRole("alert")).toHaveTextContent("Recent sign-in required.");
+    expect(within(section()).getByRole("link", { name: "Request a fresh sign-in link" })).toHaveAttribute(
+      "href",
+      "/login?step_up=1&next=%2Faccount%2Fsecurity",
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(screen.queryByText("You don't have access to this.")).not.toBeInTheDocument();
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+
+  it("marks the field and focuses it when the backend rejects the address", async () => {
+    mockApi({ onEmailChange: () => Response.json({ error: "invalid body" }, { status: 400 }) });
+    await openAccount();
+
+    await requestChange("not-an-address");
+
+    expect(await within(section()).findByText("Enter a valid email address.")).toBeVisible();
+    expect(field()).toHaveAttribute("aria-invalid", "true");
+    expect(field()).toHaveFocus();
+  });
+
+  it("keeps the typed address offline, and Retry sends it", async () => {
+    let offline = true;
+    const fetchMock = mockApi({
+      onEmailChange: () => {
+        if (!offline) return Response.json({ ok: true });
+        offline = false;
+        onlineManager.setOnline(false);
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    await openAccount();
+
+    await requestChange();
+
+    expect(await within(section()).findByText("You're offline. The confirmation link wasn't sent.")).toBeVisible();
+    expect(field()).toHaveValue("new@example.com");
+
+    onlineManager.setOnline(true);
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    expect(await within(section()).findByRole("status")).toHaveTextContent(/confirmation link/);
+    expect(requestsOf(fetchMock, "POST", "/api/auth/email-change")).toHaveLength(2);
+  });
+
+  it("shows the retryable server error for a 5xx inside the section", async () => {
+    mockApi({ onEmailChange: () => Response.json({ error: "auth misconfigured" }, { status: 500 }) });
+    await openAccount();
+
+    await requestChange();
+
+    expect(await within(section()).findByText("auth misconfigured")).toBeVisible();
+    expect(within(section()).getByText(/Something went wrong on our side/)).toBeVisible();
+    expect(within(section()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(field()).toHaveValue("new@example.com");
+  });
+
+  it("shows the account-changed page for a 412", async () => {
+    mockApi({
+      onEmailChange: () => Response.json({ error: "expected tenant mismatch", acting_tenant: "usr_b" }, { status: 412 }),
+    });
+    await openAccount();
+
+    await requestChange();
+
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(
+        "This tab is signed in to a different account than the page expects.",
+      ),
+    );
   });
 });
