@@ -83,6 +83,79 @@ export function sqlFor(env: { HYPERDRIVE: Hyperdrive }): Sql {
   return sqlFromConnectionString(env.HYPERDRIVE.connectionString);
 }
 
+// How long a session's client may sit unused before it is replaced.
+const SESSION_MAX_IDLE_MS = 10_000;
+
+export interface SqlSessionOptions {
+  maxIdleMs?: number;
+  now?: () => number;
+}
+
+// For work that outlives a request: the queue consumer and the scheduled jobs.
+// The consumer runs for minutes with provider calls between its statements,
+// and a connection left idle that long can be dropped underneath it, so a
+// client is reused only while it keeps being used: one idle past the limit, or
+// one that just threw, is closed and the next operation opens a fresh one.
+// Opening a client per statement instead would be correct but floods the
+// connection path (every open is a full handshake where nothing pools, as in
+// local and CI runs).
+//
+// Operations are serialized on the one client. Never call the session itself
+// from inside a `transaction` callback — use the `tx` handle — or the nested
+// call waits on the transaction that is waiting on it. The owner calls `end`.
+export function sqlSession(open: () => Sql, opts: SqlSessionOptions = {}): Sql {
+  const maxIdleMs = opts.maxIdleMs ?? SESSION_MAX_IDLE_MS;
+  const now = opts.now ?? Date.now;
+  let current: { sql: Sql; lastUsed: number } | null = null;
+  let queue: Promise<unknown> = Promise.resolve();
+
+  const close = async (held: { sql: Sql }) => {
+    if (current === held) current = null;
+    await held.sql.end().catch(() => undefined);
+  };
+  const run = <T>(operation: (sql: Sql) => Promise<T>): Promise<T> => {
+    const result = queue.then(async () => {
+      if (current && now() - current.lastUsed > maxIdleMs) await close(current);
+      const held = (current ??= { sql: open(), lastUsed: now() });
+      try {
+        const out = await operation(held.sql);
+        held.lastUsed = now();
+        return out;
+      } catch (error) {
+        // A client that threw may be broken; never hand it out again.
+        await close(held);
+        throw error;
+      }
+    });
+    queue = result.catch(() => undefined);
+    return result;
+  };
+
+  return {
+    query: <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) =>
+      run((sql) => sql.query<Row>(text, values)),
+    transaction: (callback, txOpts) => run((sql) => sql.transaction(callback, txOpts)),
+    async end() {
+      await queue;
+      if (current) await close(current);
+    },
+  };
+}
+
+export function sqlSessionFor(env: { HYPERDRIVE: Hyperdrive }, opts: SqlSessionOptions = {}): Sql {
+  return sqlSession(() => sqlFor(env), opts);
+}
+
+// A session for the length of `work`, always ended.
+export async function withSqlSession<T>(env: { HYPERDRIVE: Hyperdrive }, work: (sql: Sql) => Promise<T>): Promise<T> {
+  const sql = sqlSessionFor(env);
+  try {
+    return await work(sql);
+  } finally {
+    await sql.end();
+  }
+}
+
 // pgvector's text input format.
 export function vectorLiteral(embedding: readonly number[]): string {
   return `[${embedding.join(",")}]`;

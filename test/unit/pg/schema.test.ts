@@ -10,7 +10,15 @@ beforeAll(async () => {
 });
 afterAll(() => client.end());
 
-const READING_TABLES = ["reading_embeddings", "reading_relationships", "reading_revisions", "reading_urls", "readings"];
+const READING_TABLES = [
+  "reading_attempts",
+  "reading_embeddings",
+  "reading_jobs",
+  "reading_relationships",
+  "reading_revisions",
+  "reading_urls",
+  "readings",
+];
 
 describe("reading schema", () => {
   it("creates the reading tables, every one led by tenant_id in its primary key", async () => {

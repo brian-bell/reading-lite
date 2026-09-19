@@ -9,7 +9,8 @@ import { parseUserId } from "../../src/control-plane/ids";
 import { accountWipeEnvelopeV1 } from "../../src/control-plane/wipe-envelope";
 import { processDigestJob } from "../../src/digest-pipeline";
 import worker, { type Env } from "../../src/index";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { sha256Hex } from "../../src/services";
 import {
   FOUNDER_TENANT_ID,
@@ -17,8 +18,8 @@ import {
   OTHER_TOKEN_ID,
   insertSecondTenant,
   otherTenant,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 
 // #288: these are local runtime characterizations, including known limits.
 // They exercise hard deletion, not only status='deleting'. No provider calls
@@ -198,7 +199,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
 
   it("can send a digest whose list read was in flight before teardown, while FK enforcement blocks late finalization", async () => {
     const saved = await seedPendingDigest();
-    await testReadingStore(env, otherTenant()).writeListIndex({ version: 1, items: [{
+    await testReadingsFor(otherTenant()).seedListItems([{
       id: READING_ID,
       key_prefix: KEY_PREFIX,
       url: URL,
@@ -207,23 +208,21 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
       status: "ready",
       created_at: CREATED_AT,
       updated_at: CREATED_AT,
-    }] });
+    }]);
 
     let signalRead!: () => void;
     let releaseRead!: () => void;
     const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
     const mayReturnRead = new Promise<void>((resolve) => { releaseRead = resolve; });
-    const bucket = env.READINGS_BUCKET;
-    const delayedBucket = {
-      get: async (key: string) => {
-        expect(key).toBe(`${PREFIX}index/list.json`);
-        const object = await bucket.get(key);
-        expect(object).not.toBeNull();
-        signalRead();
-        await mayReturnRead;
-        return object;
-      },
-    } as unknown as R2Bucket;
+    // The library read completes, then is held open across the teardown.
+    const readLibrary = PgReadingStore.prototype.allListItems;
+    vi.spyOn(PgReadingStore.prototype, "allListItems").mockImplementation(async function (this: PgReadingStore) {
+      const library = await readLibrary.call(this);
+      expect(library).toHaveLength(1);
+      signalRead();
+      await mayReturnRead;
+      return library;
+    });
     const fetchSpy = vi.fn<typeof fetch>(async () => {
       // The send really occurs after hard deletion, not just before a delayed
       // response from the mail provider. The provider itself is a local stub.
@@ -232,7 +231,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
       return Response.json({ id: "re_288_after_teardown" });
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
-    const outcome = processDigestJob(saved, { ...env, READINGS_BUCKET: delayedBucket }, {
+    const outcome = processDigestJob(saved, env, {
       nowMs: NOW_MS,
       fetch: fetchSpy,
     }).then(() => null, (error: unknown) => error);

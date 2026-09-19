@@ -276,6 +276,8 @@ import {
   similarityStoreFor,
   VECTORIZE_DELETE_MAX_IDS,
 } from "./modules/stores/similarity-store";
+import { sqlSessionFor } from "./modules/db/sql";
+import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { RateLimitedError } from "./modules/http-retry";
 import { ListIndexSchema } from "./schemas/api";
 import { parseReadingId } from "./services";
@@ -436,9 +438,33 @@ export interface AccountWipeEnv extends AccountTeardownEnv {
   READINGS_INDEX?: VectorizeIndex;
   ACCOUNT_WIPE_JOBS?: Queue<AccountWipeEnvelopeV1>;
   TENANT_DATA_PLANE?: string;
+  HYPERDRIVE?: Hyperdrive;
+}
+
+// The default `deleteReadingRows`: every reading row the tenant owns, through
+// the same tenant-validating store the runtime writes with.
+function deleteReadingRowsFor(env: AccountWipeEnv): (tenantId: string) => Promise<number> {
+  return async (tenantId) => {
+    if (!env.HYPERDRIVE) {
+      throw new Error("account wipe: HYPERDRIVE is not bound, so the tenant's reading rows cannot be deleted");
+    }
+    const parsed = parseTenantId(tenantId);
+    if (!parsed) throw new Error("account wipe: malformed tenant id");
+    const sql = sqlSessionFor({ HYPERDRIVE: env.HYPERDRIVE });
+    try {
+      return await pgReadingWriterFor(sql, { tenantId: parsed }).deleteAllReadings();
+    } finally {
+      await sql.end();
+    }
+  };
 }
 
 export interface AccountWipeJobDeps {
+  /**
+   * Deletes the tenant's PostgreSQL reading rows; returns how many. Defaults to
+   * the HYPERDRIVE-backed store. Injected by tests that run without a database.
+   */
+  deleteReadingRows?: (tenantId: string) => Promise<number>;
   /** Consume-start clock; used for the grace gate. */
   nowMs: number;
   /**
@@ -1007,6 +1033,16 @@ async function runAccountWipeJob(
       }
       if (pages >= maxObjectPages) return continueResult();
     }
+    // The tenant's reading rows (ADR 0005), after the bytes they point at: a
+    // row that outlived its objects is a listed reading whose content 404s,
+    // never the reverse. One statement, children by cascade, and idempotent, so
+    // a redelivery that reaches here again deletes whatever a late publisher
+    // added. No tenant is exempt, and an unbound database fails closed like an
+    // unbound index: a wipe must not report success around rows it never saw.
+    // The rest of this job's PostgreSQL move (its ledger, its progress) is
+    // slice 1c's.
+    await (deps.deleteReadingRows ?? deleteReadingRowsFor(env))(tenantId);
+    await heartbeat();
     // Always written, once per pass, before the confirmation gate. The
     // confirmation now usually throws a retry (the first attempt is not allowed
     // to count until +120s), and the heartbeat above is throttled, so without

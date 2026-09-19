@@ -176,6 +176,59 @@ running it in a `READ ONLY` transaction. The URL row and its reading commit
 together, so the "initializing" outcome disappears; a row is owned and null is
 unclaimed.
 
+### Writes, publication and purge (slice 1b)
+
+Slice 1b switched the router's reads and the whole write path together.
+
+- **Attempts and jobs.** `db/migrations/0002_attempts_and_jobs.sql` adds
+  `reading_attempts` (the attempt log, the paid checkpoint, and the content
+  keys the attempt captured) and `reading_jobs` (durable job intent:
+  `queued`, `sent`, `done`, `send_failed`, `dead`). A job row commits with the
+  claim or reprocess that asks for the work, before the queue send, so a failed
+  send leaves a recoverable record. Only the reading DLQ writes `dead`.
+  Activation is idempotent on the attempt id and keeps a stored checkpoint.
+- **Claims.** One transaction inserts the reading, its `reading_urls` row with
+  `ON CONFLICT DO NOTHING`, the attempt and the job. A losing claim rolls back
+  and re-resolves the owner. The 409 `initializing` response and the
+  pointer-contention outcomes are gone from the API, since neither can happen.
+- **Publication.** `PgReadingWriter.publish` locks the reading row, verifies
+  attempt ownership, settles URL ownership, then writes the revision, the
+  reading, its relationships, the embedding, and the attempt and job rows, in
+  one transaction. This replaces the ledger-before-manifest ordering, the
+  list-index CAS helpers and `ReadingVisibility`. A failed transaction rolls
+  back whole and throws `PublishCommitError`, which requeues rather than
+  failing the reading, the contract the vector ledger's fail-closed write used
+  to carry. Only a URL's owner is searchable. Tenant eligibility is D1 state
+  until 1c, so it is checked just before and after the transaction; a tenant
+  found `deleting` afterwards has the reading removed in the same consumer.
+- **Immutable revision keys.** Each attempt writes its content under
+  `{key_prefix}/revisions/{attemptId}/`, named in `layout.ts`. A failed
+  reprocess changes only the attempt summaries, so the published content,
+  summary, relationships and embedding stay intact together. That closes the
+  divergence reading-lite-psu characterized and makes `preserve_ready_manifest`
+  unnecessary, so it is gone from the queue message too. Content of a failed or
+  superseded attempt is deleted once the reading no longer points at it.
+- **Content keys before publication.** A never-published reading's content is
+  found through its latest capturing attempt's row (not an unpublished
+  revision); an imported reading no attempt has touched keeps the legacy
+  spelling under its stored `key_prefix`.
+- **Purge and the deletion fence.** Purge deletes the reading row in one
+  transaction, cascading to every child, then deletes the R2 prefix twice. The
+  missing row is the fence: a late consumer's publish, failure or attempt-log
+  write finds nothing and writes nothing. The R2 tombstone is gone. A purge
+  that dies between the rows and the objects cannot be resumed by DELETE; the
+  account wipe removes the leftover bytes.
+- **Connections.** HTTP routes share one client per request. The queue
+  consumer and the scheduled jobs use `sqlSessionFor`: one client reused while
+  it keeps being used, replaced after 10 seconds idle or after any error, so a
+  connection left idle across a provider call is never trusted. A first
+  version opened a client per statement; under CI's parallel load that
+  flooded the local Hyperdrive proxy (every open is a full handshake where
+  nothing pools) and timed tests out.
+- **Account wipe.** Until the wipe moves in 1c, it deletes the tenant's reading
+  rows after its objects phase, failing closed when Hyperdrive is unbound. Its
+  Vectorize and vector-ledger phases stay for vectors written before cutover.
+
 ### Per-environment cutover flag
 
 The candidate's `wrangler.toml` binds Hyperdrive, so a mistaken merge or
@@ -206,14 +259,18 @@ connection string. See [local Postgres](../operations.md#local-postgres).
 
 - Reads become keyed queries; the list-index CAS loop, by-url and by-id
   pointers, and Vectorize namespaces all retire at cutover.
-- `preserve_ready_manifest` has no column: revisions replace it, and 1b owns
-  the failed-reprocess restore.
+- `preserve_ready_manifest` has no column: revisions replace it (see slice 1b
+  above).
 - Relationship rows are unique per source, kind and target. Today's schema
   does not promise that, so the mapper keeps the first occurrence and reports
   the rest; #348 checks the real corpus before relying on it.
 - The project is on Neon's free plan with scale-to-zero, so the first query
   after idle pays a cold start. #349 measures it; #350 decides whether
   production needs a paid plan.
-- In 1b the HTTP tests all use one fixed founder id across parallel files
-  against one shared database. 1b must choose a database per vitest worker,
-  per-file founder ids, or serial files.
+- The HTTP tests used one fixed founder id across parallel files against one
+  shared database. 1b chose **per-file tenant ids**: `test/helpers/file-tenants.ts`
+  derives the founder and second-tenant ids from the test file's path, and
+  `test/apply-control-plane.ts` deletes those tenants' rows before each test,
+  which matches the per-test rollback R2, D1 and Durable Objects already get.
+  A database per vitest worker does not fit the pool's single Hyperdrive
+  string, and serial files would give up the suite's parallelism.

@@ -1,19 +1,27 @@
-import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   activateAttempt,
+  type ActivationArtifacts,
   type AttemptActivation,
 } from "../../../src/intake/activation";
-import { ReadingStore } from "../../../src/modules/stores/reading-store";
 import type { ProcessReadingEnvelopeV1 } from "../../../src/control-plane/envelope";
 import { createApiTokenPrincipal } from "../../../src/control-plane/principal";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
 import { sha256Hex, type Services } from "../../../src/services";
+import { FOUNDER_TENANT_ID } from "../../helpers/file-tenants";
+import { mintTenant } from "../../helpers/pg-fixtures";
+import { testReadingsFor, type TestReadings } from "../../helpers/test-readings";
+
+// activateAttempt runs AFTER the caller's transaction committed the attempt
+// and its job row. Its own contract is what happens next: import content is
+// written under the attempt's keys, the message is sent, and a throw at either
+// step rolls the reading back in one transaction. Each test starts from a
+// committed attempt on its own tenant.
 
 const PRINCIPAL = createApiTokenPrincipal({
-  tenantId: "usr_550e8400-e29b-41d4-a716-446655440000",
-  userId: "usr_550e8400-e29b-41d4-a716-446655440000",
+  tenantId: FOUNDER_TENANT_ID,
+  userId: FOUNDER_TENANT_ID,
   tokenId: "tok_550e8400-e29b-41d4-a716-446655440000",
   scopes: ["readings:write"],
 });
@@ -27,13 +35,6 @@ function services(): Services {
     now: () => NOW,
     newId: () => "rd_UNUSED",
   };
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
 }
 
 // A capturing queue stub mirroring installQueueStub() from the integration suite.
@@ -57,7 +58,7 @@ function rejectingQueue(error: unknown = new Error("queue send failed")): Queue<
 
 const ID = "rd_TEST01";
 const URL = "https://example.com/activate";
-const URL_HASH = "a".repeat(64);
+const URL_HASH = await sha256Hex(URL);
 const KEY_PREFIX = "readings/2026/04/26T200000Z-rd_TEST01";
 const ATTEMPT_ID = "at_TEST01";
 const STARTED_AT = "2026-04-26T20:00:00.000Z";
@@ -107,9 +108,7 @@ function queueMessage(): ProcessReadingArgs {
 function baseActivation(overrides: Partial<AttemptActivation> = {}): AttemptActivation {
   const manifest = overrides.manifest ?? pendingManifest();
   return {
-    keyPrefix: KEY_PREFIX,
     manifest,
-    writeByIdPointer: true,
     rollbackManifest: manifest,
     rollbackAttempt: activeAttempt(),
     queueMessage: queueMessage(),
@@ -118,298 +117,171 @@ function baseActivation(overrides: Partial<AttemptActivation> = {}): AttemptActi
   };
 }
 
-beforeEach(clearBucket);
-afterEach(clearBucket);
+const ARTIFACTS: ActivationArtifacts = {
+  rawKey: `${KEY_PREFIX}/revisions/${ATTEMPT_ID}/raw.md`,
+  rawBytes: new TextEncoder().encode("# Imported"),
+  rawContentType: "text/markdown; charset=utf-8",
+  extractedKey: `${KEY_PREFIX}/revisions/${ATTEMPT_ID}/extracted.md`,
+  extractedMarkdown: "# Imported",
+};
+
+// The state intake leaves behind before it calls activateAttempt: the reading,
+// its URL, the running attempt and a queued job, committed together.
+async function committedAttempt(manifest: Manifest = pendingManifest()): Promise<TestReadings> {
+  const readings = testReadingsFor(mintTenant());
+  await readings.writer.claimUrl(manifest, KEY_PREFIX, { summary: activeAttempt(), payload: queueMessage() });
+  return readings;
+}
+
+function activate(readings: TestReadings, queue: Queue<ProcessReadingEnvelopeV1>, a: AttemptActivation) {
+  return activateAttempt(readings, queue, services(), a);
+}
 
 describe("activateAttempt", () => {
-  it("submit shape: writes manifest, by-id pointer, index, sends, returns activated derived from manifest", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+  it("sends under the principal's envelope, marks the job sent, and derives the outcome from the manifest", async () => {
+    const readings = await committedAttempt();
     const { queue, sent } = captureQueue();
 
-    const result = await activateAttempt(reader, queue, services(), baseActivation());
+    const out = await activate(readings, queue, baseActivation());
 
-    expect(result).toEqual({
-      kind: "activated",
-      id: ID,
-      status: "pending",
-      attemptId: ATTEMPT_ID,
-    });
-    await expect(reader.readManifest(KEY_PREFIX)).resolves.toMatchObject({ id: ID, status: "pending" });
-    await expect(reader.readByIdPointer(ID)).resolves.toEqual({ id: ID, key_prefix: KEY_PREFIX });
-    const index = await reader.readListIndex();
-    expect(index?.items.map((i) => i.id)).toContain(ID);
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      version: 1,
-      tenant: { tenantId: PRINCIPAL.tenantId },
-      actor: { kind: "api_token", credentialId: PRINCIPAL.tokenId },
-      job: { id: ID, attemptId: ATTEMPT_ID },
-    });
-    expect(sent[0]).not.toHaveProperty("scopes");
+    expect(out).toEqual({ kind: "activated", id: ID, status: "pending", attemptId: ATTEMPT_ID });
+    expect(sent).toEqual([
+      {
+        version: 1,
+        tenant: { tenantId: PRINCIPAL.tenantId },
+        actor: { kind: "api_token", credentialId: "tok_550e8400-e29b-41d4-a716-446655440000" },
+        job: queueMessage(),
+      },
+    ]);
+    expect(await readings.jobState(ID, ATTEMPT_ID)).toBe("sent");
   });
 
-  it("reprocess shape: writeByIdPointer false skips the by-id pointer write", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const { queue, sent } = captureQueue();
+  it("derives a ready status for a reprocess of a published reading", async () => {
+    const readings = await committedAttempt();
+    const { queue } = captureQueue();
+    const ready = pendingManifest({ status: "ready", connections: [] });
 
-    const result = await activateAttempt(
-      reader,
-      queue,
-      services(),
-      baseActivation({ writeByIdPointer: false }),
-    );
+    const out = await activate(readings, queue, baseActivation({ manifest: ready }));
 
-    expect(result.kind).toBe("activated");
-    await expect(reader.readManifest(KEY_PREFIX)).resolves.toMatchObject({ id: ID });
-    await expect(reader.readByIdPointer(ID)).resolves.toBeNull();
-    expect(sent).toHaveLength(1);
+    expect(out).toMatchObject({ kind: "activated", status: "ready" });
   });
 
-  it("import shape: writes the full sequence raw → extracted → manifest → by-id → index → send", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const { queue, sent } = captureQueue();
-    const markdown = "# Imported\n\nbody";
-    // Capture the entire canonical write order, not just the artifact prefix, so
-    // a future reordering of the by-id pointer vs the list index is caught.
-    const order: string[] = [];
-    const trace = (method: keyof ReadingStore, label: string) => {
-      const original = (reader[method] as (...a: unknown[]) => unknown).bind(reader);
-      vi.spyOn(reader, method).mockImplementation((async (...args: unknown[]) => {
-        order.push(label);
-        return original(...args);
-      }) as never);
-    };
-    trace("writeRaw", "raw");
-    trace("writeExtracted", "extracted");
-    trace("writeManifest", "manifest");
-    trace("writeByIdPointer", "byId");
-    trace("appendOrReplaceListIndexItem", "index");
-    vi.spyOn(queue, "send").mockImplementation((async (msg: ProcessReadingEnvelopeV1) => {
-      order.push("send");
-      sent.push(msg);
-    }) as unknown as Queue<ProcessReadingEnvelopeV1>["send"]);
-
-    const result = await activateAttempt(
-      reader,
-      queue,
-      services(),
-      baseActivation({
-        manifest: pendingManifest({
-          source_type: "markdown",
-          content_type: "text/markdown; charset=utf-8",
-          content_bytes: new TextEncoder().encode(markdown).byteLength,
-          content_sha256: await sha256Hex(markdown),
-        }),
-        artifacts: {
-          rawExt: "md",
-          rawBytes: new TextEncoder().encode(markdown),
-          rawContentType: "text/markdown; charset=utf-8",
-          extractedMarkdown: markdown,
-        },
+  // Ordering pin: the content is in R2 before the consumer can be told about it.
+  it("import: writes raw and extracted under the attempt's keys before it sends", async () => {
+    const readings = await committedAttempt();
+    const seenAtSend: (string | null)[] = [];
+    const queue = {
+      send: vi.fn(async () => {
+        seenAtSend.push(await (await readings.content.get(ARTIFACTS.rawKey))?.text() ?? null);
+        seenAtSend.push(await (await readings.content.get(ARTIFACTS.extractedKey))?.text() ?? null);
       }),
-    );
+    } as unknown as Queue<ProcessReadingEnvelopeV1>;
 
-    expect(result.kind).toBe("activated");
-    expect(order).toEqual(["raw", "extracted", "manifest", "byId", "index", "send"]);
-    const extracted = await reader.readExtracted(KEY_PREFIX);
-    expect(await extracted?.text()).toBe(markdown);
-    expect(sent).toHaveLength(1);
+    const out = await activate(readings, queue, baseActivation({ artifacts: ARTIFACTS }));
+
+    expect(out.kind).toBe("activated");
+    expect(seenAtSend).toEqual(["# Imported", "# Imported"]);
+    const raw = await readings.content.get(ARTIFACTS.rawKey);
+    expect(raw!.contentType).toBe("text/markdown; charset=utf-8");
+    // An unread R2 body breaks the pool's per-test storage isolation.
+    await raw!.arrayBuffer();
   });
 
-  it("import-existing rollback: a failed prior rolls back to a failed manifest (not a prior ready)", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    const markdown = "# Re-imported\n\nbody";
-    // enqueueMarkdownImport rolls back to the freshly-built pending manifest, not
-    // to the prior (failed) manifest — so the slot lands `failed`, retryable.
-    const pending = pendingManifest({
-      source_type: "markdown",
-      content_type: "text/markdown; charset=utf-8",
-      active_attempt: activeAttempt("import"),
-    });
-
-    const result = await activateAttempt(
-      reader,
-      rejectingQueue(),
-      services(),
-      baseActivation({
-        manifest: pending,
-        rollbackManifest: pending,
-        rollbackAttempt: activeAttempt("import"),
-        artifacts: {
-          rawExt: "md",
-          rawBytes: new TextEncoder().encode(markdown),
-          rawContentType: "text/markdown; charset=utf-8",
-          extractedMarkdown: markdown,
-        },
-      }),
-    );
-
-    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
-    const manifest = await reader.readManifest(KEY_PREFIX);
-    expect(manifest).toMatchObject({
-      status: "failed",
-      content_status: "failed",
-      error: { code: "QueueSendError", retryable: true },
-    });
-
-    consoleErr.mockRestore();
-  });
-
-  it("setup failure: a pre-send write throw reports unavailable(activation_failed) and commits a failed manifest", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+  it("setup failure: a content write that throws reports activation_failed, never sends, and fails the reading", async () => {
+    const readings = await committedAttempt();
     const { queue, sent } = captureQueue();
-    const byIdKey = `index/by-id/${ID}`;
-    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    let failedOnce = false;
-    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
-      (async (key: string, value: unknown, options?: R2PutOptions) => {
-        if (key === byIdKey && !failedOnce) {
-          failedOnce = true;
-          throw new Error("simulated setup failure");
-        }
-        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
-      }) as R2Bucket["put"],
-    );
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(readings.content, "put").mockRejectedValue(new Error("R2 put failed"));
 
-    const result = await activateAttempt(reader, queue, services(), baseActivation());
+    const out = await activate(readings, queue, baseActivation({ artifacts: ARTIFACTS }));
 
-    expect(result).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
+    expect(out).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
     expect(sent).toHaveLength(0);
-    const manifest = await reader.readManifest(KEY_PREFIX);
-    expect(manifest).toMatchObject({
-      id: ID,
-      status: "failed",
-      error: { code: "QueueSendError", retryable: true },
-    });
-    const index = await reader.readListIndex();
-    expect(index?.items.find((i) => i.id === ID)?.status).toBe("failed");
-
-    putSpy.mockRestore();
-    consoleErr.mockRestore();
+    expect(queue.send).not.toHaveBeenCalled();
+    expect(await readings.manifest(ID)).toMatchObject({ status: "failed", error: { retryable: true } });
+    expect(await readings.jobState(ID, ATTEMPT_ID)).toBe("send_failed");
   });
 
-  it("queue-send failure: a rejecting queue reports unavailable(queue_send_failed) and commits a failed manifest", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+  // No later attempt revisits this attempt's revision prefix, so what the
+  // failed activation half-wrote must go now.
+  it("setup failure: deletes a raw object whose extracted write failed", async () => {
+    const readings = await committedAttempt();
+    const put = readings.content.put.bind(readings.content);
+    vi.spyOn(readings.content, "put")
+      .mockImplementationOnce(put)
+      .mockRejectedValueOnce(new Error("R2 put failed"));
 
-    const result = await activateAttempt(reader, rejectingQueue(), services(), baseActivation());
+    const out = await activate(readings, captureQueue().queue, baseActivation({ artifacts: ARTIFACTS }));
 
-    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
-    const manifest = await reader.readManifest(KEY_PREFIX);
+    expect(out).toMatchObject({ kind: "unavailable", reason: "activation_failed" });
+    expect(await readings.content.list(`${KEY_PREFIX}/revisions/${ATTEMPT_ID}`)).toEqual([]);
+  });
+
+  it("queue-send failure: reports queue_send_failed and leaves a failed, retryable owner with its job recorded", async () => {
+    const readings = await committedAttempt();
+
+    const out = await activate(readings, rejectingQueue(), baseActivation());
+
+    expect(out).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
+    const manifest = await readings.manifest(ID);
     expect(manifest).toMatchObject({
       status: "failed",
       error: { code: "QueueSendError", retryable: true },
+      last_attempt: { id: ATTEMPT_ID, status: "failed" },
     });
-
-    consoleErr.mockRestore();
+    expect(manifest!.active_attempt).toBeUndefined();
+    // Recoverable: the URL is still owned, so a resubmit reprocesses in place,
+    // and the job row records that the work was asked for and never queued.
+    expect(await readings.urlOwnerId(URL)).toBe(ID);
+    expect(await readings.jobState(ID, ATTEMPT_ID)).toBe("send_failed");
   });
 
   it("ready-reprocess rollback: a ready rollbackManifest stays ready with active_attempt cleared on send failure", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    const ready = pendingManifest({ status: "ready", active_attempt: undefined, last_attempt: undefined });
+    const ready = pendingManifest({ status: "ready", connections: [], title: "Kept", last_attempt: undefined });
+    const readings = testReadingsFor(mintTenant());
+    await readings.seed({ ...ready, active_attempt: undefined }, { keyPrefix: KEY_PREFIX });
+    await readings.writer.startAttempt(ready, { summary: activeAttempt("reprocess"), payload: queueMessage() }, (await readings.manifest(ID))!);
 
-    const result = await activateAttempt(
-      reader,
+    const out = await activate(
+      readings,
       rejectingQueue(),
-      services(),
       baseActivation({
-        writeByIdPointer: false,
-        manifest: pendingManifest({ status: "ready", active_attempt: activeAttempt("reprocess") }),
-        rollbackManifest: ready,
+        manifest: ready,
+        rollbackManifest: { ...ready, active_attempt: undefined },
         rollbackAttempt: activeAttempt("reprocess"),
       }),
     );
 
-    expect(result.kind).toBe("unavailable");
-    const manifest = await reader.readManifest(KEY_PREFIX);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.active_attempt).toBeUndefined();
-    expect(manifest?.last_attempt).toMatchObject({ status: "failed", error: { code: "QueueSendError" } });
-
-    consoleErr.mockRestore();
+    expect(out).toMatchObject({ kind: "unavailable", reason: "queue_send_failed" });
+    const manifest = await readings.manifest(ID);
+    expect(manifest).toMatchObject({ status: "ready", title: "Kept", last_attempt: { status: "failed" } });
+    expect(manifest!.active_attempt).toBeUndefined();
   });
 
-  it("tombstone before writes: skips activation, writes nothing, does not enqueue", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const { queue, sent } = captureQueue();
-    await reader.writePurgeTombstone(ID);
-
-    const result = await activateAttempt(
-      reader,
-      queue,
-      services(),
-      baseActivation({ writeByIdPointer: false }),
-    );
-
-    expect(result).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
-    expect(sent).toHaveLength(0);
-    await expect(reader.readManifest(KEY_PREFIX)).resolves.toBeNull();
-    await expect(reader.findListIndexItem(ID)).resolves.toBeNull();
-    await expect(reader.readByIdPointer(ID)).resolves.toBeNull();
-  });
-
-  it("tombstone during rollback: does not recreate a list row after a failed enqueue", async () => {
-    // Purge can finish between the pending write and the queue-send catch.
-    // Rollback must not resurrect the row the tombstone just forbade.
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+  // The deletion fence: the reading was purged between the commit and the send.
+  it("purged before the rollback: recreates nothing", async () => {
+    const readings = await committedAttempt();
     const queue = {
       send: vi.fn(async () => {
-        await reader.writePurgeTombstone(ID);
-        await reader.removeListIndexItemIf(ID, (item) => item.id === ID);
-        await reader.deleteReadingObjects(KEY_PREFIX);
+        await readings.writer.purge(ID, () => false);
         throw new Error("queue send failed");
       }),
     } as unknown as Queue<ProcessReadingEnvelopeV1>;
 
-    const result = await activateAttempt(
-      reader,
-      queue,
-      services(),
-      baseActivation({ writeByIdPointer: false }),
-    );
+    const out = await activate(readings, queue, baseActivation());
 
-    expect(result).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
-    await expect(reader.readManifest(KEY_PREFIX)).resolves.toBeNull();
-    await expect(reader.findListIndexItem(ID)).resolves.toBeNull();
-    consoleErr.mockRestore();
+    expect(out).toEqual({ kind: "unavailable", reason: "queue_send_failed", id: ID });
+    expect(await readings.manifest(ID)).toBeNull();
+    expect(await readings.ids()).toEqual([]);
   });
 
-  it("tombstone HEAD throw fail-opens and still activates", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
+  it("a failed job-state update after a successful send still reports activated", async () => {
+    const readings = await committedAttempt();
     const { queue, sent } = captureQueue();
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    vi.spyOn(reader, "hasPurgeTombstone").mockRejectedValue(new Error("R2 hiccup"));
+    vi.spyOn(readings.writer, "markJobSent").mockRejectedValue(new Error("database blip"));
 
-    const result = await activateAttempt(reader, queue, services(), baseActivation());
+    const out = await activate(readings, queue, baseActivation());
 
-    expect(result.kind).toBe("activated");
+    expect(out.kind).toBe("activated");
     expect(sent).toHaveLength(1);
-    consoleErr.mockRestore();
-  });
-
-  it("response derives status: a ready 'next' manifest returns status 'ready' in the activated outcome", async () => {
-    const reader = new ReadingStore(env.READINGS_BUCKET);
-    const { queue } = captureQueue();
-
-    const result = await activateAttempt(
-      reader,
-      queue,
-      services(),
-      baseActivation({
-        writeByIdPointer: false,
-        manifest: pendingManifest({ status: "ready", active_attempt: activeAttempt("reprocess") }),
-      }),
-    );
-
-    expect(result).toEqual({
-      kind: "activated",
-      id: ID,
-      status: "ready",
-      attemptId: ATTEMPT_ID,
-    });
   });
 });

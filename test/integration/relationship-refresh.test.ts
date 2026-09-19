@@ -2,9 +2,10 @@ import { env } from "cloudflare:test";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../../src/index";
 import { REFRESH_CRON, REFRESH_SCAN_SIZE, consumeRelationshipRefresh, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
-import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
-import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, testReadingStore } from "../helpers/tenant-fixtures";
+import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, founderTenant } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
 
 const NOW = Date.parse("2026-09-06T03:07:00Z");
@@ -31,11 +32,25 @@ beforeEach(() => {
       getByIds: vi.fn(async (ids: string[]) => ids.map(id => ({ id }))), queryById: query,
     } as unknown as VectorizeIndex,
   } as unknown as Env;
+  // Neighbourhoods come from pgvector now. These tests are about what the scan
+  // does with a neighbourhood, so they keep scripting one through the
+  // Vectorize-shaped doubles above, and this adapter feeds the scan from them:
+  // `getByIds` decides whether the reading has a vector at all, `queryById`
+  // supplies its matches. The similarity store has its own suite.
+  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation(async (id, topK) => {
+    const index = runtime.READINGS_INDEX as unknown as {
+      getByIds: (ids: string[]) => Promise<unknown[]>;
+      queryById: (id: string, options: { topK: number }) => Promise<{ matches: { id: string; score: number }[] }>;
+    };
+    if ((await index.getByIds([`${FOUNDER_TENANT_ID}:${id}`])).length === 0) return null;
+    const { matches } = await index.queryById(id, { topK });
+    return matches.map(match => ({ id: match.id.slice(match.id.indexOf(":") + 1), score: match.score, url: "" }));
+  });
 });
 afterEach(() => vi.restoreAllMocks());
 
 async function seed(n: number): Promise<Manifest[]> {
-  const store = testReadingStore(env);
+  const store = testReadingsFor(founderTenant());
   const manifests: Manifest[] = [];
   for (let i = 0; i < n; i++) {
     const id = `rd_${String(i).padStart(10, "0")}`;
@@ -43,12 +58,11 @@ async function seed(n: number): Promise<Manifest[]> {
       id, url: `https://example.com/${i}`, url_hash: "a".repeat(64), status: "ready",
       novelty_verdict: "familiar", connections: [],
       content_type: "text/html", content_status: "captured", content_bytes: 1,
-      content_sha256: "b".repeat(64), created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
+      content_sha256: "b".repeat(64), created_at: "2026-09-01T00:00:00.000Z", updated_at: "2026-09-01T00:00:00.000Z",
     };
     manifests.push(m);
-    await store.writeManifest(buildKeyPrefix(id, m.created_at), m);
+    await store.seed(m);
   }
-  await store.writeListIndex({ version: 1, items: manifests.map(m => manifestToIndexItem(m, buildKeyPrefix(m.id, m.created_at))) });
   return manifests;
 }
 
@@ -89,16 +103,16 @@ describe("relationship refresh scan", () => {
     expect(judges()).toHaveLength(4);
     expect(query).toHaveBeenCalledTimes(manifests.length);
     expect(new Set(judges().map(x => x.kind === "judge" && x.readingId)).size).toBe(4);
-    const store = testReadingStore(env);
-    for (const m of manifests) expect(await store.readManifest(buildKeyPrefix(m.id, m.created_at))).toEqual(m);
+    const store = testReadingsFor(founderTenant());
+    for (const m of manifests) expect(await store.manifest(m.id)).toEqual(m);
   });
 
   it("finds a fifth ready neighbour behind a stale vector", async () => {
     const manifests = await seed(6);
     const target = manifests[0]!;
     const known = manifests.slice(1, 5).map(m => m.id);
-    const store = testReadingStore(env);
-    await store.writeManifest(buildKeyPrefix(target.id, target.created_at), {
+    const store = testReadingsFor(founderTenant());
+    await store.seed({
       ...target, connections: known.map(id => ({ id, reason: "Known" })),
       connections_neighbourhood_ids: known,
     });
@@ -217,10 +231,10 @@ describe("relationship refresh scan", () => {
   it("skips purged, in-TTL reprocessing and vectorless readings", async () => {
     const manifests = await seed(3);
     await scheduleRelationshipRefresh(runtime, NOW);
-    const store = testReadingStore(env);
+    const store = testReadingsFor(founderTenant());
     const [purged, running, vectorless] = manifests;
-    await store.removeListIndexItem(purged!.id);
-    await store.writeManifest(buildKeyPrefix(running!.id, running!.created_at), {
+    await store.purge(purged!.id);
+    await store.seed({
       ...running!, active_attempt: { id: "at_test", trigger: "reprocess", status: "running", stage: "queued", started_at: new Date().toISOString() },
     });
     vi.mocked(runtime.READINGS_INDEX.getByIds).mockResolvedValue([]);
@@ -232,7 +246,7 @@ describe("relationship refresh scan", () => {
 
   it("keeps a zombie-running ready target as a scan candidate", async () => {
     const [target] = await seed(1);
-    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+    await testReadingsFor(founderTenant()).seed({
       ...target!,
       active_attempt: { id: "at_zombie", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-01T00:00:00Z" },
     });
@@ -244,7 +258,7 @@ describe("relationship refresh scan", () => {
   it("omits an in-TTL running target when the scan clock is services.now()", async () => {
     const nowIso = "2026-09-06T03:07:00.000Z";
     const [target] = await seed(1);
-    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+    await testReadingsFor(founderTenant()).seed({
       ...target!,
       active_attempt: { id: "at_live", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-06T03:06:00.000Z" },
     });
