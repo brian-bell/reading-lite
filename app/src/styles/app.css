@@ -461,6 +461,28 @@ textarea {
   margin: var(--space-1) 0 0;
 }
 
+.settings-group + .settings-group {
+  margin-top: var(--space-5);
+}
+
+.settings-group-title {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* Cadence, time zone, hour, and weekday side by side where they fit. */
+.digest-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.digest-actions {
+  margin-top: var(--space-3);
+}
+
 /* A 44 px row so the whole label is the target, not just the box. */
 .settings-toggle {
   display: inline-flex;

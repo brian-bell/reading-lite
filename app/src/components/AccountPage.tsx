@@ -1,11 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import { useRef, useState, type RefObject } from "react";
+import { useId, useMemo, useRef, useState, type RefObject } from "react";
 import { accountViewOf, readRefusedBy, type AccountView } from "../account-state";
 import { saveSettings } from "../api/settings";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
 import { isUnauthorized } from "../api/errors";
 import { dropSignedInAccount } from "../auth/session";
+import {
+  changeDigest,
+  digestBody,
+  digestHourLabel,
+  DIGEST_CADENCE_OPTIONS,
+  DIGEST_HOURS,
+  DIGEST_WEEKDAY_OPTIONS,
+  listIanaTimeZones,
+  scheduleOf,
+  turnsDigestOn,
+  type DigestDraft,
+  type DigestSchedule,
+} from "../digest";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
@@ -18,7 +31,13 @@ import {
   type SessionsResult,
 } from "../sessions";
 import { sessionsQueryOptions } from "../sessions-query";
-import { settingsQueryKey, type SettingsBody, type SettingsResult, type UserSettings } from "../settings";
+import {
+  settingsQueryKey,
+  type DigestCadence,
+  type SettingsBody,
+  type SettingsResult,
+  type UserSettings,
+} from "../settings";
 import { settingsQueryOptions } from "../settings-query";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
@@ -55,6 +74,7 @@ export function AccountPage() {
   const settingsQuery = useQuery(settingsQueryOptions(queryClient, identity));
   const [confirmAll, setConfirmAll] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
+  const [digestDraft, setDigestDraft] = useState<DigestDraft | null>(null);
 
   const revoke = useMutation({
     mutationFn: async (target: RevokeTarget): Promise<{ target: RevokeTarget; outcome: RevokeOutcome }> => {
@@ -90,6 +110,9 @@ export function AccountPage() {
       const stored: SettingsResult =
         outcome.kind === "saved" ? { state: "ready", value: outcome.settings } : readRefusedBy(outcome);
       queryClient.setQueryData<SettingsResult>(settingsKey, stored);
+      // A draft exists only while the digest is off, so a save that leaves it
+      // on is the draft's own (or its Retry): the draft is now the settings.
+      if (outcome.kind === "saved" && outcome.settings.digest_cadence !== "off") setDigestDraft(null);
     },
   });
 
@@ -135,6 +158,39 @@ export function AccountPage() {
   // While a save is in flight, or after one failed, the controls show what
   // the reader asked for rather than snapping back to the stored value.
   const unsaved = save.isPending || saveFailure !== undefined ? save.variables : undefined;
+  const storedSettings =
+    settingsView.kind === "ready" || settingsView.kind === "offline" ? settingsView.value : undefined;
+  const shown = storedSettings ? { ...storedSettings, ...unsaved } : undefined;
+
+  function changeDigestSchedule(patch: Partial<DigestSchedule>) {
+    if (!storedSettings || !shown || save.isPending) return;
+    const change = changeDigest(storedSettings, shown, digestDraft, patch);
+    if (change.kind === "draft") setDigestDraft(change.draft);
+    else if (change.kind === "cancel") cancelDigestDraft();
+    else if (change.kind === "save") saveSetting(change.body);
+  }
+
+  function saveDigestDraft() {
+    if (shown && digestDraft) saveSetting(digestBody(shown, digestDraft));
+  }
+
+  // A failed save of the draft, which would otherwise keep the digest showing
+  // as on. A failed save of anything else is left for its own Discard.
+  const draftSaveFailed =
+    saveFailure !== undefined && storedSettings !== undefined && turnsDigestOn(storedSettings, save.variables);
+
+  // Cancel, and choosing Off, drop the draft and any failed save of it.
+  function cancelDigestDraft() {
+    setDigestDraft(null);
+    if (draftSaveFailed) save.reset();
+  }
+
+  // Discard puts back the stored settings: after a failed draft save, that
+  // closes the draft too.
+  function discardSave() {
+    save.reset();
+    if (draftSaveFailed) setDigestDraft(null);
+  }
 
   return (
     <PageStateFocus kind={view.kind}>
@@ -149,13 +205,17 @@ export function AccountPage() {
         revokeAllRef,
         settings: {
           view: settingsView,
-          unsaved,
+          shown,
+          digestDraft,
           saving: save.isPending,
           saveFailure,
           onSave: saveSetting,
+          onDigestChange: changeDigestSchedule,
+          onSaveDigestDraft: saveDigestDraft,
+          onCancelDigestDraft: cancelDigestDraft,
           onRetry: () => void settingsQuery.refetch(),
           onRetrySave: retrySave,
-          onDiscard: () => save.reset(),
+          onDiscard: discardSave,
         },
       })}
     </PageStateFocus>
@@ -194,10 +254,15 @@ function pageViewOf(sessions: AccountView<SessionsList>, settings: AccountView<U
 
 interface SettingsActions {
   view: AccountView<UserSettings>;
-  unsaved: SettingsBody | undefined;
+  /** The stored settings with any unsaved change over them. */
+  shown: UserSettings | undefined;
+  digestDraft: DigestDraft | null;
   saving: boolean;
   saveFailure: Failure | undefined;
   onSave: (body: SettingsBody) => void;
+  onDigestChange: (patch: Partial<DigestSchedule>) => void;
+  onSaveDigestDraft: () => void;
+  onCancelDigestDraft: () => void;
   /** Reads the settings again after a failed read. */
   onRetry: () => void;
   onRetrySave: () => void;
@@ -275,22 +340,25 @@ function pageFor(
 }
 
 /**
- * Immediate email (#340.6.1), as the SPA's notify-immediate section. The
- * section carries its read's loading, offline, and server-error states, and a
- * failed save's, itself; a refusal never reaches here (pageViewOf).
+ * Immediate email (#340.6.1) and the digest schedule (#340.6.3), as the SPA's
+ * notify-immediate and digest-schedule sections. The section carries its
+ * read's loading, offline, and server-error states, and a failed save's,
+ * itself; a refusal never reaches here (pageViewOf).
  */
 function NotificationsSection({
   view,
-  unsaved,
+  shown,
+  digestDraft,
   saving,
   saveFailure,
   onSave,
+  onDigestChange,
+  onSaveDigestDraft,
+  onCancelDigestDraft,
   onRetry,
   onRetrySave,
   onDiscard,
 }: SettingsActions) {
-  const stored = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
-  const shown = stored ? { ...stored, ...unsaved } : undefined;
   return (
     <section className="account-section" aria-labelledby="notifications-heading">
       <h2 id="notifications-heading" className="account-section-title">
@@ -319,23 +387,164 @@ function NotificationsSection({
           <p className="form-hint">{view.message}</p>
         </InlineNotice>
       ) : null}
-      {stored && shown ? (
-        <div className="settings-group">
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={shown.notify_immediate}
-              onChange={(event) => onSave({ notify_immediate: event.currentTarget.checked })}
-              disabled={saving}
-            />
-            Email me when a reading is ready
-          </label>
-          <p className="session-meta">
-            Immediate mail on a successful reading. Uncheck to opt out. Mail goes to your current verified address.
-          </p>
-        </div>
+      {shown ? (
+        <>
+          <div className="settings-group">
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={shown.notify_immediate}
+                onChange={(event) => onSave({ notify_immediate: event.currentTarget.checked })}
+                disabled={saving}
+              />
+              Email me when a reading is ready
+            </label>
+            <p className="session-meta">
+              Immediate mail on a successful reading. Uncheck to opt out. Mail goes to your current verified
+              address.
+            </p>
+          </div>
+          <DigestScheduleFields
+            schedule={digestDraft ?? scheduleOf(shown)}
+            drafting={digestDraft !== null}
+            saving={saving}
+            onChange={onDigestChange}
+            onSaveDraft={onSaveDigestDraft}
+            onCancelDraft={onCancelDigestDraft}
+          />
+        </>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Cadence, then — while the digest is on or being drafted — time zone, local
+ * hour, and (weekly only) weekday. A draft shows Save digest and Cancel.
+ */
+function DigestScheduleFields({
+  schedule,
+  drafting,
+  saving,
+  onChange,
+  onSaveDraft,
+  onCancelDraft,
+}: {
+  schedule: DigestSchedule;
+  drafting: boolean;
+  saving: boolean;
+  onChange: (patch: Partial<DigestSchedule>) => void;
+  onSaveDraft: () => void;
+  onCancelDraft: () => void;
+}) {
+  const id = useId();
+  const zones = useMemo(() => listIanaTimeZones(schedule.time_zone), [schedule.time_zone]);
+  return (
+    <div className="settings-group" role="group" aria-labelledby={`${id}-heading`}>
+      <h3 id={`${id}-heading`} className="settings-group-title">
+        Digest email
+      </h3>
+      <div className="digest-fields">
+        <div className="field">
+          <label className="field-label" htmlFor={`${id}-cadence`}>
+            Cadence
+          </label>
+          <select
+            id={`${id}-cadence`}
+            className="text-input"
+            value={schedule.digest_cadence}
+            onChange={(event) => onChange({ digest_cadence: event.currentTarget.value as DigestCadence })}
+            disabled={saving}
+          >
+            {DIGEST_CADENCE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        {schedule.digest_cadence !== "off" ? (
+          <>
+            <div className="field">
+              <label className="field-label" htmlFor={`${id}-time-zone`}>
+                Time zone
+              </label>
+              <select
+                id={`${id}-time-zone`}
+                className="text-input"
+                value={schedule.time_zone}
+                onChange={(event) => onChange({ time_zone: event.currentTarget.value })}
+                disabled={saving}
+              >
+                {zones.map((zone) => (
+                  <option key={zone} value={zone}>
+                    {zone}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="field">
+              <label className="field-label" htmlFor={`${id}-hour`}>
+                Local hour
+              </label>
+              <select
+                id={`${id}-hour`}
+                className="text-input"
+                value={schedule.digest_hour_local}
+                onChange={(event) => onChange({ digest_hour_local: Number(event.currentTarget.value) })}
+                disabled={saving}
+              >
+                {DIGEST_HOURS.map((hour) => (
+                  <option key={hour} value={hour}>
+                    {digestHourLabel(hour)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {schedule.digest_cadence === "weekly" ? (
+              <div className="field">
+                <label className="field-label" htmlFor={`${id}-weekday`}>
+                  Weekday
+                </label>
+                <select
+                  id={`${id}-weekday`}
+                  className="text-input"
+                  value={schedule.digest_weekday}
+                  onChange={(event) => onChange({ digest_weekday: Number(event.currentTarget.value) })}
+                  disabled={saving}
+                >
+                  {DIGEST_WEEKDAY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+      {/* Always in the page, so the draft's sentence is announced when it
+          arrives (a region inserted with its text is generally not). */}
+      <p className="session-meta" role="status">
+        {drafting ? "Digest stays off until you save. Confirm time zone, hour, and weekday in this save." : null}
+      </p>
+      {drafting ? (
+        <div className="form-actions digest-actions">
+          <button type="button" className="button button-primary" onClick={onSaveDraft} disabled={saving}>
+            Save digest
+          </button>
+          <button type="button" className="button" onClick={onCancelDraft} disabled={saving}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <p className="session-meta">
+          Daily or weekly digest of new ready readings. Off skips digest mail. Independent of immediate email.
+          Hour, weekday, and time zone stay saved when off.
+        </p>
+      )}
+    </div>
   );
 }
 

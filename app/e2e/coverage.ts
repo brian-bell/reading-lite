@@ -413,7 +413,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await expect(page.getByText("Firefox (this device)")).toBeVisible();
       await expect(page.getByRole("button", { name: "Revoke this device" })).toBeVisible();
-      await expect(page.getByRole("status")).toContainText("10-session limit");
+      await expect(page.getByRole("region", { name: "Sessions" }).getByRole("status")).toContainText("10-session limit");
       await expect(page.getByRole("checkbox", { name: "Email me when a reading is ready" })).toBeChecked();
     },
   },
@@ -451,6 +451,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
     prepare: async (page) => {
       await expect(page.getByText("storage unavailable")).toBeVisible();
+    },
+  },
+  {
+    name: "account-digest-draft",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    // Weekly from off opens the draft: every schedule control plus Save digest.
+    prepare: async (page) => {
+      await page.getByRole("combobox", { name: "Cadence" }).selectOption("weekly");
+      await expect(page.getByRole("combobox", { name: "Weekday" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Save digest" })).toBeVisible();
+      await page.locator("#main h1").focus();
     },
   },
   {

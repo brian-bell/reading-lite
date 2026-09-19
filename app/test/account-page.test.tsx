@@ -209,7 +209,7 @@ describe("the account page", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
     expect(await screen.findByText("Firefox (this device)")).toBeVisible();
     expect(screen.getByText("Phone")).toBeVisible();
-    expect(screen.getByRole("status")).toHaveTextContent("10-session limit");
+    expect(within(screen.getByRole("region", { name: "Sessions" })).getByRole("status")).toHaveTextContent("10-session limit");
     expect(screen.getByRole("button", { name: "Revoke this device" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Revoke" })).toBeInTheDocument();
   });
@@ -557,5 +557,162 @@ describe("notification settings on the account page", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your session ended."));
     expect(router.state.location.href).toBe("/account/security");
+  });
+});
+
+// The digest schedule (#340.6.3): saved values, the off-to-on draft, saves
+// while on, and a failed save. The draft rules themselves are digest.test.ts's.
+describe("the digest schedule on the account page", () => {
+  const cadence = () => screen.getByRole("combobox", { name: "Cadence" });
+  const WEEKLY = { ...SETTINGS, digest_cadence: "weekly", time_zone: "Europe/London", digest_hour_local: 7, digest_weekday: 3 };
+
+  it.each([
+    ["weekly", { "Time zone": "Europe/London", "Local hour": "7", Weekday: "3" }],
+    ["daily", { "Time zone": "Europe/London", "Local hour": "7", Weekday: null }],
+    ["off", { "Time zone": null, "Local hour": null, Weekday: null }],
+  ])("shows a saved %s schedule, with the weekday only for weekly", async (saved, controls) => {
+    mockApi({ settings: { ...WEEKLY, digest_cadence: saved } });
+    await openAccount();
+
+    await waitFor(() => expect(cadence()).toHaveValue(saved));
+    for (const [name, value] of Object.entries(controls)) {
+      if (value === null) expect(screen.queryByRole("combobox", { name })).not.toBeInTheDocument();
+      else expect(screen.getByRole("combobox", { name })).toHaveValue(value);
+    }
+  });
+
+  it("carries a change that failed to save into the next one", async () => {
+    let fail = true;
+    const fetchMock = mockApi({
+      settings: WEEKLY,
+      onSaveSettings: (body) => {
+        if (!fail) return Response.json({ ...WEEKLY, ...body });
+        fail = false;
+        return Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("weekly"));
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Local hour" }), "21");
+    expect(await screen.findByText("control plane unavailable")).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Local hour" })).toHaveValue("21");
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Weekday" }), "5");
+
+    await waitFor(() => expect(requestsOf(fetchMock, "POST", "/api/auth/settings")).toHaveLength(2));
+    await expect(requestsOf(fetchMock, "POST", "/api/auth/settings")[1]!.json()).resolves.toMatchObject({
+      digest_hour_local: 21,
+      digest_weekday: 5,
+    });
+  });
+
+  it("drafts a digest turned on from off, and saves it only on Save digest", async () => {
+    const fetchMock = mockApi({ settings: { ...WEEKLY, digest_cadence: "off" } });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("off"));
+
+    await userEvent.selectOptions(cadence(), "weekly");
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: "Local hour" }), "18");
+
+    expect(screen.getByText(/Digest stays off until you save/)).toBeVisible();
+    expect(requestsOf(fetchMock, "POST", "/api/auth/settings")).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: "Save digest" }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument());
+    const [saved] = requestsOf(fetchMock, "POST", "/api/auth/settings");
+    await expect(saved!.json()).resolves.toEqual({
+      notify_immediate: true,
+      digest_cadence: "weekly",
+      time_zone: "Europe/London",
+      digest_hour_local: 18,
+      digest_weekday: 3,
+    });
+    expect(cadence()).toHaveValue("weekly");
+    expect(screen.getByRole("combobox", { name: "Local hour" })).toHaveValue("18");
+  });
+
+  it("discards the draft on Cancel without saving", async () => {
+    const fetchMock = mockApi({ settings: { ...WEEKLY, digest_cadence: "off" } });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("off"));
+
+    await userEvent.selectOptions(cadence(), "daily");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(cadence()).toHaveValue("off");
+    expect(screen.queryByRole("combobox", { name: "Local hour" })).not.toBeInTheDocument();
+    expect(requestsOf(fetchMock, "POST", "/api/auth/settings")).toHaveLength(0);
+  });
+
+  it.each([
+    ["a new hour", "Local hour", "21", { digest_hour_local: 21 }],
+    ["turning it off, keeping the schedule", "Cadence", "off", { digest_cadence: "off" }],
+  ])("saves %s at once while the digest is on", async (_case, control, value, patch) => {
+    const fetchMock = mockApi({ settings: WEEKLY });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("weekly"));
+
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: control }), value);
+
+    await waitFor(() => expect(requestsOf(fetchMock, "POST", "/api/auth/settings")).toHaveLength(1));
+    const [saved] = requestsOf(fetchMock, "POST", "/api/auth/settings");
+    await expect(saved!.json()).resolves.toEqual({
+      notify_immediate: true,
+      digest_cadence: "weekly",
+      time_zone: "Europe/London",
+      digest_hour_local: 7,
+      digest_weekday: 3,
+      ...patch,
+    });
+    await waitFor(() => expect(screen.getByRole("combobox", { name: control })).toBeEnabled());
+    expect(screen.getByRole("combobox", { name: control })).toHaveValue(value);
+  });
+
+  it.each([
+    ["Cancel", (section: HTMLElement) => userEvent.click(within(section).getByRole("button", { name: "Cancel" }))],
+    ["Discard", (section: HTMLElement) => userEvent.click(within(section).getByRole("button", { name: "Discard" }))],
+    ["choosing Off", () => userEvent.selectOptions(cadence(), "off")],
+  ])("keeps the draft through a failed Save digest, and %s puts the digest back off", async (_case, dropDraft) => {
+    const fetchMock = mockApi({
+      settings: { ...WEEKLY, digest_cadence: "off" },
+      onSaveSettings: () => Response.json({ error: "control plane unavailable" }, { status: 503 }),
+    });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("off"));
+
+    await userEvent.selectOptions(cadence(), "daily");
+    await userEvent.click(screen.getByRole("button", { name: "Save digest" }));
+
+    const section = screen.getByRole("region", { name: "Notifications" });
+    expect(await within(section).findByText("control plane unavailable")).toBeVisible();
+    expect(cadence()).toHaveValue("daily");
+    expect(screen.getByRole("button", { name: "Save digest" })).toBeEnabled();
+
+    await dropDraft(section);
+
+    expect(cadence()).toHaveValue("off");
+    expect(screen.queryByRole("button", { name: "Save digest" })).not.toBeInTheDocument();
+    expect(within(section).queryByText(/Your change wasn't saved/)).not.toBeInTheDocument();
+    expect(requestsOf(fetchMock, "POST", "/api/auth/settings")).toHaveLength(1);
+  });
+
+  it("leaves a failed immediate-email save alone when the draft is cancelled", async () => {
+    mockApi({
+      settings: { ...WEEKLY, digest_cadence: "off" },
+      onSaveSettings: () => Response.json({ error: "control plane unavailable" }, { status: 503 }),
+    });
+    await openAccount();
+    await waitFor(() => expect(cadence()).toHaveValue("off"));
+
+    await userEvent.selectOptions(cadence(), "daily");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Email me when a reading is ready" }));
+    expect(await screen.findByText("control plane unavailable")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByText("control plane unavailable")).toBeVisible();
+    expect(screen.getByRole("checkbox", { name: "Email me when a reading is ready" })).not.toBeChecked();
   });
 });
