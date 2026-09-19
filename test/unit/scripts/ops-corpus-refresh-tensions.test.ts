@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, spendHarness } from "../../helpers/operator-spend";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type {
@@ -94,7 +95,7 @@ const supersedes = {
   },
 };
 
-function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<string, unknown>> } = {}) {
+function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<string, unknown>>; authority?: Parameters<typeof spendHarness>[0] } = {}) {
   const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c"), { ...listRow("rd_failed"), status: "failed" as const }];
   const manifests = new Map<string, { manifest: Record<string, unknown>; etag: string }>([
     ["readings/2026/rd_a", { manifest: manifest("rd_a", { people: ["Ada"] }), etag: "e-a" }],
@@ -132,6 +133,7 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
   const judge = vi.fn<(input: TensionJudgementInput) => Promise<TensionJudgementResult>>(
     async () => supersedes,
   );
+  const spend = spendHarness(opts.authority);
   const readReport = vi.fn(async (): Promise<string | null> => JSON.stringify(report()));
   const createStorage = vi.fn(async () => storage);
   const deps: CorpusRefreshTensionsDeps = {
@@ -146,16 +148,18 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
       judge,
     }),
     now: () => Date.parse(JUDGED_AT),
+    openSpend: spend.openSpend,
+    fetch: spend.fetch,
     sleep: async (ms: number) => {
       sleeps.push(ms);
     },
   };
   const stored = (id: string) => manifests.get(`readings/2026/${id}`)!.manifest;
-  return { deps, out, err, sleeps, judge, readReport, createStorage, writes, listWrites, manifests, stored };
+  return { spend, deps, out, err, sleeps, judge, readReport, createStorage, writes, listWrites, manifests, stored };
 }
 
 const run = (h: ReturnType<typeof harness>, ...argv: string[]) =>
-  corpusRefreshTensionsCommand.run(["--tenant", "global", ...argv], h.deps);
+  corpusRefreshTensionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT, ...argv], h.deps);
 
 /** A fake clock that advances a fixed step on every read. */
 function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
@@ -182,7 +186,7 @@ describe("ops corpus refresh-tensions", () => {
   it("prints a Timing block for a plan pass with no provider phase", async () => {
     const h = harness();
     expect(
-      await corpusRefreshTensionsCommand.run(["--tenant", "global"], {
+      await corpusRefreshTensionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], {
         ...h.deps,
         now: fakeClock(10),
       }),
@@ -201,7 +205,7 @@ describe("ops corpus refresh-tensions", () => {
     const h = harness();
     expect(
       await corpusRefreshTensionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).toBe(0);
@@ -686,7 +690,7 @@ describe("ops corpus refresh-tensions planning read concurrency", () => {
         report(ids.map((id, index) => ({ id, neighbours: [ids[(index + 1) % COUNT]!] }))),
       ),
     );
-    const code = await corpusRefreshTensionsCommand.run(["--tenant", "global"], h.deps);
+    const code = await corpusRefreshTensionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps);
     // The Timing block is wall-clock and is expected to differ between a
     // sequential and a concurrent pass; everything else must not.
     const plan = h.out.slice(0, h.out.findIndex((line) => line.includes("Timing:")));
@@ -788,6 +792,8 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
       [
         "--tenant",
         "global",
+        "--billing-tenant",
+        BILLING_TENANT,
         "--execute",
         "--sole-writer",
         ...pairs.flatMap(([a, b]) => ["--pair", `${a},${b}`]),
@@ -859,6 +865,8 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
       [
         "--tenant",
         "global",
+        "--billing-tenant",
+        BILLING_TENANT,
         "--execute",
         "--sole-writer",
         ...pairs.flatMap(([a, b]) => ["--pair", `${a},${b}`]),
@@ -975,5 +983,47 @@ describe("ops corpus refresh-tensions execute concurrency", () => {
         `failures: 2; skipped at the backoff ceiling: ${pairs.length - 2}`,
     );
     expect(s.manifests.get("readings/2026/rd_09")!.manifest.tensions).toEqual([]);
+  });
+});
+
+// reading-lite-gh319.1. The stand-in provider sends `request` through the paid
+// transport the command hands it, as the real judge client does.
+describe("ops corpus refresh-tensions spend admission", () => {
+  function paying(h: ReturnType<typeof harness>, request: RequestInit) {
+    const base = h.deps.loadProvider;
+    h.deps.loadProvider = async (execute, paidFetch) => ({
+      ...(await base(execute)),
+      judge: async () => {
+        await paidFetch!(EMBED_URL, request);
+        return supersedes;
+      },
+    });
+  }
+
+  it("opens no spend session for a plan or a refused execute", async () => {
+    const h = harness();
+    expect(await run(h)).toBe(0);
+    await expect(run(h, "--execute")).rejects.toThrow(/--sole-writer/);
+    expect(h.spend.openSpend).not.toHaveBeenCalled();
+    expect(h.spend.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to execute for --tenant global without a valid --billing-tenant", async () => {
+    const h = harness();
+    const execute = (...argv: string[]) =>
+      corpusRefreshTensionsCommand.run(["--tenant", "global", "--execute", "--sole-writer", ...argv], h.deps);
+    await expect(execute()).rejects.toThrow(/requires --billing-tenant/);
+    await expect(execute("--billing-tenant", "global")).rejects.toThrow(/malformed --billing-tenant/);
+    expect(h.spend.openSpend).not.toHaveBeenCalled();
+  });
+
+  it.each(FAIL_CLOSED_CASES)("makes no provider request after %s", async (_label, authority, request, refusal) => {
+    const h = harness({ authority });
+    paying(h, request);
+    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
+    expect(h.spend.fetch).not.toHaveBeenCalled();
+    expect(h.err.join("\n")).toMatch(refusal);
+    expect(h.writes).toEqual([]);
+    expect(h.spend.dispose).toHaveBeenCalledTimes(1);
   });
 });

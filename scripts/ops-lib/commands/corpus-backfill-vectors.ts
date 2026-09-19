@@ -47,6 +47,13 @@ import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { operatorVectorLedger } from "../../account-lib/operator-ledger";
 import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
+import {
+  BILLING_TENANT_FLAG_HELP,
+  resolveBillingTenant,
+  spendEnvironmentForBucket,
+  withOperatorPaidFetch,
+} from "../operator-spend";
+import type { OpenOperatorSpend } from "../../system-lib/spend";
 
 export interface CorpusBackfillVectorsDeps extends BaseDeps {
   r2: {
@@ -58,8 +65,10 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
     writeRefreshState: (state: unknown, deps: R2Deps) => Promise<void>;
   };
   // Execute-only: resolves credentials (throwing when absent, BEFORE any read
-  // work) and returns the paid/write seams. Never called in plan mode.
-  makeWriters: (vectorizeIndex: string, namespace: string | undefined) => Promise<{
+  // work) and returns the paid/write seams. Never called in plan mode. The
+  // embedding client must send through `paidFetch`, the spend-admitted
+  // transport; the raw `fetch` below is never handed to a provider client.
+  makeWriters: (vectorizeIndex: string, namespace: string | undefined, paidFetch: typeof fetch) => Promise<{
     embedMany: (inputs: string[]) => Promise<{ embeddings: number[][] }>;
     upsert: (vectors: {
       id: string;
@@ -69,6 +78,10 @@ export interface CorpusBackfillVectorsDeps extends BaseDeps {
   }>;
   /** Stamps the run marker, so one run's invalidation is identifiably its own. */
   now: () => number;
+  /** Execute-only: the session with the central spend authority. */
+  openSpend: OpenOperatorSpend;
+  /** The provider transport, reached only through the spend wrapper. */
+  fetch: typeof fetch;
   /**
    * The durable vector-id ledger (issue #195 S3). Every id is recorded before
    * its upsert, so a vector this command restores stays addressable even if the
@@ -86,6 +99,7 @@ interface Opts {
   only: string[];
   bucket: string;
   tenant?: string;
+  billingTenant?: string;
   vectorizeIndex?: string;
   remote: boolean;
   execute: boolean;
@@ -120,6 +134,7 @@ export function parseArgs(
     }
     else if (arg === "--bucket") opts.bucket = takeValue(arg, index++);
     else if (arg === "--tenant") opts.tenant = takeValue(arg, index++);
+    else if (arg === "--billing-tenant") opts.billingTenant = takeValue(arg, index++);
     else if (arg === "--vectorize") opts.vectorizeIndex = takeValue(arg, index++);
     else if (arg === "--limit") {
       const raw = takeValue(arg, index++);
@@ -142,9 +157,24 @@ async function runCorpusBackfillVectors(
   deps: CorpusBackfillVectorsDeps,
 ): Promise<number> {
   const opts = parseArgs(argv);
+  const tenant = requireOperatorTenant(opts.tenant);
+  const billingTenant = resolveBillingTenant(opts.billingTenant, { tenant, execute: opts.execute });
+  if (!opts.execute) return backfill(opts, tenant, deps, undefined);
+  return withOperatorPaidFetch(
+    deps,
+    { env: spendEnvironmentForBucket(opts.bucket), billingTenant, command: "corpus-backfill-vectors" },
+    (paidFetch) => backfill(opts, tenant, deps, paidFetch),
+  );
+}
+
+async function backfill(
+  opts: Opts,
+  tenant: OperatorTenant,
+  deps: CorpusBackfillVectorsDeps,
+  paidFetch: typeof fetch | undefined,
+): Promise<number> {
   const { io, r2 } = deps;
   const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const tenant = requireOperatorTenant(opts.tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
@@ -171,10 +201,10 @@ async function runCorpusBackfillVectors(
   const ledger = deps.makeLedger({ tenant, bucket: opts.bucket, execute: opts.execute });
   // One clock read for both stamps, so a run is identifiable by it.
   const runAt = new Date(deps.now()).toISOString();
-  if (opts.execute) {
+  if (paidFetch !== undefined) {
     // Awaited before any read so a missing credential fails the run up front,
     // matching the retired standalone script.
-    ({ embedMany, upsert } = await deps.makeWriters(vectorizeIndex, tenant.namespace));
+    ({ embedMany, upsert } = await deps.makeWriters(vectorizeIndex, tenant.namespace, paidFetch));
     // Before the first upsert, and fatal: an unstamped marker would let the
     // next incremental refresh scope narrowly around vectors it cannot see, and
     // nothing later in this run can put that right.
@@ -366,6 +396,8 @@ Options:
   --limit <n>         Cap how many vectors are restored this pass.
   --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
+  ${BILLING_TENANT_FLAG_HELP}
+                      Default: --tenant. Required to --execute with --tenant global.
   --vectorize <idx>   Vectorize index. Default: the bucket name.
   --execute           Embed and upsert the missing vectors.
   --help              Show this message.
@@ -387,7 +419,9 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
       writeRefreshState: async (state, d) =>
         (await import("../../corpus-lib/wrangler-r2")).writeRefreshState(state, d),
     },
-    makeWriters: async (vectorizeIndex, namespace) => {
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: (input, init) => globalThis.fetch(input, init),
+    makeWriters: async (vectorizeIndex, namespace, paidFetch) => {
       // Imports stay inside so plan mode and help never resolve credentials
       // or load client modules; the awaited call still fails a credential-less
       // execute before any read work happens.
@@ -407,7 +441,7 @@ and CORPUS_CF_API_TOKEN / CLOUDFLARE_API_TOKEN.`,
         }
         throw new Error(`missing execute credential: ${names.join(" or ")}`);
       };
-      const openai = makeOpenAIEmbedClient({ fetch, apiKey: required(["OPENAI_API_KEY"]) });
+      const openai = makeOpenAIEmbedClient({ fetch: paidFetch, apiKey: required(["OPENAI_API_KEY"]) });
       const vectorize = makeVectorizeClient({
         accountId: required(["CORPUS_VECTORIZE_ACCOUNT_ID", "CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]),
         apiToken: required(["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]),

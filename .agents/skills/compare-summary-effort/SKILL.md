@@ -59,7 +59,12 @@ that job — that command is the fixture-based quality matrix, not live readings
    ceiling immediately before execution. A current-turn instruction that already
    approves those calls and that ceiling is sufficient; do not ask twice.
 
-6. Execute only after approval (`--execute` is the only paid path):
+6. Execute only after approval (`--execute` is the only paid path). Provider
+   requests are admitted against a tenant's daily spend cap plus the global
+   cap, so `--execute` requires `--env staging|production` (whose spend
+   authority) and `--billing-tenant usr_…` (who pays; production uses
+   `/api/whoami`'s `tenant_id`). A denial or an unpriced `--model` stops the run
+   before the provider is called:
 
    ```zsh
    npx tsx .agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts \
@@ -67,6 +72,8 @@ that job — that command is the fixture-based quality matrix, not live readings
      --target 'https://example.com/article' \
      --model gpt-5.6-luna \
      --effort max \
+     --env production \
+     --billing-tenant 'usr_EXAMPLE' \
      --execute
    ```
 

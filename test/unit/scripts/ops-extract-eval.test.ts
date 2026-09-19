@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, PRICED_REQUEST, spendHarness } from "../../helpers/operator-spend";
 import { extractAgentCommand, type ExtractAgentDeps } from "../../../scripts/ops-lib/commands/extract-agent";
 import { extractProbeCommand, type ExtractProbeDeps } from "../../../scripts/ops-lib/commands/extract-probe";
 import { evalSummarizerCommand, summarizerDepsForEvaluationCandidate, type EvalSummarizerDeps } from "../../../scripts/ops-lib/commands/eval-summarizer";
@@ -128,16 +129,25 @@ describe("ops extract probe", () => {
 });
 
 describe("ops eval summarizer", () => {
-  function makeDeps() {
+  const EXECUTE = ["--execute", "--env", "staging", "--billing-tenant", BILLING_TENANT];
+
+  // `request`, when given, is what the stand-in matrix sends through the paid
+  // transport it was handed, as the real one does for every provider call.
+  function makeDeps(authority: Parameters<typeof spendHarness>[0] = "allow", request?: RequestInit) {
     const { io: cio, out } = io();
     const executions: { cases: number; candidates: number; outputDir: string }[] = [];
+    const spend = spendHarness(authority);
     const deps: EvalSummarizerDeps = {
       io: cio,
-      executeMatrix: async (cases, candidates, outputDir) => {
+      openSpend: spend.openSpend,
+      fetch: spend.fetch,
+      now: () => Date.now(),
+      executeMatrix: async (cases, candidates, outputDir, paidFetch) => {
         executions.push({ cases: cases.length, candidates: candidates.length, outputDir });
+        if (request) await paidFetch(EMBED_URL, request);
       },
     };
-    return { deps, out, executions };
+    return { deps, out, executions, spend };
   }
 
   it("plan mode prints the matrix without any provider call or write", async () => {
@@ -154,10 +164,46 @@ describe("ops eval summarizer", () => {
 
   it("--execute runs the paid matrix", async () => {
     const { deps, executions } = makeDeps();
-    const code = await evalSummarizerCommand.run(["--execute", "--output-dir", "out"], deps);
+    const code = await evalSummarizerCommand.run([...EXECUTE, "--output-dir", "out"], deps);
     expect(code).toBe(0);
     expect(executions).toEqual([expect.objectContaining({ outputDir: "out" })]);
     expect(executions[0].cases).toBeGreaterThan(0);
+  });
+
+  it("plan mode opens no spend session and reaches no provider", async () => {
+    const { deps, spend } = makeDeps();
+    expect(await evalSummarizerCommand.run([], deps)).toBe(0);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(spend.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [["--execute", "--env", "staging"], /requires --billing-tenant/],
+    [["--execute", "--env", "staging", "--billing-tenant", "global"], /malformed --billing-tenant/],
+    [["--billing-tenant", "nobody"], /malformed --billing-tenant/],
+    [["--execute", "--billing-tenant", BILLING_TENANT], /--env must be staging or production/],
+  ])("refuses %j before any spend session or matrix run", async (argv, message) => {
+    const { deps, executions, spend } = makeDeps();
+    await expect(evalSummarizerCommand.run(argv, deps)).rejects.toThrow(message);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(executions).toHaveLength(0);
+  });
+
+  it("bills the matrix to --billing-tenant on the --env authority", async () => {
+    const { deps, spend } = makeDeps("allow", PRICED_REQUEST);
+    expect(await evalSummarizerCommand.run(EXECUTE, deps)).toBe(0);
+    expect(spend.openSpend).toHaveBeenCalledWith("staging");
+    expect(spend.calls.map((call) => call.kind)).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(new Set(spend.calls.map((call) => call.tenantId))).toEqual(new Set([BILLING_TENANT]));
+    expect(spend.fetch).toHaveBeenCalledTimes(1);
+    expect(spend.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(FAIL_CLOSED_CASES)("makes no provider request after %s", async (_label, authority, request, refusal) => {
+    const { deps, spend } = makeDeps(authority, request);
+    await expect(evalSummarizerCommand.run(EXECUTE, deps)).rejects.toThrow(refusal);
+    expect(spend.fetch).not.toHaveBeenCalled();
+    expect(spend.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an unknown candidate id as a usage error", async () => {

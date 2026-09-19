@@ -15,15 +15,25 @@ import {
 } from "../../summarizer-eval/fixtures";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import type { SummarizerDeps } from "../../../src/modules/summarizer";
+import { BILLING_TENANT_FLAG_HELP, resolveBillingTenant, withOperatorPaidFetch } from "../operator-spend";
+import { policyEnvironment } from "../../system-lib/policy";
+import type { OpenOperatorSpend } from "../../system-lib/spend";
 
 export interface EvalSummarizerDeps extends BaseDeps {
   // The whole paid path: provider calls, scoring, and report writes. Only
-  // reached with --execute; the default loads provider clients lazily.
+  // reached with --execute; the default loads provider clients lazily. Every
+  // provider request goes through `paidFetch`, the spend-admitted transport.
   executeMatrix: (
     cases: EvaluationCase[],
     candidates: EvaluationCandidate[],
     outputDir: string,
+    paidFetch: typeof fetch,
   ) => Promise<void>;
+  /** Execute-only: the session with the central spend authority. */
+  openSpend: OpenOperatorSpend;
+  /** The provider transport, reached only through the spend wrapper. */
+  fetch: typeof fetch;
+  now: () => number;
 }
 
 interface Args {
@@ -31,6 +41,8 @@ interface Args {
   outputDir: string;
   candidateIds: string[];
   caseIds: string[];
+  env?: string;
+  billingTenant?: string;
 }
 
 function parseEvalArgs(argv: string[]): Args {
@@ -43,6 +55,8 @@ function parseEvalArgs(argv: string[]): Args {
         "output-dir": { type: "string", default: ".summarizer-eval" },
         candidate: { type: "string", multiple: true, default: [] },
         case: { type: "string", multiple: true, default: [] },
+        env: { type: "string" },
+        "billing-tenant": { type: "string" },
       },
     }));
   } catch (err) {
@@ -53,6 +67,8 @@ function parseEvalArgs(argv: string[]): Args {
     outputDir: values["output-dir"]!,
     candidateIds: values.candidate,
     caseIds: values.case,
+    env: values.env,
+    billingTenant: values["billing-tenant"],
   };
 }
 
@@ -107,6 +123,12 @@ export function summarizerDepsForEvaluationCandidate(
 
 async function runEvalSummarizer(argv: string[], deps: EvalSummarizerDeps): Promise<number> {
   const args = parseEvalArgs(argv);
+  // Fixture evaluations have no tenant of their own, so the payer and the
+  // spend authority are both explicit. Refused before the matrix is printed.
+  const billingTenant = resolveBillingTenant(args.billingTenant, { execute: args.execute });
+  const spend = args.execute
+    ? { env: policyEnvironment(args.env), billingTenant, command: "eval-summarizer" }
+    : null;
   const candidates = selectById(EVALUATION_CANDIDATES, args.candidateIds, "candidate");
   const cases = selectById(EVALUATION_CASES, args.caseIds, "case");
   deps.io.stdout(
@@ -115,11 +137,15 @@ async function runEvalSummarizer(argv: string[], deps: EvalSummarizerDeps): Prom
   for (const candidate of candidates) {
     deps.io.stdout(`  ${candidate.id}: ${evaluationCandidateIdentity(candidate)}`);
   }
-  if (!args.execute) {
+  if (!spend) {
     deps.io.stdout("Pass --execute to run paid provider calls and write the report.");
     return 0;
   }
-  await deps.executeMatrix(cases, candidates, args.outputDir);
+  await withOperatorPaidFetch(
+    deps,
+    spend,
+    (paidFetch) => deps.executeMatrix(cases, candidates, args.outputDir, paidFetch),
+  );
   return 0;
 }
 
@@ -140,6 +166,10 @@ Options:
   --output-dir <path>     Generated raw JSON and Markdown report directory.
                           Default: .summarizer-eval (gitignored).
   --execute               Call the configured Anthropic and OpenAI APIs.
+                          Requires --env and --billing-tenant.
+  --env <name>            staging or production: whose spend authority admits
+                          the paid requests.
+  ${BILLING_TENANT_FLAG_HELP}
   --help                  Show this message.
 
 Candidates: ${EVALUATION_CANDIDATES.map((item) => item.id).join(", ")}
@@ -149,7 +179,10 @@ Credentials resolve from process env, .prd.vars, then .dev.vars. Outputs never
 include credential values. There is no provider fallback.`,
   defaultDeps: (io: CommandIo): EvalSummarizerDeps => ({
     io,
-    executeMatrix: async (cases, candidates, outputDir) => {
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: (input, init) => globalThis.fetch(input, init),
+    now: () => Date.now(),
+    executeMatrix: async (cases, candidates, outputDir, paidFetch) => {
       const { mkdir, writeFile } = await import("node:fs/promises");
       const { resolve } = await import("node:path");
       const { summarizeReading } = await import("../../../src/modules/summarizer");
@@ -179,7 +212,7 @@ include credential values. There is no provider fallback.`,
           summarizeReading(
             evaluationCase.input,
             summarizerDepsForEvaluationCandidate(candidate, {
-              fetch: globalThis.fetch,
+              fetch: paidFetch,
               openaiApiKey: vars.OPENAI_API_KEY!,
               anthropicApiKey: vars.ANTHROPIC_API_KEY,
               fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-5",

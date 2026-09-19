@@ -1,3 +1,4 @@
+import { BILLING_TENANT, FAIL_CLOSED_CASES, spendHarness } from "../../helpers/operator-spend";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -337,10 +338,11 @@ describe("compare-summary-effort", () => {
           "claude-opus-5",
           "--anthropic-effort",
           "max",
-          "--execute",
+          "--execute", "--env", "staging", "--billing-tenant", BILLING_TENANT,
         ],
         {
           fetch: fetchFn,
+          openSpend: spendHarness().openSpend,
           now: () => Date.parse("2026-08-03T04:00:00.000Z"),
           credentials: {
             READER_API_TOKEN: "reader-token",
@@ -783,6 +785,7 @@ describe("compare-summary-effort", () => {
       ["--target", "rd_MAIN", "--model", "gpt-5.6-luna", "--effort", "max"],
       {
         fetch: fetchFn,
+        openSpend: spendHarness().openSpend,
         now: () => Date.parse("2026-08-03T04:00:00.000Z"),
         credentials: { READER_API_TOKEN: "reader-token" },
         summarize,
@@ -816,12 +819,13 @@ describe("compare-summary-effort", () => {
           "gpt-5.6-luna",
           "--effort",
           "max",
-          "--execute",
+          "--execute", "--env", "staging", "--billing-tenant", BILLING_TENANT,
           "--output-dir",
           outputDir,
         ],
         {
           fetch: fetchFn,
+          openSpend: spendHarness().openSpend,
           now: () => Date.parse("2026-08-03T04:00:00.000Z"),
           credentials: {
             READER_API_TOKEN: "reader-token",
@@ -869,9 +873,10 @@ describe("compare-summary-effort", () => {
     });
     await expect(
       runCompareSummaryEffort(
-        ["--target", "rd_MAIN", "--effort", "max", "--execute"],
+        ["--target", "rd_MAIN", "--effort", "max", "--execute", "--env", "staging", "--billing-tenant", BILLING_TENANT],
         {
           fetch: fetchFn,
+          openSpend: spendHarness().openSpend,
           now: () => Date.now(),
           credentials: {
             READER_API_TOKEN: "reader-token",
@@ -897,12 +902,13 @@ describe("compare-summary-effort", () => {
           "--effort",
           "max",
           "--openai-only",
-          "--execute",
+          "--execute", "--env", "staging", "--billing-tenant", BILLING_TENANT,
           "--output-dir",
           outputDir,
         ],
         {
           fetch: fetchFn,
+          openSpend: spendHarness().openSpend,
           now: () => Date.parse("2026-08-03T04:00:00.000Z"),
           credentials: {
             READER_API_TOKEN: "reader-token",
@@ -1003,6 +1009,83 @@ describe("compare-summary-effort", () => {
       } else {
         process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = previous;
       }
+    }
+  });
+});
+
+// reading-lite-gh319.1. No `summarize` override here: the real summarizer runs
+// over the transport the CLI hands it. productionFetch only answers GETs with
+// the reader bearer, so a provider POST reaching it would fail its assertions.
+describe("compare-summary-effort spend admission", () => {
+  function cli(authority: Parameters<typeof spendHarness>[0] = "allow") {
+    const rawContent = "<html>body</html>";
+    const fetchFn = productionFetch({
+      rd_MAIN: {
+        manifest: readyManifest({
+          connections: [],
+          content_sha256: createHash("sha256").update(rawContent).digest("hex"),
+        }),
+        raw: rawContent,
+        extracted: "# Article",
+      },
+    });
+    const spend = spendHarness(authority);
+    const run = (...argv: string[]) =>
+      runCompareSummaryEffort(["--target", "rd_MAIN", "--openai-only", "--effort", "low", ...argv], {
+        fetch: fetchFn,
+        openSpend: spend.openSpend,
+        now: () => Date.parse("2026-08-03T04:00:00.000Z"),
+        credentials: { READER_API_TOKEN: "reader-token", OPENAI_API_KEY: "sk-openai" },
+        stdout: () => {},
+        stderr: () => {},
+      });
+    return { run, spend, fetchFn };
+  }
+  const billed = ["--env", "staging", "--billing-tenant", BILLING_TENANT];
+
+  it("plans without a spend session", async () => {
+    const { run, spend } = cli();
+    expect((await run()).mode).toBe("plan");
+    expect(spend.openSpend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [["--execute", "--env", "staging"], /requires --billing-tenant/],
+    [["--execute", "--env", "staging", "--billing-tenant", "global"], /malformed --billing-tenant/],
+    [["--execute", "--billing-tenant", BILLING_TENANT], /--env must be staging or production/],
+  ])("refuses %j before reading anything", async (argv, message) => {
+    const { run, spend, fetchFn } = cli();
+    await expect(run(...argv)).rejects.toThrow(message);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it.each(FAIL_CLOSED_CASES.filter(([, authority]) => authority !== "allow"))(
+    "makes no provider request after %s",
+    async (_label, authority, _request, refusal) => {
+      const outputDir = await mkdtemp(path.join(tmpdir(), "compare-summary-effort-spend-"));
+      try {
+        const { run, spend, fetchFn } = cli(authority);
+        await expect(run(...billed, "--execute", "--output-dir", outputDir)).rejects.toThrow(refusal);
+        expect(fetchFn.mock.calls.map(([input]) => String(input)).filter((url) => !url.includes("/api/readings"))).toEqual([]);
+        expect(spend.dispose).toHaveBeenCalledTimes(1);
+      } finally {
+        await rm(outputDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("refuses a model the price catalog cannot bound", async () => {
+    const outputDir = await mkdtemp(path.join(tmpdir(), "compare-summary-effort-spend-"));
+    try {
+      const { run, spend, fetchFn } = cli();
+      await expect(
+        run(...billed, "--model", "gpt-unpriced", "--execute", "--output-dir", outputDir),
+      ).rejects.toThrow(/unbounded_request/);
+      expect(spend.calls).toEqual([]);
+      expect(fetchFn.mock.calls.map(([input]) => String(input)).filter((url) => !url.includes("/api/readings"))).toEqual([]);
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
     }
   });
 });

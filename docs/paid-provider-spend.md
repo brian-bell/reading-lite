@@ -2,8 +2,9 @@
 
 Issue #200 covers source embedding, OpenAI/Anthropic summarization, and summary
 embedding in the hosted reading consumer, plus hosted relationship judgements.
-Operator batch, evaluation, comparison, and judgement clients remain outside this
-scope; their estimates are not enforcement.
+Operator batch clients remain outside this scope; their estimates are not
+enforcement. Synchronous operator clients are covered
+[below](#synchronous-operator-clients).
 
 `src/control-plane/paid-dispatch.ts` wraps each provider adapter's fetch inside
 its HTTP retry loop. It bounds the complete request, then asks the existing
@@ -150,7 +151,27 @@ Disabling stops subsequent dispatch authorization, not already authorized or
 in-flight provider calls. Re-enabling allows normal retries of deferred attempts;
 it does not enqueue recovery jobs. Neither action releases leases, refunds
 uncertain charges, changes reading attempts, nor resets daily accounting.
-Operator batch/eval/comparison enforcement remains separate (#319).
+Operator batch enforcement remains separate (#319).
+
+### Synchronous operator clients
+
+`corpus backfill-vectors`, `corpus refresh-connections`, `corpus refresh-tensions`,
+`eval summarizer`, and the compare-summary-effort script wrap their provider
+fetch in the same `createPaidFetch`, inside the client's retry loop, in their
+`--execute` branch only. A plan opens no spend session. The verbs travel over
+the `OperatorSpend` service binding (`scripts/system-lib/spend.ts`, one
+`getPlatformProxy` session per run), which accepts exactly `reserve_spend`,
+`mark_spend_dispatched`, `release_spend`, and `settle_spend` and forwards them
+to the same GlobalUsageGuard singleton. A budget denial, an unreachable
+authority or undeployed entrypoint, and a request the price catalog cannot
+bound each refuse the provider request.
+
+There is no global-only accounting mode. `--billing-tenant usr_…` names the
+tenant whose cap, with the global cap, admits the requests. Corpus commands
+default it to a real `--tenant` and take the authority from `--bucket`;
+`--tenant global`, `eval summarizer`, and comparisons must pass it to execute,
+and the latter two also pass `--env staging|production`. `corpus recover`
+without `--batch` submits through the hosted API and is already enforced there.
 
 ### Detailed private preflight inspection
 

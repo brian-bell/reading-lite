@@ -1,3 +1,4 @@
+import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, PRICED_REQUEST, spendHarness } from "../../helpers/operator-spend";
 import { describe, expect, it } from "vitest";
 import { corpusDropCommand, type CorpusDropDeps } from "../../../scripts/ops-lib/commands/corpus-drop";
 import { corpusSweepCommand, type CorpusSweepDeps } from "../../../scripts/ops-lib/commands/corpus-sweep";
@@ -520,8 +521,15 @@ describe("ops corpus backfill-vectors", () => {
   };
 
   const RUN_AT = "2026-08-22T12:00:00.000Z";
+  // `--tenant global` is not a billing principal, so an execute names its payer.
+  const EXECUTE_GLOBAL = ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute"];
 
-  function makeDeps(marker: unknown = MARKER) {
+  // `paid.request`, when given, is what the stand-in embedding client sends
+  // through the paid transport it was handed, as the real client does.
+  function makeDeps(
+    marker: unknown = MARKER,
+    paid: { authority?: Parameters<typeof spendHarness>[0]; request?: RequestInit } = {},
+  ) {
     const { io: cio, lines } = io();
     const calls = {
       embeds: 0,
@@ -533,8 +541,11 @@ describe("ops corpus backfill-vectors", () => {
       ledgered: [] as string[],
       ledgersMade: [] as Array<{ tenant: string; bucket: string; execute: boolean }>,
     };
+    const spend = spendHarness(paid.authority);
     const deps: CorpusBackfillVectorsDeps = {
       io: cio,
+      openSpend: spend.openSpend,
+      fetch: spend.fetch,
       r2: {
         readListIndex: async () => [
           {
@@ -553,10 +564,11 @@ describe("ops corpus backfill-vectors", () => {
         },
       },
       now: () => Date.parse(RUN_AT),
-      makeWriters: async () => {
+      makeWriters: async (_index, _namespace, paidFetch) => {
         calls.writersMade++;
         return {
           embedMany: async (inputs) => {
+            if (paid.request) await paidFetch(EMBED_URL, paid.request);
             calls.embeds++;
             return { embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0)) };
           },
@@ -579,7 +591,7 @@ describe("ops corpus backfill-vectors", () => {
         };
       },
     };
-    return { deps, lines, calls };
+    return { deps, lines, calls, spend };
   }
 
   it("plan mode resolves eligibility but makes no embedding request or write", async () => {
@@ -594,9 +606,46 @@ describe("ops corpus backfill-vectors", () => {
     expect(text).toContain("no OpenAI request or write was made");
   });
 
+  it("plan mode opens no spend session", async () => {
+    const { deps, spend } = makeDeps();
+    expect(await corpusBackfillVectorsCommand.run(["--tenant", "global"], deps)).toBe(0);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(spend.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [["--tenant", "global", "--execute"], /requires --billing-tenant/],
+    [["--tenant", "global", "--billing-tenant", "global"], /malformed --billing-tenant/],
+    [[...EXECUTE_GLOBAL, "--bucket", "scratch"], /no spend authority is mapped to bucket 'scratch'/],
+  ])("refuses %j before any spend session or writer", async (argv, message) => {
+    const { deps, calls, spend } = makeDeps();
+    await expect(corpusBackfillVectorsCommand.run(argv, deps)).rejects.toThrow(message);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(calls.writersMade).toBe(0);
+  });
+
+  it("bills a real --tenant by default, on the authority its bucket names", async () => {
+    const tenantId = "usr_11111111-1111-4111-8111-111111111111";
+    const { deps, spend } = makeDeps(MARKER, { request: PRICED_REQUEST });
+    expect(await corpusBackfillVectorsCommand.run(
+      ["--tenant", tenantId, "--bucket", "reading-lite-staging", "--execute"], deps,
+    )).toBe(0);
+    expect(spend.openSpend).toHaveBeenCalledWith("staging");
+    expect(new Set(spend.calls.map((call) => call.tenantId))).toEqual(new Set([tenantId]));
+    expect(spend.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(FAIL_CLOSED_CASES)("embeds and upserts nothing after %s", async (_label, authority, request, refusal) => {
+    const { deps, calls, spend } = makeDeps(MARKER, { authority, request });
+    await expect(corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps)).rejects.toThrow(refusal);
+    expect(spend.fetch).not.toHaveBeenCalled();
+    expect(calls.upserts).toBe(0);
+    expect(spend.dispose).toHaveBeenCalledTimes(1);
+  });
+
   it("--execute resolves writers up front, embeds, and upserts", async () => {
     const { deps, calls } = makeDeps();
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps);
     expect(code).toBe(0);
     expect(calls.writersMade).toBe(1);
     expect(calls.embeds).toBe(1);
@@ -671,7 +720,7 @@ describe("ops corpus backfill-vectors", () => {
         order.push("upsert");
       },
     });
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], traced);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, traced);
     expect(code).toBe(0);
     expect(calls.markerWrites).toEqual([
       { ...MARKER, invalidated_by: `corpus backfill-vectors started ${RUN_AT}` },
@@ -689,7 +738,7 @@ describe("ops corpus backfill-vectors", () => {
   // and go on to miss the vectors this run is about to write.
   it("overwrites a stamp left by an earlier backfill", async () => {
     const { deps, calls } = makeDeps({ ...MARKER, invalidated_by: "corpus backfill-vectors started 2026-01-01T00:00:00.000Z" });
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps);
     expect(code).toBe(0);
     expect(calls.markerWrites).toHaveLength(2);
     expect((calls.markerWrites[0] as { invalidated_by: string }).invalidated_by).toBe(
@@ -701,7 +750,7 @@ describe("ops corpus backfill-vectors", () => {
   // a repair command under a message about credentials.
   it("proceeds when the stored marker is unparseable JSON", async () => {
     const { deps, calls, lines } = makeDeps(new SyntaxError("Unexpected token }"));
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps);
     expect(code).toBe(0);
     expect(calls.upserts).toBe(1);
     expect(calls.markerWrites[0]).toMatchObject({
@@ -723,7 +772,7 @@ describe("ops corpus backfill-vectors", () => {
     for (const stored of [null, { version: 9 }]) {
       const { deps, calls } = makeDeps(stored);
       const code = await corpusBackfillVectorsCommand.run(
-        ["--tenant", "global", "--execute"],
+        EXECUTE_GLOBAL,
         deps,
       );
       expect(code).toBe(0);
@@ -745,7 +794,7 @@ describe("ops corpus backfill-vectors", () => {
     deps.r2.writeRefreshState = async () => {
       throw new Error("no write");
     };
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps);
     expect(code).toBe(1);
     expect(calls.embeds).toBe(0);
     expect(calls.upserts).toBe(0);
@@ -763,7 +812,7 @@ describe("ops corpus backfill-vectors", () => {
       writes++;
       if (writes > 1) throw new Error("no write");
     };
-    const code = await corpusBackfillVectorsCommand.run(["--tenant", "global", "--execute"], deps);
+    const code = await corpusBackfillVectorsCommand.run(EXECUTE_GLOBAL, deps);
     expect(code).toBe(1);
     expect(calls.upserts).toBe(1);
     expect(lines.join("\n")).toContain("refresh-neighbours --full");

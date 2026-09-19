@@ -27,7 +27,8 @@ export type SpendRpc = (body: Record<string, unknown>) => Promise<RpcDecision>;
 export interface PaidFetchDeps {
   tenantId: string;
   attemptId: string;
-  stage: "embed_source" | "summarize" | "embed_summary";
+  // "operator" labels offline operator commands, which have no pipeline stage.
+  stage: "embed_source" | "summarize" | "embed_summary" | "operator";
   fetch: typeof fetch;
   rpc: SpendRpc;
   now: () => number;
