@@ -8,6 +8,7 @@ import {
   tokenRevokeFromResponse,
   tokensFromResponse,
   tokenStatus,
+  usableTokenCount,
   withRevokedTokens,
   type TokenListItem,
 } from "../src/tokens";
@@ -131,6 +132,15 @@ describe("withRevokedTokens", () => {
       ["tok_b", true, null],
       ["tok_c", false, 3],
     ]);
+  });
+});
+
+describe("usableTokenCount", () => {
+  it("counts only tokens that still work", () => {
+    const listed = {
+      tokens: [token(), token({ usable: false }), token({ usable: false, revoked_at_ms: 1 }), token()],
+    };
+    expect(usableTokenCount(listed)).toBe(2);
   });
 });
 

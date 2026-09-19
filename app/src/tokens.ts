@@ -105,6 +105,11 @@ export function datetimeLocalValue(ms: number): string {
 /** Usable tokens an account may hold (MAX_ACTIVE_TOKENS in the control plane). */
 export const TOKEN_LIMIT = 10;
 
+/** Tokens that still work; revoked and expired ones do not count toward the limit. */
+export function usableTokenCount(listed: TokensList): number {
+  return listed.tokens.filter((token) => token.usable).length;
+}
+
 /** The SPA's words for an account at the limit. */
 export const TOKEN_LIMIT_WARNING = `This account is at the ${TOKEN_LIMIT}-token limit. Revoke a token before creating another.`;
 

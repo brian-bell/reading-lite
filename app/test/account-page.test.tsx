@@ -1012,6 +1012,82 @@ describe("API tokens on the account page", () => {
     expect(await within(section()).findByText("tok_new.secret")).toBeVisible();
   });
 
+  const LIMIT_WARNING = "This account is at the 10-token limit. Revoke a token before creating another.";
+  const fullList = (usable: number) => [
+    ...Array.from({ length: usable }, (_, i) => token({ id: `tok_${i}`, name: `T${i}` })),
+    token({ id: "tok_gone", name: "Gone", usable: false, revoked_at_ms: 3 }),
+  ];
+  const createControls = () => [
+    nameField(),
+    ...within(section()).getAllByRole("checkbox"),
+    expiryField(),
+    createButton(),
+  ];
+
+  it.each([
+    [10, true],
+    [9, false],
+  ])("with %i usable tokens (and a revoked one) the limit warning shows: %s", async (usable, limited) => {
+    mockApi({ onListTokens: () => Response.json({ tokens: fullList(usable) }) });
+    await openAccount();
+    await within(section()).findByText("T0 (standard) · usable");
+
+    expect(within(section()).queryByText(LIMIT_WARNING) !== null).toBe(limited);
+    for (const control of createControls()) {
+      if (limited) expect(control).toBeDisabled();
+      else expect(control).toBeEnabled();
+    }
+  });
+
+  it("turns create back on once a revoke brings the account under the limit", async () => {
+    let tokens = fullList(10);
+    mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onRevokeToken: (id) => {
+        tokens = tokens.map((row) => (row.id === id ? { ...row, usable: false, revoked_at_ms: 9 } : row));
+        return Response.json({ ok: true });
+      },
+    });
+    await openAccount();
+    expect(await within(section()).findByText(LIMIT_WARNING)).toBeVisible();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Revoke T0" }));
+    await userEvent.click(within(revokeDialog()!).getByRole("button", { name: "Revoke token" }));
+
+    await waitFor(() => expect(within(section()).queryByText(LIMIT_WARNING)).not.toBeInTheDocument());
+    expect(createButton()).toBeEnabled();
+  });
+
+  it("reads the list on a 409, and clears the limit once a revoke frees a slot", async () => {
+    // Another tab filled the last slot: this tab's list still shows nine.
+    let tokens = fullList(9);
+    mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onCreateToken: () => {
+        tokens = fullList(10);
+        return Response.json({ error: "too many active tokens" }, { status: 409 });
+      },
+      onRevokeToken: (id) => {
+        tokens = tokens.map((row) => (row.id === id ? { ...row, usable: false, revoked_at_ms: 9 } : row));
+        return Response.json({ ok: true });
+      },
+    });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByText(LIMIT_WARNING)).toBeVisible();
+    expect(within(section()).getAllByText(LIMIT_WARNING)).toHaveLength(1);
+    expect(createButton()).toBeDisabled();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Revoke T9" }));
+    await userEvent.click(within(revokeDialog()!).getByRole("button", { name: "Revoke token" }));
+
+    await waitFor(() => expect(within(section()).queryByText(LIMIT_WARNING)).not.toBeInTheDocument());
+    expect(createButton()).toBeEnabled();
+  });
+
   it("says the account is at the limit when a create answers 409", async () => {
     mockApi({ onCreateToken: () => Response.json({ error: "too many active tokens" }, { status: 409 }) });
     await openAccount();
