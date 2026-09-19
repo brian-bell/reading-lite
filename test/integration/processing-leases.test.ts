@@ -109,11 +109,13 @@ function makeFetch(opts: {
   });
 }
 
+const ARTIFACT_NOW = "2026-09-03T00:00:01.000Z";
+
 function services(fetchFn: typeof fetch): Services {
   return {
     fetch: fetchFn,
     lookup: PUBLIC_LOOKUP,
-    now: () => "2026-09-03T00:00:01.000Z",
+    now: () => ARTIFACT_NOW,
     newId: mintReadingId,
   };
 }
@@ -423,7 +425,6 @@ describe("processing leases (Workers pool)", () => {
       events.push("fetch");
       return inner(input, init);
     });
-    const before = Date.now();
     try {
       await processReading(job, env as unknown as Env, services(fetchFn), tenant);
     } finally {
@@ -431,8 +432,8 @@ describe("processing leases (Workers pool)", () => {
     }
     expect(events.indexOf("guard:refresh_reading")).toBeGreaterThanOrEqual(0);
     expect(events.indexOf("guard:refresh_reading")).toBeLessThan(events.indexOf("fetch"));
-    // Wall time, not the injected artifact clock: the guard's alarm sweeps on wall time.
-    expect(refreshNowMs).toBeGreaterThanOrEqual(before);
+    // Same injected Services clock as lease/defer — not host Date.now().
+    expect(refreshNowMs).toBe(Date.parse(ARTIFACT_NOW));
   });
 
   it("defers a second attempt when the tenant cap is 1 without draining pending", async () => {

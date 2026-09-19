@@ -148,10 +148,10 @@ export async function processReading(
       return;
     }
     // The attempt is live: hold its slot for the whole defer/retry window.
-    // Wall time, because the guard sweeps on wall time. A lost refresh leaves
-    // the short TTL, and a slot that lapses fails at commit rather than
-    // summarizing uncharged.
-    await refreshReadingSlot(env, tenantId, opId, Date.now());
+    // Same injected clock as lease/defer so a test clock cannot extend from
+    // a different epoch. A lost refresh leaves the short TTL, and a slot
+    // that lapses fails at commit rather than summarizing uncharged.
+    await refreshReadingSlot(env, tenantId, opId, clock());
     validateProcessingCredentials({
       provider: env.SUMMARIZER_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
