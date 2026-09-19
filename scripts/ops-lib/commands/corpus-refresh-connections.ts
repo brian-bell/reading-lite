@@ -48,6 +48,14 @@ import {
 } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import { createPrefetchingReader } from "../planning-reads";
+import {
+  BILLING_TENANT_FLAG_HELP,
+  refuseUnguardedFetch,
+  resolveBillingTenant,
+  spendEnvironmentForBucket,
+  withOperatorPaidFetch,
+} from "../operator-spend";
+import type { OpenOperatorSpend } from "../../system-lib/spend";
 import { judgeRetryDeps } from "../judge-retry";
 import {
   createRateLimitGate,
@@ -80,6 +88,7 @@ const layout = r2KeyLayout();
 
 interface Args {
   tenant?: string;
+  billingTenant?: string;
   report: string;
   bucket: string;
   execute: boolean;
@@ -128,7 +137,13 @@ export interface CorpusRefreshConnectionsDeps extends BaseDeps {
     bucket: string,
     keyRoot: string,
   ) => Promise<RefreshConnectionsStorage>;
-  loadProvider: (execute: boolean) => Promise<RelationshipProviderPlan>;
+  // `paidFetch` is the spend-admitted transport, present only under --execute.
+  // Without it the provider's judge refuses rather than reach a provider unguarded.
+  loadProvider: (execute: boolean, paidFetch?: typeof fetch) => Promise<RelationshipProviderPlan>;
+  /** Execute-only: the session with the central spend authority. */
+  openSpend: OpenOperatorSpend;
+  /** The provider transport, reached only through the spend wrapper. */
+  fetch: typeof fetch;
   now: () => number;
   /** Injected so the rate-limit backoff is instant under a fake clock. */
   sleep: (ms: number) => Promise<void>;
@@ -166,6 +181,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
       args: argv,
       options: {
         tenant: { type: "string" },
+        "billing-tenant": { type: "string" },
         report: { type: "string", default: "refresh-report.json" },
         bucket: {
           type: "string",
@@ -192,6 +208,7 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
   return {
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
     report: values.report!,
+    ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
     bucket: values.bucket!,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -211,7 +228,16 @@ async function runCorpusRefreshConnections(
   const args = parseRefreshConnectionsArgs(argv);
   const timer = createRefreshTimer(deps.now);
   try {
-    return await refreshConnections(args, deps, timer);
+    const tenant = requireOperatorTenant(args.tenant);
+    const billingTenant = resolveBillingTenant(args.billingTenant, { tenant, execute: args.execute });
+    // An --execute without --sole-writer is refused inside, before any provider
+    // is loaded, so it needs no spend session either.
+    if (!args.execute || !args.soleWriter) return await refreshConnections(args, deps, timer, undefined);
+    return await withOperatorPaidFetch(
+      deps,
+      { env: spendEnvironmentForBucket(args.bucket), billingTenant, command: "corpus-refresh-connections" },
+      (paidFetch) => refreshConnections(args, deps, timer, paidFetch),
+    );
   } finally {
     printTiming(timer, deps.io.stdout);
   }
@@ -221,6 +247,7 @@ async function refreshConnections(
   args: Args,
   deps: CorpusRefreshConnectionsDeps,
   timer: RefreshTimer,
+  paidFetch: typeof fetch | undefined,
 ): Promise<number> {
   if (args.execute && !args.soleWriter) {
     const verdict = soleWriterGuard({
@@ -238,7 +265,7 @@ async function refreshConnections(
     JSON.parse(await deps.readReport(args.report)) as unknown,
     selector,
   );
-  const provider = await deps.loadProvider(args.execute);
+  const provider = await deps.loadProvider(args.execute, paidFetch);
   // One phase covers every manifest read: they all happen while planning, and
   // execute writes against the ETags those reads returned. A read added back
   // to the execute path would need its own phase again — the selector is a
@@ -715,7 +742,7 @@ export function providerFromVars(
   execute: boolean,
   transport: JudgeTransportOverrides = {},
 ): RelationshipProviderPlan {
-  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const fetchImpl = transport.fetch ?? refuseUnguardedFetch;
   const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
@@ -895,6 +922,8 @@ Options:
                        run. Default: 10m (bare = seconds); 30s to 30m.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
+  ${BILLING_TENANT_FLAG_HELP}
+                       Default: --tenant. Required to --execute with --tenant global.
   --execute            Make paid provider calls and write results.
   --sole-writer        Required with --execute: assert all corpus writers are paused.
   --help               Show this message.`,
@@ -902,8 +931,10 @@ Options:
     io,
     readReport: (path) => readFile(path, "utf8"),
     createStorage: createDefaultStorage,
-    loadProvider: async (execute) =>
-      providerFromVars(await defaultProviderVars(), execute),
+    loadProvider: async (execute, paidFetch) =>
+      providerFromVars(await defaultProviderVars(), execute, paidFetch ? { fetch: paidFetch } : {}),
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: (input, init) => globalThis.fetch(input, init),
     now: () => Date.now(),
     sleep: realSleep,
   }),

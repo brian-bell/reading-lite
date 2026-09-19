@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, spendHarness } from "../../helpers/operator-spend";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
@@ -85,7 +86,7 @@ function report(ids = ["rd_a", "rd_c"]) {
   };
 }
 
-function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
+function harness(opts: { cas?: boolean; failListOnce?: boolean; authority?: Parameters<typeof spendHarness>[0] } = {}) {
   let items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c")];
   const manifests = new Map<
     string,
@@ -138,6 +139,7 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
       cache_write_tokens: 0,
     },
   }));
+  const spend = spendHarness(opts.authority);
   const readReport = vi.fn(async () => JSON.stringify(report()));
   const createStorage = vi.fn(async () => storage);
   const deps: CorpusRefreshConnectionsDeps = {
@@ -152,11 +154,14 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean } = {}) {
       judge,
     }),
     now: () => Date.parse(JUDGED_AT),
+    openSpend: spend.openSpend,
+    fetch: spend.fetch,
     sleep: async (ms: number) => {
       sleeps.push(ms);
     },
   };
   return {
+    spend,
     deps,
     out,
     err,
@@ -195,7 +200,7 @@ describe("ops corpus refresh-connections", () => {
   it("prints a Timing block for a plan pass with no provider phase", async () => {
     const h = harness();
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], {
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], {
         ...h.deps,
         now: fakeClock(10),
       }),
@@ -217,7 +222,7 @@ describe("ops corpus refresh-connections", () => {
     h.manifests.get("readings/2026/rd_a")!.manifest.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).rejects.toThrow(/target rd_a changed/);
@@ -232,7 +237,7 @@ describe("ops corpus refresh-connections", () => {
         // Pinned to one at a time: this test is about which phase each call is
         // attributed to, and overlapping the actions would interleave the fake
         // clock's steps across them.
-        ["--tenant", "global", "--execute", "--sole-writer", "--concurrency", "1"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--concurrency", "1"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).toBe(0);
@@ -286,7 +291,7 @@ binding = "READING_JOBS"
           },
         }),
       );
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       expect(h.out.join("\n")).toContain(
         "Scope: incremental (9 reading(s)) — 4 reading(s) changed since " +
           "2026-08-21T00:00:00.000Z; narrowed by --limit 3",
@@ -298,7 +303,7 @@ binding = "READING_JOBS"
       h.readReport.mockResolvedValue(
         JSON.stringify({ ...report(["rd_a"]), scope: { kind: "full", reason: "--full" } }),
       );
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       expect(h.out.join("\n")).toContain("Scope: full — --full");
     });
 
@@ -306,7 +311,7 @@ binding = "READING_JOBS"
     // so a missing header is not a full pass. Print unstated, not full.
     it("says the scope is unstated when the report carries no header", async () => {
       const h = harness();
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       const printed = h.out.find((line) => line.startsWith("Scope:"));
       expect(printed).toBe("Scope: unstated — the report carries no scope header");
       expect(printed).not.toMatch(/full/i);
@@ -320,7 +325,7 @@ binding = "READING_JOBS"
   it("prints every planned judgement and estimated cost without provider or storage writes", async () => {
     const h = harness();
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(0);
     expect(h.out.join("\n")).toContain("rd_a  judge");
     expect(h.out.join("\n")).toContain("rd_c  judge");
@@ -339,7 +344,7 @@ binding = "READING_JOBS"
     const h = harness();
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute"],
         h.deps,
       ),
     ).rejects.toThrow(/--sole-writer/);
@@ -351,7 +356,7 @@ binding = "READING_JOBS"
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(0);
@@ -374,7 +379,7 @@ binding = "READING_JOBS"
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
@@ -389,7 +394,7 @@ binding = "READING_JOBS"
     const h = harness({ cas: false });
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(1);
@@ -415,7 +420,7 @@ binding = "READING_JOBS"
     };
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
@@ -472,7 +477,7 @@ binding = "READING_JOBS"
     });
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(1);
@@ -501,7 +506,7 @@ binding = "READING_JOBS"
     };
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(1);
@@ -517,7 +522,7 @@ binding = "READING_JOBS"
     h.manifests.delete("readings/2026/rd_b");
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(0);
@@ -530,7 +535,7 @@ binding = "READING_JOBS"
     h.manifests.get("readings/2026/rd_a")!.manifest.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).rejects.toThrow(/target rd_a changed.*regenerate/);
@@ -544,7 +549,7 @@ binding = "READING_JOBS"
     h.manifests.get("readings/2026/rd_b")!.manifest.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).rejects.toThrow(/neighbour rd_b changed.*regenerate/);
@@ -557,7 +562,7 @@ binding = "READING_JOBS"
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
     delete h.manifests.get("readings/2026/rd_a")!.manifest.content_type;
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
     expect(h.err.join("\n")).toMatch(/rd_a.*invalid or mismatched/);
     expect(h.judge).not.toHaveBeenCalled();
@@ -569,7 +574,7 @@ binding = "READING_JOBS"
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
     h.manifests.get("readings/2026/rd_a")!.manifest.summary_markdown = "  ";
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
     expect(h.err.join("\n")).toMatch(/rd_a.*no stored summary text/);
     expect(h.judge).not.toHaveBeenCalled();
@@ -590,7 +595,7 @@ binding = "READING_JOBS"
       return storage;
     };
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
     expect(h.err.join("\n")).toContain("candidate rd_b: invalid JSON");
     expect(h.err.join("\n")).toContain("invalid candidate manifest(s): rd_b");
@@ -603,6 +608,8 @@ binding = "READING_JOBS"
     const argv = [
       "--tenant",
       "global",
+      "--billing-tenant",
+      BILLING_TENANT,
       "--execute",
       "--sole-writer",
       "--limit",
@@ -628,7 +635,7 @@ binding = "READING_JOBS"
 
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--execute", "--sole-writer"],
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
@@ -850,7 +857,7 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
   it("overlaps planning reads up to the cap and keeps plan output in report order", async () => {
     const { h, tracked } = scaled();
 
-    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
 
     expect(tracked.peak()).toBe(8);
     // Proof the fixture actually completes out of order, so the assertion below
@@ -865,7 +872,7 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
   it("reads every manifest once across both planning waves", async () => {
     const { h, tracked } = scaled();
 
-    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global"], h.deps)).toBe(0);
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
 
     expect(tracked.completed).toHaveLength(COUNT * 2);
     expect(new Set(tracked.completed).size).toBe(COUNT * 2);
@@ -962,7 +969,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 
   const execute = (h: ReturnType<typeof harness>, ...extra: string[]) =>
     corpusRefreshConnectionsCommand.run(
-      ["--tenant", "global", "--execute", "--sole-writer", ...extra],
+      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
       h.deps,
     );
 
@@ -970,7 +977,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
   const executeOnAClock = (h: ReturnType<typeof harness>, ...extra: string[]) => {
     let clock = Date.parse(JUDGED_AT);
     return corpusRefreshConnectionsCommand.run(
-      ["--tenant", "global", "--execute", "--sole-writer", ...extra],
+      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
       {
         ...h.deps,
         now: () => clock,
@@ -1223,5 +1230,51 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     expect(await execute(s.h)).toBe(0);
 
     expect(s.h.err.join("\n")).toContain("pausing new judgements for 8.000s");
+  });
+});
+
+// reading-lite-gh319.1. The stand-in provider sends `request` through the paid
+// transport the command hands it, as the real judge client does.
+describe("ops corpus refresh-connections spend admission", () => {
+  const run = (h: ReturnType<typeof harness>, ...argv: string[]) =>
+    corpusRefreshConnectionsCommand.run(["--tenant", "global", ...argv], h.deps);
+  const billed = ["--billing-tenant", BILLING_TENANT];
+
+  function paying(h: ReturnType<typeof harness>, request: RequestInit) {
+    const base = h.deps.loadProvider;
+    h.deps.loadProvider = async (execute, paidFetch) => ({
+      ...(await base(execute)),
+      judge: async (input) => {
+        await paidFetch!(EMBED_URL, request);
+        return h.judge(input);
+      },
+    });
+  }
+
+  it("opens no spend session for a plan or a refused execute", async () => {
+    const h = harness();
+    expect(await run(h)).toBe(0);
+    await expect(run(h, ...billed, "--execute")).rejects.toThrow(/--sole-writer/);
+    expect(h.spend.openSpend).not.toHaveBeenCalled();
+    expect(h.spend.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses to execute for --tenant global without a valid --billing-tenant", async () => {
+    const h = harness();
+    await expect(run(h, "--execute", "--sole-writer")).rejects.toThrow(/requires --billing-tenant/);
+    await expect(run(h, "--execute", "--sole-writer", "--billing-tenant", "global")).rejects.toThrow(
+      /malformed --billing-tenant/,
+    );
+    expect(h.spend.openSpend).not.toHaveBeenCalled();
+  });
+
+  it.each(FAIL_CLOSED_CASES)("makes no provider request after %s", async (_label, authority, request, refusal) => {
+    const h = harness({ authority });
+    paying(h, request);
+    expect(await run(h, ...billed, "--execute", "--sole-writer")).toBe(1);
+    expect(h.spend.fetch).not.toHaveBeenCalled();
+    expect(h.err.join("\n")).toMatch(refusal);
+    expect(h.writes).toEqual([]);
+    expect(h.spend.dispose).toHaveBeenCalledTimes(1);
   });
 });

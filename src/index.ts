@@ -316,3 +316,4 @@ export { GlobalUsageGuard } from "./control-plane/global-usage-guard";
 
 export { OperatorStatus } from "./control-plane/operator-status";
 export { OperatorLeaseClear } from "./control-plane/operator-lease-clear";
+export { OperatorSpend } from "./control-plane/operator-spend";

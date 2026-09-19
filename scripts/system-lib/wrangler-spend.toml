@@ -1,0 +1,18 @@
+# Used only by getPlatformProxy: no local data bindings or deploy entrypoint.
+# A separate config from wrangler-status.toml and wrangler-lease-clear.toml so
+# a paid operator command's proxy session sees exactly the four spend verbs
+# and nothing else.
+name = "reading-lite-operator-spend-client"
+compatibility_date = "2025-01-24"
+
+[[env.staging.services]]
+binding = "SPEND"
+service = "reading-lite-staging"
+entrypoint = "OperatorSpend"
+remote = true
+
+[[env.production.services]]
+binding = "SPEND"
+service = "reading-lite"
+entrypoint = "OperatorSpend"
+remote = true

@@ -70,6 +70,14 @@ import {
 import { requireOperatorTenant } from "../tenant-flag";
 import { createPrefetchingReader } from "../planning-reads";
 import {
+  BILLING_TENANT_FLAG_HELP,
+  refuseUnguardedFetch,
+  resolveBillingTenant,
+  spendEnvironmentForBucket,
+  withOperatorPaidFetch,
+} from "../operator-spend";
+import type { OpenOperatorSpend } from "../../system-lib/spend";
+import {
   createRateLimitGate,
   judgeWithRateLimitRetry,
   parseConcurrencyFlag,
@@ -106,6 +114,7 @@ const ASSUMED_OUTPUT_TOKENS = 128;
 
 interface Args {
   tenant?: string;
+  billingTenant?: string;
   /** null when --pair was given without an explicit --report. */
   report: string | null;
   reportExplicit: boolean;
@@ -136,7 +145,13 @@ export interface CorpusRefreshTensionsDeps extends BaseDeps {
   /** Resolves to null when the report file does not exist. */
   readReport: (path: string) => Promise<string | null>;
   createStorage: (bucket: string, keyRoot: string) => Promise<RefreshTensionsStorage>;
-  loadProvider: (execute: boolean) => Promise<TensionProviderPlan>;
+  // `paidFetch` is the spend-admitted transport, present only under --execute.
+  // Without it the provider's judge refuses rather than reach a provider unguarded.
+  loadProvider: (execute: boolean, paidFetch?: typeof fetch) => Promise<TensionProviderPlan>;
+  /** Execute-only: the session with the central spend authority. */
+  openSpend: OpenOperatorSpend;
+  /** The provider transport, reached only through the spend wrapper. */
+  fetch: typeof fetch;
   now: () => number;
   /** Injected so the rate-limit backoff is instant under a fake clock. */
   sleep: (ms: number) => Promise<void>;
@@ -202,6 +217,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
       args: argv,
       options: {
         tenant: { type: "string" },
+        "billing-tenant": { type: "string" },
         report: { type: "string" },
         bucket: {
           type: "string",
@@ -239,6 +255,7 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
     // A hand-picked pair does not implicitly consume a leftover report in cwd.
     report: values.report ?? (pairs.length > 0 ? null : "refresh-report.json"),
     reportExplicit: values.report !== undefined,
+    ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
     bucket: values.bucket!,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -259,7 +276,16 @@ async function runCorpusRefreshTensions(
   const args = parseRefreshTensionsArgs(argv);
   const timer = createRefreshTimer(deps.now);
   try {
-    return await refreshTensions(args, deps, timer);
+    const tenant = requireOperatorTenant(args.tenant);
+    const billingTenant = resolveBillingTenant(args.billingTenant, { tenant, execute: args.execute });
+    // An --execute without --sole-writer is refused inside, before any provider
+    // is loaded, so it needs no spend session either.
+    if (!args.execute || !args.soleWriter) return await refreshTensions(args, deps, timer, undefined);
+    return await withOperatorPaidFetch(
+      deps,
+      { env: spendEnvironmentForBucket(args.bucket), billingTenant, command: "corpus-refresh-tensions" },
+      (paidFetch) => refreshTensions(args, deps, timer, paidFetch),
+    );
   } finally {
     printTiming(timer, deps.io.stdout);
   }
@@ -269,6 +295,7 @@ async function refreshTensions(
   args: Args,
   deps: CorpusRefreshTensionsDeps,
   timer: RefreshTimer,
+  paidFetch: typeof fetch | undefined,
 ): Promise<number> {
   // Planning and execute read the same manifests through the same call, so the
   // phase label is what separates the fixed planning cost from the re-reads
@@ -296,7 +323,7 @@ async function refreshTensions(
     rawReport === null
       ? null
       : parseRefreshConnectionsReport(JSON.parse(rawReport) as unknown, selector);
-  const provider = await deps.loadProvider(args.execute);
+  const provider = await deps.loadProvider(args.execute, paidFetch);
   const storage = timedRefreshStorage(
     await deps.createStorage(args.bucket, tenant.keyRoot),
     timer,
@@ -811,7 +838,7 @@ export function tensionProviderFromVars(
   execute: boolean,
   transport: JudgeTransportOverrides = {},
 ): TensionProviderPlan {
-  const fetchImpl = transport.fetch ?? globalThis.fetch;
+  const fetchImpl = transport.fetch ?? refuseUnguardedFetch;
   const retry = transport.retry ?? judgeRetryDeps();
   const provider = parseSummarizerProvider(vars.SUMMARIZER_PROVIDER);
   if (provider === "openai") {
@@ -929,6 +956,8 @@ Options:
                        run. Default: 10m (bare = seconds); 30s to 30m.
   --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
+  ${BILLING_TENANT_FLAG_HELP}
+                       Default: --tenant. Required to --execute with --tenant global.
   --execute            Make paid provider calls and write results.
   --sole-writer        Required with --execute: assert all corpus writers are paused.
   --help               Show this message.`,
@@ -947,7 +976,10 @@ Options:
         ),
         keyRoot,
       ),
-    loadProvider: async (execute) => tensionProviderFromVars(await defaultProviderVars(), execute),
+    loadProvider: async (execute, paidFetch) =>
+      tensionProviderFromVars(await defaultProviderVars(), execute, paidFetch ? { fetch: paidFetch } : {}),
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: (input, init) => globalThis.fetch(input, init),
     now: () => Date.now(),
     sleep: realSleep,
   }),

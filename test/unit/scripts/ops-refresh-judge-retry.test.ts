@@ -3,6 +3,8 @@ import { RateLimitedError, type RetryDeps } from "../../../src/modules/http-retr
 import { providerFromVars } from "../../../scripts/ops-lib/commands/corpus-refresh-connections";
 import { tensionProviderFromVars } from "../../../scripts/ops-lib/commands/corpus-refresh-tensions";
 import { judgeRetryDeps } from "../../../scripts/ops-lib/judge-retry";
+import { withOperatorPaidFetch } from "../../../scripts/ops-lib/operator-spend";
+import { BILLING_TENANT, spendHarness } from "../../helpers/operator-spend";
 
 const vars = {
   SUMMARIZER_PROVIDER: "openai",
@@ -153,5 +155,29 @@ describe("refresh judgement retry", () => {
       baseDelayMs: 500,
       maxDelayMs: 8_000,
     });
+  });
+});
+
+// reading-lite-gh319.1. The spend wrapper sits where the judge client takes its
+// fetch, inside the retry loop: the real relationship payload is one the price
+// catalog can bound, and the retried attempt is a second possible bill.
+describe("refresh judgement retry under spend admission", () => {
+  it("reserves each provider attempt under a fresh operation identity", async () => {
+    const spend = spendHarness();
+    spend.fetch
+      .mockResolvedValueOnce(new Response("upstream boom", { status: 503 }))
+      .mockResolvedValueOnce(relationshipResponse());
+    const result = await withOperatorPaidFetch(
+      { openSpend: spend.openSpend, fetch: spend.fetch, now: () => Date.now() },
+      { env: "staging", billingTenant: BILLING_TENANT, command: "corpus-refresh-connections" },
+      (paidFetch) =>
+        providerFromVars(vars, true, { fetch: paidFetch, retry: testRetry(async () => {}) }).judge(relationshipInput),
+    );
+    expect(result.judgement.novelty_verdict).toBe("familiar");
+    expect(spend.fetch).toHaveBeenCalledTimes(2);
+    const reserved = spend.calls.filter((call) => call.kind === "reserve_spend").map((call) => call.opId);
+    expect(reserved).toHaveLength(2);
+    expect(new Set(reserved).size).toBe(2);
+    expect(reserved.every((opId) => opId.startsWith("operator:corpus-refresh-connections:operator:"))).toBe(true);
   });
 });

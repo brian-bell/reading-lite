@@ -25,6 +25,9 @@ import {
 } from "../../../../src/schemas/manifest";
 import { DEFAULT_API_BASE } from "../../../../scripts/corpus-lib/config";
 import { loadDotVars } from "../../../../scripts/lib/dotvars";
+import { resolveBillingTenant, withOperatorPaidFetch } from "../../../../scripts/ops-lib/operator-spend";
+import { policyEnvironment } from "../../../../scripts/system-lib/policy";
+import { openRemoteOperatorSpend, type OpenOperatorSpend } from "../../../../scripts/system-lib/spend";
 
 const DEFAULT_BASE_URL = DEFAULT_API_BASE;
 const DEFAULT_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
@@ -48,6 +51,10 @@ export interface ComparisonArgs {
   targets: string[];
   baseUrl: string;
   execute: boolean;
+  /** staging or production: whose spend authority admits the paid requests. */
+  env?: string;
+  /** Tenant whose daily spend cap, with the global cap, pays for the run. */
+  billingTenant?: string;
   efforts: OpenAIReasoningEffort[];
   includeAnthropic: boolean;
   anthropicModel: string;
@@ -126,7 +133,11 @@ export interface ComparisonArtifactPaths {
 }
 
 export interface CompareCliDeps {
+  // Serves the GET-only reading API directly. Provider requests never use it
+  // raw: --execute wraps it in the spend-admitted transport first.
   fetch: typeof fetch;
+  /** Execute-only: the session with the central spend authority. */
+  openSpend: OpenOperatorSpend;
   now(): number;
   credentials: Record<string, string | undefined>;
   summarize?: RunComparisonDeps["summarize"];
@@ -158,6 +169,8 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
       target: { type: "string", multiple: true, default: [] },
       "base-url": { type: "string", default: DEFAULT_BASE_URL },
       execute: { type: "boolean", default: false },
+      env: { type: "string" },
+      "billing-tenant": { type: "string" },
       effort: { type: "string", multiple: true, default: [] },
       "output-dir": { type: "string" },
       model: { type: "string" },
@@ -228,6 +241,8 @@ export function parseComparisonArgs(argv: string[]): ComparisonArgs {
     targets: uniqueTargets(values.target),
     baseUrl: values["base-url"]!.replace(/\/$/, ""),
     execute: values.execute!,
+    env: values.env,
+    billingTenant: values["billing-tenant"],
     efforts,
     includeAnthropic,
     anthropicModel,
@@ -585,13 +600,19 @@ export async function runCompareSummaryEffort(
   const write = deps.stdout ?? ((text: string) => process.stdout.write(text));
   const writeErr = deps.stderr ?? ((text: string) => process.stderr.write(text));
   const args = parseComparisonArgs(argv);
+  // Comparisons have no tenant of their own: reading API access is not a
+  // billing principal. Refused before any reading is fetched.
+  const billingTenant = resolveBillingTenant(args.billingTenant, { execute: args.execute });
+  const spend = args.execute
+    ? { env: policyEnvironment(args.env), billingTenant, command: "compare-summary-effort" }
+    : null;
   if (!deps.credentials.READER_API_TOKEN) throw new Error("missing READER_API_TOKEN");
   const plan = await prepareComparison(args, {
     fetch: deps.fetch,
     readerToken: deps.credentials.READER_API_TOKEN,
   });
   write(formatComparisonPlan(plan, args.execute));
-  if (!args.execute) {
+  if (!spend) {
     write("No provider calls made. After explicit spend approval, pass --execute.\n");
     return { mode: "plan", plan };
   }
@@ -611,22 +632,19 @@ export async function runCompareSummaryEffort(
   const outputDir =
     args.outputDir ?? defaultOutputDir(plan, generatedAt);
   write(`  candidate checkpoints: ${resolve(outputDir)}\n`);
-  const summarize =
-    deps.summarize ??
-    ((input, candidate) =>
-      summarizeReading(
-        input,
-        summarizerDepsForCandidate(candidate, {
-          fetch: deps.fetch,
-          openaiApiKey: deps.credentials.OPENAI_API_KEY ?? "",
-          anthropicApiKey: deps.credentials.ANTHROPIC_API_KEY,
-        }),
-      ));
-  const { observations, paths } = await runCheckpointedComparison(
-    plan,
-    outputDir,
-    generatedAt,
-    {
+  const { observations, paths } = await withOperatorPaidFetch(deps, spend, (paidFetch) => {
+    const summarize: RunComparisonDeps["summarize"] =
+      deps.summarize ??
+      ((input, candidate) =>
+        summarizeReading(
+          input,
+          summarizerDepsForCandidate(candidate, {
+            fetch: paidFetch,
+            openaiApiKey: deps.credentials.OPENAI_API_KEY ?? "",
+            anthropicApiKey: deps.credentials.ANTHROPIC_API_KEY,
+          }),
+        ));
+    return runCheckpointedComparison(plan, outputDir, generatedAt, {
       now: deps.now,
       summarize,
       onProgress: (observation) => {
@@ -635,8 +653,8 @@ export async function runCompareSummaryEffort(
             `$${observation.estimatedCostUsd.toFixed(6)})\n`,
         );
       },
-    },
-  );
+    });
+  });
   const totalCost = observations.reduce(
     (sum, observation) => sum + observation.estimatedCostUsd,
     0,
@@ -957,6 +975,11 @@ no /reprocess, and no manifest/vector/list writes.
                                Default: ${DEFAULT_ANTHROPIC_OUTPUT_PRICE_PER_MILLION}.
   --price-date <date>          Pricing provenance date. Default: ${DEFAULT_PRICE_DATE}.
   --execute                    Make paid provider calls and write artifacts.
+                               Requires --env and --billing-tenant.
+  --env <name>                 staging or production: whose spend authority
+                               admits the paid requests.
+  --billing-tenant <usr_…>     Tenant whose daily spend cap (with the global
+                               cap) admits the paid requests.
   --help                       Show this help.
 
 Credentials resolve from process env, .prd.vars, then .dev.vars. The runner
@@ -974,6 +997,7 @@ async function main(argv = process.argv.slice(2)): Promise<void> {
   }
   await runCompareSummaryEffort(argv, {
     fetch: globalThis.fetch,
+    openSpend: openRemoteOperatorSpend,
     now: () => Date.now(),
     credentials: loadCredentials(),
   });
