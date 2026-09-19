@@ -19,6 +19,7 @@ import {
   manifestToIndexItem,
   ReadingStore,
 } from "../../src/modules/stores/reading-store";
+import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { GetReadingResponseSchema } from "../../src/schemas/api";
 import {
   FOUNDER_TENANT_ID,
@@ -4246,7 +4247,7 @@ describe("GET /api/readings/:id — relationship_targets", () => {
       ],
     });
     const keyPrefix = await seed(founderTenant(), source);
-    const storedBefore = await (await env.READINGS_BUCKET.get(founderObjectKey(`${keyPrefix}/manifest.json`)))!.text();
+    const storedBefore = JSON.stringify(await testReadingsFor(founderTenant()).manifest(source.id));
 
     const res = await getDetail(source.id);
     expect(res.status).toBe(200);
@@ -4257,8 +4258,8 @@ describe("GET /api/readings/:id — relationship_targets", () => {
       rd_TGTFAIL01: { url: "https://example.com/rd_TGTFAIL01", title: "Title rd_TGTFAIL01", status: "failed" },
     });
 
-    // Computed on read: the stored manifest is untouched and never carries the map.
-    const storedAfter = await (await env.READINGS_BUCKET.get(founderObjectKey(`${keyPrefix}/manifest.json`)))!.text();
+    // Computed on read: the stored reading is untouched and never carries the map.
+    const storedAfter = JSON.stringify(await testReadingsFor(founderTenant()).manifest(source.id));
     expect(storedAfter).toBe(storedBefore);
     expect(storedAfter).not.toContain("relationship_targets");
   });
@@ -4311,32 +4312,26 @@ describe("GET /api/readings/:id — relationship_targets", () => {
 
 describe("error handling", () => {
   it("returns a generic 500 (no internals leaked) when a route handler throws", async () => {
-    const faultyBucket = {
-      get: vi.fn(async () => {
-        throw new Error("simulated R2 outage with internal stack info");
-      }),
-      put: vi.fn(),
-      head: vi.fn(),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
-    const customEnv = { ...env, READINGS_BUCKET: faultyBucket } as unknown as typeof env;
+    const outage = vi
+      .spyOn(PgReadingStore.prototype, "loadReadingById")
+      .mockRejectedValue(new Error("simulated database outage with internal stack info"));
     const app = createApp({ services: makeServices(makeStubFetch()) });
 
-    // Route reaches into the bucket to look up the id pointer; the throw
-    // should be caught by the router's onError and surfaced as a generic 500.
+    // The route reads the reading's row; the throw should be caught by the
+    // router's onError and surfaced as a generic 500.
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     const res = await app.request(
       "/api/readings/rd_DOES_NOT_EXIST",
       { headers: { authorization: `Bearer ${TOKEN}` } },
-      customEnv,
+      env,
     );
+    outage.mockRestore();
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({ error: "internal" });
     // The underlying error message must NOT appear in the response body.
     const text = JSON.stringify(body);
-    expect(text).not.toContain("simulated R2 outage");
+    expect(text).not.toContain("simulated database outage");
     expect(text).not.toContain("stack");
     // But it should be logged for the operator to see.
     expect(consoleErr).toHaveBeenCalled();
@@ -4786,9 +4781,15 @@ describe("DELETE /api/readings/:id (purge)", () => {
       prefix: founderObjectKey(`${diag.key_prefix}/`),
     });
     expect(leftover.objects).toEqual([]);
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/deleted/${id}`))).not.toBeNull();
+    // Nothing of the reading is left in rows either: no URL ownership, and no
+    // revision, attempt or job. The missing row is itself the deletion fence,
+    // so there is no tombstone to find.
+    const purged = testReadingsFor(founderTenant());
+    expect(await purged.urlOwnerId(url)).toBeNull();
+    for (const table of ["reading_revisions", "reading_attempts", "reading_jobs"]) {
+      expect(await purged.sql.query(`SELECT 1 FROM ${table} WHERE tenant_id = $1 AND reading_id = $2`, [FOUNDER_TENANT_ID, id])).toEqual([]);
+    }
+    expect((await env.READINGS_BUCKET.list({ prefix: founderObjectKey("index/") })).objects).toEqual([]);
 
     // Idempotent target: once purged, the id answers like it never existed.
     expect(
