@@ -261,8 +261,9 @@ Slice 1b switched the router's reads and the whole write path together.
 - **`wipe_progress` drops its Vectorize-only columns** (`vector_cursor`,
   `mutation_ids`, `index_count_sampled`, `index_count_start`, `probe_attempts`,
   `probe_saw_residue`, `seed_cursor`, `seed_completed_at_ms`). Its phases are
-  `rows`, `objects`, `done`: rows and embeddings go before R2 objects. Both
-  completion pairs stay, as history.
+  `objects`, `rows`, `done`: R2 objects go first and the reading rows and
+  embeddings after them, keeping the rule that a wipe deletes rows after
+  objects. Both completion pairs stay, as history.
 
 `fromSql` (`src/control-plane/db.ts`) is the PostgreSQL `ControlPlaneDb`.
 Control-plane SQL keeps its `?` placeholders and the adapter numbers them
