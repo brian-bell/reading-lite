@@ -268,7 +268,10 @@ Slice 1b switched the router's reads and the whole write path together.
   phase then pages R2. Rows go FIRST, which is the same contract D1's wipe
   kept by submitting vector deletes before object deletes: an embedding is a
   row now, so "vectors before objects" reads as "rows before objects". Both
-  completion pairs stay, as history.
+  completion pairs stay, as history. 0003's own comment got that backwards and
+  is applied, so 0005 carries the correction as a `COMMENT ON COLUMN` rather
+  than editing it; the `CHECK (phase IN (...))` list is a set, not a sequence,
+  and needs no change.
 
 `fromSql` (`src/control-plane/db.ts`) is the PostgreSQL `ControlPlaneDb`.
 Control-plane SQL keeps its `?` placeholders and the adapter numbers them

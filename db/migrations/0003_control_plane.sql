@@ -221,16 +221,12 @@ CREATE TABLE relationship_refresh_jobs (
 -- cleared) and is the evidence teardown gates its delete of the users row on.
 --
 -- D1's Vectorize-only columns (vector_cursor, mutation_ids, index_count_*,
--- probe_*, seed_*) have no counterpart: an embedding is a row now, so there is
--- nothing to submit, confirm or seed. The `rows` phase deletes the tenant's
--- reading rows (embeddings by cascade) and its refresh checkpoints, and the
--- `objects` phase then pages R2. Rows go FIRST, which is the same contract
--- D1's wipe kept by submitting vector deletes before object deletes: a reading
--- whose objects outlive its row is invisible, where the reverse would be a
--- listed reading whose content 404s.
+-- probe_*, seed_*) have no counterpart: the wipe deletes a tenant's R2
+-- objects, then its reading rows and embeddings in PostgreSQL. Rows go last,
+-- as the account-deletion contract requires (AGENTS.md).
 CREATE TABLE wipe_progress (
   tenant_id text PRIMARY KEY REFERENCES users (id),
-  phase text NOT NULL CHECK (phase IN ('rows', 'objects', 'done')),
+  phase text NOT NULL CHECK (phase IN ('objects', 'rows', 'done')),
   -- Optimistic-lock version. Every write bumps it and is conditional on the
   -- value the writer last read or wrote.
   lease_seq integer NOT NULL DEFAULT 0,
