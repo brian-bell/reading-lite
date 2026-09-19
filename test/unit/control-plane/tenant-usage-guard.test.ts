@@ -9,7 +9,7 @@ import {
   utcMonthResetAt,
 } from "../../../src/control-plane/tenant-usage-guard";
 import type { Env } from "../../../src/index";
-import { READING_RESERVATION_TTL_MS } from "../../../src/control-plane/constants";
+import { READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "../../../src/control-plane/constants";
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const NOW = Date.parse("2026-09-03T02:14:00.000Z");
@@ -262,7 +262,17 @@ describe("TenantUsageGuard", () => {
     expect(await storage.getAlarm()).toBe(expiresAt);
   });
 
-  it("refresh_reading extends a held reservation past the original TTL so cleanup keeps it", async () => {
+  it("reserve_reading holds an unused slot only for the short TTL", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    const before = Date.now();
+    expect((await post(guard, { kind: "reserve_reading", tenantId: TENANT, opId: "at_new", nowMs: NOW })).ok).toBe(true);
+    const { expiresAt } = map.get("op:at_new") as { expiresAt: number };
+    expect(expiresAt).toBeGreaterThanOrEqual(before + READING_RESERVATION_TTL_MS);
+    expect(expiresAt).toBeLessThan(before + READING_RESERVATION_LIVE_TTL_MS);
+  });
+
+  it("refresh_reading extends a held reservation to the live TTL so cleanup keeps it", async () => {
     const originalExpiry = NOW + 60 * 60 * 1000;
     const map = new Map<string, unknown>([
       [
@@ -284,7 +294,10 @@ describe("TenantUsageGuard", () => {
     ).toEqual({ ok: true });
     const row = map.get("op:at_defer") as { status: string; expiresAt: number };
     expect(row.status).toBe("held");
-    expect(row.expiresAt).toBe(later + READING_RESERVATION_TTL_MS);
+    expect(row.expiresAt).toBe(later + READING_RESERVATION_LIVE_TTL_MS);
+    // A refresh stamped with an earlier clock must not shorten the hold.
+    await post(guard, { kind: "refresh_reading", tenantId: TENANT, opId: "at_defer", nowMs: NOW });
+    expect((map.get("op:at_defer") as { expiresAt: number }).expiresAt).toBe(later + READING_RESERVATION_LIVE_TTL_MS);
     expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
   });
 

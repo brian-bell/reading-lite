@@ -2,7 +2,7 @@ import { TenantRecoveryRequestSchema, tenantLeaseRecovery, type TenantRecoveryRe
 import { inspectTenant } from "./operator-inspection";
 import type { Env } from "../index";
 import { bumpWindow } from "./auth-rate-guard";
-import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_TTL_MS } from "./constants";
+import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { logUnboundGuardPurge } from "./global-usage-guard";
 import { parseTenantId } from "./ids";
@@ -24,7 +24,9 @@ import {
 //
 // Request-rate counts every intake write. Reading slots are reserved only for
 // an activation attempt (idempotent on attempt id) and released when the
-// attempt never reaches summarization dispatch. GlobalUsageGuard owns spend
+// attempt never reaches summarization dispatch. A reservation starts short so
+// a lost release returns the slot soon; the consumer refreshes it to the live
+// TTL once it picks the attempt up. GlobalUsageGuard owns spend
 // and the paid-work switch. Concurrent-work leases are fenced
 // and expiring; the holder presents the fence before renew, paid dispatch,
 // and release.
@@ -377,7 +379,8 @@ export class TenantUsageGuard implements DurableObject {
     const opKey = `op:${body.opId}`;
     const existing = (await this.state.storage.get(opKey)) as Reservation | undefined;
     if (!existing || existing.status !== "held") return json({ ok: true });
-    const expiresAt = body.nowMs + READING_RESERVATION_TTL_MS;
+    // Never shorten: callers pass different clocks (pickup uses wall time).
+    const expiresAt = Math.max(existing.expiresAt, body.nowMs + READING_RESERVATION_LIVE_TTL_MS);
     await this.state.storage.put(opKey, { ...existing, expiresAt } satisfies Reservation);
     await scheduleCleanupAlarm(this.state.storage, expiresAt);
     return json({ ok: true });

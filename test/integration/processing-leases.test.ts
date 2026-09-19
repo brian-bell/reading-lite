@@ -405,6 +405,36 @@ describe("processing leases (Workers pool)", () => {
     ).toMatchObject({ ok: true });
   });
 
+  it("extends the attempt's reservation to the live TTL on pickup, before any work", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20, monthly_readings: 20, max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    const job = await seedPending(tenant, { id: "rd_PICKUP", url: "https://lease.test/pickup", attemptId: "at_pickup" });
+    const events: string[] = [];
+    let refreshNowMs = 0;
+    const restoreTenant = interceptTenantUsageFetch(async (body, next) => {
+      if (body.kind === "refresh_reading") refreshNowMs = Number(body.nowMs);
+      events.push(`guard:${String(body.kind)}`);
+      return next();
+    });
+    const inner = makeFetch();
+    const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+      events.push("fetch");
+      return inner(input, init);
+    });
+    const before = Date.now();
+    try {
+      await processReading(job, env as unknown as Env, services(fetchFn), tenant);
+    } finally {
+      restoreTenant();
+    }
+    expect(events.indexOf("guard:refresh_reading")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("guard:refresh_reading")).toBeLessThan(events.indexOf("fetch"));
+    // Wall time, not the injected artifact clock: the guard's alarm sweeps on wall time.
+    expect(refreshNowMs).toBeGreaterThanOrEqual(before);
+  });
+
   it("defers a second attempt when the tenant cap is 1 without draining pending", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
