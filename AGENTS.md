@@ -129,9 +129,11 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
   does not survive Hyperdrive, so use `SET LOCAL` inside `sql.transaction`.
   `reading_embeddings` deliberately has no HNSW index. Never edit an applied
   file in `db/migrations/`.
-- Never hold a transaction or a connection across a provider call or an R2
-  write: the consumer uses `sqlPerOperationFor`. Write content to R2 first,
-  then commit the row that points at it.
+- Never hold a transaction across a provider call or an R2 write. Queue and
+  scheduled work use one `sqlSessionFor` session, ended when the work
+  finishes; it replaces a client left idle across a provider call. Never call
+  a session from inside its own `transaction` callback (use `tx`). Write
+  content to R2 first, then commit the row that points at it.
 - Keep URL ownership eager and per tenant: one unique `reading_urls` row,
   committed with the reading, its attempt, and its job. Ready/pending owners
   return the existing reading; failed owners reprocess in place. `/lookup` must

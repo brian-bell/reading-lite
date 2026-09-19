@@ -18,7 +18,8 @@ import { fromD1 } from "./control-plane/db";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readRefreshJob, markRefreshDispatched, saveRefreshResult, markRefreshRateLimited, type SavedRefreshResult } from "./control-plane/relationship-refresh-jobs";
-import { sqlPerOperationFor } from "./modules/db/sql";
+import { withSqlSession, type Sql } from "./modules/db/sql";
+import type { TenantContext } from "./control-plane/ids";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
@@ -34,9 +35,12 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   if (env.RELATIONSHIP_REFRESH !== "1") return;
   const tenant = await activeRefreshFounder(env);
   if (!tenant || tenant.tenantId !== job.tenantId) return;
+  await withSqlSession(env, (sql) => judgeWith(sql, tenant, job, env, services));
+}
+
+async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: Env, services: Services): Promise<void> {
   const runAt = new Date(job.runAt).toISOString();
   const db = fromD1(env.CONTROL_PLANE);
-  const sql = sqlPerOperationFor(env);
   const rows = pgReadingStoreFor(sql, tenant);
   const writer = pgReadingWriterFor(sql, tenant);
   const versionOf = (manifest: Manifest) => sha256Hex(JSON.stringify(manifest));

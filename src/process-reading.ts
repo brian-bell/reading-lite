@@ -8,7 +8,7 @@ import {
   summarizeSimilarity,
 } from "./modules/stores/similarity-store";
 import { attemptIoFor, type AttemptIo } from "./attempt-io";
-import { sqlPerOperationFor } from "./modules/db/sql";
+import { sqlSessionFor } from "./modules/db/sql";
 import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import {
   extractFromUrl,
@@ -78,9 +78,14 @@ export async function processReading(
   services: Services,
   tenant: TenantContext,
 ): Promise<void> {
-  // No connection is held across the attempt's provider calls: see
-  // sqlPerOperationFor.
-  await runAttempt(args, env, services, tenant, attemptIoFor(sqlPerOperationFor(env), env, tenant, args));
+  // A connection idle across the attempt's provider calls is replaced, not
+  // trusted: see sqlSession.
+  const sql = sqlSessionFor(env);
+  try {
+    await runAttempt(args, env, services, tenant, attemptIoFor(sql, env, tenant, args));
+  } finally {
+    await sql.end();
+  }
 }
 
 async function runAttempt(
@@ -650,7 +655,21 @@ export async function markDeadLettered(
   services: Services,
   tenant: TenantContext,
 ): Promise<void> {
-  const io = attemptIoFor(sqlPerOperationFor(env), env, tenant, args);
+  const sql = sqlSessionFor(env);
+  try {
+    await markDeadLetteredWith(attemptIoFor(sql, env, tenant, args), args, env, services, tenant);
+  } finally {
+    await sql.end();
+  }
+}
+
+async function markDeadLetteredWith(
+  io: AttemptIo,
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+  tenant: TenantContext,
+): Promise<void> {
   let existing: Manifest | null = null;
   let confirmedAbsent = false;
   try {

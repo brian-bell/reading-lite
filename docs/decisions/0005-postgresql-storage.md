@@ -219,9 +219,12 @@ Slice 1b switched the router's reads and the whole write path together.
   that dies between the rows and the objects cannot be resumed by DELETE; the
   account wipe removes the leftover bytes.
 - **Connections.** HTTP routes share one client per request. The queue
-  consumer and the scheduled jobs use `sqlPerOperationFor`, one short-lived
-  client per statement or transaction, so no connection sits idle across a
-  provider call.
+  consumer and the scheduled jobs use `sqlSessionFor`: one client reused while
+  it keeps being used, replaced after 10 seconds idle or after any error, so a
+  connection left idle across a provider call is never trusted. A first
+  version opened a client per statement; under CI's parallel load that
+  flooded the local Hyperdrive proxy (every open is a full handshake where
+  nothing pools) and timed tests out.
 - **Account wipe.** Until the wipe moves in 1c, it deletes the tenant's reading
   rows after its objects phase, failing closed when Hyperdrive is unbound. Its
   Vectorize and vector-ledger phases stay for vectors written before cutover.

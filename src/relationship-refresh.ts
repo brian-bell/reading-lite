@@ -21,7 +21,7 @@ import type { Env } from "./index";
 import { fromD1 } from "./control-plane/db";
 import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
-import { sqlPerOperationFor } from "./modules/db/sql";
+import { withSqlSession } from "./modules/db/sql";
 import { tenantKeyRoot } from "./modules/stores/reading-store";
 import { r2KeyLayout } from "./modules/stores/layout";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
@@ -107,7 +107,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
   let c = previous?.cursor;
   const nextNight = !c || runAt.slice(0, 10) > c.budget_at.slice(0, 10);
   if (!c || (nextNight && complete(c))) {
-    const library = await pgReadingStoreFor(sqlPerOperationFor(env), tenant).allListItems();
+    const library = await withSqlSession(env, (sql) => pgReadingStoreFor(sql, tenant).allListItems());
     c = {
       version: 1, token: newId(), run_at: runAt, budget_at: runAt, limit, dispatched: 0,
       targets: library.filter(r => r.status === "ready")
@@ -149,26 +149,27 @@ async function processScan(env: Env, job: Extract<RefreshEnvelope, { kind: "scan
       ...(c.rollover ? { ...c.rollover, dispatched: 0, rollover: undefined } : {}),
     };
   } else if (c.scan_offset < c.targets.length) {
-    const sql = sqlPerOperationFor(env);
-    const store = pgReadingStoreFor(sql, tenant);
-    const similarity = pgSimilarityStoreFor(sql, tenant);
-    const list = await store.allListItems();
-    const live = new Map(list.map(r => [r.id, r]));
     const shard = c.targets.slice(c.scan_offset, c.scan_offset + REFRESH_SCAN_SIZE);
     const candidates = [...c.candidates];
-    for (const target of shard) {
-      const row = live.get(target.id);
-      if (!row || row.status !== "ready" || row.key_prefix !== target.key_prefix) continue;
-      const manifest = (await store.loadReadingById(target.id))?.manifest ?? null;
-      // Overlay applyStaleness for running only. A zombie attempt on a ready
-      // manifest is still candidatable; in-TTL reprocess is skipped here.
-      if (!manifest || manifest.id !== target.id || manifest.status !== "ready") continue;
-      if (effectivelyRunning(manifest, pendingTtlSeconds(env.PENDING_TTL_SECONDS), nowIso)) continue;
-      const matches = await similarity.queryByVectorId(target.id, REFRESH_CANDIDATE_TOP_K);
-      if (matches === null) continue;
-      const judged = resolveJudgedAt({ ...manifest, key_prefix: target.key_prefix });
-      if (diffNeighbourhood({ ...manifest, key_prefix: target.key_prefix }, matches, list, judged.judged_at).length > 0) candidates.push(target);
-    }
+    await withSqlSession(env, async (sql) => {
+      const store = pgReadingStoreFor(sql, tenant);
+      const similarity = pgSimilarityStoreFor(sql, tenant);
+      const list = await store.allListItems();
+      const live = new Map(list.map(r => [r.id, r]));
+      for (const target of shard) {
+        const row = live.get(target.id);
+        if (!row || row.status !== "ready" || row.key_prefix !== target.key_prefix) continue;
+        const manifest = (await store.loadReadingById(target.id))?.manifest ?? null;
+        // Overlay applyStaleness for running only. A zombie attempt on a ready
+        // manifest is still candidatable; in-TTL reprocess is skipped here.
+        if (!manifest || manifest.id !== target.id || manifest.status !== "ready") continue;
+        if (effectivelyRunning(manifest, pendingTtlSeconds(env.PENDING_TTL_SECONDS), nowIso)) continue;
+        const matches = await similarity.queryByVectorId(target.id, REFRESH_CANDIDATE_TOP_K);
+        if (matches === null) continue;
+        const judged = resolveJudgedAt({ ...manifest, key_prefix: target.key_prefix });
+        if (diffNeighbourhood({ ...manifest, key_prefix: target.key_prefix }, matches, list, judged.judged_at).length > 0) candidates.push(target);
+      }
+    });
     next = { ...c, candidates, scan_offset: c.scan_offset + shard.length, token: newId() };
   } else {
     const count = Math.min(REFRESH_SCAN_SIZE, c.limit - c.dispatched);

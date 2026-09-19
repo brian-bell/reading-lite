@@ -6,9 +6,9 @@
 // one from `cloudflare:test` (./test-readings.ts); the Node pool builds one
 // over a direct connection and a fake bucket (./node-readings.ts).
 //
-// The connection is per operation, so there is nothing to close.
+// Each entry point shares one session per test file and ends it after the file.
 import type { TenantContext } from "../../src/control-plane/ids";
-import { sqlPerOperationFor, type Sql } from "../../src/modules/db/sql";
+import type { Sql } from "../../src/modules/db/sql";
 import { contentStoreFor, type ContentStore } from "../../src/modules/stores/content-store";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
 import { manifestToRows, writeReadingRows } from "../../src/modules/stores/postgres/manifest-rows";
@@ -47,8 +47,10 @@ export class TestReadings {
   constructor(
     readonly tenant: TenantContext,
     env: ReadingsEnv,
+    // The caller owns the session and ends it.
+    sql: Sql,
   ) {
-    this.sql = sqlPerOperationFor(env);
+    this.sql = sql;
     this.store = pgReadingStoreFor(this.sql, tenant);
     this.writer = pgReadingWriterFor(this.sql, tenant);
     this.similarity = pgSimilarityStoreFor(this.sql, tenant);

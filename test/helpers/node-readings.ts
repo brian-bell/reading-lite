@@ -6,7 +6,9 @@
 // Nothing rolls these rows back between tests. Seed what a test needs (a seed
 // replaces the reading), and mint a tenant when tests in one file would
 // otherwise share ids.
+import { afterAll } from "vitest";
 import type { TenantContext } from "../../src/control-plane/ids";
+import { sqlSessionFor } from "../../src/modules/db/sql";
 import { TestReadings } from "./readings-facade";
 import { testDatabaseUrl } from "./test-database";
 
@@ -48,6 +50,10 @@ export function memoryBucket(): R2Bucket {
   } as unknown as R2Bucket;
 }
 
+// One session per test file, ended after it.
+const session = sqlSessionFor({ HYPERDRIVE: NODE_HYPERDRIVE });
+afterAll(() => session.end());
+
 export function nodeReadingsFor(tenant: TenantContext, bucket: R2Bucket = memoryBucket()): TestReadings {
-  return new TestReadings(tenant, { HYPERDRIVE: NODE_HYPERDRIVE, READINGS_BUCKET: bucket });
+  return new TestReadings(tenant, { HYPERDRIVE: NODE_HYPERDRIVE, READINGS_BUCKET: bucket }, session);
 }

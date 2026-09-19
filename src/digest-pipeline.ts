@@ -58,7 +58,7 @@ import {
   type DigestScheduleSettings,
 } from "./modules/digest-schedule";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
-import { sqlPerOperationFor } from "./modules/db/sql";
+import { sqlSessionFor } from "./modules/db/sql";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
@@ -301,8 +301,13 @@ export async function processDigestJob(
     throw new Error("HYPERDRIVE is not configured");
   }
 
-  // One statement, so the per-operation client is opened and closed around it.
-  const library = await pgReadingStoreFor(sqlPerOperationFor({ HYPERDRIVE: env.HYPERDRIVE }), { tenantId }).allListItems();
+  const sql = sqlSessionFor({ HYPERDRIVE: env.HYPERDRIVE });
+  let library;
+  try {
+    library = await pgReadingStoreFor(sql, { tenantId }).allListItems();
+  } finally {
+    await sql.end();
+  }
   const items = selectDigestReadings(library, window);
   if (items.length === 0) {
     await finalizeDigestDelivery(

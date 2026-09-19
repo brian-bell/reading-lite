@@ -117,8 +117,10 @@ retries reach the reading DLQ, which calls `markDeadLettered`, the only path
 that marks a job `dead`. If that write fails, the handler logs and acks;
 read-time staleness annotation remains the fallback.
 
-The consumer never holds a database connection across a provider call: it uses
-`sqlPerOperationFor`, one short-lived client per statement or transaction.
+The consumer and the scheduled jobs use `sqlSessionFor`: one client reused
+while it keeps being used, replaced after 10 seconds idle (a provider call) or
+after any error, and ended when the work finishes. A client per statement
+would also be correct but floods the connection path where nothing pools.
 HTTP routes share one client per request (`src/modules/db/request-sql.ts`).
 Attempt journals and paid checkpoints are `reading_attempts` rows; durable job
 intent is `reading_jobs`.

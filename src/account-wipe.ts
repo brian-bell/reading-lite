@@ -276,7 +276,7 @@ import {
   similarityStoreFor,
   VECTORIZE_DELETE_MAX_IDS,
 } from "./modules/stores/similarity-store";
-import { sqlPerOperationFor } from "./modules/db/sql";
+import { sqlSessionFor } from "./modules/db/sql";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { RateLimitedError } from "./modules/http-retry";
 import { ListIndexSchema } from "./schemas/api";
@@ -450,7 +450,12 @@ function deleteReadingRowsFor(env: AccountWipeEnv): (tenantId: string) => Promis
     }
     const parsed = parseTenantId(tenantId);
     if (!parsed) throw new Error("account wipe: malformed tenant id");
-    return pgReadingWriterFor(sqlPerOperationFor({ HYPERDRIVE: env.HYPERDRIVE }), { tenantId: parsed }).deleteAllReadings();
+    const sql = sqlSessionFor({ HYPERDRIVE: env.HYPERDRIVE });
+    try {
+      return await pgReadingWriterFor(sql, { tenantId: parsed }).deleteAllReadings();
+    } finally {
+      await sql.end();
+    }
   };
 }
 
