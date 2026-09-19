@@ -12,7 +12,7 @@ import {
   processDigestJob,
 } from "../../src/digest-pipeline";
 import worker, { type Env } from "../../src/index";
-import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { Manifest } from "../../src/schemas/manifest";
 import {
   FOUNDER_TENANT_ID,
@@ -20,8 +20,8 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 import type { ListIndexItem } from "../../src/schemas/api";
 
 const NOW_MS = Date.parse("2026-09-02T09:00:00.000Z");
@@ -422,7 +422,7 @@ describe("digest DLQ does not touch reading manifests", () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
 
-    const reader = testReadingStore(env);
+    const reader = testReadingsFor(founderTenant());
     const manifest: Manifest = {
       id: READING_ID,
       url: "https://example.com/dlq",
@@ -443,8 +443,7 @@ describe("digest DLQ does not touch reading manifests", () => {
         started_at: "2026-05-07T12:00:05.000Z",
       },
     };
-    await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await reader.seed(manifest, { keyPrefix: KEY_PREFIX });
 
     const ack = vi.fn();
     const batch = {
@@ -464,7 +463,7 @@ describe("digest DLQ does not touch reading manifests", () => {
     await worker.queue(batch, env as unknown as Env);
 
     expect(ack).toHaveBeenCalledOnce();
-    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect((await reader.manifest(READING_ID))?.status).toBe("pending");
     expect(
       await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
         userId: FOUNDER_TENANT_ID,
@@ -563,7 +562,7 @@ async function seedList(
   tenant: ReturnType<typeof founderTenant>,
   items: ListIndexItem[],
 ): Promise<void> {
-  await testReadingStore(env, tenant).writeListIndex({ version: 1, items });
+  await testReadingsFor(tenant).seedListItems(items);
 }
 
 describe("digest send isolation (196 B2)", () => {

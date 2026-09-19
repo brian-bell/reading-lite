@@ -15,6 +15,7 @@ import { manifestToRows, writeReadingRows } from "../../src/modules/stores/postg
 import { pgReadingStoreFor, type PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { pgReadingWriterFor, type PgReadingWriter } from "../../src/modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor, type PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import type { ListIndexItem } from "../../src/schemas/api";
 import { ManifestSchema, type Manifest } from "../../src/schemas/manifest";
 import { sha256Hex } from "../../src/services";
 
@@ -72,6 +73,27 @@ export class TestReadings {
       await this.content.put(layout.rawKey(keyPrefix, opts.raw.ext), opts.raw.body, opts.raw.contentType);
     }
     return keyPrefix;
+  }
+
+  // For tests that think in list rows (what index/list.json held): seeds the
+  // reading each row describes, with placeholder content facts.
+  async seedListItems(items: readonly ListIndexItem[]): Promise<void> {
+    for (const item of items) {
+      const { key_prefix, ...fields } = item;
+      await this.seed(
+        {
+          content_type: "text/html; charset=utf-8",
+          content_status: "captured",
+          content_bytes: 0,
+          content_sha256: "0".repeat(64),
+          ...(item.status === "ready" ? { connections: [] } : {}),
+          ...fields,
+          url_hash: await sha256Hex(item.url),
+          updated_at: item.updated_at ?? item.created_at,
+        },
+        { keyPrefix: key_prefix },
+      );
+    }
   }
 
   async manifest(id: string): Promise<Manifest | null> {
