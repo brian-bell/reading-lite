@@ -463,18 +463,20 @@ export class PgReadingWriter {
   // of them. FOR SHARE, not FOR UPDATE, so a tenant's readings still claim and
   // publish in parallel.
   //
-  // Only a row that says so blocks. No row is not a confirmation: the reading
-  // tables carry no foreign key to `users` on purpose — the reading plane does
-  // not depend on a control-plane row existing — so this cannot assert an
-  // integrity rule the schema declines to make. Nor does it need to: a torn-
-  // down tenant's readings are already deleted, so publish finds no row to
-  // commit against.
+  // A missing row is inactive too. Teardown deletes `users` last, after the
+  // wipe, and a request that authenticated before that can reach its claim
+  // after it. `claimUrl` INSERTs rather than locking something that already
+  // exists, so treating absence as active would let it write a reading, a URL
+  // row, an attempt and a job for a tenant that no longer exists — rows no
+  // wipe and no cron could ever find again, because they are reached through
+  // `users`. The reading tables carry no foreign key to `users`, so this
+  // check, not the schema, is what keeps that from happening.
   private async tenantIsActive(tx: SqlQuery): Promise<boolean> {
     const [row] = await tx.query<{ status: string }>(
       "SELECT status FROM users WHERE id = $1 FOR SHARE",
       [this.tenantId],
     );
-    return row === undefined || row.status === "active";
+    return row?.status === "active";
   }
 
   private async lock(tx: SqlQuery, id: string): Promise<LockedRow | null> {

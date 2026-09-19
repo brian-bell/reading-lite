@@ -379,9 +379,14 @@ outside the transaction that acts on it.
   tenant's reading is left to the account wipe, whose second rows sweep exists
   for exactly this publisher; a `suspended` tenant keeps its reading, out of
   search, as before.
-- **Only a confirmed row blocks.** The reading tables carry no foreign key to
-  `users` on purpose, so a missing row is not read as ineligible; a torn-down
-  tenant has no readings left to publish against anyway.
+- **A missing row is inactive too.** Teardown deletes `users` last, after the
+  wipe, and a request that authenticated before that can reach its claim after
+  it. `claimUrl` inserts rather than locking something that already exists, so
+  reading absence as active would let it write a reading, a URL row, an
+  attempt and a job for a tenant that no longer exists — rows nothing could
+  find again, since both the wipe and its cron reach tenants through `users`.
+  The reading tables carry no foreign key to `users`, so this check, not the
+  schema, is what prevents that.
 - **Purge.** `relationship_refresh_jobs` has no foreign key to hang off, so
   the purge transaction deletes the reading's refresh checkpoint itself,
   alongside the row.

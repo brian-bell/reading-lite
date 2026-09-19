@@ -12,7 +12,7 @@ afterEach(() => sql.end());
 
 describe("PgSimilarityStore", () => {
   it("returns ready neighbours nearest first with cosine scores and reading metadata", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const near = await readyManifest("rd_near", { tags: ["Near"] });
     await seedManifest(sql, tenant, near, { embedding: axisVector(1, 0.9) });
     await seedManifest(sql, tenant, await readyManifest("rd_far"), { embedding: axisVector(2, 0.1) });
@@ -30,7 +30,7 @@ describe("PgSimilarityStore", () => {
   });
 
   it("caps results at topK", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     for (let axis = 1; axis <= 3; axis++) {
       await seedManifest(sql, tenant, await readyManifest(`rd_${axis}`), { embedding: axisVector(axis, axis / 10) });
     }
@@ -39,14 +39,14 @@ describe("PgSimilarityStore", () => {
   });
 
   it("skips a reading that stopped being ready", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await seedManifest(sql, tenant, await readyManifest("rd_was_ready"), { embedding: axisVector(1, 0.5) });
     await sql.query("UPDATE readings SET status = 'failed' WHERE tenant_id = $1", [String(tenant.tenantId)]);
     expect(await pgSimilarityStoreFor(sql, tenant).query(axisVector(0), 5)).toEqual([]);
   });
 
   it("queries by a stored vector, self included, and returns null without one", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await seedManifest(sql, tenant, await readyManifest("rd_self"), { embedding: axisVector(1, 0.5) });
     await seedManifest(sql, tenant, await readyManifest("rd_peer"), { embedding: axisVector(1, 0.4) });
     await seedManifest(sql, tenant, await readyManifest("rd_vectorless"));
@@ -60,7 +60,7 @@ describe("PgSimilarityStore", () => {
   it("rejects a wrong-dimension embedding before any SQL runs", async () => {
     const query = vi.fn();
     const fake = { query, transaction: vi.fn(), end: vi.fn() } as unknown as Sql;
-    const store = pgSimilarityStoreFor(fake, mintTenant());
+    const store = pgSimilarityStoreFor(fake, await mintTenant());
     await expect(store.query([1, 2, 3], 5)).rejects.toBeInstanceOf(WrongEmbeddingDimensionError);
     expect(query).not.toHaveBeenCalled();
   });
@@ -72,8 +72,8 @@ describe("PgSimilarityStore", () => {
 
   it("gives a small tenant its full k beside a larger tenant that sits closer to the query", async () => {
     // The case a shared HNSW index got wrong (ADR 0005): the scan is exact.
-    const large = mintTenant();
-    const small = mintTenant();
+    const large = await mintTenant();
+    const small = await mintTenant();
     const largeId = String(large.tenantId);
     await sql.transaction(async (tx) => {
       await tx.query(

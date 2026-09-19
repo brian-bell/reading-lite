@@ -1,11 +1,9 @@
-import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import { fromSql } from "../../../src/control-plane/db";
 import {
   markRefreshDispatched,
   readRefreshJob,
 } from "../../../src/control-plane/relationship-refresh-jobs";
-import { insertActiveUser } from "../../helpers/control-plane-db";
 import type { TenantContext } from "../../../src/control-plane/ids";
 import type { Sql } from "../../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../../src/modules/manifest-drafting";
@@ -15,7 +13,7 @@ import { pgReadingWriterFor, type NewAttempt } from "../../../src/modules/stores
 import { pgSimilarityStoreFor } from "../../../src/modules/stores/postgres/similarity-store";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
 import { sha256Hex } from "../../../src/services";
-import { axisVector, mintTenant, readyManifest, seedManifest, testSql } from "../../helpers/pg-fixtures";
+import { axisVector, mintTenant, mintTenantWithoutUser, readyManifest, seedManifest, testSql } from "../../helpers/pg-fixtures";
 
 const CREATED_AT = "2026-04-26T20:00:00.000Z";
 const LATER = "2026-04-26T20:05:00.000Z";
@@ -87,7 +85,7 @@ async function jobState(s: Sql, tenant: TenantContext, id: string, attemptId: st
 describe("claimUrl", () => {
   it("commits the reading, its URL, the attempt and a queued job together", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_claim", "https://example.com/claim", "at_1");
 
     expect(await pgReadingWriterFor(s, tenant).claimUrl(p.manifest, p.keyPrefix, p.attempt)).toEqual({ kind: "claimed" });
@@ -99,7 +97,7 @@ describe("claimUrl", () => {
   });
 
   it("converges concurrent duplicate submissions on one reading", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const url = "https://example.com/duplicate";
     const a = await pendingFor("rd_dup_a", url, "at_a");
     const b = await pendingFor("rd_dup_b", url, "at_b");
@@ -121,15 +119,15 @@ describe("claimUrl", () => {
   it("lets two tenants own the same URL", async () => {
     const s = sql();
     const p = await pendingFor("rd_shared", "https://example.com/shared", "at_1");
-    expect((await pgReadingWriterFor(s, mintTenant()).claimUrl(p.manifest, p.keyPrefix, p.attempt)).kind).toBe("claimed");
-    expect((await pgReadingWriterFor(s, mintTenant()).claimUrl(p.manifest, p.keyPrefix, p.attempt)).kind).toBe("claimed");
+    expect((await pgReadingWriterFor(s, await mintTenant()).claimUrl(p.manifest, p.keyPrefix, p.attempt)).kind).toBe("claimed");
+    expect((await pgReadingWriterFor(s, await mintTenant()).claimUrl(p.manifest, p.keyPrefix, p.attempt)).kind).toBe("claimed");
   });
 });
 
 describe("queue-send failure", () => {
   it("leaves a failed, re-submittable owner and a send_failed job", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_send", "https://example.com/send", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -154,7 +152,7 @@ describe("queue-send failure", () => {
   // at objects that never landed: its content stays the previous import's.
   it("drops the keys of content that never reached R2", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_reimport", "https://example.com/reimport", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, { ...p.attempt, content: contentFor(p.keyPrefix, "at_1") });
@@ -174,7 +172,7 @@ describe("queue-send failure", () => {
 
   it("only records the failed attempt on a published reading, keeping a write made since the start", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await seedManifest(s, tenant, await readyManifest("rd_judged"), { embedding: axisVector(1) });
     const writer = pgReadingWriterFor(s, tenant);
     const seen = await loaded(s, tenant, "rd_judged");
@@ -194,7 +192,7 @@ describe("queue-send failure", () => {
 describe("publish", () => {
   it("commits the revision, summary, relationships and embedding together", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await publishNew(s, tenant, "rd_target", "https://example.com/target", axisVector(2));
     const p = await pendingFor("rd_pub", "https://example.com/pub", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
@@ -221,7 +219,7 @@ describe("publish", () => {
   // is written, so an attempt that lost the reading changes no row at all.
   it("writes nothing when another attempt owns the reading", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_lost", "https://example.com/lost", "at_owner");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -243,7 +241,7 @@ describe("publish", () => {
 
   it("rolls the whole publication back when one part fails", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_atomic", "https://example.com/atomic", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -265,7 +263,7 @@ describe("publish", () => {
 
   it("stores a duplicate that does not own its URL without making it searchable", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const owner = await publishNew(s, tenant, "rd_owner", "https://example.com/owned");
     // An imported orphan: same URL, no URL row of its own.
     const orphan = await readyManifest("rd_orphan", {
@@ -297,7 +295,7 @@ describe("reprocessing", () => {
 
   it("keeps the published content and summary together when the reprocess fails", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const { manifest, keyPrefix } = await importedReady(s, tenant, "rd_keep");
     const store = pgReadingStoreFor(s, tenant);
     const keysBefore = await store.contentKeys("rd_keep");
@@ -324,7 +322,7 @@ describe("reprocessing", () => {
 
   it("moves an imported reading onto its new revision keys when the reprocess succeeds", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const { manifest, keyPrefix } = await importedReady(s, tenant, "rd_move");
     const writer = pgReadingWriterFor(s, tenant);
     const draft = reprocessPending(manifest, { attemptId: "at_re", startedAt: LATER }, LATER);
@@ -345,7 +343,7 @@ describe("reprocessing", () => {
 
   it("refuses to start when another attempt activated since the caller looked", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_busy", "https://example.com/busy", "at_running");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -361,7 +359,7 @@ describe("reprocessing", () => {
   // undo whatever landed in between.
   it("refuses to start when another writer changed the reading since the caller looked", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const { manifest } = await importedReady(s, tenant, "rd_stale");
     const writer = pgReadingWriterFor(s, tenant);
     const seen = await loaded(s, tenant, "rd_stale");
@@ -376,7 +374,7 @@ describe("reprocessing", () => {
 
   it("re-activates under the same attempt id without failing, keeping a paid checkpoint", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_again", "https://example.com/again", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -396,7 +394,7 @@ describe("reprocessing", () => {
 
   it("fails a reading that was never published", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_fail", "https://example.com/fail", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -422,7 +420,7 @@ describe("purge", () => {
 
   it("removes every row and releases the URL", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await publishNew(s, tenant, "rd_gone", "https://example.com/gone");
 
     const outcome = await pgReadingWriterFor(s, tenant).purge("rd_gone", never);
@@ -441,8 +439,7 @@ describe("purge", () => {
   // about it go at the same instant.
   it("takes the hosted refresh checkpoint with the reading", async () => {
     const s = sql();
-    const tenant = mintTenant();
-    await insertActiveUser(env, String(tenant.tenantId));
+    const tenant = await mintTenant();
     await publishNew(s, tenant, "rd_chkpt", "https://example.com/checkpoint");
     expect(
       await markRefreshDispatched(fromSql(s), {
@@ -461,7 +458,7 @@ describe("purge", () => {
 
   it("refuses while the caller's staleness rule says an attempt is running", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_running", "https://example.com/running", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -474,7 +471,7 @@ describe("purge", () => {
   // cannot republish the reading, or recreate any row for it.
   it("stops a late consumer from republishing", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_race", "https://example.com/race", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -511,10 +508,29 @@ describe("purge", () => {
 // claimUrl's refusal is owned by the account-deletion race test; this covers
 // the other verb that activates an attempt.
 describe("tenant eligibility", () => {
+  // Teardown deletes the users row last, after the wipe. A request that
+  // authenticated before that and reaches its claim after it must not write:
+  // the tenant no longer exists, so nothing — not the wipe, not the cron —
+  // would ever come back for the rows it would create.
+  it("refuses a claim for a tenant whose row is gone", async () => {
+    const s = sql();
+    const tenant = mintTenantWithoutUser();
+    const p = await pendingFor("rd_torndown", "https://example.com/torn-down", "at_1");
+
+    const claimed = await pgReadingWriterFor(s, tenant).claimUrl(p.manifest, p.keyPrefix, p.attempt);
+
+    expect(claimed).toEqual({ kind: "tenant_inactive" });
+    const store = pgReadingStoreFor(s, tenant);
+    expect(await store.loadReadingById("rd_torndown")).toBeNull();
+    expect(await store.findOwnerByUrl(p.manifest.url)).toBeNull();
+    for (const table of ["reading_attempts", "reading_jobs"]) {
+      expect(await s.query(`SELECT 1 FROM ${table} WHERE tenant_id = $1`, [String(tenant.tenantId)])).toEqual([]);
+    }
+  });
+
   it("refuses to start an attempt for a tenant that is no longer active", async () => {
     const s = sql();
-    const tenant = mintTenant();
-    await insertActiveUser(env, String(tenant.tenantId));
+    const tenant = await mintTenant();
     const { manifest } = await (async () => {
       const m = await readyManifest("rd_inelig");
       await seedManifest(s, tenant, m, { embedding: axisVector(1) });
@@ -542,7 +558,7 @@ describe("tenant eligibility", () => {
 describe("attempt log", () => {
   it("records events and a paid checkpoint against the attempt", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_log", "https://example.com/log", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -569,7 +585,7 @@ describe("attempt log", () => {
 describe("content of a reading that was never published", () => {
   it("is found under the latest attempt that captured any", async () => {
     const s = sql();
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const p = await pendingFor("rd_raw", "https://example.com/raw", "at_1");
     const writer = pgReadingWriterFor(s, tenant);
     await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
@@ -586,8 +602,8 @@ describe("content of a reading that was never published", () => {
 describe("deleteAllReadings", () => {
   it("removes one tenant's readings and leaves the other's", async () => {
     const s = sql();
-    const gone = mintTenant();
-    const kept = mintTenant();
+    const gone = await mintTenant();
+    const kept = await mintTenant();
     await publishNew(s, gone, "rd_a", "https://example.com/a");
     await publishNew(s, kept, "rd_a", "https://example.com/a");
 
