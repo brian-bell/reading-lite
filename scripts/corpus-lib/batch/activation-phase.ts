@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import type { OpenAIReasoningEffort } from "../../../src/modules/summarizer/types";
 import type { WriteReportRow } from "./write-phase";
+import type { BatchSpendIdentity } from "./spend";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
 // client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
@@ -24,13 +25,16 @@ const layout = r2KeyLayout();
 export interface ActivationDeps {
   r2: Pick<R2Client, "get" | "put" | "putIfAbsent" | "delete">;
   model?: string;
+  // `spend` is the operation admitted before activation; the activating
+  // sidecar is the first pending sidecar, so it carries it.
   identity?:
-    | { provider: "anthropic"; model: string }
+    | { provider: "anthropic"; model: string; spend?: BatchSpendIdentity }
     | {
         provider: "openai";
         model: string;
         reasoningEffort: OpenAIReasoningEffort;
         runId: string;
+        spend?: BatchSpendIdentity;
       };
   now(): string;
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
@@ -251,6 +255,7 @@ function activatingSidecar(
     urlHash: target.urlHash,
     createdAt: target.createdAt,
   }));
+  const spend = identity.spend === undefined ? {} : { spend: identity.spend };
   if (identity.provider === "openai") {
     return {
       version: 2,
@@ -265,6 +270,7 @@ function activatingSidecar(
       reasoningEffort: identity.reasoningEffort,
       processingStatus: "activating",
       targets: sidecarTargets,
+      ...spend,
     };
   }
   return {
@@ -276,6 +282,7 @@ function activatingSidecar(
     processingStatus: "activating",
     resultsUrl: null,
     targets: sidecarTargets,
+    ...spend,
   };
 }
 

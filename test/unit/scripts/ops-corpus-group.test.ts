@@ -1335,8 +1335,13 @@ describe("ops corpus ingest", () => {
       dirReads: 0, sidecarLoads: 0, configResolves: 0,
       ownershipPlans: 0, executes: 0, sidecarClears: 0,
     };
+    const spend = spendHarness();
+    const paid: Array<{ spend: { tenantId: string } }> = [];
     const deps: CorpusIngestDeps = {
       io: cio,
+      openSpend: spend.openSpend,
+      fetch: spend.fetch,
+      now: () => 0,
       readMarkdownDir: async () => {
         calls.dirReads++;
         return [{
@@ -1367,12 +1372,13 @@ describe("ops corpus ingest", () => {
           })) as never,
         };
       },
-      executeBatch: async () => {
+      executeBatch: async (_eligible, _cfg, opts) => {
         calls.executes++;
+        paid.push(opts.paid);
         return { report: [{ status: "ready" }] as never, dropped: [], resumed: false, batchId: "b1", dispositions: [] };
       },
     };
-    return { deps, lines, calls };
+    return { deps, lines, calls, spend, paid };
   }
 
   it("--execute without --sole-writer refuses before touching the directory or sidecar", async () => {
@@ -1412,22 +1418,23 @@ describe("ops corpus ingest", () => {
     expect(calls.executes).toBe(0);
   });
 
-  it("still allows --tenant global on any bucket", async () => {
+  it("lets --tenant global past the ledger guard on any bucket", async () => {
     // The pre-tenant corpus has no tenant id to key ledger rows by, and no
-    // account wipe addresses it, so there is nothing to refuse. Run in execute
-    // mode: plan mode swallows a ledger refusal and still exits 0, so only a
-    // submitted batch proves the guard let global through.
-    const { deps, calls } = makeDeps();
+    // account wipe addresses it, so the ledger guard has nothing to refuse.
+    // Run in execute mode: plan mode swallows a ledger refusal and still exits
+    // 0. The run gets past that guard and stops only at the next one: a bucket
+    // with no spend authority cannot admit the batch (reading-lite-gh319.2).
+    const { deps, calls, spend } = makeDeps();
     deps.resolveConfig = (flags) => {
       calls.configResolves++;
       return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
     };
-    const code = await corpusIngestCommand.run(
-      ["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"],
+    await expect(corpusIngestCommand.run(
+      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--dir", "/md", "--execute", "--sole-writer"],
       deps,
-    );
-    expect(code).toBe(0);
-    expect(calls.executes).toBe(1);
+    )).rejects.toThrow(/no spend authority is mapped to bucket 'some-scratch-bucket'/);
+    expect(spend.openSpend).not.toHaveBeenCalled();
+    expect(calls.executes).toBe(0);
   });
 
   it("plan mode degrades gracefully without credentials", async () => {
@@ -1444,7 +1451,10 @@ describe("ops corpus ingest", () => {
 
   it("--execute --sole-writer runs the batch and clears the sidecar", async () => {
     const { deps, calls } = makeDeps();
-    const code = await corpusIngestCommand.run(["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"], deps);
+    const code = await corpusIngestCommand.run(
+      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--dir", "/md", "--execute", "--sole-writer"],
+      deps,
+    );
     expect(code).toBe(0);
     expect(calls.executes).toBe(1);
     expect(calls.sidecarClears).toBe(1);
@@ -1469,7 +1479,7 @@ describe("ops corpus ingest", () => {
     deps.loadSidecar = async () =>
       ({ batchId: "b1", targets: [], provider: "openai" }) as never;
     const code = await corpusIngestCommand.run(
-      ["--tenant", "global", "--dir", "/md", "--execute", "--sole-writer"],
+      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--dir", "/md", "--execute", "--sole-writer"],
       deps,
     );
     expect(code).toBe(0);
@@ -1479,5 +1489,51 @@ describe("ops corpus ingest", () => {
   it("rejects a malformed --limit", async () => {
     const { deps } = makeDeps();
     await expect(corpusIngestCommand.run(["--tenant", "global", "--dir", "/md", "--limit", "zero"], deps)).rejects.toThrow(UsageError);
+  });
+
+  // reading-lite-gh319.2. These also own the batch payer rules
+  // (resolveBatchBillingTenant); corpus recover shares them.
+  describe("spend admission", () => {
+    const TENANT = "usr_11111111-1111-4111-8111-111111111111";
+    const ADMITTED_PAYER = "usr_33333333-3333-4333-8333-333333333333";
+    const inFlight = (payer?: string) =>
+      ({ batchId: "b1", targets: [], provider: "openai", ...(payer ? { spend: { tenantId: payer } } : {}) }) as never;
+    const EXECUTE = ["--dir", "/md", "--execute", "--sole-writer"];
+
+    it.each([
+      ["a fresh plan", null],
+      ["a resume plan", inFlight(ADMITTED_PAYER)],
+    ])("%s opens no spend session", async (_label, sidecar) => {
+      const { deps, spend } = makeDeps();
+      deps.loadSidecar = async () => sidecar;
+      expect(await corpusIngestCommand.run(["--tenant", "global", "--dir", "/md"], deps)).toBe(0);
+      expect(spend.openSpend).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a real --tenant pays by default", ["--tenant", TENANT], null, TENANT],
+      ["--tenant global pays with --billing-tenant", ["--tenant", "global", "--billing-tenant", BILLING_TENANT], null, BILLING_TENANT],
+      ["a resume pays with the tenant its batch was admitted under", ["--tenant", "global"], inFlight(ADMITTED_PAYER), ADMITTED_PAYER],
+      ["a resume may name that same tenant", ["--tenant", "global", "--billing-tenant", ADMITTED_PAYER], inFlight(ADMITTED_PAYER), ADMITTED_PAYER],
+    ])("%s, through the bucket's spend authority", async (_label, flags, sidecar, payer) => {
+      const { deps, spend, paid } = makeDeps();
+      deps.loadSidecar = async () => sidecar;
+      expect(await corpusIngestCommand.run([...flags, ...EXECUTE], deps)).toBe(0);
+      expect(spend.openSpend).toHaveBeenCalledWith("production");
+      expect(paid.map((p) => p.spend.tenantId)).toEqual([payer]);
+      expect(spend.dispose).toHaveBeenCalledOnce();
+    });
+
+    it.each([
+      ["--tenant global without --billing-tenant", ["--tenant", "global"], null, /--execute requires --billing-tenant/],
+      ["a resume naming a different payer", ["--tenant", "global", "--billing-tenant", BILLING_TENANT], inFlight(ADMITTED_PAYER), /admitted against billing tenant/],
+      ["a batch submitted before spend accounting, under --tenant global", ["--tenant", "global"], inFlight(), /--execute requires --billing-tenant/],
+    ])("refuses %s before any spend session or batch", async (_label, flags, sidecar, refusal) => {
+      const { deps, spend, calls } = makeDeps();
+      deps.loadSidecar = async () => sidecar;
+      await expect(corpusIngestCommand.run([...flags, ...EXECUTE], deps)).rejects.toThrow(refusal);
+      expect(spend.openSpend).not.toHaveBeenCalled();
+      expect(calls.executes).toBe(0);
+    });
   });
 });

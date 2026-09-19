@@ -41,6 +41,33 @@ export function spendHarness(authority: Authority = "allow") {
   return { openSpend, fetch, calls, dispose };
 }
 
+type Decision = Awaited<ReturnType<SpendRpc>>;
+
+/**
+ * reading-lite-gh319.2: the admission route a provider batch reserves, marks,
+ * and settles through. Answers like the authority unless `answers` (mutable,
+ * so a test can deny one run and allow the next) overrides a verb.
+ */
+export function batchSpendAuthority(answers: Partial<Record<string, Decision>> = {}) {
+  const calls: Array<Record<string, unknown>> = [];
+  const rpc = vi.fn<SpendRpc>(async (body) => {
+    calls.push(body);
+    const kind = String(body.kind);
+    const answer = answers[kind];
+    if (answer) return answer;
+    if (kind === "reserve_spend") return { ok: true, state: "reserved" };
+    if (kind === "mark_spend_dispatched") return { ok: true, state: "dispatched", fresh: true };
+    return { ok: true, state: kind === "release_spend" ? "released" : "settled" };
+  });
+  return {
+    rpc,
+    answers,
+    calls,
+    kinds: () => calls.map((call) => String(call.kind)),
+    spend: { tenantId: BILLING_TENANT, rpc, newOpId: () => "op-1" },
+  };
+}
+
 /** [label, authority, request the command's paid client sends, refusal]. */
 export const FAIL_CLOSED_CASES: Array<[string, Authority, RequestInit, RegExp]> = [
   ["a budget denial", "deny", PRICED_REQUEST, /daily_spend/],

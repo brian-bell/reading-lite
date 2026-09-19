@@ -2,9 +2,8 @@
 
 Issue #200 covers source embedding, OpenAI/Anthropic summarization, and summary
 embedding in the hosted reading consumer, plus hosted relationship judgements.
-Operator batch clients remain outside this scope; their estimates are not
-enforcement. Synchronous operator clients are covered
-[below](#synchronous-operator-clients).
+Operator clients are covered below: [synchronous](#synchronous-operator-clients)
+and [provider batches](#operator-provider-batches).
 
 `src/control-plane/paid-dispatch.ts` wraps each provider adapter's fetch inside
 its HTTP retry loop. It bounds the complete request, then asks the existing
@@ -151,7 +150,6 @@ Disabling stops subsequent dispatch authorization, not already authorized or
 in-flight provider calls. Re-enabling allows normal retries of deferred attempts;
 it does not enqueue recovery jobs. Neither action releases leases, refunds
 uncertain charges, changes reading attempts, nor resets daily accounting.
-Operator batch enforcement remains separate (#319).
 
 ### Synchronous operator clients
 
@@ -172,6 +170,41 @@ default it to a real `--tenant` and take the authority from `--bucket`;
 `--tenant global`, `eval summarizer`, and comparisons must pass it to execute,
 and the latter two also pass `--env staging|production`. `corpus recover`
 without `--batch` submits through the hosted API and is already enforced there.
+
+### Operator provider batches
+
+`corpus ingest` and `corpus recover --batch` admit each provider batch as one
+operation (`scripts/corpus-lib/batch/spend.ts`), over the same `OperatorSpend`
+route and billed the same way. Their embedding calls go through `createPaidFetch`
+like any synchronous client.
+
+- **Bound.** The maximum is the sum of the synchronous quote of every request in
+  the batch: each OpenAI JSONL body against `/v1/responses`, each Anthropic
+  `params` against `/v1/messages`. Batch prices are at most synchronous prices,
+  so the catalog has no batch entries. A request the catalog cannot bound refuses
+  the whole batch in the extracted-only preflight, before similar-reading
+  embeddings. The fingerprint is a SHA-256 of the exact admitted JSONL or
+  request collection.
+- **Order.** Reserve, then mark dispatched, then the first pending sidecar
+  (`activating`, or `creating`/`uploading`), then create. Every later sidecar
+  carries `{tenantId, opId, quote}`. A denial or outage writes no sidecar and
+  claims nothing, so a rerun starts clean. Activation can only drop requests, so
+  the admitted maximum still bounds the batch that is created.
+- **Uncertainty.** A failure before create is attempted (activation leaving
+  nothing, an activation or upload error) settles the operation at zero. A create
+  whose outcome is unknown keeps the maximum held; the existing adopt-or-refuse
+  reconciliation decides the batch, and a resume never reserves again.
+- **Settlement.** Once results are downloaded, the summed actual usage settles
+  the sidecar's operation. If any request lacks valid usage (errored, expired,
+  missing, or a response tier the catalog does not price) the maximum stays
+  charged. Settlement is idempotent, so a repeated resume settles at most once.
+- **Retention.** Operation records last the admission day plus one UTC day. A
+  resume after that gets a settlement refusal; the run logs the maximum as
+  permanently held and completes. Sidecars from before this change resume
+  unmetered.
+- **Payer.** A resume settles against the tenant its sidecar records and needs no
+  `--billing-tenant`; naming a different one is refused. The spend authority
+  follows `--bucket`; an unmapped bucket cannot execute a batch.
 
 ### Detailed private preflight inspection
 

@@ -37,8 +37,16 @@ import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import type { AuditRow, RecoveryAction } from "../../corpus-lib/types";
 import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import {
+  BILLING_TENANT_FLAG_HELP,
+  resolveBatchBillingTenant,
+  spendEnvironmentForBucket,
+  withOperatorPaidFetch,
+  type OperatorPaidFetchDeps,
+} from "../operator-spend";
+import type { BatchPaidDeps } from "./corpus-ingest";
 
-export interface CorpusRecoverDeps extends BaseDeps {
+export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
   readFile: (path: string) => Promise<string>;
   writeFile: (path: string, body: string) => Promise<void>;
   resolveApiTarget: (flags: { url?: string; token?: string }) => ApiTarget;
@@ -62,13 +70,14 @@ export interface CorpusRecoverDeps extends BaseDeps {
     }) => BatchConfig;
     // Runs the whole batch pipeline (clients + sidecar seams wired in by
     // defaultDeps). The unit tests stub this boundary to cover routing.
-    execute: (rows: AuditRow[], cfg: BatchConfig, scPath: string) => Promise<BatchRunResult>;
+    execute: (rows: AuditRow[], cfg: BatchConfig, scPath: string, paid: BatchPaidDeps) => Promise<BatchRunResult>;
   };
 }
 
 interface Args {
   index: string;
   tenant?: string;
+  billingTenant?: string;
   execute: boolean;
   only?: RecoveryAction;
   limit: number;
@@ -97,6 +106,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
       options: {
         index: { type: "string" },
         tenant: { type: "string" },
+        "billing-tenant": { type: "string" },
         execute: { type: "boolean", default: false },
         only: { type: "string" },
         limit: { type: "string" },
@@ -113,12 +123,18 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
   } catch (err) {
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
+  // Realtime recovery bills through the hosted API, which admits the spend
+  // against the bearer token's tenant; only --batch pays from this machine.
+  if (values["billing-tenant"] !== undefined && values.batch !== true) {
+    throw new UsageError("--billing-tenant applies only to --batch");
+  }
   if (values.only !== undefined && !ONLY_ACTIONS.includes(values.only as RecoveryAction)) {
     throw new UsageError(`--only must be one of: ${ONLY_ACTIONS.join(", ")}`);
   }
   return {
     index: values.index ?? "./index.json",
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
+    ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
     execute: values.execute === true,
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
@@ -391,6 +407,11 @@ async function runBatchMode(
     );
     return 1;
   }
+  const billingTenant = resolveBatchBillingTenant(args.billingTenant, {
+    tenant,
+    execute: args.execute,
+    sidecar: existing,
+  });
 
   if (!args.execute) {
     if (existing) {
@@ -421,7 +442,11 @@ async function runBatchMode(
     return 2;
   }
 
-  const result = await deps.batch.execute(batchRows, cfg, scPath);
+  const result = await withOperatorPaidFetch(
+    deps,
+    { env: spendEnvironmentForBucket(cfg.r2.bucket), billingTenant, command: "corpus-recover" },
+    (paidFetch, spend) => deps.batch.execute(batchRows, cfg, scPath, { fetch: paidFetch, spend }),
+  );
 
   // The batch finished and results are written — the sidecar is no longer needed.
   await deps.batch.clearSidecar(scPath);
@@ -481,6 +506,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
     },
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: globalThis.fetch,
     batch: {
       loadSidecar: async (p) => {
         const { loadSidecar } = await import("../../corpus-lib/batch/sidecar");
@@ -491,7 +518,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         await clearSidecar(p);
       },
       resolveConfig: (flags) => resolveBatchConfig(flags),
-      execute: async (rows, cfg, scPath) => {
+      execute: async (rows, cfg, scPath, paid) => {
         const { randomUUID } = await import("node:crypto");
         const { runBatch } = await import("../../corpus-lib/batch/run");
         const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
@@ -522,7 +549,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
             ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
             : {}),
           openaiBatch: makeOpenAIBatchClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
-          embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
+          embed: makeOpenAIEmbedClient({ fetch: paid.fetch, apiKey: cfg.openaiApiKey }),
+          spend: paid.spend,
           extract: (url: string) =>
             extractFromUrl(url, {
               fetch: browserFetch,
@@ -587,6 +615,13 @@ Options:
                     + Vectorize creds and OPENAI_API_KEY for embeddings;
                     ANTHROPIC_API_KEY only for an Anthropic start/resume.
                     Sidecars pin provider/model/effort; there is no fallback.
+                    --execute admits the batch's maximum against the billing
+                    tenant's and the global daily caps before claiming anything,
+                    and settles actual usage from the results.
+  ${BILLING_TENANT_FLAG_HELP}
+                    --batch only. Defaults to a usr_… --tenant; required with
+                    --tenant global. A resume settles against the tenant its
+                    batch was admitted under.
   --sole-writer     Required with --batch --execute: assert the realtime writer
                     is paused/drained. Eager by-url claims are defense-in-depth,
                     not a replacement for excluding the realtime writer.

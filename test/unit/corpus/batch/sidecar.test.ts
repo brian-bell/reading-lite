@@ -111,6 +111,50 @@ describe("batch sidecar I/O", () => {
     }
   });
 
+  describe("spend identity (reading-lite-gh319.2)", () => {
+    const spend = {
+      tenantId: "usr_550e8400-e29b-41d4-a716-446655440000",
+      opId: "operator:anthropic-batch:op-1",
+      quote: { dayKey: "2026-09-19", catalogVersion: 1, requestFingerprint: "f".repeat(64), maxMicrodollars: 900 },
+      anthropicCacheWriteRate: 625,
+    };
+    const creating = (value: unknown) => ({
+      version: 2,
+      provider: "anthropic",
+      phase: "creating",
+      batchId: "",
+      model: "m",
+      processingStatus: "pending",
+      resultsUrl: null,
+      targets: [target],
+      spend: value,
+    });
+
+    it("round-trips on a pending sidecar so a resume settles the admitted operation", async () => {
+      const { dir, path } = await tempPath();
+      try {
+        await saveSidecar(path, creating(spend) as PersistedSidecar);
+        expect((await loadSidecar(path))?.spend).toEqual(spend);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["a billing tenant that is not a tenant id", { ...spend, tenantId: "global" }],
+      ["a malformed quote", { ...spend, quote: { ...spend.quote, dayKey: "yesterday" } }],
+      ["an unknown field", { ...spend, refunded: true }],
+    ])("refuses to load %s", async (_label, value) => {
+      const { dir, path } = await tempPath();
+      try {
+        await writeFile(path, JSON.stringify(creating(value)));
+        await expect(loadSidecar(path)).rejects.toThrow(/manual reconciliation required/);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("round-trips judged candidate IDs and still loads a pre-upgrade sidecar without them", async () => {
     const { dir, path } = await tempPath();
     try {

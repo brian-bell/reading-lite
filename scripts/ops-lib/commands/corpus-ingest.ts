@@ -26,12 +26,27 @@ import type { BatchRunResult } from "../../corpus-lib/batch/run";
 import type { FreshDisposition } from "../../corpus-lib/batch/prepare-fresh-markdown";
 import { tallyDispositions } from "../../corpus-lib/batch/prepare-fresh-markdown";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
+import {
+  BILLING_TENANT_FLAG_HELP,
+  resolveBatchBillingTenant,
+  spendEnvironmentForBucket,
+  withOperatorPaidFetch,
+  type OperatorPaidFetchDeps,
+} from "../operator-spend";
+import type { SpendRpc } from "../../../src/control-plane/paid-dispatch";
 
 export interface FreshBatchResult extends BatchRunResult {
   dispositions: FreshDisposition[];
 }
 
-export interface CorpusIngestDeps extends BaseDeps {
+// What an execute run bills through (reading-lite-gh319.2): the embedding
+// client's paid fetch, and the admission route for the batch itself.
+export interface BatchPaidDeps {
+  fetch: typeof fetch;
+  spend: { tenantId: string; rpc: SpendRpc };
+}
+
+export interface CorpusIngestDeps extends BaseDeps, OperatorPaidFetchDeps {
   readMarkdownDir: (dir: string) => Promise<MarkdownArticle[]>;
   loadSidecar: (path: string) => Promise<PersistedSidecar | null>;
   clearSidecar: (path: string) => Promise<void>;
@@ -50,7 +65,7 @@ export interface CorpusIngestDeps extends BaseDeps {
   executeBatch: (
     eligible: MarkdownArticle[],
     cfg: BatchConfig,
-    opts: { limit?: number; sidecar: string },
+    opts: { limit?: number; sidecar: string; paid: BatchPaidDeps },
   ) => Promise<FreshBatchResult>;
 }
 
@@ -59,6 +74,7 @@ const DEFAULT_SIDECAR = "./corpus-ingest.batch.json";
 interface Args {
   dir: string;
   tenant?: string;
+  billingTenant?: string;
   execute: boolean;
   soleWriter: boolean;
   limit: number;
@@ -74,6 +90,7 @@ function parseIngestArgs(argv: string[]): Args {
       options: {
         dir: { type: "string" },
         tenant: { type: "string" },
+        "billing-tenant": { type: "string" },
         execute: { type: "boolean", default: false },
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
@@ -88,6 +105,7 @@ function parseIngestArgs(argv: string[]): Args {
   return {
     dir: values.dir,
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
+    ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
     limit: parsePositiveInt(values.limit),
@@ -135,6 +153,11 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
     );
     return 1;
   }
+  const billingTenant = resolveBatchBillingTenant(args.billingTenant, {
+    tenant,
+    execute: args.execute,
+    sidecar: existing,
+  });
 
   const articles = existing ? [] : await deps.readMarkdownDir(args.dir);
   const { plan, oversized, eligible } = selectEligibleArticles(articles);
@@ -214,10 +237,16 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
     return 0;
   }
 
-  const result = await deps.executeBatch(eligible, cfg, {
-    ...(Number.isFinite(args.limit) ? { limit: args.limit } : {}),
-    sidecar: args.sidecar,
-  });
+  const result = await withOperatorPaidFetch(
+    deps,
+    { env: spendEnvironmentForBucket(cfg.r2.bucket), billingTenant, command: "corpus-ingest" },
+    (paidFetch, spend) =>
+      deps.executeBatch(eligible, cfg, {
+        ...(Number.isFinite(args.limit) ? { limit: args.limit } : {}),
+        sidecar: args.sidecar,
+        paid: { fetch: paidFetch, spend },
+      }),
+  );
 
   // The batch finished and results are written — the sidecar is no longer needed.
   await deps.clearSidecar(args.sidecar);
@@ -271,6 +300,9 @@ function printSummary(io: CommandIo, s: Partial<Summary> & { executed: boolean }
 function defaultDeps(io: CommandIo): CorpusIngestDeps {
   return {
     io,
+    openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
+    fetch: globalThis.fetch,
+    now: () => Date.now(),
     readMarkdownDir: async (dir) => (await import("../../import-markdown-lib/parse")).readMarkdownDir(dir),
     loadSidecar: async (p) => (await import("../../corpus-lib/batch/sidecar")).loadSidecar(p),
     clearSidecar: async (p) => (await import("../../corpus-lib/batch/sidecar")).clearSidecar(p),
@@ -317,7 +349,8 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
           ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
           : {}),
         openaiBatch: makeOpenAIBatchClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
-        embed: makeOpenAIEmbedClient({ fetch: fetchFn, apiKey: cfg.openaiApiKey }),
+        embed: makeOpenAIEmbedClient({ fetch: opts.paid.fetch, apiKey: cfg.openaiApiKey }),
+        spend: opts.paid.spend,
         // The fresh-markdown path never fetches a URL; this is only here to satisfy
         // the shared BatchRunDeps shape and must never be called.
         extract: () => {
@@ -371,6 +404,9 @@ Options:
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
+  ${BILLING_TENANT_FLAG_HELP}
+                   Defaults to a usr_… --tenant; required with --tenant global.
+                   A resume settles against the tenant its batch was admitted under.
   --sidecar <path> In-flight batch marker. Default: ${DEFAULT_SIDECAR}.
   --help           Show this message.
 
@@ -379,6 +415,12 @@ pending owners are skipped (a realtime submit may be in flight), failed owners
 re-ingest in place, and unclaimed URLs mint a new reading. An existing sidecar
 pins its provider/model/effort regardless of current SUMMARIZER_PROVIDER, and
 there is no automatic provider fallback.
+
+Spend: --execute admits the whole batch's maximum (the sum of every request's
+synchronous price) against the billing tenant's and the global daily caps
+before it claims anything or writes the sidecar, and settles actual usage once
+the results are in. A refusal leaves nothing to reconcile. Embedding calls are
+admitted per request.
 
 Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* +
 CORPUS_CF_API_TOKEN for R2/Vectorize and OPENAI_API_KEY for embeddings/default

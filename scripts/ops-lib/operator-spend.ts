@@ -12,7 +12,7 @@
 import { controlPlaneForBucket, CONTROL_PLANE_BY_BUCKET } from "../account-lib/control-plane";
 import type { OperatorTenant } from "../corpus-lib/tenant";
 import { parseTenantId } from "../../src/control-plane/ids";
-import { createPaidFetch } from "../../src/control-plane/paid-dispatch";
+import { createPaidFetch, type SpendRpc } from "../../src/control-plane/paid-dispatch";
 import type { OpenOperatorSpend } from "../system-lib/spend";
 import type { PolicyEnvironment } from "../system-lib/policy";
 import { UsageError } from "./contract";
@@ -47,6 +47,31 @@ export function resolveBillingTenant(
   return undefined;
 }
 
+/**
+ * The payer for a provider batch (reading-lite-gh319.2). A batch in flight
+ * settles against the tenant it was admitted under, so a resume takes the
+ * payer from its sidecar and refuses a different one; nothing new is
+ * admitted on a resume, so it needs no --billing-tenant of its own.
+ */
+export function resolveBatchBillingTenant(
+  raw: string | undefined,
+  opts: { tenant: OperatorTenant; execute: boolean; sidecar: { spend?: { tenantId: string } } | null },
+): string | undefined {
+  const pinned = opts.sidecar?.spend?.tenantId;
+  const named = resolveBillingTenant(raw, {
+    tenant: opts.tenant,
+    execute: opts.execute && pinned === undefined,
+  });
+  if (pinned === undefined) return named;
+  if (raw !== undefined && named !== pinned) {
+    throw new UsageError(
+      `the in-flight batch was admitted against billing tenant '${pinned}', not '${named}'; ` +
+        "resume it without --billing-tenant or with that tenant",
+    );
+  }
+  return pinned;
+}
+
 /** The spend authority that goes with a data bucket; no guess for an unknown one. */
 export function spendEnvironmentForBucket(bucket: string): PolicyEnvironment {
   const target = controlPlaneForBucket(bucket);
@@ -78,7 +103,9 @@ export interface OperatorPaidFetchDeps {
 export async function withOperatorPaidFetch<T>(
   deps: OperatorPaidFetchDeps,
   opts: { env: PolicyEnvironment; billingTenant: string | undefined; command: string },
-  run: (paidFetch: typeof fetch) => Promise<T>,
+  // `spend` is the raw admission route, for callers that account for work the
+  // paid fetch cannot quote (provider batches).
+  run: (paidFetch: typeof fetch, spend: { tenantId: string; rpc: SpendRpc }) => Promise<T>,
 ): Promise<T> {
   // resolveBillingTenant already refuses this for --execute; without a payer
   // there is nothing to admit against, so no session and no transport.
@@ -93,7 +120,7 @@ export async function withOperatorPaidFetch<T>(
       fetch: deps.fetch,
       rpc: session.rpc,
       now: deps.now,
-    }));
+    }), { tenantId: billingTenant, rpc: session.rpc });
   } finally {
     await session.dispose();
   }

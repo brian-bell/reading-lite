@@ -135,9 +135,10 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
 - Hosted provider fetches must retain lease checks and budget admission inside
   the HTTP retry loop. Synchronous operator clients (backfill-vectors, refresh
   judgements, evals, comparisons) take the same wrapper through `OperatorSpend`
-  and `scripts/ops-lib/operator-spend.ts`, billed to `--billing-tenant`; operator
-  batch clients are still outside that enforcement. See
-  [paid spend](docs/paid-provider-spend.md).
+  and `scripts/ops-lib/operator-spend.ts`, billed to `--billing-tenant`. Operator
+  batches (`corpus ingest`, `corpus recover --batch`) admit their summed maximum
+  before the first pending sidecar and settle from results; the sidecar carries
+  the operation. See [paid spend](docs/paid-provider-spend.md).
 - A successful Markdown reprocess changes `source_type`; a failed one retains
   it and restores a previously ready manifest. Supplied Markdown takes priority
   over stored text. Restoring the manifest does not restore overwritten content

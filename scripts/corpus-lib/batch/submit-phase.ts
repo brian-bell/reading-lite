@@ -23,6 +23,7 @@ import type {
   SidecarTarget,
   SummarizeTarget,
 } from "./types";
+import type { BatchSpendIdentity } from "./spend";
 
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
 // client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
@@ -41,6 +42,8 @@ export interface SubmitDeps {
   // silently re-submitting (and re-billing).
   saveSidecar(sidecar: PersistedSidecar): Promise<void>;
   maxBatchBytes?: number;
+  // The spend operation admitted for this batch, recorded on every sidecar.
+  spend?: BatchSpendIdentity;
 }
 
 export interface SubmitResult {
@@ -69,6 +72,8 @@ export interface OpenAISubmitDeps {
   // Re-read after lock acquisition so a stale "no sidecar" decision cannot
   // overwrite a submit that finished (or crashed mid-window) while we waited.
   loadSidecar(): Promise<PersistedSidecar | null>;
+  // The spend operation admitted for this batch, recorded on every sidecar.
+  spend?: BatchSpendIdentity;
 }
 
 export interface OpenAISubmitResult {
@@ -100,6 +105,7 @@ export async function submitBatch(
   }
 
   assertBatchPayloadWithinLimit(requests, deps.maxBatchBytes);
+  const spend = deps.spend === undefined ? {} : { spend: deps.spend };
 
   // Pending marker before create: if the process dies in the create window, the
   // sidecar (batchId "") makes a re-run abort for manual reconciliation rather
@@ -113,6 +119,7 @@ export async function submitBatch(
     processingStatus: "pending",
     resultsUrl: null,
     targets: sidecarTargets,
+    ...spend,
   });
 
   const info = await deps.batch.create(requests);
@@ -125,6 +132,7 @@ export async function submitBatch(
     processingStatus: info.processing_status,
     resultsUrl: info.results_url,
     targets: sidecarTargets,
+    ...spend,
   };
   await deps.saveSidecar(sidecar);
   return { info, sidecar };
@@ -153,6 +161,7 @@ export async function submitOpenAIBatch(
     outputFileId: null,
     errorFileId: null,
     targets: sidecarTargets,
+    ...(deps.spend === undefined ? {} : { spend: deps.spend }),
   };
 
   // Persist the exact JSONL first so a resume from "uploading" can re-upload
@@ -250,6 +259,14 @@ function assertBatchPayloadWithinLimit(
       )}MB safety cap; re-run with --limit to split into smaller batches`,
     );
   }
+}
+
+export function anthropicBatchRequests(
+  targets: SummarizeTarget[],
+  model: string,
+  effort: AnthropicReasoningEffort,
+): AnthropicBatchRequest[] {
+  return targets.map((target) => requestForSummarizeTarget(target, model, effort));
 }
 
 function requestForSummarizeTarget(

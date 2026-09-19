@@ -15,11 +15,24 @@ import { extractTargets } from "./extract-phase";
 import { activateRecoverTargets } from "./activation-phase";
 import { resolveSimilar } from "./similar-phase";
 import {
+  anthropicBatchRequests,
   assertExtractedBatchPayloadWithinLimit,
   assertSummarizeBatchPayloadWithinLimit,
   submitBatch,
   submitOpenAIBatch,
 } from "./submit-phase";
+import {
+  admitBatchSpend,
+  anthropicResultLines,
+  boundAnthropicBatch,
+  boundOpenAIBatch,
+  cancelUnsentBatchSpend,
+  openAIResultLines,
+  settleBatchSpend,
+  type BatchSpendIdentity,
+  type BatchSpendOutcome,
+} from "./spend";
+import type { SpendRpc } from "../../../src/control-plane/paid-dispatch";
 import { prepareOpenAIBatchPayload } from "./openai-payload";
 import { pollUntilEnded } from "./poll-phase";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
@@ -34,6 +47,7 @@ import type {
   OpenAISubmittedSidecar,
   PersistedSidecar,
   Sidecar,
+  SummarizeTarget,
 } from "./types";
 import type { ActivationResult } from "./activation-phase";
 import type {
@@ -100,15 +114,20 @@ export interface BatchRunDeps {
   maxBatchBytes?: number;
   log?(line: string): void;
   poll?: { intervalMs?: number; maxPolls?: number };
+  // The spend authority (reading-lite-gh319.2). A new batch is admitted
+  // against `tenantId` before its first sidecar; results settle the operation
+  // the sidecar recorded, whichever tenant this run names.
+  spend: { tenantId: string; rpc: SpendRpc; newOpId?(): string };
 }
 
 export type BatchIdentity =
-  | { provider: "anthropic"; model: string }
+  | { provider: "anthropic"; model: string; spend?: BatchSpendIdentity }
   | {
       provider: "openai";
       model: string;
       reasoningEffort: OpenAIReasoningEffort;
       runId: string;
+      spend?: BatchSpendIdentity;
     };
 
 export interface BatchRunResult {
@@ -116,6 +135,8 @@ export interface BatchRunResult {
   dropped: DroppedTarget[];
   resumed: boolean;
   batchId?: string;
+  // Absent when no batch was submitted.
+  spend?: BatchSpendOutcome;
 }
 
 // The front-end half of a bulk run: produce the extracted-and-in-hand targets to
@@ -144,12 +165,13 @@ export async function runBatchPipeline(
       if (existing.phase === "submitted") {
         const openaiBatch = requireOpenAIBatchClient(deps, "resume pinned sidecar");
         log(`Resuming OpenAI batch ${existing.batchId} (${existing.targets.length} readings)`);
-        const report = await pollAndWriteOpenAI(existing, deps, openaiBatch);
+        const { report, spend } = await pollAndWriteOpenAI(existing, deps, openaiBatch);
         return {
           report,
           dropped: [],
           resumed: true,
           batchId: existing.batchId,
+          spend,
         };
       }
       if (
@@ -170,12 +192,13 @@ export async function runBatchPipeline(
           ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
           log,
         });
-        const report = await pollAndWriteOpenAI(submitted, deps, openaiBatch);
+        const { report, spend } = await pollAndWriteOpenAI(submitted, deps, openaiBatch);
         return {
           report,
           dropped: [],
           resumed: true,
           batchId: submitted.batchId,
+          spend,
         };
       }
       // OpenAI `activating` (no remote object) keeps the manual reconcile path.
@@ -189,8 +212,8 @@ export async function runBatchPipeline(
     const batch = requireAnthropicBatchClient(deps, "resume pinned sidecar");
     const sidecar = existing as Sidecar;
     log(`Resuming batch ${sidecar.batchId} (${sidecar.targets.length} readings)`);
-    const report = await pollAndWrite(sidecar, deps, batch);
-    return { report, dropped: [], resumed: true, batchId: sidecar.batchId };
+    const { report, spend } = await pollAndWrite(sidecar, deps, batch);
+    return { report, dropped: [], resumed: true, batchId: sidecar.batchId, spend };
   }
 
   const provider = deps.configuredProvider ?? "anthropic";
@@ -227,8 +250,16 @@ export async function runBatchPipeline(
 
   let activationSkipped: WriteReportRow[] = [];
   if (deps.activateExtracted) {
-    // Extracted-only preflight: an oversized run must fail here, before
+    // Extracted-only preflight: an oversized run, or one the price catalog
+    // cannot bound (reading-lite-gh319.2), must fail here, before
     // resolveSimilar spends embedding quota and before any eager by-url claim.
+    const preflight = extracted.map((target) => ({
+      extracted: target,
+      similar: [],
+      queryEmbedTokens: 0,
+      // Preflight payload only: never written to a manifest.
+      similarity: { count: 0, computed_at: deps.now() },
+    }));
     if (provider === "anthropic") {
       assertExtractedBatchPayloadWithinLimit(
         extracted,
@@ -236,21 +267,22 @@ export async function runBatchPipeline(
         anthropicEffort,
         deps.maxBatchBytes,
       );
+      if (extracted.length > 0) {
+        await boundAnthropicBatch(
+          anthropicBatchRequests(preflight, deps.model, anthropicEffort),
+          deps.model,
+        );
+      }
     } else {
-      prepareOpenAIBatchPayload(
-        extracted.map((target) => ({
-          extracted: target,
-          similar: [],
-          queryEmbedTokens: 0,
-          // Size-check payload only: never written to a manifest.
-          similarity: { count: 0, computed_at: deps.now() },
-        })),
+      const prepared = prepareOpenAIBatchPayload(
+        preflight,
         deps.model,
         reasoningEffort,
         deps.maxBatchBytes === undefined
           ? undefined
           : { maxBytes: deps.maxBatchBytes },
       );
+      if (extracted.length > 0) await boundOpenAIBatch(prepared.jsonl, deps.model);
     }
   }
 
@@ -263,16 +295,68 @@ export async function runBatchPipeline(
     now: () => deps.now(),
   });
 
-  if (deps.activateExtracted) {
-    if (provider === "anthropic") {
-      assertSummarizeBatchPayloadWithinLimit(
-        summarizeTargets,
-        deps.model,
-        anthropicEffort,
-        deps.maxBatchBytes,
+  // Admit the batch before anything is claimed or written (reading-lite-
+  // gh319.2): a refusal leaves no sidecar and no pending manifest, so a rerun
+  // starts clean. Activation can only drop requests from the admitted set, so
+  // its maximum still bounds the batch that is created.
+  const spend =
+    summarizeTargets.length === 0
+      ? undefined
+      : await admitBatch(summarizeTargets, provider, deps, {
+          reasoningEffort,
+          anthropicEffort,
+          log,
+        });
+  const spendDeps = { rpc: deps.spend.rpc, log };
+  // Until the provider create is attempted no batch can exist, so a failure
+  // settles the operation at zero. Once create is attempted the batch may
+  // exist and be billed, so the maximum stays held for reconciliation.
+  let createAttempted = false;
+  const settleUnsent = async () => {
+    if (spend && !createAttempted) await cancelUnsentBatchSpend(spend, spendDeps);
+  };
+
+  let submitted:
+    | { provider: "openai"; sidecar: OpenAISubmittedSidecar }
+    | { provider: "anthropic"; sidecar: Sidecar };
+  try {
+    if (deps.activateExtracted) {
+      const activated = await deps.activateExtracted(
+        extracted,
+        spend ? { ...identity, spend } : identity,
       );
-    } else {
-      prepareOpenAIBatchPayload(
+      extracted = activated.activated;
+      activationSkipped = activated.skipped;
+      for (const row of activationSkipped) {
+        log(`  skipped ${row.id}: ${row.reason ?? "batch activation skipped"}`);
+      }
+
+      const activatedByKey = new Map(
+        extracted.map((target) => [extractedTargetKey(target), target]),
+      );
+      summarizeTargets = summarizeTargets
+        .filter((target) => activatedByKey.has(extractedTargetKey(target.extracted)))
+        .map((target) => ({
+          ...target,
+          extracted: activatedByKey.get(extractedTargetKey(target.extracted))!,
+        }));
+
+      if (extracted.length === 0) {
+        await settleUnsent();
+        await deps.clearSidecar();
+        log("No readings to summarize after batch activation.");
+        return { report: activationSkipped, dropped, resumed: false };
+      }
+    }
+
+    if (summarizeTargets.length === 0) {
+      await settleUnsent();
+      log("No readings to summarize after extraction.");
+      return { report: activationSkipped, dropped, resumed: false };
+    }
+
+    if (provider === "openai") {
+      const prepared = prepareOpenAIBatchPayload(
         summarizeTargets,
         deps.model,
         reasoningEffort,
@@ -280,93 +364,120 @@ export async function runBatchPipeline(
           ? undefined
           : { maxBytes: deps.maxBatchBytes },
       );
+      log(`Submitting OpenAI Batch: ${summarizeTargets.length} readings`);
+      const client = openaiBatch!;
+      const { info, sidecar } = await submitOpenAIBatch(
+        summarizeTargets,
+        prepared,
+        {
+          model: deps.model,
+          reasoningEffort,
+          runId: runId!,
+          batch: {
+            ...client,
+            create: (inputFileId, batchRunId) => {
+              createAttempted = true;
+              return client.create(inputFileId, batchRunId);
+            },
+          },
+          putObject: (key, body, contentType) =>
+            deps.r2.put(key, body, { contentType }),
+          saveInputJsonl: deps.saveInputJsonl ?? (() => {
+            // OpenAI resume depends on the companion JSONL; if a caller wires
+            // an OpenAI provider without one, fail loudly here rather than
+            // silently lose the upload bytes on the next crash.
+            throw new Error(
+              "OpenAI submission requires a saveInputJsonl helper on BatchRunDeps",
+            );
+          }),
+          saveSidecar: deps.saveSidecar,
+          loadSidecar: deps.loadSidecar,
+          ...(deps.sidecarFilePath ? { sidecarFilePath: deps.sidecarFilePath } : {}),
+          ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
+          ...(spend ? { spend } : {}),
+        },
+      );
+      log(`Batch ${info.id} created; polling for completion...`);
+      submitted = { provider: "openai", sidecar };
+    } else {
+      log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
+      const client = batch!;
+      const { info, sidecar } = await submitBatch(summarizeTargets, {
+        model: deps.model,
+        effort: anthropicEffort,
+        batch: {
+          ...client,
+          create: (requests) => {
+            createAttempted = true;
+            return client.create(requests);
+          },
+        },
+        putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
+        saveSidecar: deps.saveSidecar,
+        ...(deps.maxBatchBytes === undefined ? {} : { maxBatchBytes: deps.maxBatchBytes }),
+        ...(spend ? { spend } : {}),
+      });
+      log(`Batch ${info.id} created; polling for completion...`);
+      submitted = { provider: "anthropic", sidecar };
     }
-    const activated = await deps.activateExtracted(extracted, identity);
-    extracted = activated.activated;
-    activationSkipped = activated.skipped;
-    for (const row of activationSkipped) {
-      log(`  skipped ${row.id}: ${row.reason ?? "batch activation skipped"}`);
-    }
-
-    const activatedByKey = new Map(
-      extracted.map((target) => [extractedTargetKey(target), target]),
-    );
-    summarizeTargets = summarizeTargets
-      .filter((target) => activatedByKey.has(extractedTargetKey(target.extracted)))
-      .map((target) => ({
-        ...target,
-        extracted: activatedByKey.get(extractedTargetKey(target.extracted))!,
-      }));
-
-    if (extracted.length === 0) {
-      await deps.clearSidecar();
-      log("No readings to summarize after batch activation.");
-      return { report: activationSkipped, dropped, resumed: false };
-    }
+  } catch (error) {
+    await settleUnsent();
+    throw error;
   }
 
-  if (summarizeTargets.length === 0) {
-    log("No readings to summarize after extraction.");
-    return { report: activationSkipped, dropped, resumed: false };
-  }
+  const polled =
+    submitted.provider === "openai"
+      ? await pollAndWriteOpenAI(submitted.sidecar, deps, openaiBatch!)
+      : await pollAndWrite(submitted.sidecar, deps, batch!);
+  return {
+    report: [...activationSkipped, ...polled.report],
+    dropped,
+    resumed: false,
+    batchId: submitted.sidecar.batchId,
+    spend: polled.spend,
+  };
+}
 
+// The size preflight doubles as the bound: the exact payload submit would
+// send is what gets quoted, and an oversized batch fails before reserving.
+async function admitBatch(
+  targets: SummarizeTarget[],
+  provider: "openai" | "anthropic",
+  deps: BatchRunDeps,
+  opts: {
+    reasoningEffort: OpenAIReasoningEffort;
+    anthropicEffort: AnthropicReasoningEffort;
+    log: (line: string) => void;
+  },
+): Promise<BatchSpendIdentity> {
+  let bound;
   if (provider === "openai") {
     const prepared = prepareOpenAIBatchPayload(
-      summarizeTargets,
+      targets,
       deps.model,
-      reasoningEffort,
-      deps.maxBatchBytes === undefined
-        ? undefined
-        : { maxBytes: deps.maxBatchBytes },
+      opts.reasoningEffort,
+      deps.maxBatchBytes === undefined ? undefined : { maxBytes: deps.maxBatchBytes },
     );
-    log(`Submitting OpenAI Batch: ${summarizeTargets.length} readings`);
-    const { info, sidecar } = await submitOpenAIBatch(
-      summarizeTargets,
-      prepared,
-      {
-        model: deps.model,
-        reasoningEffort,
-        runId: runId!,
-        batch: openaiBatch!,
-        putObject: (key, body, contentType) =>
-          deps.r2.put(key, body, { contentType }),
-        saveInputJsonl: deps.saveInputJsonl ?? (() => {
-          // OpenAI resume depends on the companion JSONL; if a caller wires
-          // an OpenAI provider without one, fail loudly here rather than
-          // silently lose the upload bytes on the next crash.
-          throw new Error(
-            "OpenAI submission requires a saveInputJsonl helper on BatchRunDeps",
-          );
-        }),
-        saveSidecar: deps.saveSidecar,
-        loadSidecar: deps.loadSidecar,
-        ...(deps.sidecarFilePath ? { sidecarFilePath: deps.sidecarFilePath } : {}),
-        ...(deps.reconcileAcquireLock ? { acquireLock: deps.reconcileAcquireLock } : {}),
-      },
+    bound = await boundOpenAIBatch(prepared.jsonl, deps.model);
+  } else {
+    assertSummarizeBatchPayloadWithinLimit(
+      targets,
+      deps.model,
+      opts.anthropicEffort,
+      deps.maxBatchBytes,
     );
-    log(`Batch ${info.id} created; polling for completion...`);
-    const report = await pollAndWriteOpenAI(sidecar, deps, openaiBatch!);
-    return {
-      report: [...activationSkipped, ...report],
-      dropped,
-      resumed: false,
-      batchId: sidecar.batchId,
-    };
+    bound = await boundAnthropicBatch(
+      anthropicBatchRequests(targets, deps.model, opts.anthropicEffort),
+      deps.model,
+    );
   }
-
-  log(`Submitting Message Batch: ${summarizeTargets.length} readings`);
-  const { info, sidecar } = await submitBatch(summarizeTargets, {
-    model: deps.model,
-    effort: anthropicEffort,
-    batch: batch!,
-    putObject: (key, body, contentType) => deps.r2.put(key, body, { contentType }),
-    saveSidecar: deps.saveSidecar,
-    ...(deps.maxBatchBytes === undefined ? {} : { maxBatchBytes: deps.maxBatchBytes }),
+  return admitBatchSpend(bound, {
+    tenantId: deps.spend.tenantId,
+    rpc: deps.spend.rpc,
+    nowMs: Date.parse(deps.now()),
+    opId: `operator:${provider}-batch:${deps.spend.newOpId?.() ?? randomUUID()}`,
+    log: opts.log,
   });
-  log(`Batch ${info.id} created; polling for completion...`);
-
-  const report = await pollAndWrite(sidecar, deps, batch!);
-  return { report: [...activationSkipped, ...report], dropped, resumed: false, batchId: sidecar.batchId };
 }
 
 // Recover path: resolve audit rows into targets (existing manifest authoritative)
@@ -481,7 +592,7 @@ async function pollAndWrite(
   sidecar: Sidecar,
   deps: BatchRunDeps,
   batch: AnthropicBatchClient,
-): Promise<WriteReportRow[]> {
+): Promise<{ report: WriteReportRow[]; spend: BatchSpendOutcome }> {
   const ended = await pollUntilEnded(sidecar.batchId, {
     batch,
     sleep: deps.sleep,
@@ -493,7 +604,8 @@ async function pollAndWrite(
     throw new Error(`batch ${sidecar.batchId} ended without a results_url`);
   }
   const results = await batch.results(ended.results_url);
-  return writeResults(sidecar, results, {
+  const spend = await settleBatchSpend(sidecar, anthropicResultLines(results), settleDeps(deps));
+  const report = await writeResults(sidecar, results, {
     r2: deps.r2,
     vectorize: deps.vectorize,
     embedMany: (inputs) => deps.embed.embedMany(inputs),
@@ -502,13 +614,18 @@ async function pollAndWrite(
     ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
     ...(deps.log ? { log: deps.log } : {}),
   });
+  return { report, spend };
+}
+
+function settleDeps(deps: BatchRunDeps) {
+  return { rpc: deps.spend.rpc, ...(deps.log ? { log: deps.log } : {}) };
 }
 
 async function pollAndWriteOpenAI(
   sidecar: OpenAISubmittedSidecar,
   deps: BatchRunDeps,
   batch: OpenAIBatchClient,
-): Promise<WriteReportRow[]> {
+): Promise<{ report: WriteReportRow[]; spend: BatchSpendOutcome }> {
   const terminal = new Set([
     "completed",
     "failed",
@@ -543,7 +660,12 @@ async function pollAndWriteOpenAI(
   const errors = info.error_file_id
     ? await batch.content(info.error_file_id)
     : undefined;
-  return writeOpenAIResults(
+  const spend = await settleBatchSpend(
+    sidecar,
+    openAIResultLines(`${output ?? ""}\n${errors ?? ""}`),
+    settleDeps(deps),
+  );
+  const report = await writeOpenAIResults(
     {
       ...sidecar,
       processingStatus: info.status,
@@ -565,4 +687,5 @@ async function pollAndWriteOpenAI(
       ...(deps.log ? { log: deps.log } : {}),
     },
   );
+  return { report, spend };
 }
