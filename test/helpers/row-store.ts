@@ -47,7 +47,8 @@ export function rowStore(tenant: TenantContext = founderTenant()) {
     },
     readManifest: (keyPrefix: string) => readings.manifest(idOfPrefix(keyPrefix)),
     loadReadingById: (readingId: string) => readings.store.loadReadingById(readingId),
-    writeByUrlPointer: (urlHash: string, pointer: { id: string }) => own(urlHash, pointer.id),
+    // The key prefix a pointer carried is the reading's own; only the id matters.
+    writeByUrlPointer: (urlHash: string, pointer: { id: string; key_prefix?: string }) => own(urlHash, pointer.id),
     async readByUrlPointer(urlHash: string): Promise<{ id: string; key_prefix: string } | null> {
       const [row] = await readings.sql.query<{ id: string; key_prefix: string }>(
         `SELECT r.id, r.key_prefix FROM reading_urls u
@@ -64,7 +65,7 @@ export function rowStore(tenant: TenantContext = founderTenant()) {
     // The reading's rows are its by-id pointer and its list row.
     writeByIdPointer: async (_id: string, _pointer: unknown): Promise<void> => undefined,
     appendOrReplaceListIndexItem: async (_item: ListIndexItem): Promise<void> => undefined,
-    writeListIndex: (index: { items: ListIndexItem[] }) => readings.seedListItems(index.items),
+    writeListIndex: (index: { version?: 1; items: ListIndexItem[] }) => readings.seedListItems(index.items),
     async readListIndex(): Promise<{ version: 1; items: ListIndexItem[] }> {
       return { version: 1, items: await readings.store.allListItems() };
     },

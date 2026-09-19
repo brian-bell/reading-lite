@@ -57,7 +57,7 @@ async function seedPending(bucket: R2Bucket) {
 }
 
 describe("processReading — config preflight", () => {
-  it.each([
+  it.each<{ name: string; overrides: Record<string, string>; message: RegExp }>([
     {
       name: "an invalid OpenAI reasoning effort",
       overrides: { SUMMARIZER_PROVIDER: "openai", OPENAI_SUMMARIZATION_REASONING_EFFORT: "extreme" },

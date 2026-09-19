@@ -312,15 +312,14 @@ describe("markDeadLettered", () => {
     await reader.writeManifest(KEY_PREFIX, v2);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(v2, KEY_PREFIX));
 
-    const v1: Manifest = { ...pendingManifest(), status: "ready", title: "v1 (stale)" };
     await markDeadLettered(
-      args({ attemptId: "at_ORIGINAL", preserveReadyManifest: v1 }),
+      args({ attemptId: "at_ORIGINAL" }),
       env as unknown as Env,
       services(),
       founderTenant(),
     );
 
-    // The stale message must not roll back to v1 over the newer v2.
+    // The stale message must not touch the reading the newer attempt published.
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("ready");
     expect(after?.title).toBe("v2 (newer attempt)");
@@ -331,10 +330,10 @@ describe("markDeadLettered", () => {
     {
       state: "pending manifest",
       attemptId: undefined,
-      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+      seed: async (reader: ReturnType<typeof rowStore>) => {
         await reader.writeManifest(KEY_PREFIX, pendingManifest());
       },
-      check: async (reader: ReturnType<typeof testReadingStore>) => {
+      check: async (reader: ReturnType<typeof rowStore>) => {
         expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("failed");
       },
     },
@@ -342,25 +341,25 @@ describe("markDeadLettered", () => {
       state: "confirmed-absent manifest",
       attemptId: undefined,
       seed: async () => {},
-      check: async (reader: ReturnType<typeof testReadingStore>) => {
+      check: async (reader: ReturnType<typeof rowStore>) => {
         expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
       },
     },
     {
       state: "purge tombstone",
       attemptId: undefined,
-      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+      seed: async (reader: ReturnType<typeof rowStore>) => {
         await reader.writeManifest(KEY_PREFIX, pendingManifest());
         await reader.writePurgeTombstone(READING_ID);
       },
-      check: async (reader: ReturnType<typeof testReadingStore>) => {
+      check: async (reader: ReturnType<typeof rowStore>) => {
         expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
       },
     },
     {
       state: "stale attempt that no longer owns the reading",
       attemptId: "at_ORIGINAL",
-      seed: async (reader: ReturnType<typeof testReadingStore>) => {
+      seed: async (reader: ReturnType<typeof rowStore>) => {
         const v2: Manifest = {
           ...pendingManifest(),
           status: "ready",
@@ -375,7 +374,7 @@ describe("markDeadLettered", () => {
         };
         await reader.writeManifest(KEY_PREFIX, v2);
       },
-      check: async (reader: ReturnType<typeof testReadingStore>) => {
+      check: async (reader: ReturnType<typeof rowStore>) => {
         expect((await reader.readManifest(KEY_PREFIX))?.title).toBe("v2 (newer attempt)");
       },
     },

@@ -13,12 +13,8 @@ import {
   type ProcessReadingArgs,
 } from "../../src/process-reading";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import { SimilarityStore, tenantVectorId } from "../../src/modules/stores/similarity-store";
-import {
-  buildKeyPrefix,
-  manifestToIndexItem,
-  ReadingStore,
-} from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { manifestToIndexItem } from "../../src/modules/stores/list-index";
 import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { GetReadingResponseSchema } from "../../src/schemas/api";
 import {
@@ -277,42 +273,6 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }, baseTime = "2
   };
 }
 
-function r2ClientForBucket(bucket: R2Bucket, keyRoot = "") {
-  const objectKey = (key: string) => `${keyRoot}${key}`;
-  return {
-    async put(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
-      await bucket.put(objectKey(key), body, opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : undefined);
-    },
-    async putIfAbsent(key: string, body: Uint8Array | string, opts?: { contentType?: string }) {
-      const result = await bucket.put(objectKey(key), body, {
-        ...(opts?.contentType ? { httpMetadata: { contentType: opts.contentType } } : {}),
-        onlyIf: new Headers({ "If-None-Match": "*" }),
-      });
-      return result !== null;
-    },
-    async get(key: string) {
-      const obj = await bucket.get(objectKey(key));
-      return obj ? obj.text() : null;
-    },
-    async head(key: string) {
-      return (await bucket.head(objectKey(key))) !== null;
-    },
-    async delete(key: string) {
-      await bucket.delete(objectKey(key));
-    },
-    async listKeys() {
-      const keys: string[] = [];
-      let cursor: string | undefined;
-      do {
-        const listed = await bucket.list({ prefix: keyRoot || undefined, cursor });
-        keys.push(...listed.objects.map((obj) => obj.key));
-        cursor = listed.truncated ? listed.cursor : undefined;
-      } while (cursor);
-      return keys;
-    },
-  };
-}
-
 const TOKEN = "test-token";
 
 function founderObjectKey(relative: string): string {
@@ -409,7 +369,6 @@ describe("two-tenant save-to-ready lifecycle", () => {
   it("lets two users save the same URL and reach ready without observing each other", async () => {
     await insertSecondTenant(env as unknown as Env);
     const url = "https://example.com/shared-two-tenant";
-    const urlHash = await sha256Hex(url);
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
 
@@ -491,7 +450,6 @@ describe("two-tenant save-to-ready lifecycle", () => {
 
   it("keeps similarity, novelty, and connections private to the active tenant", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const stub = installVectorizeStub();
     const READING_ID_RE = /rd_[0-9A-HJ-NP-Z]{10}/g;
     // The summarizer echoes back exactly the neighbour ids its prompt cited, so
     // the terminal manifest's connections are a faithful record of what the
@@ -2726,8 +2684,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 // the same way whichever write path finds it: the request lands on the legacy
 // id, the by-url pointer is rewritten to it, and one job is queued. Only the
 // request shape and the queued trigger differ between the two routes.
-const LEGACY_MARKDOWN = "# Legacy Import\n\nThe user supplied text for an old failed URL.";
-
 describe("submit-time safe-url guard", () => {
   const CREDS_URL = "https://user:secretpass@example.com/creds";
 
@@ -4164,7 +4120,7 @@ describe("GET /api/readings/:id — relationship_targets", () => {
         { id: "rd_TGTFAIL01", kind: "contradicts", reason: "disagrees", computed_at: T0 },
       ],
     });
-    const keyPrefix = await seed(founderTenant(), source);
+    await seed(founderTenant(), source);
     const storedBefore = JSON.stringify(await testReadingsFor(founderTenant()).manifest(source.id));
 
     const res = await getDetail(source.id);
@@ -4604,7 +4560,6 @@ describe("cross-tenant mutation matrix", () => {
 
   it("concurrent two-tenant terminal commits keep list CAS and vectors per tenant", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const stub = installVectorizeStub();
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
 
@@ -4666,10 +4621,8 @@ describe("cross-tenant mutation matrix", () => {
 // survives, and a partially-purged reading can be re-deleted to completion.
 describe("DELETE /api/readings/:id (purge)", () => {
   it("purges a ready reading everywhere and frees the URL for a fresh submit", async () => {
-    const stub = installVectorizeStub();
     const url = "https://example.com/delete-ready";
     const { app, id } = await seedFounderReading(url);
-    const urlHash = await sha256Hex(url);
 
     expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(true);
     const diag = (await (
@@ -4797,7 +4750,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
   });
 
   it("completes a partial purge whose manifest is already gone", async () => {
-    const stub = installVectorizeStub();
     const url = "https://example.com/delete-partial";
     const { app, id } = await seedFounderReading(url);
     const urlHash = await sha256Hex(url);
@@ -4889,7 +4841,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
   });
 
   it("answers a cross-tenant id like an unknown id and purges nothing", async () => {
-    const stub = installVectorizeStub();
     const { app, id } = await seedFounderReading("https://example.com/delete-cross-tenant");
     await expectSameAsUnknown(app, `/api/readings/${id}`, `/api/readings/${UNKNOWN_ID}`, {
       method: "DELETE",

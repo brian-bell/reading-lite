@@ -3,14 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import type { ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
-import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { mintReadingId, type Services } from "../../src/services";
 import {
   decodeIntakeResponse,
   decodeWhoamiResponse,
   readingApiFor,
 } from "../../scripts/lib/reading-api";
-import { insertQuotaTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 
 // Contract test for the operator-side Reading API client: the pure
 // decodeIntakeResponse must round-trip the REAL router's responses (toHttp's
