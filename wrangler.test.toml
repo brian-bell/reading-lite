@@ -74,10 +74,10 @@ class_name = "GlobalUsageGuard"
 
 # PostgreSQL through Hyperdrive (ADR 0005). Locally Hyperdrive is a passthrough
 # to this connection string: the docker-compose `postgres` service on its
-# non-default host port. vitest.workspace.ts always overrides this string with
-# CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE, set to the database
-# globalSetup prepares (per checkout locally, TEST_DATABASE_URL in CI). Tests
-# never connect to Neon.
+# non-default host port. The binding must be declared here, but
+# vitest.workspace.ts always replaces this string (Miniflare `hyperdrives`)
+# with the database globalSetup prepares: per checkout locally,
+# TEST_DATABASE_URL in CI. Tests never connect to Neon.
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "00000000000000000000000000000099"

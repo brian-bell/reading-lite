@@ -16,11 +16,14 @@ const SUFFIX = createHash("sha256").update(CHECKOUT).digest("hex").slice(0, 8);
 export const LOCAL_TEST_DATABASE_URL =
   `postgres://reading_lite:reading_lite@127.0.0.1:54329/reading_lite_test_${SUFFIX}`;
 
-export function testDatabaseUrl(): string {
-  return process.env.TEST_DATABASE_URL ?? LOCAL_TEST_DATABASE_URL;
+// The host's real environment. The root vitest config is a Workers config, and
+// its plugin replaces the literal `process.env` with an empty object in every
+// module it transforms, globalSetup included, so CI's TEST_DATABASE_URL would
+// silently never arrive. An indirect read is not rewritten.
+export function hostEnv(): Record<string, string | undefined> {
+  return Reflect.get(globalThis.process, "env") as Record<string, string | undefined>;
 }
 
-// wrangler.test.toml's localConnectionString yields to this variable. The test
-// run always sets it, so the workers pool can never drift from the database
-// globalSetup prepared, whatever the developer's shell exports for `npm run dev`.
-export const HYPERDRIVE_LOCAL_ENV = "CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE";
+export function testDatabaseUrl(): string {
+  return hostEnv().TEST_DATABASE_URL ?? LOCAL_TEST_DATABASE_URL;
+}
