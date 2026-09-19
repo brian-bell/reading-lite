@@ -44,8 +44,9 @@ import {
   type UserSettings,
 } from "../settings";
 import { settingsQueryOptions } from "../settings-query";
-import { tokenHeading, tokenStatus, tokenTimes, type TokensList } from "../tokens";
+import type { TokensList } from "../tokens";
 import { tokensQueryOptions } from "../tokens-query";
+import { TokensSection, type TokensSectionProps } from "./AccountTokens";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { BackToLibrary } from "./BackToLibrary";
@@ -410,7 +411,7 @@ function pageFor(
     revokeAllRef: RefObject<HTMLButtonElement | null>;
     email: EmailActions;
     settings: SettingsActions;
-    tokens: TokensActions;
+    tokens: TokensSectionProps;
     deletion: DeletionActions;
   },
 ) {
@@ -811,58 +812,6 @@ function SessionsList({
         ))}
       </ul>
     </>
-  );
-}
-
-interface TokensActions {
-  view: AccountView<TokensList>;
-  /** Reads the tokens again after a failed read. */
-  onRetry: () => void;
-}
-
-/**
- * API tokens (#340.7), as the SPA's API tokens section: each token's name,
- * format, status, scopes, and times. The section carries its read's loading,
- * offline, and server-error states itself; a refusal never reaches here
- * (pageViewOf).
- */
-function TokensSection({ view, onRetry }: TokensActions) {
-  const listed = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
-  return (
-    <section className="account-section" aria-labelledby="api-tokens-heading">
-      <h2 id="api-tokens-heading" className="account-section-title">
-        API tokens
-      </h2>
-      {view.kind === "loading" ? <LoadingRegion /> : null}
-      {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
-      {view.kind === "server-error" ? (
-        <InlineNotice message="Something went wrong on our side." onAction={onRetry}>
-          <p className="form-hint">{view.message}</p>
-        </InlineNotice>
-      ) : null}
-      {listed?.tokens.length === 0 ? <p className="session-meta">No API tokens yet.</p> : null}
-      {listed && listed.tokens.length > 0 ? (
-        <ul className="session-list" aria-label="API tokens">
-          {listed.tokens.map((token) => {
-            const status = tokenStatus(token);
-            return (
-              <li
-                key={token.id}
-                className={
-                  status === "revoked" ? "session-revoked" : status === "expired" ? "session-expired" : undefined
-                }
-              >
-                <div>
-                  <p>{tokenHeading(token)}</p>
-                  <p className="session-meta">{token.scopes.join(", ")}</p>
-                  <p className="session-meta">{tokenTimes(token)}</p>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      ) : null}
-    </section>
   );
 }
 

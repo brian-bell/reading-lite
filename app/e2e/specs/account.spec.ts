@@ -6,6 +6,9 @@
 // Account deletion (#340.8): the typed confirmation driven from the keyboard
 // alone, with the request the browser actually sent, and Escape after typing
 // sending nothing. The component tests own the outcomes.
+//
+// API token revoke (#340.7.2): the confirmation from the keyboard alone, the
+// request the browser sent, and focus once the row's Revoke button is gone.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
@@ -56,6 +59,30 @@ for (const close of ["Escape", "Cancel"] as const) {
     expect(writes.revokeAll).toEqual([]);
   });
 }
+
+test("revokes an API token from the keyboard and keeps focus in the section", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  const { revokes } = await serveTokensInBrowser(page);
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+  await expect(tokens.getByText("CI (standard) · usable")).toBeVisible();
+
+  await tokens.getByRole("button", { name: "Revoke CI" }).focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", { name: "Revoke this API token?" });
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByRole("button", { name: "Revoke token" })).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  await expect(tokens.getByText("CI (standard) · revoked")).toBeVisible();
+  await expect(tokens.getByRole("heading", { name: "API tokens" })).toBeFocused();
+  expect(revokes).toHaveLength(1);
+  expect(new URL(revokes[0]!.url()).pathname).toBe("/api/auth/tokens/tok_ci");
+  expect(await revokes[0]!.headerValue("x-csrf-token")).toBeTruthy();
+});
 
 function deleteDialog(page: Page) {
   return page.getByRole("dialog", { name: "Delete your account?" });

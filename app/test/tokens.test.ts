@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { tokenHeading, tokensFromResponse, tokenStatus, type TokenListItem } from "../src/tokens";
+import {
+  tokenHeading,
+  tokenRevokeFromResponse,
+  tokensFromResponse,
+  tokenStatus,
+  withRevokedTokens,
+  type TokenListItem,
+} from "../src/tokens";
 
 const token = (over: Partial<TokenListItem> = {}): TokenListItem => ({
   id: "tok_1",
@@ -35,6 +42,44 @@ describe("tokensFromResponse", () => {
     [200, { tokens: [{ id: "tok_1" }] }, "tokens returned an unexpected body"],
   ])("throws status %i with its message", (status, body, message) => {
     expect(() => tokensFromResponse(status, body)).toThrow(expect.objectContaining({ status, message }));
+  });
+});
+
+describe("tokenRevokeFromResponse", () => {
+  it.each([
+    [200, { ok: true }, { kind: "revoked" }],
+    [404, { error: "not found" }, { kind: "gone" }],
+    [403, { error: "forbidden" }, { kind: "forbidden" }],
+    [412, { error: "expected tenant mismatch", acting_tenant: "usr_b" }, { kind: "account-changed", actingTenant: "usr_b" }],
+  ])("maps %i to an outcome", (status, body, outcome) => {
+    expect(tokenRevokeFromResponse(status, body)).toEqual(outcome);
+  });
+
+  it.each([
+    [401, { error: "unauthorized" }, "unauthorized"],
+    [503, null, "failed to revoke token"],
+  ])("throws %i", (status, body, message) => {
+    expect(() => tokenRevokeFromResponse(status, body)).toThrow(expect.objectContaining({ status, message }));
+  });
+});
+
+describe("withRevokedTokens", () => {
+  it("shows the named usable tokens revoked and leaves the rest alone", () => {
+    const listed = {
+      tokens: [
+        token({ id: "tok_a" }),
+        token({ id: "tok_b" }),
+        token({ id: "tok_c", usable: false, revoked_at_ms: 3 }),
+      ],
+    };
+
+    const shown = withRevokedTokens(listed, new Set(["tok_a", "tok_c"]), 7);
+
+    expect(shown.tokens.map((row) => [row.id, row.usable, row.revoked_at_ms])).toEqual([
+      ["tok_a", false, 7],
+      ["tok_b", true, null],
+      ["tok_c", false, 3],
+    ]);
   });
 });
 

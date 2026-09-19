@@ -122,6 +122,7 @@ function mockApi(options?: {
   onSaveSettings?: (body: Record<string, unknown>) => Response | Promise<Response>;
   onEmailChange?: (body: { email: string }) => Response;
   onListTokens?: () => Response;
+  onRevokeToken?: (id: string) => Response;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -138,6 +139,10 @@ function mockApi(options?: {
     }
     if (path === "/api/auth/tokens" && request.method === "GET") {
       return options?.onListTokens?.() ?? Response.json({ tokens: [] });
+    }
+    if (request.method === "DELETE" && path.startsWith("/api/auth/tokens/")) {
+      const id = decodeURIComponent(path.slice("/api/auth/tokens/".length));
+      return options?.onRevokeToken?.(id) ?? Response.json({ ok: true });
     }
     if (path === "/api/auth/email-change" && request.method === "POST") {
       const body = (await request.clone().json()) as { email: string };
@@ -709,6 +714,124 @@ describe("API tokens on the account page", () => {
     expect(await within(section()).findByText(/offline/i)).toBeVisible();
     expect(within(section()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+  });
+
+  const revokeDialog = () => screen.queryByRole("dialog", { name: "Revoke this API token?" });
+
+  async function revokeCi() {
+    await userEvent.click(await within(section()).findByRole("button", { name: "Revoke CI" }));
+    await userEvent.click(within(revokeDialog()!).getByRole("button", { name: "Revoke token" }));
+  }
+
+  it("revokes a token after confirming, with CSRF and the tenant pin, and shows it revoked", async () => {
+    let tokens = [token()];
+    const fetchMock = mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onRevokeToken: () => {
+        tokens = [token({ usable: false, revoked_at_ms: 9 })];
+        return Response.json({ ok: true });
+      },
+    });
+    await openAccount();
+
+    await revokeCi();
+
+    expect(await within(section()).findByText("CI (standard) · revoked")).toBeVisible();
+    expect(within(section()).queryByRole("button", { name: "Revoke CI" })).not.toBeInTheDocument();
+    const [revoked] = requestsOf(fetchMock, "DELETE", "/api/auth/tokens/");
+    expect(new URL(revoked!.url).pathname).toBe("/api/auth/tokens/tok_ci");
+    expect(revoked!.headers.get("x-csrf-token")).toBe("csrf-a");
+    expect(revoked!.headers.get("x-expected-tenant")).toBe("usr_a");
+    await waitFor(() => expect(within(section()).getByRole("heading", { name: "API tokens" })).toHaveFocus());
+  });
+
+  it("sends nothing when the confirmation is cancelled", async () => {
+    const fetchMock = mockApi({ onListTokens: () => Response.json({ tokens: [token()] }) });
+    await openAccount();
+
+    await userEvent.click(await within(section()).findByRole("button", { name: "Revoke CI" }));
+    await userEvent.click(within(revokeDialog()!).getByRole("button", { name: "Cancel" }));
+
+    expect(revokeDialog()).not.toBeInTheDocument();
+    expect(within(section()).getByRole("button", { name: "Revoke CI" })).toHaveFocus();
+    expect(requestsOf(fetchMock, "DELETE", "/api/auth/tokens/")).toHaveLength(0);
+  });
+
+  it.each([
+    ["an out-of-date list read", 200],
+    ["a 404 because another tab already revoked it", 404],
+  ])("keeps a revoked token revoked through %s", async (_, status) => {
+    // The list keeps answering with the token usable.
+    mockApi({
+      onListTokens: () => Response.json({ tokens: [token()] }),
+      onRevokeToken: () =>
+        status === 200 ? Response.json({ ok: true }) : Response.json({ error: "not found" }, { status }),
+    });
+    await openAccount();
+
+    await revokeCi();
+
+    expect(await within(section()).findByText("CI (standard) · revoked")).toBeVisible();
+    expect(within(section()).queryByRole("button", { name: "Revoke CI" })).not.toBeInTheDocument();
+    expect(within(section()).queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows a failed revoke in the section, and Retry reads the list without revoking again", async () => {
+    let tokens = [token()];
+    const fetchMock = mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onRevokeToken: () => {
+        tokens = [token({ usable: false, revoked_at_ms: 9 })];
+        return Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+
+    await revokeCi();
+
+    expect(await within(section()).findByText("control plane unavailable")).toBeVisible();
+    expect(within(section()).getByText(/The token wasn't revoked/)).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    expect(await within(section()).findByText("CI (standard) · revoked")).toBeVisible();
+    expect(within(section()).queryByText("control plane unavailable")).not.toBeInTheDocument();
+    expect(requestsOf(fetchMock, "DELETE", "/api/auth/tokens/")).toHaveLength(1);
+  });
+
+  it("keeps the list and says so when a revoke fails offline", async () => {
+    mockApi({
+      onListTokens: () => Response.json({ tokens: [token()] }),
+      onRevokeToken: () => {
+        onlineManager.setOnline(false);
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    await openAccount();
+
+    await revokeCi();
+
+    expect(await within(section()).findByText("You're offline. The token wasn't revoked.")).toBeVisible();
+    expect(within(section()).getByText("CI (standard) · usable")).toBeVisible();
+  });
+
+  it.each([
+    [403, "You don't have access to this."],
+    [412, "This tab is signed in to a different account than the page expects."],
+  ])("shows the page's refusal state for a revoke %i", async (status, heading) => {
+    const body =
+      status === 412 ? { error: "expected tenant mismatch", acting_tenant: "usr_b" } : { error: "forbidden" };
+    mockApi({
+      onListTokens: () => Response.json({ tokens: [token()] }),
+      onRevokeToken: () => Response.json(body, { status }),
+    });
+    const { queryClient } = await openAccount();
+
+    await revokeCi();
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading));
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
   });
 });
 
