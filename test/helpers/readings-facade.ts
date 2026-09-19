@@ -103,6 +103,27 @@ export class TestReadings {
     }
   }
 
+  // Rewrites a seeded reading's status and attempt state in place. Unlike
+  // `seed`, it keeps the reading's attempt rows (and so its paid checkpoint),
+  // which is what a test arranging a takeover or a stale attempt needs.
+  async restate(manifest: Pick<Manifest, "id" | "status" | "active_attempt" | "last_attempt" | "error" | "updated_at">): Promise<void> {
+    const json = (value: unknown) => (value === undefined ? null : JSON.stringify(value));
+    await this.sql.query(
+      `UPDATE readings SET status = $3, active_attempt = $4::jsonb, last_attempt = $5::jsonb,
+         error = $6::jsonb, updated_at = $7
+       WHERE tenant_id = $1 AND id = $2`,
+      [
+        String(this.tenant.tenantId), manifest.id, manifest.status, json(manifest.active_attempt),
+        json(manifest.last_attempt), json(manifest.error), manifest.updated_at,
+      ],
+    );
+  }
+
+  // What DELETE /api/readings/:id does to the rows.
+  async purge(id: string): Promise<void> {
+    await this.writer.purge(id, () => false);
+  }
+
   async manifest(id: string): Promise<Manifest | null> {
     return (await this.store.loadReadingById(id))?.manifest ?? null;
   }
