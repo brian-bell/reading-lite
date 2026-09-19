@@ -191,9 +191,12 @@ like any synchronous client.
   claims nothing, so a rerun starts clean. Activation can only drop requests, so
   the admitted maximum still bounds the batch that is created.
 - **Uncertainty.** A failure before create is attempted (activation leaving
-  nothing, an activation or upload error) settles the operation at zero. A create
-  whose outcome is unknown keeps the maximum held; the existing adopt-or-refuse
-  reconciliation decides the batch, and a resume never reserves again.
+  nothing, an activation or upload error) settles the operation at zero. An
+  `activating` sidecar found on resume is settled at zero before it may be
+  deleted; if that settlement is refused, the sidecar is retained so the hold
+  can be retried. A create whose outcome is unknown keeps the maximum held; the
+  existing adopt-or-refuse reconciliation decides the batch, and a resume never
+  reserves again.
 - **Settlement.** Once results are downloaded, the summed actual usage settles
   the sidecar's operation. If any request lacks valid usage (errored, expired,
   missing, or a response tier the catalog does not price) the maximum stays

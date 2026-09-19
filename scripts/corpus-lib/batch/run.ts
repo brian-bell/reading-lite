@@ -201,12 +201,17 @@ export async function runBatchPipeline(
           spend,
         };
       }
-      // OpenAI `activating` (no remote object) keeps the manual reconcile path.
-      throw noIdReconciliationError(existing);
+      // OpenAI `activating` (no remote object) keeps the manual reconcile
+      // path, but the known-zero spend hold must settle first.
+      throw await reconcileActivatingSidecar(existing, { rpc: deps.spend.rpc, log });
     }
     // Anthropic: an empty batchId still aborts; we have no remote-tagged
-    // identity to adopt.
+    // identity to adopt. An activating sidecar never reached create, so
+    // settle its hold at zero before the sidecar may be deleted.
     if (!existing.batchId) {
+      if (existing.phase === "activating") {
+        throw await reconcileActivatingSidecar(existing, { rpc: deps.spend.rpc, log });
+      }
       throw noIdReconciliationError(existing);
     }
     const batch = requireAnthropicBatchClient(deps, "resume pinned sidecar");
@@ -312,8 +317,21 @@ export async function runBatchPipeline(
   // settles the operation at zero. Once create is attempted the batch may
   // exist and be billed, so the maximum stays held for reconciliation.
   let createAttempted = false;
+  let unsentSettled = false;
   const settleUnsent = async () => {
-    if (spend && !createAttempted) await cancelUnsentBatchSpend(spend, spendDeps);
+    if (!spend || createAttempted || unsentSettled) return;
+    unsentSettled = true;
+    return cancelUnsentBatchSpend(spend, spendDeps);
+  };
+  // Activation leaving nothing, or a crash before create, is known zero.
+  // Only drop the sidecar after that settlement is acknowledged; a refusal
+  // keeps the persisted identity so the hold can be retried.
+  const requireUnsentSettlement = async () => {
+    if (!spend || createAttempted) return;
+    const result = await settleUnsent();
+    if (result && !result.settled) {
+      throw retainedActivatingSpendError(spend, result.reason);
+    }
   };
 
   let submitted:
@@ -342,7 +360,7 @@ export async function runBatchPipeline(
         }));
 
       if (extracted.length === 0) {
-        await settleUnsent();
+        await requireUnsentSettlement();
         await deps.clearSidecar();
         log("No readings to summarize after batch activation.");
         return { report: activationSkipped, dropped, resumed: false };
@@ -548,6 +566,25 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
 
 export function newBatchAttemptId(): string {
   return `batch_${randomUUID()}`;
+}
+
+async function reconcileActivatingSidecar(
+  existing: PersistedSidecar,
+  deps: { rpc: SpendRpc; log: (line: string) => void },
+): Promise<Error> {
+  const spend = existing.spend;
+  if (spend) {
+    const result = await cancelUnsentBatchSpend(spend, deps);
+    if (!result.settled) return retainedActivatingSpendError(spend, result.reason);
+  }
+  return noIdReconciliationError(existing);
+}
+
+function retainedActivatingSpendError(spend: BatchSpendIdentity, reason: string): Error {
+  return new Error(
+    `found an activating sidecar whose spend operation ${spend.opId} could not be settled at zero (${reason}); ` +
+      `the sidecar is retained so the hold can be cleared later`,
+  );
 }
 
 function noIdReconciliationError(existing: PersistedSidecar): Error {

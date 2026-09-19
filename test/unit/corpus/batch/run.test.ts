@@ -15,7 +15,7 @@ import { isBatchOwnedPending } from "../../../../src/modules/staleness";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
-import { batchSpendAuthority } from "../../../helpers/operator-spend";
+import { BILLING_TENANT, batchSpendAuthority } from "../../../helpers/operator-spend";
 import type {
   ExtractedTarget,
   PersistedSidecar,
@@ -1915,6 +1915,135 @@ describe("runBatch — spend admission", () => {
     expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 0 });
     expect(h.batch.create).not.toHaveBeenCalled();
   });
+
+  const activatingSpend = {
+    tenantId: BILLING_TENANT,
+    opId: OP_ID,
+    quote: {
+      dayKey: "2026-09-19",
+      catalogVersion: 1,
+      requestFingerprint: "f".repeat(64),
+      maxMicrodollars: 900,
+    },
+  };
+
+  function activatingSidecar(
+    provider: "anthropic" | "openai",
+    spend = activatingSpend,
+  ): PersistedSidecar {
+    const spendField = spend ? { spend } : {};
+    if (provider === "openai") {
+      return {
+        version: 2,
+        provider: "openai",
+        phase: "activating",
+        runId: "run_1",
+        batchId: "",
+        inputFileId: null,
+        outputFileId: null,
+        errorFileId: null,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        processingStatus: "activating",
+        targets: [],
+        ...spendField,
+      };
+    }
+    return {
+      version: 2,
+      provider: "anthropic",
+      phase: "activating",
+      batchId: "",
+      model: "claude-opus-4-8",
+      processingStatus: "activating",
+      resultsUrl: null,
+      targets: [],
+      ...spendField,
+    };
+  }
+
+  async function writeActivatingThenSkip(
+    h: ReturnType<typeof harness>,
+    identity: { spend?: typeof activatingSpend },
+  ) {
+    await h.deps.saveSidecar(activatingSidecar("anthropic", identity.spend));
+    return {
+      activated: [] as ExtractedTarget[],
+      skipped: [{ id: "rd_a", status: "skipped" as const, reason: "by-url slot already owned at batch submit" }],
+    };
+  }
+
+  it.each(["anthropic", "openai"] as const)(
+    "resumes a %s activating sidecar by settling the known-zero hold before the sidecar may be deleted",
+    async (provider) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      const existing = activatingSidecar(provider);
+      h.setSidecar(existing);
+      h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/ownership activation/i);
+      expect(h.authority.kinds()).toEqual(["settle_spend"]);
+      expect(h.authority.calls[0]).toEqual({
+        kind: "settle_spend",
+        ...activatingSpend,
+        actualMicrodollars: 0,
+      });
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.batch.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["unavailable", { ok: false, reason: "unavailable" }],
+    ["refused", { ok: false, reason: "operation_state" }],
+  ] as const)(
+    "keeps an activating sidecar on resume when zero settlement is %s",
+    async (_label, answer) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      h.authority.answers.settle_spend = answer;
+      h.setSidecar(activatingSidecar("anthropic"));
+      h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar is retained/);
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.authority.kinds()).toEqual(["settle_spend"]);
+    },
+  );
+
+  it("clears the activating sidecar only after zero settlement is acknowledged when activation leaves nothing", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.activateExtracted = async (_targets, identity) => writeActivatingThenSkip(h, identity);
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 0 });
+    expect(h.deps.clearSidecar).toHaveBeenCalledOnce();
+    expect(h.getSidecar()).toBeNull();
+    expect(result.report).toEqual([
+      { id: "rd_a", status: "skipped", reason: "by-url slot already owned at batch submit" },
+    ]);
+  });
+
+  it.each([
+    ["unavailable", { ok: false, reason: "unavailable" }],
+    ["refused", { ok: false, reason: "operation_state" }],
+  ] as const)(
+    "keeps the activating sidecar when zero settlement is %s after activation leaves nothing",
+    async (_label, answer) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      h.authority.answers.settle_spend = answer;
+      h.deps.activateExtracted = async (_targets, identity) => writeActivatingThenSkip(h, identity);
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar is retained/);
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+      expect(h.batch.create).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps the maximum held after an Anthropic create whose outcome is unknown, and never admits it again", async () => {
     const h = harness({ rd_a: manifest("rd_a") });

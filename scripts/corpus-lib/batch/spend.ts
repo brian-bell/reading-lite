@@ -161,13 +161,17 @@ export async function admitBatchSpend(
 export async function cancelUnsentBatchSpend(
   spend: BatchSpendIdentity,
   deps: BatchSpendDeps,
-): Promise<void> {
+): Promise<{ settled: true } | { settled: false; reason: string }> {
   const settled = await call(deps.rpc, settleBody(spend, 0));
+  if (settled.ok) {
+    deps.log?.(`Spend: no batch was created; ${spend.opId} settled at $0`);
+    return { settled: true };
+  }
+  const reason = settled.reason ?? "unavailable";
   deps.log?.(
-    settled.ok
-      ? `Spend: no batch was created; ${spend.opId} settled at $0`
-      : `Spend: no batch was created, but ${usd(spend.quote.maxMicrodollars)} maximum stays held (${settled.reason ?? "unavailable"})`,
+    `Spend: no batch was created, but ${usd(spend.quote.maxMicrodollars)} maximum stays held (${reason})`,
   );
+  return { settled: false, reason };
 }
 
 /**

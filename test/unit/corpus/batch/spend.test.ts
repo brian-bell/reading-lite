@@ -141,7 +141,15 @@ describe("batch spend settlement", () => {
 
   it("settles a batch that was never created at zero", async () => {
     const a = authority();
-    await cancelUnsentBatchSpend(spend, { rpc: a.rpc });
+    await expect(cancelUnsentBatchSpend(spend, { rpc: a.rpc })).resolves.toEqual({ settled: true });
     expect(a.calls).toEqual([{ kind: "settle_spend", ...spend, actualMicrodollars: 0 }]);
+  });
+
+  it("reports a refused zero settlement so the sidecar can be retained", async () => {
+    const a = authority({ settle_spend: { ok: false, reason: "unavailable" } });
+    await expect(cancelUnsentBatchSpend(spend, { rpc: a.rpc })).resolves.toEqual({
+      settled: false,
+      reason: "unavailable",
+    });
   });
 });
