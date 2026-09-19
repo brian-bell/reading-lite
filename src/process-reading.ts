@@ -147,6 +147,11 @@ export async function processReading(
       await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
       return;
     }
+    // The attempt is live: hold its slot for the whole defer/retry window.
+    // Same injected clock as lease/defer so a test clock cannot extend from
+    // a different epoch. A lost refresh leaves the short TTL, and a slot
+    // that lapses fails at commit rather than summarizing uncharged.
+    await refreshReadingSlot(env, tenantId, opId, clock());
     validateProcessingCredentials({
       provider: env.SUMMARIZER_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
@@ -212,8 +217,11 @@ export async function processReading(
       onAuthorizedDispatch: async () => {
         if (stage !== "summarize") return;
         // Spend denial must not consume a reading slot. Commit only once the
-        // request has dispatch permission and is about to be sent.
-        if (!(await commitReadingSlot(env, tenantId, opId))) throw new DeferPaidWorkError();
+        // request has dispatch permission and is about to be sent. A lapsed
+        // slot was already refunded, so fail rather than summarize uncharged.
+        const commit = await commitReadingSlot(env, tenantId, opId);
+        if (commit === "expired") throw new ReadingReservationExpiredError();
+        if (commit !== "committed") throw new DeferPaidWorkError();
         readingSlotConsumed = true;
       },
     });
@@ -275,7 +283,9 @@ export async function processReading(
         if (cachedSummary) {
           // commit_reading is idempotent for already-consumed slots. Call it
           // here too so a recovered artifact cannot hide an unavailable guard.
-          if (!(await commitReadingSlot(env, tenantId, opId))) throw new DeferPaidWorkError();
+          // The checkpoint exists only after a committed dispatch, so a slot
+          // that has lapsed since was already charged.
+          if ((await commitReadingSlot(env, tenantId, opId)) === "unavailable") throw new DeferPaidWorkError();
           readingSlotConsumed = true;
           return { reading: cachedSummary.reading, usage: cachedSummary.usage };
         }
@@ -562,6 +572,14 @@ export class ProcessingDeferExpiredError extends Error {
   constructor() {
     super("processing defer loop exceeded PROCESSING_DEFER_MAX_AGE_MS");
     this.name = "ProcessingDeferExpiredError";
+  }
+}
+
+/** The attempt's reading slot was swept or released before summarize could commit it (#320). */
+export class ReadingReservationExpiredError extends Error {
+  constructor() {
+    super("reading-slot reservation expired before summarize dispatch");
+    this.name = "ReadingReservationExpiredError";
   }
 }
 
@@ -1723,6 +1741,7 @@ export function retryableError(e: unknown): boolean {
   if (e.name === "DestinationResolutionError") return true;
   if (e.name === "QueueRetriesExhaustedError") return true;
   if (e.name === "ProcessingDeferExpiredError") return true;
+  if (e.name === "ReadingReservationExpiredError") return true;
   return false;
 }
 

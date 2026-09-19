@@ -14,6 +14,7 @@ import {
   insertSecondTenant,
   otherTenant,
   PUBLIC_LOOKUP,
+  reserveReadingSlot,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 
@@ -284,6 +285,7 @@ async function processReady(
     updated_at: args.createdAt,
   });
   await reader.writeByIdPointer(args.id, { id: args.id, key_prefix: args.keyPrefix });
+  await reserveReadingSlot(env, tenant, args);
   await processReading(args, env as unknown as Env, makeServices(fetchFn), tenant);
 }
 

@@ -166,7 +166,7 @@ test that fails when the backend adds or renames a class.
 | Provider limit | Provider 429, `RateLimitedError` | The AI provider is rate limiting requests | Retry later |
 | Provider error | Other provider errors at `summarize` or `embed_*` | The AI provider returned an error | Retry |
 | Key problem | Provider 401 or 403 | Provisional until Phase 6 (hosted keys are the operator's today) | Phase 6 |
-| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError` | Reading Lite's processing limit was reached | Retry later |
+| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError`, `ReadingReservationExpiredError` | Reading Lite's processing limit was reached | Retry later |
 | Stopped | `stale_pending`, `stale_active_attempt`, `QueueRetriesExhaustedError` | Processing stopped before finishing | Retry |
 | Unknown | Anything else | The error message, unchanged | Retry; Details |
 

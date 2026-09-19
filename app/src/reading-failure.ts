@@ -73,6 +73,7 @@ const HOSTING_LIMIT_CODES: ReadonlySet<string> = new Set([
   "SpendAdmissionError",
   "ProcessingDeferExpiredError",
   "DeferPaidWorkError",
+  "ReadingReservationExpiredError",
 ]);
 
 /** Where the paid providers are called. `query_similar` is our own index, not a provider. */

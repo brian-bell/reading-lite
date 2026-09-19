@@ -2,7 +2,7 @@ import { TenantRecoveryRequestSchema, tenantLeaseRecovery, type TenantRecoveryRe
 import { inspectTenant } from "./operator-inspection";
 import type { Env } from "../index";
 import { bumpWindow } from "./auth-rate-guard";
-import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_TTL_MS } from "./constants";
+import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { logUnboundGuardPurge } from "./global-usage-guard";
 import { parseTenantId } from "./ids";
@@ -24,7 +24,9 @@ import {
 //
 // Request-rate counts every intake write. Reading slots are reserved only for
 // an activation attempt (idempotent on attempt id) and released when the
-// attempt never reaches summarization dispatch. GlobalUsageGuard owns spend
+// attempt never reaches summarization dispatch. A reservation starts short so
+// a lost release returns the slot soon; the consumer refreshes it to the live
+// TTL once it picks the attempt up. GlobalUsageGuard owns spend
 // and the paid-work switch. Concurrent-work leases are fenced
 // and expiring; the holder presents the fence before renew, paid dispatch,
 // and release.
@@ -98,7 +100,8 @@ export type UsageDenyReason =
   | "hourly"
   | "monthly"
   | "missing_limits"
-  | "unavailable";
+  | "unavailable"
+  | "expired";
 
 export type LeaseDenyReason = "contention" | "stale_fence" | "missing_limits" | "unavailable";
 
@@ -376,7 +379,8 @@ export class TenantUsageGuard implements DurableObject {
     const opKey = `op:${body.opId}`;
     const existing = (await this.state.storage.get(opKey)) as Reservation | undefined;
     if (!existing || existing.status !== "held") return json({ ok: true });
-    const expiresAt = body.nowMs + READING_RESERVATION_TTL_MS;
+    // Never shorten: callers pass different clocks (pickup uses wall time).
+    const expiresAt = Math.max(existing.expiresAt, body.nowMs + READING_RESERVATION_LIVE_TTL_MS);
     await this.state.storage.put(opKey, { ...existing, expiresAt } satisfies Reservation);
     await scheduleCleanupAlarm(this.state.storage, expiresAt);
     return json({ ok: true });
@@ -395,8 +399,10 @@ export class TenantUsageGuard implements DurableObject {
   private async commitReading(body: CommitReadingBody): Promise<Response> {
     const opKey = `op:${body.opId}`;
     const existing = (await this.state.storage.get(opKey)) as Reservation | undefined;
-    if (!existing || existing.status === "consumed") return json({ ok: true });
-    if (existing.status === "released") return json({ ok: true });
+    if (existing?.status === "consumed") return json({ ok: true });
+    // A swept or released slot was refunded; committing it would let the
+    // summary dispatch uncharged.
+    if (!existing || existing.status === "released") return json({ ok: false, reason: "expired" });
     await this.state.storage.put(opKey, { ...existing, status: "consumed" } satisfies Reservation);
     return json({ ok: true });
   }
@@ -542,7 +548,8 @@ function parseDecision(payload: unknown): UsageDecision {
     reason !== "hourly" &&
     reason !== "monthly" &&
     reason !== "missing_limits" &&
-    reason !== "unavailable"
+    reason !== "unavailable" &&
+    reason !== "expired"
   ) {
     return denyUnavailable();
   }
@@ -696,12 +703,18 @@ export async function refreshReadingSlot(env: Env, tenantId: string, opId: strin
   }
 }
 
-// Confirms RPC success, preserving commit_reading's existing no-op behavior
-// for missing/released slots. Reservation admission/expiry is a separate policy.
-export async function commitReadingSlot(env: Env, tenantId: string, opId: string): Promise<boolean> {
+// "expired" means the held slot was swept or released, so nothing is charged
+// for this attempt. Any other denial is an unconfirmed commit.
+export async function commitReadingSlot(
+  env: Env,
+  tenantId: string,
+  opId: string,
+): Promise<"committed" | "expired" | "unavailable"> {
   try {
-    return (await tenantUsageFor(env, tenantId).commitReading(opId)).ok;
+    const decision = await tenantUsageFor(env, tenantId).commitReading(opId);
+    if (decision.ok) return "committed";
+    return decision.reason === "expired" ? "expired" : "unavailable";
   } catch {
-    return false;
+    return "unavailable";
   }
 }

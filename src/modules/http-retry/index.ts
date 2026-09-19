@@ -55,8 +55,12 @@ export async function fetchWithRetry(
     } catch (e) {
       if (e instanceof RateLimitedError) throw e;
       // Admission/lease failures are not provider transport failures. The queue
-      // defers the existing attempt; retrying here would reserve repeatedly.
-      if (["SpendAdmissionError", "DeferPaidWorkError", "StaleProcessingLeaseError"].includes(errorName(e) ?? "")) throw e;
+      // defers (or fails) the existing attempt; retrying here would reserve repeatedly.
+      if (
+        ["SpendAdmissionError", "DeferPaidWorkError", "StaleProcessingLeaseError", "ReadingReservationExpiredError"].includes(
+          errorName(e) ?? "",
+        )
+      ) throw e;
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
       // tripping). Retrying would mask the cancellation intent, so surface it.
       if (isAbortError(e)) throw e;

@@ -5,7 +5,7 @@ import { dispatchQueueMessage, type Env } from "../../src/index";
 import { VectorLedgerWriteError } from "../../src/control-plane/vector-ledger";
 import { sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix, ReadingStore } from "../../src/modules/stores/reading-store";
-import { founderTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
+import { founderTenant, PUBLIC_LOOKUP, reserveReadingSlot, testReadingStore } from "../helpers/tenant-fixtures";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -204,6 +204,7 @@ describe("processReading — vector ledger at publish", () => {
       },
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reserveReadingSlot(env, founderTenant(), job);
 
     // Fail only the ledger INSERT, leaving every other control-plane read and
     // write alone, so this test is about the ledger and not about D1 generally.
@@ -317,6 +318,7 @@ describe("processReading — tenant status lookup at publish", () => {
       updated_at: createdAt,
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reserveReadingSlot(env, founderTenant(), job);
 
     const workerEnv = env as unknown as Env;
     const wrapped: Env = {
@@ -376,6 +378,7 @@ describe("processReading — tenant status lookup at publish", () => {
       updated_at: createdAt,
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reserveReadingSlot(env, founderTenant(), job);
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
 
     const workerEnv = env as unknown as Env;
@@ -442,6 +445,7 @@ describe("processReading — tenant status lookup at publish", () => {
       updated_at: createdAt,
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reserveReadingSlot(env, founderTenant(), job);
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
 
     const workerEnv = env as unknown as Env;
@@ -499,6 +503,7 @@ describe("processReading — tenant status lookup at publish", () => {
       updated_at: createdAt,
     });
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
+    await reserveReadingSlot(env, founderTenant(), job);
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
 
     const workerEnv = env as unknown as Env;
