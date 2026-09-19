@@ -1482,7 +1482,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
     const services = makeServices(makeStubFetch());
-    const vector = installVectorizeStub();
     const reader = rowStore();
     const url = "https://example.com/stale-same-reading-success";
     const urlHash = await sha256Hex(url);
@@ -1509,11 +1508,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       created_at: createdAt,
       updated_at: "2026-04-26T19:30:00.000Z",
     };
-    vector.vectors.set(id, {
-      values: new Array(1536).fill(0.24),
-      metadata: { url, title: "Existing vector" },
-    });
     await reader.writeManifest(keyPrefix, newerPending);
+    await reader.readings.putEmbedding(id, new Array(1536).fill(0.24));
     await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
@@ -1542,14 +1538,12 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await expect(reader.readListIndex()).resolves.toMatchObject({
       items: [{ id, status: "pending", active_attempt: { id: "at_NEW" } }],
     });
-    expect(vector.upsert).not.toHaveBeenCalled();
-    expect(vector.deleteByIds).not.toHaveBeenCalled();
-    expect(vector.vectors.has(id)).toBe(true);
+    // The newer attempt's vector is untouched.
+    expect(await reader.readings.hasEmbedding(id)).toBe(true);
   });
 
   it("does not let a stale successful attempt overwrite a newer ready reading", async () => {
     const services = makeServices(makeStubFetch());
-    const vector = installVectorizeStub();
     const reader = rowStore();
     const url = "https://example.com/stale-after-ready";
     const urlHash = await sha256Hex(url);
@@ -1583,11 +1577,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
         finished_at: "2026-04-26T19:30:00.000Z",
       },
     };
-    vector.vectors.set(id, {
-      values: new Array(1536).fill(0.84),
-      metadata: { url, title: "Winning Title" },
-    });
     await reader.writeManifest(keyPrefix, ready);
+    await reader.readings.putEmbedding(id, new Array(1536).fill(0.24));
     await reader.writeRaw(
       keyPrefix,
       "html",
@@ -1626,9 +1617,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     });
     expect(await (await reader.readRaw(keyPrefix, "html"))?.text()).toBe("winner raw");
     expect(await (await reader.readExtracted(keyPrefix))?.text()).toBe("winner extracted");
-    expect(vector.upsert).not.toHaveBeenCalled();
-    expect(vector.deleteByIds).not.toHaveBeenCalled();
-    expect(vector.vectors.has(id)).toBe(true);
+    // The newer attempt's vector is untouched.
+    expect(await reader.readings.hasEmbedding(id)).toBe(true);
   });
 
   it("does not let a stale failed job publish a newer by-url owner's URL", async () => {
@@ -1636,25 +1626,29 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const reader = rowStore();
     const url = "https://example.com/stale-job-failure";
     const urlHash = await sha256Hex(url);
+    const pendingFor = (id: string, createdAt: string): Manifest => ({
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
     const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
     const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_OWNER",
-      key_prefix: ownerPrefix,
-    });
+    await reader.writeManifest(ownerPrefix, pendingFor("rd_OWNER", ownerCreatedAt));
+    await reader.writeByUrlPointer(urlHash, { id: "rd_OWNER", key_prefix: ownerPrefix });
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
+    // An older reading of the same URL that does not own it; its job fails.
     const staleId = "rd_STALE_FAILED";
     const staleCreatedAt = "2026-04-26T19:00:00.000Z";
     const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
-    await reader.appendOrReplaceListIndexItem({
-      id: staleId,
-      key_prefix: stalePrefix,
-      url,
-      status: "pending",
-      created_at: staleCreatedAt,
-      updated_at: staleCreatedAt,
-    });
+    await reader.readings.seed(pendingFor(staleId, staleCreatedAt), { keyPrefix: stalePrefix, ownsUrl: false });
     await processReading(
       {
         id: staleId,
@@ -1669,6 +1663,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       founderTenant(),
     );
 
+    // The failure is recorded on the stale reading and touches nothing else:
+    // the URL is still the newer reading's, and that reading is still pending.
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
       id: "rd_OWNER",
       key_prefix: ownerPrefix,
@@ -1677,7 +1673,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       id: staleId,
       status: "failed",
     });
-    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
+    await expect(reader.readManifest(ownerPrefix)).resolves.toMatchObject({ id: "rd_OWNER", status: "pending" });
     consoleErr.mockRestore();
   });
 
@@ -2577,7 +2573,9 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(diagnostics.attempts[0]!.status).toBe("failed");
     expect(diagnostics.attempts[0]!.error?.stage).toBe("fetch_source");
     expect(diagnostics.pointers.by_url.exists).toBe(true);
-    expect(diagnostics.objects.some((o) => o.key.includes("/attempts/at_"))).toBe(true);
+    // The attempt history above is rows now, so it is no longer among the
+    // objects; the source fetch failed, so nothing was captured either.
+    expect(diagnostics.objects).toEqual([]);
     consoleErr.mockRestore();
   });
 
@@ -2999,14 +2997,20 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     expect(retry.status).toBe(202);
 
     // Asserted before the drain: the queued job carries the supplied text, and
-    // the ready manifest is still preserved across the attempt.
+    // the reading stays published across the attempt. Its revision holds that
+    // state, so the message carries no snapshot of it.
     expect(queuedJobs).toHaveLength(1);
     expect(queuedJobs[0]).toMatchObject({
       id,
       trigger: "reprocess",
       source: { kind: "markdown", markdown: AGENT_MARKDOWN, title: "Agent Extraction" },
     });
-    expect(queuedJobs[0]!.preserveReadyManifest).toMatchObject({ id, status: "ready" });
+    expect(queuedJobs[0]).not.toHaveProperty("preserveReadyManifest");
+    expect(await testReadingsFor(founderTenant()).manifest(id)).toMatchObject({
+      status: "ready",
+      source_type: "url",
+      active_attempt: { status: "running" },
+    });
 
     await drainQueue(services);
     await waitOnExecutionContext(ctx2);
@@ -3186,8 +3190,8 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
 
     // Strip the stored markdown out from under the reading. A no-source
     // reprocess now has nothing to synthesize from and must 409...
-    const { keyPrefix } = (await reader.loadReadingById(id))!;
-    await env.READINGS_BUCKET.delete(founderObjectKey(`${keyPrefix}/extracted.md`));
+    const stored = (await reader.readings.store.contentKeys(id))!;
+    await env.READINGS_BUCKET.delete(founderObjectKey(stored.extractedKey!));
     const withoutSource = await app.request(
       `/api/readings/${id}/reprocess`,
       {
@@ -3244,6 +3248,10 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     const { id } = (await submit.json()) as { id: string };
     await drainQueue(services);
     await waitOnExecutionContext(ctx1);
+    const originalContent = await (
+      await app.request(`/api/readings/${id}/content`, { headers: { authorization: `Bearer ${TOKEN}` } }, env)
+    ).text();
+    expect(originalContent).toContain("picked up by readability");
 
     // Summarization fails on the reprocess attempt. A markdown source never
     // fetches the URL, so the failure has to come from the summarizer.
@@ -3275,8 +3283,8 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     expect(retry.status).toBe(202);
     expect(queuedJobs[0]).toMatchObject({
       source: { kind: "markdown", markdown: AGENT_MARKDOWN },
-      preserveReadyManifest: { id, status: "ready" },
     });
+    const failedAttemptId = queuedJobs[0]!.attemptId!;
     await drainQueue(failingServices);
     await waitOnExecutionContext(ctx2);
     consoleErr.mockRestore();
@@ -3296,18 +3304,21 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       last_attempt: { trigger: "reprocess", status: "failed" },
     });
 
-    // KNOWN DIVERGENCE (reading-lite-psu): write_extracted already replaced
-    // extracted.md before summarization failed, and the preserve-ready rollback
-    // restores only the manifest. So /content serves the failed attempt's
-    // markdown under a manifest whose hash and byte counts describe the old
-    // text. Characterized here so the divergence is visible rather than silent;
-    // this assertion flips when psu is fixed in process-reading.ts.
+    // The divergence reading-lite-psu characterized here is closed. The failed
+    // attempt captured its markdown under its own revision keys, so it never
+    // touched what the published revision points at: /content still serves the
+    // original text, matching the hash and byte counts the reading reports.
     const content = await failingApp.request(
       `/api/readings/${id}/content`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
       env,
     );
-    expect(await content.text()).toBe(AGENT_MARKDOWN);
+    const served = await content.text();
+    expect(served).toBe(originalContent);
+    expect(served).not.toBe(AGENT_MARKDOWN);
+    // And the failed attempt's bytes are gone: nothing references them.
+    const objects = (await env.READINGS_BUCKET.list()).objects.map((object) => object.key);
+    expect(objects.filter((key) => key.includes(`/revisions/${failedAttemptId}/`))).toEqual([]);
   });
 
   it("retains the url source after a supplied-source attempt dies before write_extracted", async () => {
