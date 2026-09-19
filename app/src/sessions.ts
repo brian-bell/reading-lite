@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { AccountRead, AccountRefusal } from "./account-state";
 import { ApiError } from "./api/errors";
 import { actingTenantOf, messageOf } from "./reading";
 
@@ -39,16 +40,13 @@ export function sessionsQueryKey(userId: string): readonly unknown[] {
  * they are for the library and a reading, so the page renders the shared
  * state; a 401 and anything unexpected throw.
  */
-export type SessionsResult =
-  | { state: "ready"; listed: SessionsList }
-  | { state: "forbidden" }
-  | { state: "account-changed"; acting_tenant?: string };
+export type SessionsResult = AccountRead<SessionsList>;
 
 export function sessionsFromResponse(status: number, body: unknown): SessionsResult {
   if (status === 200) {
     const parsed = SessionsListSchema.safeParse(body);
     if (!parsed.success) throw new ApiError(status, "sessions returned an unexpected body");
-    return { state: "ready", listed: parsed.data };
+    return { state: "ready", value: parsed.data };
   }
   if (status === 403) return { state: "forbidden" };
   if (status === 412) return { state: "account-changed", acting_tenant: actingTenantOf(body) };
@@ -62,10 +60,7 @@ export function sessionsFromResponse(status: number, body: unknown): SessionsRes
  * and anything else throw: the 401 through the mutation cache becomes the
  * shell's expired-session page.
  */
-export type RevokeOutcome =
-  | { kind: "revoked" }
-  | { kind: "forbidden" }
-  | { kind: "account-changed"; actingTenant?: string };
+export type RevokeOutcome = { kind: "revoked" } | AccountRefusal;
 
 export function revokeFromResponse(status: number, body: unknown, fallback: string): RevokeOutcome {
   if (status === 200) return { kind: "revoked" };

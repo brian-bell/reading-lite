@@ -283,7 +283,7 @@ describe("signed-in identity", () => {
     expect(html).toContain('name="url"');
   });
 
-  it("server-renders the account page's frame without the sessions list", async () => {
+  it("server-renders the account page's frame without the sessions list or settings", async () => {
     const response = await request("/account/security", { headers: { Cookie: A.cookie } });
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
@@ -291,7 +291,9 @@ describe("signed-in identity", () => {
     expect(html).toContain(heading("Account"));
     expect(html).toContain("Revoke all sessions");
     expect(html).toContain('aria-busy="true"');
-    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["sessions"'))).toEqual([]);
+    expect(
+      dehydratedQueryKeys(html).filter((key) => key.startsWith('["sessions"') || key.startsWith('["settings"')),
+    ).toEqual([]);
   });
 
   // The common states on the library (#416), in the HTML before any script
