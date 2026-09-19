@@ -4,11 +4,11 @@
 // would grow without bound.
 import pg from "pg";
 import { migrate, readMigrations } from "../scripts/pg-lib/migrate";
-import { testDatabaseUrl } from "./helpers/test-database";
+import { hostEnv, testDatabaseUrl } from "./helpers/test-database";
 
 export default async function setup(): Promise<void> {
   // CI's ops job runs one database-free test file and has no Postgres service.
-  if (process.env.SKIP_TEST_POSTGRES === "1") return;
+  if (hostEnv().SKIP_TEST_POSTGRES === "1") return;
   const url = testDatabaseUrl();
   if (/neon\.tech/.test(url)) throw new Error("Tests never connect to Neon; point TEST_DATABASE_URL at a local Postgres.");
   const admin = new URL(url);

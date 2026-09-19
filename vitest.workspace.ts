@@ -1,16 +1,18 @@
 import path from "node:path";
 import { defineWorkersProject, readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
 import { configDefaults, defineProject } from "vitest/config";
-import { HYPERDRIVE_LOCAL_ENV, testDatabaseUrl } from "./test/helpers/test-database";
+import { testDatabaseUrl } from "./test/helpers/test-database";
 
 const AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
 
-// The workers pool reaches PostgreSQL through the HYPERDRIVE binding's local
-// connection string. Always force it to the database globalSetup migrates and
-// truncates: a developer may export this variable for `npm run dev`, and the
-// tests must never write to that dev database.
-process.env[HYPERDRIVE_LOCAL_ENV] = testDatabaseUrl();
+// The workers pool reaches PostgreSQL through the HYPERDRIVE binding. Its
+// connection string is set explicitly on both workers projects, to the database
+// globalSetup migrates and truncates, so it overrides wrangler.test.toml and
+// whatever Hyperdrive variable a developer exports for `npm run dev`. Setting
+// the variable here instead does not work: this file's `process.env` is not the
+// host's (see hostEnv).
+const hyperdrives = { HYPERDRIVE: testDatabaseUrl() };
 
 // Unit tests that need the Workers runtime: they import cloudflare:test or
 // cloudflare:workers (directly or through src/index.ts), or they assert on
@@ -51,6 +53,7 @@ export default [
           wrangler: { configPath: "./wrangler.test.toml" },
           miniflare: {
             compatibilityFlags: ["nodejs_compat"],
+            hyperdrives,
             // Pin the secret-shaped bindings to known test values so that any
             // .dev.vars present on the developer's machine cannot leak real
             // credentials into the test process or override the test token.
@@ -86,6 +89,7 @@ export default [
           wrangler: { configPath: "./wrangler.test.toml" },
           miniflare: {
             compatibilityFlags: ["nodejs_compat"],
+            hyperdrives,
             bindings: {
               READER_API_TOKEN: "test-token",
               AUTH_ROOT_SECRET,
