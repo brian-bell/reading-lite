@@ -7,7 +7,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSignedIn } from "../src/auth/guards";
@@ -639,7 +639,7 @@ describe("API tokens on the account page", () => {
     format: "standard",
     scopes: ["readings:read", "readings:write"],
     created_at_ms: 1,
-    expires_at_ms: 2,
+    expires_at_ms: 4_102_444_800_000,
     revoked_at_ms: null,
     last_used_at_ms: null,
     usable: true,
@@ -1036,6 +1036,32 @@ describe("API tokens on the account page", () => {
     for (const control of createControls()) {
       if (limited) expect(control).toBeDisabled();
       else expect(control).toBeEnabled();
+    }
+  });
+
+  it("turns create back on once a cached token expires", async () => {
+    const now = Date.parse("2026-09-19T12:00:00Z");
+    vi.useFakeTimers({ now, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    mockApi({
+      onListTokens: () =>
+        Response.json({
+          tokens: [...fullList(9), token({ id: "tok_soon", name: "Soon", expires_at_ms: now + 1_000 })],
+        }),
+    });
+    try {
+      await openAccount();
+      expect(await within(section()).findByText(LIMIT_WARNING)).toBeVisible();
+      expect(createButton()).toBeDisabled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      await waitFor(() => expect(within(section()).queryByText(LIMIT_WARNING)).not.toBeInTheDocument());
+      expect(createButton()).toBeEnabled();
+      expect(within(section()).getByText("Soon (standard) · expired")).toBeVisible();
+    } finally {
+      vi.useRealTimers();
     }
   });
 

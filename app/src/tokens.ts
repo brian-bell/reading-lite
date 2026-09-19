@@ -110,6 +110,19 @@ export function usableTokenCount(listed: TokensList): number {
   return listed.tokens.filter((token) => token.usable).length;
 }
 
+/**
+ * Soonest `expires_at_ms` among tokens that still count toward the cap, so
+ * the account page can re-evaluate once that time passes.
+ */
+export function nextUsableTokenExpiryMs(listed: TokensList): number | undefined {
+  let next: number | undefined;
+  for (const token of listed.tokens) {
+    if (!token.usable) continue;
+    if (next == null || token.expires_at_ms < next) next = token.expires_at_ms;
+  }
+  return next;
+}
+
 /** The SPA's words for an account at the limit. */
 export const TOKEN_LIMIT_WARNING = `This account is at the ${TOKEN_LIMIT}-token limit. Revoke a token before creating another.`;
 
@@ -172,18 +185,24 @@ export function tokenRevokeFromResponse(status: number, body: unknown): TokenRev
 /**
  * The list with every token in `revokedIds` shown revoked, as the SPA's
  * revoked-ids overlay does: a list read that started before the revoke
- * landed must not bring the token back as usable.
+ * landed must not bring the token back as usable. A cached `usable` flag
+ * that has passed `expires_at_ms` is treated the same way, so the 10-token
+ * cap unlocks when a token expires without another list read.
  */
 export function withRevokedTokens(listed: TokensList, revokedIds: ReadonlySet<string>, nowMs: number): TokensList {
-  if (revokedIds.size === 0) return listed;
-  return {
-    ...listed,
-    tokens: listed.tokens.map((token) =>
-      revokedIds.has(token.id) && token.usable
-        ? { ...token, usable: false, revoked_at_ms: token.revoked_at_ms ?? nowMs }
-        : token,
-    ),
-  };
+  let changed = false;
+  const tokens = listed.tokens.map((token) => {
+    if (revokedIds.has(token.id) && token.usable) {
+      changed = true;
+      return { ...token, usable: false, revoked_at_ms: token.revoked_at_ms ?? nowMs };
+    }
+    if (token.usable && token.expires_at_ms <= nowMs) {
+      changed = true;
+      return { ...token, usable: false };
+    }
+    return token;
+  });
+  return changed ? { ...listed, tokens } : listed;
 }
 
 /** The SPA's status word: revoked wins over expired, and a usable token is usable. */

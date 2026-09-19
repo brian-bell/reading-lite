@@ -7,10 +7,10 @@ import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
   datetimeLocalValue,
+  nextUsableTokenExpiryMs,
   TOKEN_EXPIRY_ERRORS,
   TOKEN_LIMIT,
   TOKEN_LIMIT_WARNING,
-  usableTokenCount,
   TOKEN_MAX_TTL_MS,
   TOKEN_NAME_MAX,
   TOKEN_SCOPES,
@@ -19,6 +19,7 @@ import {
   tokensQueryKey,
   tokenStatus,
   tokenTimes,
+  usableTokenCount,
   withRevokedTokens,
   type TokenCreateBody,
   type TokenCreateOutcome,
@@ -69,6 +70,10 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
   const tokensKey = tokensQueryKey(identity?.user_id ?? "");
   const [revokedIds, setRevokedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [confirming, setConfirming] = useState<{ token: TokenListItem; opener: HTMLElement } | null>(null);
+  // The tokens query never goes stale. A cached `usable` flag stays true after
+  // expires_at_ms, so re-evaluate the cap from wall clock and tick when the
+  // next one expires — including after navigating away and back.
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const headingRef = useRef<HTMLHeadingElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -97,9 +102,18 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
   }, [settled, revokedIds]);
 
   const listed = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
-  const shown = listed ? withRevokedTokens(listed, revokedIds, Date.now()) : undefined;
+  const shown = listed ? withRevokedTokens(listed, revokedIds, nowMs) : undefined;
   const usable = shown ? usableTokenCount(shown) : 0;
   const atLimit = usable >= TOKEN_LIMIT;
+  const nextExpiryMs = shown ? nextUsableTokenExpiryMs(shown) : undefined;
+  useEffect(() => {
+    if (nextExpiryMs == null) return;
+    // Browsers store setTimeout delays as a signed 32-bit int; a 90-day token
+    // would overflow and fire immediately. Tick at the clamp and reschedule.
+    const delay = Math.min(2_147_483_647, Math.max(0, nextExpiryMs - Date.now()));
+    const timer = window.setTimeout(() => setNowMs(Date.now()), delay);
+    return () => window.clearTimeout(timer);
+  }, [nextExpiryMs, nowMs]);
 
   // Reaching the limit while the list is up (a 409's reread) disables the
   // form, and a browser drops focus from a control that becomes disabled:
