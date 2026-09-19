@@ -863,6 +863,13 @@ textarea {
   color: var(--danger);
 }
 
+/* A leading icon reads heavier than the text, so its side takes 2 px less
+   padding to look centred. */
+.button-leading-icon {
+  gap: 6px;
+  padding-inline-start: 14px;
+}
+
 .button:disabled,
 .button[aria-disabled="true"] {
   cursor: not-allowed;
@@ -940,6 +947,31 @@ textarea {
 
 .form-error p {
   margin: 0 0 var(--space-2);
+}
+
+/* ---- Save ------------------------------------------------------------- */
+
+/* The form is a card with its tabs inside (design spec, Forms/status cards:
+   20 px padding, 18 px at ≤650), on the library card's surface. */
+.save-card {
+  max-width: 68ch;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+@container shell (max-width: 650px) {
+  .save-card {
+    padding: 18px;
+  }
+}
+
+.save-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
 /* ---- Sign-in ---------------------------------------------------------- */
