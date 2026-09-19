@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-reading";
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
-import { manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import { manifestToIndexItem } from "../../src/modules/stores/list-index";
 import { parseTenantId } from "../../src/control-plane/ids";
 import { tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
 import {
@@ -14,11 +14,12 @@ import {
   OTHER_TOKEN_ID,
   otherTenant,
   PUBLIC_LOOKUP,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { rowStore } from "../helpers/row-store";
+import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
 
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 
 const READING_ID = "rd_0123456780";
 const KEY_PREFIX = buildKeyPrefix(READING_ID, "2026-05-07T12:00:00.000Z");
@@ -80,7 +81,7 @@ describe("markDeadLettered", () => {
   beforeEach(clearBucket);
 
   it("flips a stranded pending reading to a retryable failed manifest + updates the index", async () => {
-    const reader = testReadingStore(env);
+    const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
@@ -102,22 +103,24 @@ describe("markDeadLettered", () => {
     expect(await reader.readByUrlPointer(DLQ_URL_HASH)).toEqual(pointer);
   });
 
-  it("writes nothing when the manifest is confirmed absent from the tenant's namespace", async () => {
-    const reader = testReadingStore(env);
-    await reader.writeExtracted(KEY_PREFIX, "# leftover without a tombstone");
+  it("writes nothing, and sweeps nothing it does not own, when the reading is confirmed absent", async () => {
+    const reader = rowStore();
+    const foreign = `${KEY_PREFIX}/extracted.md`;
+    await reader.readings.content.put(foreign, "# not this attempt's", "text/markdown; charset=utf-8");
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
-    // No tombstone: confirmed-absent is a mismatched envelope, not a purge.
-    // Do not sweep a prefix this tenant may not own as a purged reading.
-    expect(await (await reader.readExtracted(KEY_PREFIX))?.text()).toBe("# leftover without a tombstone");
+    // No row means the reading was purged, or the envelope names a reading
+    // this tenant never had. Either way only this attempt's own revision
+    // prefix may be swept, so an object outside it is left alone.
+    expect(await (await reader.readings.content.get(foreign))?.text()).toBe("# not this attempt's");
     expect(await reader.readManifest(KEY_PREFIX)).toBeNull();
     expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
-  it("sweeps prefix residue when a purge tombstone is present and the manifest is already gone", async () => {
-    const reader = testReadingStore(env);
-    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge deleted the manifest");
+  it("sweeps its own residue when the reading was purged", async () => {
+    const reader = rowStore();
+    await reader.readings.content.put(`${KEY_PREFIX}/revisions/at_${READING_ID}/extracted.md`, "# leftover after the purge", "text/markdown; charset=utf-8");
     await reader.writeAttempt(KEY_PREFIX, {
       id: `at_${READING_ID}`,
       trigger: "reprocess",
@@ -139,12 +142,12 @@ describe("markDeadLettered", () => {
     expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
   });
 
-  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone is present", async () => {
-    const reader = testReadingStore(env);
+  it("sweeps its own residue and recreates nothing when the reading was purged after it started", async () => {
+    const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
-    await reader.writeExtracted(KEY_PREFIX, "# leftover after purge sweep");
+    // Written after the purge's own sweep, as a late consumer would.
     await reader.writeAttempt(KEY_PREFIX, {
       id: `at_${READING_ID}`,
       trigger: "reprocess",
@@ -157,6 +160,7 @@ describe("markDeadLettered", () => {
       events: [{ stage: "queued", status: "started", at: "2026-05-07T12:00:05.000Z" }],
     });
     await reader.writePurgeTombstone(READING_ID);
+    await reader.readings.content.put(`${KEY_PREFIX}/revisions/at_${READING_ID}/extracted.md`, "# leftover after purge sweep", "text/markdown; charset=utf-8");
 
     await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
@@ -164,53 +168,12 @@ describe("markDeadLettered", () => {
     expect(await reader.readExtracted(KEY_PREFIX)).toBeNull();
     expect(await reader.listAttempts(KEY_PREFIX)).toEqual([]);
     expect(await reader.listReadingObjects(KEY_PREFIX)).toEqual([]);
-    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
-  });
-
-  it("fail-opens and writes the failed manifest when the purge-tombstone lookup throws", async () => {
-    const reader = testReadingStore(env);
-    const manifest = pendingManifest();
-    await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
-
-    const tombstoneKey = `u/${FOUNDER_TENANT_ID}/index/deleted/${READING_ID}`;
-    const bucket = env.READINGS_BUCKET;
-    let threw = false;
-    const flaky = {
-      get: bucket.get.bind(bucket),
-      put: bucket.put.bind(bucket),
-      delete: bucket.delete.bind(bucket),
-      head: async (key: string) => {
-        if (key === tombstoneKey) {
-          threw = true;
-          throw new Error("tombstone HEAD failed");
-        }
-        return bucket.head(key);
-      },
-      list: bucket.list.bind(bucket),
-    } as unknown as R2Bucket;
-
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      await markDeadLettered(
-        args(),
-        { ...(env as unknown as Env), READINGS_BUCKET: flaky },
-        services(),
-        founderTenant(),
-      );
-    } finally {
-      consoleErr.mockRestore();
-    }
-
-    expect(threw).toBe(true);
-    const after = await reader.readManifest(KEY_PREFIX);
-    expect(after?.status).toBe("failed");
-    expect(after?.error?.code).toBe("QueueRetriesExhaustedError");
-    expect((await reader.findListIndexItem(READING_ID))?.status).toBe("failed");
+    // Purged means gone: nothing is recreated, not even a failed row.
+    expect(await reader.findListIndexItem(READING_ID)).toBeNull();
   });
 
   it("writes nothing when the tenant is already deleting", async () => {
-    const reader = testReadingStore(env);
+    const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
@@ -229,7 +192,7 @@ describe("markDeadLettered", () => {
   });
 
   it("fail-opens and writes the failed manifest when the tenant-status lookup throws", async () => {
-    const reader = testReadingStore(env);
+    const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
@@ -271,39 +234,28 @@ describe("markDeadLettered", () => {
     expect((await reader.findListIndexItem(READING_ID))?.status).toBe("failed");
   });
 
-  it("still marks when the manifest read fails transiently — an error is not confirmed absence", async () => {
-    const reader = testReadingStore(env);
-    const manifest = pendingManifest();
-    await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+  it("still marks when the reading's row read fails transiently — an error is not confirmed absence", async () => {
+    const reader = rowStore();
+    await reader.writeManifest(KEY_PREFIX, pendingManifest());
 
-    // The manifest exists, but the ownership-guard read hits a one-off R2
+    // The reading exists, but the ownership-guard read hits a one-off database
     // error. The DLQ message is acked either way, so treating the error as
     // absence would silently strand the reading; the mark must fall through
     // and still land.
-    const manifestKey = `u/${FOUNDER_TENANT_ID}/${KEY_PREFIX}/manifest.json`;
-    const bucket = env.READINGS_BUCKET;
+    const load = PgReadingStore.prototype.loadReadingById;
     let threw = false;
-    const flaky = {
-      get: async (key: string, opts?: unknown) => {
-        if (key === manifestKey && !threw) {
-          threw = true;
-          throw new Error("transient R2 read failure");
-        }
-        return bucket.get(key, opts as never);
-      },
-      put: bucket.put.bind(bucket),
-      delete: bucket.delete.bind(bucket),
-      head: bucket.head.bind(bucket),
-      list: bucket.list.bind(bucket),
-    } as unknown as R2Bucket;
+    const spy = vi.spyOn(PgReadingStore.prototype, "loadReadingById").mockImplementation(async function (this: PgReadingStore, id) {
+      if (!threw) {
+        threw = true;
+        throw new Error("transient database read failure");
+      }
+      return load.call(this, id);
+    });
+    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await markDeadLettered(
-      args(),
-      { ...(env as unknown as Env), READINGS_BUCKET: flaky },
-      services(),
-      founderTenant(),
-    );
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
+    spy.mockRestore();
+    consoleErr.mockRestore();
 
     expect(threw).toBe(true);
     const after = await reader.readManifest(KEY_PREFIX);
@@ -313,8 +265,8 @@ describe("markDeadLettered", () => {
     expect(item?.status).toBe("failed");
   });
 
-  it("rolls back to the preserved ready snapshot when a reprocess of a ready reading is dead-lettered", async () => {
-    const reader = testReadingStore(env);
+  it("keeps a published reading published when its reprocess is dead-lettered", async () => {
+    const reader = rowStore();
     const ready: Manifest = {
       ...pendingManifest(),
       status: "ready",
@@ -325,15 +277,11 @@ describe("markDeadLettered", () => {
       summary_markdown: "# Preserved\n\nbody",
       active_attempt: undefined,
     };
-    await reader.writeManifest(KEY_PREFIX, pendingManifest());
+    // A reprocess leaves a published reading `ready` with a running attempt:
+    // its revision holds the summary, so there is no snapshot to carry.
+    await reader.writeManifest(KEY_PREFIX, { ...ready, connections: [], active_attempt: pendingManifest().active_attempt });
 
-    // The DLQ delivers args as JSON, so preserveReadyManifest reaches
-    // markDeadLettered as a parsed plain object, not the live one. Round-trip
-    // it the same way to prove the deep fields survive the rollback.
-    const queued = JSON.parse(
-      JSON.stringify(args({ preserveReadyManifest: ready })),
-    ) as ProcessReadingArgs;
-    await markDeadLettered(queued, env as unknown as Env, services(), founderTenant());
+    await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
 
     const after = await reader.readManifest(KEY_PREFIX);
     expect(after?.status).toBe("ready");
@@ -346,7 +294,7 @@ describe("markDeadLettered", () => {
   });
 
   it("skips a stale dead-lettered message whose attempt was superseded by a newer one", async () => {
-    const reader = testReadingStore(env);
+    const reader = rowStore();
     // The reading was reprocessed again (a newer attempt) and is now ready (v2)
     // while the original message sat in the DLQ pipeline.
     const v2: Manifest = {
@@ -455,7 +403,7 @@ async function quotaUsage() {
   return {
     tenant,
     usage: tenantUsageFor(env as unknown as Env, tenantId),
-    reader: testReadingStore(env, tenant),
+    reader: rowStore(tenant),
   };
 }
 
@@ -479,7 +427,7 @@ describe("queue() dead-letter routing", () => {
   beforeEach(clearBucket);
 
   it("routes a reading-lite-dlq batch through the mark path (not processReading) and acks", async () => {
-    const reader = testReadingStore(env);
+    const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
@@ -504,8 +452,8 @@ describe("queue() dead-letter routing", () => {
 
   it("marks only the admitted tenant's matching DLQ artifact", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const founder = testReadingStore(env, founderTenant());
-    const other = testReadingStore(env, otherTenant());
+    const founder = rowStore(founderTenant());
+    const other = rowStore(otherTenant());
     const founderManifest: Manifest = { ...pendingManifest(), title: "founder pending" };
     const otherManifest: Manifest = { ...pendingManifest(), title: "other pending" };
     await founder.writeManifest(KEY_PREFIX, founderManifest);
@@ -541,7 +489,7 @@ describe("queue() dead-letter routing", () => {
 
   it("acks a cross-tenant actor envelope before processing or mutating its claimed tenant", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const founder = testReadingStore(env, founderTenant());
+    const founder = rowStore(founderTenant());
     const manifest: Manifest = { ...pendingManifest(), title: "founder pending" };
     await founder.writeManifest(KEY_PREFIX, manifest);
     await founder.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
@@ -566,6 +514,6 @@ describe("queue() dead-letter routing", () => {
     expect((await founder.readManifest(KEY_PREFIX))?.status).toBe("pending");
     expect((await founder.readManifest(KEY_PREFIX))?.title).toBe("founder pending");
     expect((await founder.findListIndexItem(READING_ID))?.status).toBe("pending");
-    expect(await testReadingStore(env, otherTenant()).readManifest(KEY_PREFIX)).toBeNull();
+    expect(await rowStore(otherTenant()).readManifest(KEY_PREFIX)).toBeNull();
   });
 });
