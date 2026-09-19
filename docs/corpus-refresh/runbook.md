@@ -51,7 +51,7 @@ wr() { node node_modules/wrangler/wrangler-dist/cli.js "$@"; }
 `prd` supplies R2, Vectorize, and provider credentials to corpus commands.
 `wr` uses the operator's existing Wrangler authentication for queue control;
 a corpus token may lack Queue permissions. The direct Wrangler entrypoint also
-preserves the documented Node 20.19.x operator path.
+uses the same wrangler-dist entrypoint as `scripts/lib/wrangler-cli.ts`.
 
 Generate a read-only full report and plan both paid passes:
 

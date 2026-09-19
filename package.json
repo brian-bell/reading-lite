@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.0.0"
   },
   "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist to R2 + Vectorize.",
   "scripts": {

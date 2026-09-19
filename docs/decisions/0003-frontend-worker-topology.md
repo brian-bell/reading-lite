@@ -40,8 +40,8 @@ Constraints that shape this decision:
   header only when `Sec-Fetch-Site` is `same-origin`. A server render triggered by
   a typed URL (`none`) or an email link (`cross-site`) cannot satisfy that by
   forwarding browser headers, and faking the header would bypass the check.
-- `@tanstack/react-start` 1.168 requires Node ≥22.12. The operator machine stays
-  on Node 20.19 for `ops` (see [operator Node](../operations.md#operator-node)).
+- `@tanstack/react-start` 1.168 requires Node ≥22.12. `npm run ops` also runs
+  on Node 22 (see [operator Node](../operations.md#operator-node)).
 - Production releases run in the `deploy-production-release` concurrency group:
   the Worker deploys first, then the SPA deploys the same tested SHA, refusing a
   stale `main`.
@@ -148,7 +148,7 @@ same in both frontends, so those links work before and after cutover.
 ### Build and release
 
 - `app/` builds only on Node ≥22.12, in CI or another managed Node 22 runtime.
-  The operator's Node 20.19 `ops` path does not build it.
+  The ops CLI does not build it.
 - Until Phase 5, the frontend deploys only to `next.readinglite.ai`, manually
   and with separate authorization.
   > **Amended 2026-09-13:** the frontend deploys from Phase 3 to the preview

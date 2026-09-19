@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
-// Gate `npm run dev` to Node 22.12+. Node 20.19.x remains the ops/install
-// floor (`engines.node`) and launches Wrangler via wrangler-dist/cli.js.
+// Gate `npm run dev` to Node 22.12+. Install and `npm run ops` use
+// `engines.node` (>=22.0.0).
 import { pathToFileURL } from "node:url";
 
 export const DEV_NODE_MINIMUM = "22.12.0";
@@ -20,7 +20,7 @@ export function formatDevNodeFloor(minimum: string): string {
 }
 
 export const DEV_NODE_GATE_MESSAGE =
-  `Use Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+ for \`npm run dev\`. Node 20.19.x is for \`npm run ops\` only.`;
+  `Use Node ${formatDevNodeFloor(DEV_NODE_MINIMUM)}+ for \`npm run dev\`.`;
 
 /** Fail-closed: unparseable `version` or `minimum` is not supported. */
 export function isNodeAtLeast(version: string, minimum: string): boolean {

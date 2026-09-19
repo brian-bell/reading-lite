@@ -1,10 +1,8 @@
 // Launch the installed wrangler CLI on the current Node process.
 //
-// Wrangler 4.87+ hard-fails in `bin/wrangler.js` when Node < 22. The supported
-// operator path for `npm run ops` is Debian `/usr/bin/node` 20.19.x (Node 22
-// will not launch under that security boundary). The CLI payload at
-// `wrangler-dist/cli.js` still runs on 20.19.x — this helper skips the wrapper
-// and execs that file with `process.execPath`. CI remains Node 22; the Worker
+// Ops and other script spawners exec `wrangler-dist/cli.js` with
+// `process.execPath` so they do not depend on PATH or the npm bin wrapper.
+// `npm run dev` and `types:generate` still use `bin/wrangler.js`. The Worker
 // runtime is workerd.
 
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";

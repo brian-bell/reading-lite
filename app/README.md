@@ -4,7 +4,7 @@ The replacement for the `web/` SPA, on its own Cloudflare Worker. Topology,
 approved dependencies, caching, and rollout are in
 [ADR 0003](../docs/decisions/0003-frontend-worker-topology.md); the design is the
 [Connected specification](../docs/design/connected/design-spec.md). Node 22.12+
-is required; the operator's Node 20 `ops` path does not build this package.
+is required; `npm run ops` does not build this package.
 
 ## Commands
 

@@ -3,8 +3,8 @@
 // All behavior lives in ops-lib (registry, dispatcher, command modules); this
 // file only binds process argv and the exit code.
 //
-// Supported operator Node is 20.19.x. Wrangler child processes go through
-// scripts/lib/wrangler-cli.ts so they do not hit the Node 22 bin wrapper.
+// Operator Node is 22. Wrangler child processes go through
+// scripts/lib/wrangler-cli.ts.
 import { runCli } from "./ops-lib/cli";
 
 runCli(process.argv.slice(2)).then(

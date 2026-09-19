@@ -20,7 +20,7 @@ export type CiJobSelection = Record<CiJob, boolean>;
 
 const ALL: readonly CiJob[] = CI_JOBS;
 const NONE: readonly CiJob[] = [];
-// The Worker suite, plus the Node 20 ops job, which imports scripts/ and,
+// The Worker suite, plus the Ops CLI job, which imports scripts/ and,
 // through them, src/.
 const BACKEND: readonly CiJob[] = ["worker", "ops"];
 

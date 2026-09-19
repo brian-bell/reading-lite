@@ -17,10 +17,9 @@ function readPkg(): { engines: { node: string }; scripts: Record<string, string>
 }
 
 describe("Node runtime policy (ops floor vs local dev)", () => {
-  it("keeps engines.node as the ops/install floor, not a Node 22-only requirement", () => {
+  it("keeps engines.node as the Node 22 install and ops floor", () => {
     const pkg = readPkg();
-    expect(pkg.engines.node).toBe(">=20.19.0");
-    expect(pkg.engines.node).not.toMatch(/^>=22/);
+    expect(pkg.engines.node).toBe(">=22.0.0");
   });
 
   it("leaves scripts.dev on wrangler dev and does not launch wrangler-dist", () => {
@@ -80,21 +79,29 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(formatDevNodeFloor("not-a-version")).toBe("not-a-version");
   });
 
-  it("uses a valid npm engine override for the Node 20 ops install", () => {
+  it("does not use a Node 20 npm engine override", () => {
     for (const file of [".github/workflows/ci.yml", "README.md", "docs/operations.md"]) {
       const text = readFileSync(path.join(repoRoot, file), "utf8");
-      expect(text, file).toContain("npm ci --engine-strict=false");
+      expect(text, file).not.toContain("npm ci --engine-strict=false");
       expect(text, file).not.toContain("--ignore-engines");
     }
+  });
+
+  it("runs the Ops CLI CI job on Node 22", () => {
+    const text = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+    expect(text).toContain("  ops:\n    name: Ops CLI");
+    expect(text).not.toContain("ops-node20");
+    expect(text).not.toContain("20.19.2");
+    expect(text).not.toMatch(/node-version:\s*"20/);
   });
 
   it("keeps the Node policy table identical in README, AGENTS.md, and operations.md", () => {
     const table = [
       "| Path | Supported Node | How Wrangler is launched |",
       "| --- | --- | --- |",
-      "| `npm run ops` | Node **20.19.x** (Debian); also runs on Node 22 | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |",
+      "| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |",
       "| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |",
-      "| CI | Worker + SPA: Node **22**; ops compatibility: **20.19.2** | Worker tests stay on workerd |",
+      "| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |",
     ].join("\n");
     for (const file of ["README.md", "AGENTS.md", "docs/operations.md"]) {
       expect(readFileSync(path.join(repoRoot, file), "utf8"), file).toContain(table);
