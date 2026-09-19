@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { makeWranglerD1, runFounderBootstrap } from "../../../scripts/lib/founder-bootstrap";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { makeWranglerD1 } from "../../../scripts/lib/founder-bootstrap";
 
 const block = (results: unknown[] = []) => ({ success: true, results, meta: { duration: 1 } });
 const response = (body: unknown) => ({ code: 0, stderr: "", stdout: JSON.stringify(body) });
@@ -52,37 +51,5 @@ describe("makeWranglerD1 local writes", () => {
     run.mockClear();
     await expect(db.batch([])).resolves.toEqual([]);
     expect(run).not.toHaveBeenCalled();
-  });
-
-  it("completes and repeats founder bootstrap through a duration-only SQLite runner", async () => {
-    const { sqlite } = openMigratedControlPlane();
-    try {
-      const run = async (args: string[]) => {
-        const command = args[4];
-        const suffix = "\n;\nSELECT changes() AS changes;";
-        if (command.endsWith(suffix)) {
-          sqlite.exec(command.slice(0, -suffix.length));
-          return response([block(), block(sqlite.prepare("SELECT changes() AS changes").all())]);
-        }
-        // Reproduce the pre-fix command's write side effect and duration-only result.
-        const statement = sqlite.prepare(command);
-        if (statement.reader) return response([block(statement.all())]);
-        statement.run();
-        return response([block()]);
-      };
-      const db = makeWranglerD1({ database: "local-test", local: true, run });
-      for (let attempt = 0; attempt < 2; attempt++) {
-        await expect(runFounderBootstrap(
-          { execute: true, env: "local", confirmProduction: false },
-          { envVars: { FOUNDER_EMAIL: "test@example.com", READER_API_TOKEN: "synthetic-test-token", AUTH_ROOT_SECRET: "01".repeat(32) }, nowMs: 1000, write: () => {}, openDb: async () => db },
-        )).resolves.toEqual({ exitCode: 0 });
-      }
-      for (const table of ["users", "user_settings", "tenant_limits", "api_tokens", "system_policy"]) {
-        expect(sqlite.prepare(`SELECT count(*) AS n FROM ${table}`).get()).toEqual({ n: 1 });
-      }
-      expect(sqlite.prepare("SELECT count(*) AS n FROM api_token_scopes").get()).toEqual({ n: 4 });
-    } finally {
-      sqlite.close();
-    }
   });
 });

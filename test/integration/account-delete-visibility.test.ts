@@ -7,6 +7,7 @@ import { PgReadingWriter, PublishCommitError } from "../../src/modules/stores/po
 import { sha256Hex, type Services } from "../../src/services";
 import { founderTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
+import { interceptSql, TENANT_STATUS_LOOKUP } from "../helpers/sql-faults";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -77,38 +78,13 @@ function makeServices(fetchFn: typeof fetch): Services {
   };
 }
 
-function statusLookupPlane(
-  inner: D1Database,
-  succeed: number,
-  after: "throw" | { status: string } = "throw",
-): D1Database {
-  let remaining = succeed;
-  return {
-    // Delegated, not stubbed away: the consumer's other control-plane writes
-    // go through `batch`.
-    batch: (statements: unknown[]) => (inner as D1Database).batch(statements as never),
-    prepare(sql: string) {
-      const stmt = inner.prepare(sql);
-      if (!/SELECT\s+status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\?/i.test(sql)) return stmt;
-      return {
-        bind(...params: unknown[]) {
-          const bound = stmt.bind(...params);
-          return {
-            first: async () => {
-              if (remaining <= 0) {
-                if (after === "throw") throw new Error("D1 hiccup");
-                return after;
-              }
-              remaining -= 1;
-              return bound.first();
-            },
-            run: () => bound.run(),
-            all: () => bound.all(),
-          };
-        },
-      };
-    },
-  } as unknown as D1Database;
+// The first `succeed` tenant-status lookups answer from the database; every
+// later one throws, or answers with `after`.
+function statusLookupsAfter(succeed: number, after: "throw" | { status: string } = "throw"): void {
+  interceptSql(TENANT_STATUS_LOOKUP, (call) => {
+    if (call <= succeed) return "pass";
+    return after === "throw" ? new Error("database hiccup") : [after];
+  });
 }
 
 async function clearBucket() {
@@ -241,8 +217,8 @@ describe("processReading — tenant status lookup at publish", () => {
   it("fail-opens and publishes when the tenant-status lookups around publish throw", async () => {
     const fetchFn = makeStubFetch();
     const { readings, job } = await pendingJob("rd_PREPUB", "https://example.com/pre-publish-lookup");
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = { ...workerEnv, CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 1) };
+    const wrapped = env as unknown as Env;
+    statusLookupsAfter(1);
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(
@@ -264,13 +240,10 @@ describe("processReading — tenant status lookup at publish", () => {
   it("removes everything it just published when the tenant is deleting", async () => {
     const fetchFn = makeStubFetch();
     const { readings, job, keyPrefix } = await pendingJob("rd_FENCE", "https://example.com/deleting-tenant");
-    const workerEnv = env as unknown as Env;
     // Active for the pre-spend and pre-publish checks, `deleting` for the
     // post-publish recheck: the exact window this fence exists for.
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "deleting" }),
-    };
+    const wrapped = env as unknown as Env;
+    statusLookupsAfter(2, { status: "deleting" });
 
     await expect(
       processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
@@ -289,11 +262,8 @@ describe("processReading — tenant status lookup at publish", () => {
   it("keeps a suspended tenant's reading but does not leave it searchable", async () => {
     const fetchFn = makeStubFetch();
     const { readings, job } = await pendingJob("rd_SUSPND", "https://example.com/suspended-not-deleting");
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "suspended" }),
-    };
+    const wrapped = env as unknown as Env;
+    statusLookupsAfter(2, { status: "suspended" });
 
     await expect(
       processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
@@ -307,11 +277,8 @@ describe("processReading — tenant status lookup at publish", () => {
   it("does not markFailed when the tenant-fence compensation throws after publication", async () => {
     const fetchFn = makeStubFetch();
     const { readings, job } = await pendingJob("rd_HIDE", "https://example.com/hide-failure");
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "deleting" }),
-    };
+    const wrapped = env as unknown as Env;
+    statusLookupsAfter(2, { status: "deleting" });
     vi.spyOn(PgReadingWriter.prototype, "purge").mockRejectedValue(new Error("compensation failure"));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 

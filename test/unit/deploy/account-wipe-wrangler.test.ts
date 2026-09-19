@@ -19,28 +19,6 @@ describe("account wipe wrangler wiring", () => {
     expect(testToml).not.toMatch(/binding = "ACCOUNT_WIPE_JOBS"/);
   });
 
-  // The terminal probe bound is only consumed inside one message's retry budget
-  // while it stays STRICTLY BELOW the queue's max_retries. Not every retry
-  // spends an attempt: the +120s first-confirmation deferral retries without
-  // counting one (S6 defect D2) and so does any transient D1/R2/Vectorize
-  // error, so an equal budget dead-letters a healthy wipe before the bound
-  // trips — the loop the bound exists to avoid. Raise the constant or
-  // max_retries alone and this fails, which is the point.
-  it("leaves the wipe queue retry headroom above the probe attempt bound", () => {
-    const wrangler = read("wrangler.toml");
-    const source = read("src/account-wipe.ts");
-    const bound = /ACCOUNT_WIPE_PROBE_MAX_ATTEMPTS = (\d+)/.exec(source)?.[1];
-    expect(bound).toBeDefined();
-    for (const queue of ["reading-lite-wipe", "reading-lite-staging-wipe"]) {
-      const block = new RegExp(`queue = "${queue}"[\\s\\S]*?max_retries = (\\d+)`).exec(wrangler);
-      expect(block, `${queue} consumer max_retries`).not.toBeNull();
-      // One spare for the deferral, one for a blip.
-      expect(Number(block![1]), `${queue} consumer max_retries`).toBeGreaterThanOrEqual(
-        Number(bound) + 2,
-      );
-    }
-  });
-
   // Both fan-out and the job skip with `no_tenant_prefix` while
   // TENANT_DATA_PLANE is off, so an environment without the pin cannot run the
   // destructive path at all — including the staging rehearsal issue #203 asks

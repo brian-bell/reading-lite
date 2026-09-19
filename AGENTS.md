@@ -129,6 +129,13 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
   does not survive Hyperdrive, so use `SET LOCAL` inside `sql.transaction`.
   `reading_embeddings` deliberately has no HNSW index. Never edit an applied
   file in `db/migrations/`.
+- The control plane (users, sessions, challenges, tokens, settings, limits,
+  digests, refresh checkpoints, wipe progress) is PostgreSQL behind
+  `ControlPlaneDb` (`fromSql`). Epoch milliseconds cross to `timestamptz` only
+  in `src/control-plane/pg-time.ts`. Where D1's single writer used to serialize
+  a read-then-write, lock then act in `db.transaction`: `SELECT … FOR UPDATE`,
+  or `lockKey` when the row may not exist yet. The Durable Object guards read
+  limits and policy through `withControlPlane`.
 - Never hold a transaction across a provider call or an R2 write. Queue and
   scheduled work use one `sqlSessionFor` session, ended when the work
   finishes; it replaces a client left idle across a provider call. Never call
@@ -162,10 +169,11 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
   `markDeadLettered`, and only it marks a job `dead`; digest DLQ marks its
   ledger failed, wipe DLQ logs and acks.
 - No tenant, including founders and staging fixtures, is exempt from deletion.
-  Wipes seed their own ledger, submit vector deletes before object deletes, and
-  retain unconfirmed ledger rows, and delete the tenant's reading rows after its
-  objects. Teardown requires current wipe completion and a confirmed-empty
-  prefix immediately before its D1 batch. Read the
+  Wipes delete the tenant's reading rows and embeddings before its R2 objects,
+  sweep rows again after, and fail closed on a database error. Teardown
+  requires current wipe completion and a confirmed-empty prefix immediately
+  before its final transaction, which locks the `users` and `wipe_progress`
+  rows and re-checks both before deleting. Read the
   [deletion rules](docs/operations.md#account-deletion) before touching this path.
 - Do not remove `nodejs_compat`. Keep bearer material out of browser storage.
   Both frontends invalidate queries after writes but do not poll pending
@@ -185,20 +193,26 @@ unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL
 back, so each workers-pool file gets its own database, cloned from a migrated
 template with `env.HYPERDRIVE` pointed at the clone
 (`test/helpers/file-database.ts`); pass `env` to the Worker rather than using
-`SELF`, which still sees the base database. The fixed founder and second tenant
-are cleared before each test; store tests mint a tenant per test
-(`test/helpers/pg-fixtures.ts`). Node-pool tests share the base database: wrap
-control-plane ones in `useRolledBackSql()` (`test/helpers/pg-rollback.ts`), which
-rolls each test back and turns nested transactions into savepoints. Seed and
-inspect reading state through `test/helpers/test-readings.ts` (workers) or
-`node-readings.ts` (Node pool); migration-runner tests create scratch databases.
+`SELF`, which still sees the base database. Before each test the control-plane
+tables are truncated and the founder re-bootstrapped, and the fixed tenants'
+readings are cleared; the usage guards are pointed at the clone too
+(`test/apply-control-plane.ts`). Store tests mint a tenant per test
+(`test/helpers/pg-fixtures.ts`). Workers-pool tests read and seed the control
+plane through `testControlPlane(env)` and inject database faults with
+`interceptSql` (`test/helpers/sql-faults.ts`). Node-pool tests share the base
+database: wrap control-plane ones in `useControlPlane()` / `useRolledBackSql()`
+(`test/helpers/control-plane-pg.ts`, `pg-rollback.ts`), which roll each test back
+and turn nested transactions into savepoints; that shares one client, so real
+concurrency belongs in a workers-pool test. Seed and inspect reading state
+through `test/helpers/test-readings.ts` (workers) or `node-readings.ts` (Node
+pool); migration-runner tests create scratch databases.
 Do not drain a queue before asserting an active pending state.
 
 Give each behavior one test owner; don't re-assert the same case at unit and
 integration, at phase and orchestrator, or at parser and every caller. Prefer
 `it.each` tables over near-identical copies. Exceptions worth keeping even
 when they look redundant: every ordering pin this file names as a contract
-(publication transaction order, vectors before objects, spend RPC order,
+(publication transaction order, rows before objects, spend RPC order,
 sidecar before create), fail-closed `not.toHaveBeenCalled` guards, cached-prefix
 snapshots, and SPA-mirror typed parses. Don't add a test that can't fail
 (asserting a constant equals its own literal, grepping source or docs for a
@@ -250,5 +264,6 @@ See [deploying](docs/operations.md#deploying) for secrets, guards, and exception
 `scripts/cloud-agent-install.ts`. Cursor environment secrets are
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
 `READER_API_TOKEN`, and `FOUNDER_EMAIL`; the installer writes `.stg.vars`.
-Staging founder state persists in D1. Bootstrap again after credential rotation,
+Staging founder state persists in PostgreSQL (the bootstrap needs `DATABASE_URL`,
+a direct connection string). Bootstrap again after credential rotation,
 or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for idempotent bootstrap on each install.

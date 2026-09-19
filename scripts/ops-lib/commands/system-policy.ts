@@ -72,6 +72,9 @@ ${POLICY_REDACTION_PHRASE}`,
               });
               return { changes: 1 };
             },
+            transaction: () => {
+              throw new Error("unexpected transaction");
+            },
           };
         },
       };

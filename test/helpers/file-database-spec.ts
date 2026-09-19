@@ -1,8 +1,8 @@
 // Shared body of the two file-database isolation tests. It is run from two
-// files because the property is between files: each commits the system_policy
-// singleton (id = 1), the row parallel files would otherwise fight over. On a
-// shared database the second file's INSERT fails on the primary key however
-// the two are scheduled, so the pair cannot pass by luck.
+// files because the property is between files: each commits its own
+// system_policy singleton (id = 1), the row parallel files would otherwise
+// fight over, and reads back only its own. The per-test setup has already
+// bootstrapped a row, so each file replaces it.
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { sqlFor } from "../../src/modules/db/sql";
@@ -16,6 +16,7 @@ export function describeFileDatabase(policyVersion: number): void {
         const [{ name }] = await sql.query<{ name: string }>("SELECT current_database() AS name");
         expect(name).toContain(fileDatabasePrefix(""));
 
+        await sql.execute("DELETE FROM system_policy");
         await sql.execute(
           `INSERT INTO system_policy (id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at)
            VALUES (1, 'open', true, $1, 1, now())`,

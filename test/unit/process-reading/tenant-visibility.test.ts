@@ -1,10 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { processReading } from "../../../src/process-reading";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
 import { memoryBucket, NODE_HYPERDRIVE, nodeReadingsFor } from "../../helpers/node-readings";
+import { interceptSql, TENANT_STATUS_LOOKUP } from "../../helpers/sql-faults";
 import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
+
+afterEach(() => vi.restoreAllMocks());
 
 function args() {
   return {
@@ -39,21 +42,14 @@ async function seedPending() {
   return { bucket, readings };
 }
 
-function statusPlane(result: { status: string } | null | "throw"): D1Database {
-  return {
-    prepare: (sql: string) => ({
-      bind: () => ({
-        first: async () => {
-          if (result === "throw") throw new Error("D1 hiccup");
-          if (/SELECT\s+status\s+FROM\s+users/i.test(sql)) return result;
-          return null;
-        },
-      }),
-    }),
-  } as unknown as D1Database;
+// Answers the consumer's tenant-status lookups: a throw, a row, or no row.
+function statusLookups(result: { status: string } | null | "throw"): void {
+  interceptSql(TENANT_STATUS_LOOKUP, () =>
+    result === "throw" ? new Error("database hiccup") : result === null ? [] : [result],
+  );
 }
 
-function envWith(bucket: R2Bucket, controlPlane: D1Database): Env {
+function envWith(bucket: R2Bucket): Env {
   return {
     READINGS_BUCKET: bucket,
     HYPERDRIVE: NODE_HYPERDRIVE,
@@ -65,7 +61,6 @@ function envWith(bucket: R2Bucket, controlPlane: D1Database): Env {
     FETCH_MAX_BYTES: "10485760",
     CORS_ALLOWED_ORIGINS: "",
     PENDING_TTL_SECONDS: "300",
-    CONTROL_PLANE: controlPlane,
   } as unknown as Env;
 }
 
@@ -84,18 +79,19 @@ describe("processReading — tenant deletion visibility fence", () => {
     const { bucket, readings } = await seedPending();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
+    statusLookups("throw");
     try {
-      await processReading(args(), envWith(bucket, statusPlane("throw")), services(fetchFn), founderTenant());
+      await processReading(args(), envWith(bucket), services(fetchFn), founderTenant());
       expect.unreachable();
     } catch (error) {
       expect(error).toBeInstanceOf(RateLimitedError);
       expect((error as RateLimitedError).status).toBe(503);
-      expect((error as RateLimitedError).url).toBe("d1://control-plane/users.status");
+      expect((error as RateLimitedError).url).toBe("postgres://control-plane/users.status");
       expect((error as RateLimitedError).retryAfterMs).toBeNull();
     }
 
     expect(consoleErr).toHaveBeenCalled();
-    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/D1 hiccup/);
+    expect(String(consoleErr.mock.calls[0]?.[0])).toMatch(/database hiccup/);
     consoleErr.mockRestore();
     expect(fetchFn).not.toHaveBeenCalled();
     // Not failed: the queue retry can still do the work.
@@ -109,9 +105,10 @@ describe("processReading — tenant deletion visibility fence", () => {
     const fetchFn = vi.fn<typeof fetch>();
     const { bucket, readings } = await seedPending();
     const before = await readings.manifest("rd_TEST");
+    statusLookups(row);
 
     await expect(
-      processReading(args(), envWith(bucket, statusPlane(row)), services(fetchFn), founderTenant()),
+      processReading(args(), envWith(bucket), services(fetchFn), founderTenant()),
     ).resolves.toBeUndefined();
 
     expect(fetchFn).not.toHaveBeenCalled();

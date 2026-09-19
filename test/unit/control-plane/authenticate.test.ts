@@ -4,14 +4,17 @@ import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { TOKEN_LAST_USED_COALESCE_MS } from "../../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { API_SCOPES } from "../../../src/control-plane/principal";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 
 async function seeded(root = authRoot) {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   const founder = await bootstrapFounder(db, {
     email: "founder@example.com",
     legacyToken: "test-token",
@@ -21,7 +24,7 @@ async function seeded(root = authRoot) {
     newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  return { sqlite, db, founder };
+  return { raw, db, founder };
 }
 
 describe("authenticateBearer", () => {
@@ -59,10 +62,8 @@ describe("authenticateBearer", () => {
   });
 
   it("forbids a suspended founder", async () => {
-    const { sqlite, db } = await seeded();
-    sqlite.prepare("UPDATE users SET status = 'suspended' WHERE email_canonical = ?").run(
-      "founder@example.com",
-    );
+    const { raw, db } = await seeded();
+    await raw.run("UPDATE users SET status = 'suspended' WHERE email_canonical = ?", "founder@example.com");
     expect(
       await authenticateBearer(db, {
         authorization: "Bearer test-token",
@@ -73,8 +74,8 @@ describe("authenticateBearer", () => {
   });
 
   it("rejects an expired or revoked token", async () => {
-    const { sqlite, db } = await seeded();
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ?").run(NOW_MS - 1);
+    const { raw, db } = await seeded();
+    await raw.run("UPDATE api_tokens SET expires_at = ?", toTimestamp(NOW_MS - 1));
     expect(
       await authenticateBearer(db, {
         authorization: "Bearer test-token",
@@ -83,9 +84,10 @@ describe("authenticateBearer", () => {
       }),
     ).toEqual({ kind: "unauthenticated" });
 
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ?, revoked_at_ms = ?").run(
-      NOW_MS + 1000,
-      NOW_MS,
+    await raw.run(
+      "UPDATE api_tokens SET expires_at = ?, revoked_at = ?",
+      toTimestamp(NOW_MS + 1000),
+      toTimestamp(NOW_MS),
     );
     expect(
       await authenticateBearer(db, {
@@ -97,25 +99,23 @@ describe("authenticateBearer", () => {
   });
 
   it("authenticates a standard selector.secret token", async () => {
-    const { sqlite, db, founder } = await seeded();
+    const { raw, db, founder } = await seeded();
     const key = await deriveHmacKey(authRoot, "api_token");
     const secretHmac = await hmacHex(key, "super-secret");
-    sqlite
-      .prepare(
-        `INSERT INTO api_tokens (
-           id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+    await raw.run(
+      `INSERT INTO api_tokens (
+           id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
          ) VALUES (?, ?, 'std', 'standard', ?, 1, ?, ?)`,
-      )
-      .run(
-        "tok_770e8400-e29b-41d4-a716-446655440000",
+      "tok_770e8400-e29b-41d4-a716-446655440000",
         founder.userId,
         secretHmac,
-        NOW_MS,
-        NOW_MS + 60_000,
-      );
-    sqlite
-      .prepare("INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')")
-      .run("tok_770e8400-e29b-41d4-a716-446655440000");
+        toTimestamp(NOW_MS),
+        toTimestamp(NOW_MS + 60_000),
+    );
+    await raw.run(
+      "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')",
+      "tok_770e8400-e29b-41d4-a716-446655440000",
+    );
 
     const result = await authenticateBearer(db, {
       authorization: "Bearer tok_770e8400-e29b-41d4-a716-446655440000.super-secret",
@@ -135,10 +135,11 @@ describe("authenticateBearer", () => {
       secret: parseAuthRootSecret("ff".repeat(32)),
       version: 0,
     };
-    const { sqlite, db, founder } = await seeded(previousAuthRoot);
-    const previousHmac = sqlite.prepare("SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?").get(
+    const { raw, db, founder } = await seeded(previousAuthRoot);
+    const previousHmac = withMs(await raw.first(
+      "SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?",
       founder.tokenId,
-    ) as { secret_hmac: string; hash_key_version: number };
+    )) as { secret_hmac: string; hash_key_version: number };
     expect(previousHmac.hash_key_version).toBe(0);
 
     const result = await authenticateBearer(db, {
@@ -149,9 +150,10 @@ describe("authenticateBearer", () => {
     });
     expect(result.kind).toBe("ok");
 
-    const rotated = sqlite.prepare("SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?").get(
+    const rotated = withMs(await raw.first(
+      "SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?",
       founder.tokenId,
-    ) as { secret_hmac: string; hash_key_version: number };
+    )) as { secret_hmac: string; hash_key_version: number };
     const expected = await hmacHex(await deriveHmacKey(authRoot, "api_token"), "test-token");
     expect(rotated.secret_hmac).toBe(expected);
     expect(rotated.secret_hmac).not.toBe(previousHmac.secret_hmac);
@@ -166,7 +168,7 @@ describe("authenticateBearer", () => {
   });
 
   it("falls back to legacy lookup when a token-shaped secret was imported as legacy", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     const tokenId = "tok_550e8400-e29b-41d4-a716-446655440000";
     const legacyToken = `${tokenId}.imported-secret`;
     const founder = await bootstrapFounder(db, {
@@ -201,17 +203,16 @@ describe("authenticateBearer", () => {
       secret: parseAuthRootSecret("ff".repeat(32)),
       version: 0,
     };
-    const { sqlite, db, founder } = await seeded();
+    const { raw, db, founder } = await seeded();
     const tokenId = "tok_770e8400-e29b-41d4-a716-446655440000";
     const previousHmac = await hmacHex(await deriveHmacKey(previousAuthRoot, "api_token"), "super-secret");
-    sqlite
-      .prepare(
-        `INSERT INTO api_tokens (
-           id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+    await raw.run(
+      `INSERT INTO api_tokens (
+           id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
          ) VALUES (?, ?, 'std', 'standard', ?, 0, ?, ?)`,
-      )
-      .run(tokenId, founder.userId, previousHmac, NOW_MS, NOW_MS + 60_000);
-    sqlite.prepare("INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')").run(tokenId);
+      tokenId, founder.userId, previousHmac, toTimestamp(NOW_MS), toTimestamp(NOW_MS + 60_000),
+    );
+    await raw.run("INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')", tokenId);
 
     const result = await authenticateBearer(db, {
       authorization: `Bearer ${tokenId}.super-secret`,
@@ -221,9 +222,10 @@ describe("authenticateBearer", () => {
     });
     expect(result.kind).toBe("ok");
 
-    const rotated = sqlite.prepare("SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?").get(
+    const rotated = withMs(await raw.first(
+      "SELECT secret_hmac, hash_key_version FROM api_tokens WHERE id = ?",
       tokenId,
-    ) as { secret_hmac: string; hash_key_version: number };
+    )) as { secret_hmac: string; hash_key_version: number };
     expect(rotated.secret_hmac).toBe(await hmacHex(await deriveHmacKey(authRoot, "api_token"), "super-secret"));
     expect(rotated.hash_key_version).toBe(1);
   });
@@ -253,16 +255,17 @@ describe("authenticateBearer", () => {
   });
 
   it("coalesces last-used writes to at most once per hour", async () => {
-    const { sqlite, db, founder } = await seeded();
+    const { raw, db, founder } = await seeded();
     const first = await authenticateBearer(db, {
       authorization: "Bearer test-token",
       authRoot,
       nowMs: NOW_MS,
     });
     expect(first.kind).toBe("ok");
-    const afterFirst = sqlite
-      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
-      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    const afterFirst = withMs(await raw.first(
+      "SELECT last_used_at FROM api_tokens WHERE id = ?",
+      founder.tokenId,
+    )) as { last_used_at_ms: number | null };
     expect(afterFirst.last_used_at_ms).toBe(NOW_MS);
 
     const withinHour = await authenticateBearer(db, {
@@ -271,9 +274,10 @@ describe("authenticateBearer", () => {
       nowMs: NOW_MS + TOKEN_LAST_USED_COALESCE_MS - 1,
     });
     expect(withinHour.kind).toBe("ok");
-    const unchanged = sqlite
-      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
-      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    const unchanged = withMs(await raw.first(
+      "SELECT last_used_at FROM api_tokens WHERE id = ?",
+      founder.tokenId,
+    )) as { last_used_at_ms: number | null };
     expect(unchanged.last_used_at_ms).toBe(NOW_MS);
 
     const laterMs = NOW_MS + TOKEN_LAST_USED_COALESCE_MS;
@@ -283,9 +287,10 @@ describe("authenticateBearer", () => {
       nowMs: laterMs,
     });
     expect(afterHour.kind).toBe("ok");
-    const touched = sqlite
-      .prepare("SELECT last_used_at_ms FROM api_tokens WHERE id = ?")
-      .get(founder.tokenId) as { last_used_at_ms: number | null };
+    const touched = withMs(await raw.first(
+      "SELECT last_used_at FROM api_tokens WHERE id = ?",
+      founder.tokenId,
+    )) as { last_used_at_ms: number | null };
     expect(touched.last_used_at_ms).toBe(laterMs);
   });
 });

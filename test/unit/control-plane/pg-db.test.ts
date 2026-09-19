@@ -130,6 +130,33 @@ describe("fromSql", () => {
     ]);
   });
 
+  it("runs transaction work all-or-nothing, and a nested call joins the outer transaction", async () => {
+    const db = fromSql(sql());
+    const boom = new Error("abort");
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.run(INSERT_USER, ...userParams("usr_a"));
+        await tx.transaction(async (inner) => {
+          await inner.run(INSERT_USER, ...userParams("usr_b"));
+        });
+        throw boom;
+      }),
+    ).rejects.toBe(boom);
+    expect(await db.all("SELECT id FROM users")).toEqual([]);
+
+    await db.transaction(async (tx) => {
+      await tx.run(INSERT_USER, ...userParams("usr_a"));
+      // A failed nested call undoes only itself.
+      await expect(
+        tx.transaction(async (inner) => {
+          await inner.run(INSERT_USER, ...userParams("usr_b"));
+          throw boom;
+        }),
+      ).rejects.toBe(boom);
+    });
+    expect(await db.all<{ id: string }>("SELECT id FROM users")).toEqual([{ id: "usr_a" }]);
+  });
+
   it("does not mistake other constraint failures for a unique violation", async () => {
     const attempt = fromSql(sql()).run(
       `INSERT INTO sessions (id, user_id, secret_hmac, hash_key_version, created_at, authenticated_at,

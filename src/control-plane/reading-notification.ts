@@ -50,8 +50,8 @@ interface NotificationUserRow {
   email_canonical: string;
   email_display: string;
   status: string;
-  email_verified_at_ms: number | null;
-  notify_immediate: number | null;
+  email_verified_at: string | null;
+  notify_immediate: boolean | null;
 }
 
 /**
@@ -68,7 +68,7 @@ export async function resolveImmediateNotification(
   if (!from) return { kind: "skip", reason: "empty_from" };
 
   const row = await db.first<NotificationUserRow>(
-    `SELECT u.email_canonical, u.email_display, u.status, u.email_verified_at_ms,
+    `SELECT u.email_canonical, u.email_display, u.status, u.email_verified_at,
             s.notify_immediate
        FROM users u
        LEFT JOIN user_settings s ON s.user_id = u.id
@@ -77,9 +77,9 @@ export async function resolveImmediateNotification(
   );
   if (!row) return { kind: "skip", reason: "missing_user" };
   if (row.status !== "active") return { kind: "skip", reason: "inactive_user" };
-  if (row.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
+  if (row.email_verified_at == null) return { kind: "skip", reason: "unverified_email" };
   if (row.notify_immediate == null) return { kind: "skip", reason: "missing_settings" };
-  if (row.notify_immediate !== 1) return { kind: "skip", reason: "opted_out" };
+  if (!row.notify_immediate) return { kind: "skip", reason: "opted_out" };
   if (!isAuthMailAllowed(env, row.email_canonical)) {
     return { kind: "skip", reason: "allowlist" };
   }
@@ -103,15 +103,15 @@ export async function resolveDigestRecipient(
     email_canonical: string;
     email_display: string;
     status: string;
-    email_verified_at_ms: number | null;
+    email_verified_at: string | null;
   }>(
-    `SELECT email_canonical, email_display, status, email_verified_at_ms
+    `SELECT email_canonical, email_display, status, email_verified_at
        FROM users WHERE id = ?`,
     tenantId,
   );
   if (!row) return { kind: "skip", reason: "missing_user" };
   if (row.status !== "active") return { kind: "skip", reason: "inactive_user" };
-  if (row.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
+  if (row.email_verified_at == null) return { kind: "skip", reason: "unverified_email" };
   if (!isAuthMailAllowed(env, row.email_canonical)) {
     return { kind: "skip", reason: "allowlist" };
   }

@@ -1,9 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import type { Services } from "../../../src/services";
 import { memoryBucket, NODE_HYPERDRIVE, nodeReadingsFor } from "../../helpers/node-readings";
 import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
+import { interceptSql, TENANT_STATUS_LOOKUP } from "../../helpers/sql-faults";
+
+// The consumer checks its tenant is active before it spends; this file's
+// tenant has no users row in the shared Node database, so the lookup is answered.
+beforeEach(() => {
+  interceptSql(TENANT_STATUS_LOOKUP, () => [{ status: "active" }]);
+});
+afterEach(() => vi.restoreAllMocks());
 
 function args() {
   return {

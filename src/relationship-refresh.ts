@@ -18,7 +18,7 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  */
 import { z } from "zod";
 import type { Env } from "./index";
-import { fromD1 } from "./control-plane/db";
+import { withControlPlane, type ControlPlaneDb } from "./control-plane/db";
 import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
 import { withSqlSession } from "./modules/db/sql";
@@ -60,12 +60,13 @@ function maxJudgements(raw: string | undefined): number {
   return Number(raw);
 }
 
-export async function activeRefreshFounder(env: Env): Promise<TenantContext | null> {
+// `db` is the caller's connection when it has one; otherwise a short-lived one.
+export async function activeRefreshFounder(env: Env, db?: ControlPlaneDb): Promise<TenantContext | null> {
   if (env.TENANT_DATA_PLANE !== "1" || !env.FOUNDER_EMAIL) return null;
-  const row = await fromD1(env.CONTROL_PLANE).first<{ id: string }>(
-    "SELECT id FROM users WHERE email_canonical = ? AND status = 'active'",
-    canonicalizeEmail(env.FOUNDER_EMAIL),
-  );
+  const email = canonicalizeEmail(env.FOUNDER_EMAIL);
+  const lookup = (cp: ControlPlaneDb) =>
+    cp.first<{ id: string }>("SELECT id FROM users WHERE email_canonical = ? AND status = 'active'", email);
+  const row = await (db ? lookup(db) : withControlPlane(env, lookup));
   const tenantId = row && parseTenantId(row.id);
   return tenantId ? { tenantId } : null;
 }

@@ -8,6 +8,7 @@ import {
   TURNSTILE_TEST_SECRET_PASS,
   TURNSTILE_TEST_SITE_KEY_PASS,
 } from "../../src/control-plane/turnstile";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -82,22 +83,22 @@ function credentialFrom(verifyUrl: string): string {
 }
 
 async function setSignupMode(workerEnv: Env, mode: "open" | "invite_only" | "closed"): Promise<void> {
-  await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = ? WHERE id = 1").bind(mode).run();
+  await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = ? WHERE id = 1", mode);
 }
 
 async function userExists(workerEnv: Env, emailCanonical: string): Promise<boolean> {
-  const row = await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
-    .bind(emailCanonical)
-    .first<{ id: string }>();
+  const row = await testControlPlane(workerEnv).first<{ id: string }>(
+    "SELECT id FROM users WHERE email_canonical = ?",
+    emailCanonical,
+  );
   return Boolean(row);
 }
 
 async function challengeCount(workerEnv: Env, emailCanonical: string): Promise<number> {
-  const row = await workerEnv.CONTROL_PLANE.prepare(
+  const row = await testControlPlane(workerEnv).first<{ n: number }>(
     "SELECT COUNT(*) AS n FROM auth_challenges WHERE email_canonical = ?",
-  )
-    .bind(emailCanonical)
-    .first<{ n: number }>();
+    emailCanonical,
+  );
   return row?.n ?? 0;
 }
 

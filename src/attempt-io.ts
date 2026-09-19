@@ -1,4 +1,5 @@
 import { resolveAttemptId, type ProcessReadingArgs } from "./attempt-ownership";
+import { fromSql, type ControlPlaneDb } from "./control-plane/db";
 import type { TenantContext } from "./control-plane/ids";
 import type { Sql } from "./modules/db/sql";
 import { ProcessingCheckpointSchema, type ProcessingCheckpoint } from "./modules/processing-checkpoint";
@@ -14,8 +15,9 @@ import { pgSimilarityStoreFor, type PgSimilarityStore } from "./modules/stores/p
 import type { Manifest, ProcessingAttempt } from "./schemas/manifest";
 
 // Everything one processing attempt reads and writes, bound to that attempt:
-// the reading's rows, its attempt log and paid checkpoint, similarity, and the
-// content it captures. Content goes under the attempt's own immutable revision
+// the reading's rows, its attempt log and paid checkpoint, similarity, the
+// content it captures, and the control-plane rows (tenant status, recipient)
+// it checks on the way. Content goes under the attempt's own immutable revision
 // keys (ADR 0005), so no attempt can overwrite what a published revision
 // points at, and a failed reprocess leaves that content in place.
 //
@@ -35,6 +37,7 @@ export function attemptIoFor(
     pgReadingWriterFor(sql, tenant),
     contentStoreFor(env.READINGS_BUCKET, tenant, env),
     pgSimilarityStoreFor(sql, tenant),
+    fromSql(sql),
     args,
   );
 }
@@ -48,6 +51,7 @@ export class AttemptIo {
     readonly writer: PgReadingWriter,
     readonly content: ContentStore,
     readonly similarity: PgSimilarityStore,
+    readonly controlPlane: ControlPlaneDb,
     private readonly args: ProcessReadingArgs,
   ) {}
 

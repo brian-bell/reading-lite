@@ -6,6 +6,8 @@ import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -398,7 +400,7 @@ describe("invite-only magic-link sessions", () => {
     const origGuard = workerEnv.AUTH_RATE_GUARD;
     const { ns, posts } = recordingRateGuard();
     workerEnv.AUTH_RATE_GUARD = ns as unknown as Env["AUTH_RATE_GUARD"];
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();
+    await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1");
     try {
       const unknown = await request(
         "/api/auth/challenge",
@@ -418,7 +420,7 @@ describe("invite-only magic-link sessions", () => {
       expect(posts.map((post) => post.kind)).toEqual(["ip", "ip", "send"]);
     } finally {
       workerEnv.AUTH_RATE_GUARD = origGuard;
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
+      await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1");
     }
   });
 
@@ -453,7 +455,7 @@ describe("invite-only magic-link sessions", () => {
 
   it("does not disclose whether an unknown address is invited", async () => {
     const workerEnv = env as unknown as Env;
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();
+    await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1");
     try {
       const unknown = await request("/api/auth/challenge", {
         method: "POST",
@@ -463,22 +465,19 @@ describe("invite-only magic-link sessions", () => {
       expect(await unknown.res.json()).toEqual({ ok: true });
       expect(unknown.sent).toHaveLength(0);
     } finally {
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
+      await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1");
     }
   });
 
   it("provisions an invited address on redemption", async () => {
     const workerEnv = env as unknown as Env;
     const now = Date.parse(NOW);
-    await workerEnv.CONTROL_PLANE.prepare(
-      "UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1",
-    ).run();
-    await workerEnv.CONTROL_PLANE.prepare(
-      `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1");
+    await testControlPlane(workerEnv).run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
        VALUES ('invited@test.example', 'Invited@test.example', ?)`,
-    )
-      .bind(now)
-      .run();
+      toTimestamp(now),
+    );
     try {
       const challenge = await request("/api/auth/challenge", {
         method: "POST",
@@ -496,7 +495,7 @@ describe("invite-only magic-link sessions", () => {
       expect(body.email).toBe("Invited@test.example");
       expect(body.principal).toBe("session");
     } finally {
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
+      await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1");
     }
   });
 
@@ -505,13 +504,12 @@ describe("invite-only magic-link sessions", () => {
     const now = Date.parse(NOW);
     const origAppEnv = workerEnv.APP_ENV;
     const origAllowlist = workerEnv.AUTH_MAIL_ALLOWLIST;
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1").run();
-    await workerEnv.CONTROL_PLANE.prepare(
-      `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'invite_only' WHERE id = 1");
+    await testControlPlane(workerEnv).run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
        VALUES ('keep-live@test.example', 'Keep-Live@test.example', ?)`,
-    )
-      .bind(now)
-      .run();
+      toTimestamp(now),
+    );
     try {
       const first = await request("/api/auth/challenge", {
         method: "POST",
@@ -544,10 +542,10 @@ describe("invite-only magic-link sessions", () => {
       } else {
         workerEnv.AUTH_MAIL_ALLOWLIST = origAllowlist;
       }
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1").run();
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).run("UPDATE system_policy SET signup_mode = 'open' WHERE id = 1");
+      await testControlPlane(workerEnv).run(
         "DELETE FROM signup_invites WHERE email_canonical = 'keep-live@test.example'",
-      ).run();
+      );
     }
   });
 
@@ -566,11 +564,10 @@ describe("invite-only magic-link sessions", () => {
       expect(first.sent).toHaveLength(1);
       const credential = credentialFrom(first.sent[0]!.verifyUrl);
       const countAfterFirst = (
-        await workerEnv.CONTROL_PLANE.prepare(
+        await testControlPlane(workerEnv).first<{ n: number }>(
           "SELECT COUNT(*) AS n FROM auth_challenges WHERE email_canonical = ?",
+          "founder@test.example",
         )
-          .bind("founder@test.example")
-          .first<{ n: number }>()
       )?.n;
 
       const denied = await request(
@@ -582,11 +579,10 @@ describe("invite-only magic-link sessions", () => {
       expect(await denied.res.json()).toEqual({ ok: true });
       expect(denied.sent).toHaveLength(0);
 
-      const countAfterDeny = await workerEnv.CONTROL_PLANE.prepare(
+      const countAfterDeny = await testControlPlane(workerEnv).first<{ n: number }>(
         "SELECT COUNT(*) AS n FROM auth_challenges WHERE email_canonical = ?",
-      )
-        .bind("founder@test.example")
-        .first<{ n: number }>();
+        "founder@test.example",
+      );
       expect(countAfterDeny?.n).toBe(countAfterFirst);
 
       const redeemed = await request("/api/auth/redeem", {

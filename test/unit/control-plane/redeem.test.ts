@@ -5,14 +5,17 @@ import { MAGIC_LINK_TTL_MS, SESSION_COOKIE_NAME } from "../../../src/control-pla
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
 import { authenticateSession } from "../../../src/control-plane/sessions";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 
 async function seeded() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -22,7 +25,7 @@ async function seeded() {
     newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  return { sqlite, db };
+  return { raw, db };
 }
 
 describe("redeemLoginChallenge", () => {
@@ -69,13 +72,12 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("provisions an invited user and rechecks eligibility at redemption", async () => {
-    const { sqlite, db } = await seeded();
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    const { raw, db } = await seeded();
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
          VALUES ('invited@example.com', 'Invited@example.com', ?)`,
-      )
-      .run(NOW_MS);
+      toTimestamp(NOW_MS),
+    );
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "invited@example.com",
       emailDisplayRequested: "invited@example.com",
@@ -85,7 +87,7 @@ describe("redeemLoginChallenge", () => {
     expect(issued.kind).toBe("issued");
     if (issued.kind !== "issued") return;
 
-    sqlite.prepare("DELETE FROM signup_invites WHERE email_canonical = 'invited@example.com'").run();
+    await raw.run("DELETE FROM signup_invites WHERE email_canonical = 'invited@example.com'");
     const denied = await redeemLoginChallenge(db, {
       credential: issued.credential,
       redemptionId: "clm_invite-1",
@@ -95,12 +97,11 @@ describe("redeemLoginChallenge", () => {
     });
     expect(denied.kind).toBe("forbidden");
 
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
          VALUES ('invited@example.com', 'Invited@example.com', ?)`,
-      )
-      .run(NOW_MS);
+      toTimestamp(NOW_MS),
+    );
     const issuedAgain = await issueLoginChallenge(db, {
       emailCanonical: "invited@example.com",
       emailDisplayRequested: "invited@example.com",
@@ -118,15 +119,15 @@ describe("redeemLoginChallenge", () => {
     });
     expect(ok.kind).toBe("ok");
     if (ok.kind !== "ok") return;
-    const user = sqlite
-      .prepare("SELECT email_display, status FROM users WHERE email_canonical = 'invited@example.com'")
-      .get() as { email_display: string; status: string };
+    const user = withMs(await raw.first(
+      "SELECT email_display, status FROM users WHERE email_canonical = 'invited@example.com'",
+    )) as { email_display: string; status: string };
     expect(user.email_display).toBe("Invited@example.com");
     expect(user.status).toBe("active");
   });
 
   it("rejects an expired or unknown secret without consuming a later challenge", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -162,10 +163,10 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: null,
     });
     expect(forged.kind).toBe("invalid");
-    expect(sqlite.prepare("SELECT state FROM auth_challenges WHERE id = ?").get(later.challengeId)).toEqual({
+    expect(withMs(await raw.first("SELECT state FROM auth_challenges WHERE id = ?", later.challengeId))).toEqual({
       state: "issued",
     });
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 0 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM sessions"))).toEqual({ n: 0 });
 
     const real = await redeemLoginChallenge(db, {
       credential: later.credential,
@@ -178,7 +179,7 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("rejects the same credential+redemption_id after expiry without rotating the live session", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -198,9 +199,10 @@ describe("redeemLoginChallenge", () => {
     expect(first.kind).toBe("ok");
     if (first.kind !== "ok") return;
 
-    const hmacBefore = sqlite
-      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
-      .get(first.sessionId) as { secret_hmac: string };
+    const hmacBefore = withMs(await raw.first(
+      "SELECT secret_hmac FROM sessions WHERE id = ?",
+      first.sessionId,
+    )) as { secret_hmac: string };
 
     const replay = await redeemLoginChallenge(db, {
       credential: issued.credential,
@@ -211,9 +213,10 @@ describe("redeemLoginChallenge", () => {
     });
     expect(replay.kind).toBe("invalid");
 
-    const hmacAfter = sqlite
-      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
-      .get(first.sessionId) as { secret_hmac: string };
+    const hmacAfter = withMs(await raw.first(
+      "SELECT secret_hmac FROM sessions WHERE id = ?",
+      first.sessionId,
+    )) as { secret_hmac: string };
     expect(hmacAfter.secret_hmac).toBe(hmacBefore.secret_hmac);
 
     const stillLive = await authenticateSession(db, {
@@ -225,7 +228,7 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("does not complete a claimed challenge after expiry", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -235,13 +238,12 @@ describe("redeemLoginChallenge", () => {
     expect(issued.kind).toBe("issued");
     if (issued.kind !== "issued") return;
 
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges
-         SET state = 'claimed', claim_id = ?, claimed_at_ms = ?
+    await raw.run(
+      `UPDATE auth_challenges
+         SET state = 'claimed', claim_id = ?, claimed_at = ?
          WHERE id = ?`,
-      )
-      .run("clm_claimed1", NOW_MS + 1, issued.challengeId);
+      "clm_claimed1", toTimestamp(NOW_MS + 1), issued.challengeId,
+    );
 
     const late = await redeemLoginChallenge(db, {
       credential: issued.credential,
@@ -251,18 +253,17 @@ describe("redeemLoginChallenge", () => {
       userAgentLabel: null,
     });
     expect(late.kind).toBe("invalid");
-    const sessions = sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    const sessions = withMs(await raw.first("SELECT COUNT(*) AS n FROM sessions")) as { n: number };
     expect(sessions.n).toBe(0);
   });
 
   it("does not attach a reused redemption_id to another user's session", async () => {
-    const { sqlite, db } = await seeded();
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    const { raw, db } = await seeded();
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
          VALUES ('other@example.com', 'other@example.com', ?)`,
-      )
-      .run(NOW_MS);
+      toTimestamp(NOW_MS),
+    );
 
     const founderIssued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -281,9 +282,10 @@ describe("redeemLoginChallenge", () => {
     });
     expect(founder.kind).toBe("ok");
     if (founder.kind !== "ok") return;
-    const hmacFounder = sqlite
-      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
-      .get(founder.sessionId) as { secret_hmac: string };
+    const hmacFounder = withMs(await raw.first(
+      "SELECT secret_hmac FROM sessions WHERE id = ?",
+      founder.sessionId,
+    )) as { secret_hmac: string };
 
     const otherIssued = await issueLoginChallenge(db, {
       emailCanonical: "other@example.com",
@@ -305,9 +307,10 @@ describe("redeemLoginChallenge", () => {
     expect(other.sessionId).not.toBe(founder.sessionId);
     expect(other.userId).not.toBe(founder.userId);
 
-    const hmacFounderAfter = sqlite
-      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
-      .get(founder.sessionId) as { secret_hmac: string };
+    const hmacFounderAfter = withMs(await raw.first(
+      "SELECT secret_hmac FROM sessions WHERE id = ?",
+      founder.sessionId,
+    )) as { secret_hmac: string };
     expect(hmacFounderAfter.secret_hmac).toBe(hmacFounder.secret_hmac);
 
     const stillFounder = await authenticateSession(db, {
@@ -319,7 +322,7 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("refreshes authenticated_at_ms on the current session instead of minting another row", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const issued = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -359,7 +362,7 @@ describe("redeemLoginChallenge", () => {
     if (stepped.kind !== "ok") return;
     expect(stepped.sessionId).toBe(first.sessionId);
     expect(stepped.credential).toBeNull();
-    const rows = sqlite.prepare("SELECT id, authenticated_at_ms FROM sessions").all() as {
+    const rows = withMs(await raw.all("SELECT id, authenticated_at FROM sessions")) as {
       id: string;
       authenticated_at_ms: number;
     }[];
@@ -369,7 +372,7 @@ describe("redeemLoginChallenge", () => {
   });
 
   it("pins a consumed step-up replay to completed_session_id when another same-user session is live", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const issuedA = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -428,15 +431,17 @@ describe("redeemLoginChallenge", () => {
     expect(stepped.sessionId).toBe(sessionA.sessionId);
     expect(stepped.credential).toBeNull();
 
-    const challengeBefore = sqlite
-      .prepare("SELECT state, completed_session_id FROM auth_challenges WHERE id = ?")
-      .get(issuedStep.challengeId) as { state: string; completed_session_id: string };
+    const challengeBefore = withMs(await raw.first(
+      "SELECT state, completed_session_id FROM auth_challenges WHERE id = ?",
+      issuedStep.challengeId,
+    )) as { state: string; completed_session_id: string };
     expect(challengeBefore.state).toBe("consumed");
     expect(challengeBefore.completed_session_id).toBe(sessionA.sessionId);
 
-    const sessionBBefore = sqlite
-      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
-      .get(sessionB.sessionId) as { authenticated_at_ms: number };
+    const sessionBBefore = withMs(await raw.first(
+      "SELECT authenticated_at FROM sessions WHERE id = ?",
+      sessionB.sessionId,
+    )) as { authenticated_at_ms: number };
     expect(sessionBBefore.authenticated_at_ms).toBe(NOW_MS + 1);
 
     const replay = await redeemLoginChallenge(db, {
@@ -452,19 +457,22 @@ describe("redeemLoginChallenge", () => {
     expect(replay.sessionId).toBe(sessionA.sessionId);
     expect(replay.credential).toBeNull();
 
-    const challengeAfter = sqlite
-      .prepare("SELECT completed_session_id FROM auth_challenges WHERE id = ?")
-      .get(issuedStep.challengeId) as { completed_session_id: string };
+    const challengeAfter = withMs(await raw.first(
+      "SELECT completed_session_id FROM auth_challenges WHERE id = ?",
+      issuedStep.challengeId,
+    )) as { completed_session_id: string };
     expect(challengeAfter.completed_session_id).toBe(sessionA.sessionId);
 
-    const sessionBAfter = sqlite
-      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
-      .get(sessionB.sessionId) as { authenticated_at_ms: number };
+    const sessionBAfter = withMs(await raw.first(
+      "SELECT authenticated_at FROM sessions WHERE id = ?",
+      sessionB.sessionId,
+    )) as { authenticated_at_ms: number };
     expect(sessionBAfter.authenticated_at_ms).toBe(sessionBBefore.authenticated_at_ms);
 
-    const sessionAAfter = sqlite
-      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
-      .get(sessionA.sessionId) as { authenticated_at_ms: number };
+    const sessionAAfter = withMs(await raw.first(
+      "SELECT authenticated_at FROM sessions WHERE id = ?",
+      sessionA.sessionId,
+    )) as { authenticated_at_ms: number };
     expect(sessionAAfter.authenticated_at_ms).toBe(NOW_MS + 90_000);
   });
 });

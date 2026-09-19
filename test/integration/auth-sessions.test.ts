@@ -8,6 +8,8 @@ import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { OTHER_TOKEN_SECRET, insertSecondTenant } from "../helpers/tenant-fixtures";
+import { fromTimestamp, toTimestamp } from "../../src/control-plane/pg-time";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -135,12 +137,11 @@ describe("session inspect and revoke", () => {
     });
     expect(unknown.res.status).toBe(foreign.res.status);
     expect(await unknown.res.json()).toEqual({ error: "not found" });
-    const retained = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT revoked_at_ms FROM sessions WHERE id = ?",
-    )
-      .bind(otherSessionId)
-      .first<{ revoked_at_ms: number | null }>();
-    expect(retained?.revoked_at_ms).toBeNull();
+    const retained = await testControlPlane(workerEnv).first<{ revoked_at: string | null }>(
+      "SELECT revoked_at FROM sessions WHERE id = ?",
+      otherSessionId,
+    );
+    expect(retained?.revoked_at).toBeNull();
 
     const ownerDelete = await request(`/api/auth/sessions/${otherSessionId}`, {
       method: "DELETE",
@@ -148,12 +149,11 @@ describe("session inspect and revoke", () => {
       csrf: other.csrf,
     });
     expect(ownerDelete.res.status).toBe(200);
-    const revoked = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT revoked_at_ms FROM sessions WHERE id = ?",
-    )
-      .bind(otherSessionId)
-      .first<{ revoked_at_ms: number | null }>();
-    expect(revoked?.revoked_at_ms).toBe(Date.parse(NOW));
+    const revoked = await testControlPlane(workerEnv).first<{ revoked_at: string | null }>(
+      "SELECT revoked_at FROM sessions WHERE id = ?",
+      otherSessionId,
+    );
+    expect(revoked?.revoked_at).toBe(NOW);
   });
 
   it("lists sessions, marks current, and requires CSRF on cookie mutations", async () => {
@@ -321,14 +321,16 @@ describe("session inspect and revoke", () => {
 
     const workerEnv = env as unknown as Env;
     const current = (
-      await workerEnv.CONTROL_PLANE.prepare(
-        "SELECT id FROM sessions WHERE revoked_at_ms IS NULL ORDER BY created_at_ms DESC LIMIT 1",
-      ).first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM sessions WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
     )?.id;
     expect(current).toBeTruthy();
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(Date.parse(NOW) - 11 * 60 * 1000, current)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(Date.parse(NOW) - 11 * 60 * 1000),
+      current,
+    );
 
     const readings = await request("/api/readings", { cookie: session.cookie });
     expect(readings.res.status).toBe(200);
@@ -337,9 +339,9 @@ describe("session inspect and revoke", () => {
   it("refreshes authenticated_at_ms on redeem when a live same-user cookie is present", async () => {
     const first = await redeemSession("clm_step_cookie");
     const workerEnv = env as unknown as Env;
-    const before = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT COUNT(*) AS n, MAX(authenticated_at_ms) AS auth FROM sessions WHERE revoked_at_ms IS NULL",
-    ).first<{ n: number; auth: number }>();
+    const before = await testControlPlane(workerEnv).first<{ n: number; auth: string }>(
+      "SELECT COUNT(*) AS n, MAX(authenticated_at) AS auth FROM sessions WHERE revoked_at IS NULL",
+    );
 
     const later = "2026-08-16T12:05:00.000Z";
     const challenge = await request("/api/auth/challenge", {
@@ -357,21 +359,20 @@ describe("session inspect and revoke", () => {
     expect(stepped.res.status).toBe(200);
     expect(cookieFrom(stepped.res)).toBeNull();
 
-    const after = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT COUNT(*) AS n, MAX(authenticated_at_ms) AS auth FROM sessions WHERE revoked_at_ms IS NULL",
-    ).first<{ n: number; auth: number }>();
+    const after = await testControlPlane(workerEnv).first<{ n: number; auth: string }>(
+      "SELECT COUNT(*) AS n, MAX(authenticated_at) AS auth FROM sessions WHERE revoked_at IS NULL",
+    );
     expect(after?.n).toBe(before?.n);
-    expect(after?.auth).toBe(Date.parse(later));
+    expect(fromTimestamp(after?.auth)).toBe(Date.parse(later));
   });
 
   it("surfaces the 11th-session warning once the account is at cap", async () => {
     const workerEnv = env as unknown as Env;
     const userId = (
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).first<{ id: string }>(
         "SELECT id FROM users WHERE email_canonical = ?",
+        "founder@test.example",
       )
-        .bind("founder@test.example")
-        .first<{ id: string }>()
     )?.id;
     expect(userId).toBeTruthy();
     const secretHmac = await hmacHex(
@@ -380,26 +381,23 @@ describe("session inspect and revoke", () => {
     );
     const now = Date.parse(NOW);
     for (let i = 0; i < 9; i += 1) {
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).run(
         `INSERT INTO sessions (
            id, user_id, secret_hmac, hash_key_version,
-           created_at_ms, authenticated_at_ms, last_seen_at_ms,
-           idle_expires_at_ms, absolute_expires_at_ms, user_agent_label, created_from_claim_id
+           created_at, authenticated_at, last_seen_at,
+           idle_expires_at, absolute_expires_at, user_agent_label, created_from_claim_id
          ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-        .bind(
-          `ses_${crypto.randomUUID()}`,
-          userId,
-          secretHmac,
-          now + i,
-          now + i,
-          now + i,
-          now + 30 * 24 * 60 * 60 * 1000,
-          now + 90 * 24 * 60 * 60 * 1000,
-          `cap-${i}`,
-          `clm_warn_${i}`,
-        )
-        .run();
+        `ses_${crypto.randomUUID()}`,
+        userId,
+        secretHmac,
+        toTimestamp(now + i),
+        toTimestamp(now + i),
+        toTimestamp(now + i),
+        toTimestamp(now + 30 * 24 * 60 * 60 * 1000),
+        toTimestamp(now + 90 * 24 * 60 * 60 * 1000),
+        `cap-${i}`,
+        `clm_warn_${i}`,
+      );
     }
     const session = await redeemSession("clm_warn_live");
     const listed = await request("/api/auth/sessions", { cookie: session.cookie });
@@ -410,9 +408,10 @@ describe("session inspect and revoke", () => {
   it("keeps idle-expired sessions in the list as unusable", async () => {
     const workerEnv = env as unknown as Env;
     const userId = (
-      await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
-        .bind("founder@test.example")
-        .first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM users WHERE email_canonical = ?",
+        "founder@test.example",
+      )
     )?.id;
     expect(userId).toBeTruthy();
     const secretHmac = await hmacHex(
@@ -421,26 +420,23 @@ describe("session inspect and revoke", () => {
     );
     const now = Date.parse(NOW);
     const expiredId = `ses_${crypto.randomUUID()}`;
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       `INSERT INTO sessions (
          id, user_id, secret_hmac, hash_key_version,
-         created_at_ms, authenticated_at_ms, last_seen_at_ms,
-         idle_expires_at_ms, absolute_expires_at_ms, user_agent_label, created_from_claim_id
+         created_at, authenticated_at, last_seen_at,
+         idle_expires_at, absolute_expires_at, user_agent_label, created_from_claim_id
        ) VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-      .bind(
-        expiredId,
-        userId,
-        secretHmac,
-        now,
-        now,
-        now,
-        now,
-        now + 90 * 24 * 60 * 60 * 1000,
-        "Old laptop",
-        "clm_expired_inspect",
-      )
-      .run();
+      expiredId,
+      userId,
+      secretHmac,
+      toTimestamp(now),
+      toTimestamp(now),
+      toTimestamp(now),
+      toTimestamp(now),
+      toTimestamp(now + 90 * 24 * 60 * 60 * 1000),
+      "Old laptop",
+      "clm_expired_inspect",
+    );
 
     const session = await redeemSession("clm_expired_live");
     const listed = await request("/api/auth/sessions", { cookie: session.cookie });

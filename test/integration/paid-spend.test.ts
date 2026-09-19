@@ -6,13 +6,17 @@ import { summarizeReading, buildSummarizeRequestBody } from "../../src/modules/o
 import type { Env } from "../../src/index";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
 import { GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const url = "https://api.openai.com/v1/embeddings";
 const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({model: "text-embedding-3-small", input: "Hello"}) };
 const now = Date.now();
 const rpc = () => spendRpcFor(env as unknown as Env);
 async function limitTenant(amount: number) {
-  await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = ? WHERE tenant_id = ?").bind(amount, FOUNDER_TENANT_ID).run();
+  await testControlPlane(env).run(
+    "UPDATE tenant_limits SET daily_spend_microdollars = ? WHERE tenant_id = ?",
+    amount, FOUNDER_TENANT_ID,
+  );
 }
 function paid(fetch: typeof globalThis.fetch, clock = now) {
   return createPaidFetch({ tenantId: FOUNDER_TENANT_ID, attemptId: crypto.randomUUID(), stage: "embed_source", fetch, rpc: rpc(), now: () => clock });
@@ -30,11 +34,13 @@ describe("hosted spend guards", () => {
   it("requires an explicit global budget without consuming tenant admission", async () => {
     const quote = (await quotePaidRequest(url, init))!;
     await limitTenant(quote.maxMicrodollars);
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET daily_spend_microdollars = NULL WHERE id = 1").run();
+    await testControlPlane(env).run("UPDATE system_policy SET daily_spend_microdollars = NULL WHERE id = 1");
     const fetch = vi.fn(async () => response());
     await expect(paid(fetch)(url, init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET daily_spend_microdollars = 1000000 WHERE id = 1").run();
+    await testControlPlane(env).run(
+      "UPDATE system_policy SET daily_spend_microdollars = 1000000 WHERE id = 1",
+    );
     expect((await paid(fetch)(url, init)).status).toBe(200);
   });
   it("retains a timeout maximum even after the queue would release concurrency", async () => {
@@ -107,10 +113,10 @@ describe("hosted spend guards", () => {
   });
   it("defers disabled paid work and resumes when re-enabled", async () => {
     const fetch = vi.fn(async () => response());
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET paid_work_enabled = 0 WHERE id = 1").run();
+    await testControlPlane(env).run("UPDATE system_policy SET paid_work_enabled = false WHERE id = 1");
     await expect(paid(fetch)(url,init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET paid_work_enabled = 1 WHERE id = 1").run();
+    await testControlPlane(env).run("UPDATE system_policy SET paid_work_enabled = true WHERE id = 1");
     expect((await paid(fetch)(url,init)).status).toBe(200);
   });
   it("honors disabling between reservation and dispatch and releases the unused hold", async () => {
@@ -120,17 +126,17 @@ describe("hosted spend guards", () => {
     const wrapped = createPaidFetch({tenantId:FOUNDER_TENANT_ID,attemptId:crypto.randomUUID(),stage:"embed_source",
       fetch,now:() => now,rpc:async (body) => {
         if (body.kind === "mark_spend_dispatched") {
-          await env.CONTROL_PLANE.prepare("UPDATE system_policy SET paid_work_enabled = 0 WHERE id = 1").run();
+          await testControlPlane(env).run("UPDATE system_policy SET paid_work_enabled = false WHERE id = 1");
         }
         return rpc()(body);
       }});
     await expect(wrapped(url,init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET paid_work_enabled = 1 WHERE id = 1").run();
+    await testControlPlane(env).run("UPDATE system_policy SET paid_work_enabled = true WHERE id = 1");
     expect((await paid(fetch)(url,init)).status).toBe(200);
   });
   it("blocks mismatched catalog versions before dispatch", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET catalog_version = 999 WHERE id = 1").run();
+    await testControlPlane(env).run("UPDATE system_policy SET catalog_version = 999 WHERE id = 1");
     const fetch = vi.fn(async () => response());
     await expect(paid(fetch)(url, init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();

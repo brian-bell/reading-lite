@@ -1,66 +1,60 @@
 /**
- * D1-backed account-wipe progress, lease, and completion record (issue 195 S2).
+ * Account-wipe progress, lease, and completion record (issue 195 S2; on
+ * PostgreSQL since slice 1c.2, ADR 0005).
  *
- * This is the whole of the wipe's durable state. It replaces
- * `wipe/{tenantId}/progress.json` and the R2 etag CAS around it.
+ * This is the whole of the wipe's durable state.
+ *
+ * ## Phases
+ *
+ * `rows` deletes the tenant's reading rows, and with them their embeddings,
+ * in one PostgreSQL statement. `objects` pages the tenant's R2 prefix. `done`
+ * is terminal. Rows go first: a reading whose objects outlive its row is
+ * invisible, where the reverse would be a listed reading whose content 404s.
+ * D1's `vectors` phase, its Vectorize bookkeeping (mutation ids, index
+ * baseline, probes) and the ledger seed have no counterpart: an embedding is a
+ * row now, so there is nothing to submit, confirm or seed.
  *
  * ## The lease is a version, not a timestamp
  *
  * Every write is `UPDATE … WHERE tenant_id = ? AND lease_seq = ?` and bumps
- * `lease_seq`. `changes === 0` means the row moved under us — a sibling
- * delivery owns this wipe — and the writer throws
+ * `lease_seq`. Zero rows changed means the row moved under us (a sibling
+ * delivery owns this wipe) and the writer throws
  * `AccountWipeProgressConflictError` rather than re-reading and re-applying.
- * Re-applying would be the clobber the CAS exists to prevent.
+ * Re-applying would be the clobber the CAS exists to prevent. So neither a
+ * frozen job clock nor a long delayed retry can corrupt a cursor: whichever
+ * writer bumps first owns the wipe, and the other is told so.
  *
- * Two things that were special under the R2 etag CAS stop being special here:
- *
- * - **A frozen clock.** The old lease was `updated_at_ms` compared against the
- *   wall clock, so a job whose clock did not advance could have its record
- *   last-write-wins clobbered by a cron tick at the 15-minute boundary. That is
- *   why the job heartbeat had to read a live clock rather than the frozen
- *   consume-start `nowMs`. A CAS on a counter no clock touches does not care:
- *   whichever writer bumps first owns the wipe, and the other one is told so.
- * - **A long delayed retry.** A 12-hour `Retry-After` used to require pushing
- *   `updated_at_ms` into the future so cron would not enqueue a sibling while
- *   the retry was still owed. Now a sibling enqueued in that window simply
- *   claims the lease, and the late retry's stale `lease_seq` loses and backs
- *   off. Duplicated effort at worst, never a corrupted cursor.
- *
- * `updated_at_ms` survives, but demoted to advice: cron uses it to avoid
- * enqueuing a duplicate it would only have to turn away.
+ * `updated_at` is advice only: cron uses it to avoid enqueuing a duplicate it
+ * would only have to turn away.
  *
  * ## The record outlives the wipe on purpose
  *
- * The R2 object was deleted at the terminal transition (review finding F4)
- * because its key named a deleted tenant and its body listed that tenant's
- * reading ids. Neither is true here: the row is keyed by a tenant whose `users`
- * row is still present until S4's teardown, and `complete()` clears both
- * cursors so the finished record carries no reading id at all.
- *
- * Keeping it is what closes the gap S1 documented as accepted. Fan-out no
- * longer has to infer "already wiped" from "no record AND an empty R2 prefix",
- * a shape a tenant with an emptied prefix and stranded vectors also has. The
- * row says what happened, and `residue` says whether the namespace was ever
- * confirmed clean. S4's hard delete of the `users` row gates on
- * `completed_at_ms`, which is also why the foreign key does not cascade.
+ * The row is keyed by a tenant whose `users` row is still present until S4's
+ * teardown, and `complete()` clears the cursor, so the finished record names
+ * no reading. Keeping it lets fan-out ask "was this tenant wiped?" directly,
+ * and teardown's hard delete of the `users` row gates on `completed_at`, which
+ * is also why the foreign key does not cascade.
  *
  * The completion is stored as TWO pairs, because they answer different
  * questions and a reopen must not conflate them:
  *
- * - `completedAtMs`/`residue` are the current state — this wipe has nothing
- *   left to do. A reopen clears them, which is exactly what a teardown gate
- *   wants: it must not hard-delete the users row while a reopened pass runs.
+ * - `completedAtMs`/`residue` are the current state: this wipe has nothing
+ *   left to do. A reopen clears them, so teardown does not hard-delete the
+ *   users row while a reopened pass runs.
  * - `firstCompletedAtMs`/`firstResidue` are the durable history, written once
- *   at the first terminal transition and pinned in SQL thereafter. Without
- *   them, a reopen whose enqueue failed or whose pass dead-lettered would leave
- *   the row claiming this tenant had never been wiped at all — destroying the
- *   evidence at the moment it is needed, which is the whole thing the
- *   non-cascading foreign key exists to prevent. The residue scan reads these.
+ *   at the first terminal transition and pinned in SQL thereafter, so a reopen
+ *   that never finishes cannot leave the row claiming this tenant was never
+ *   wiped.
+ *
+ * `residue` recorded, on D1, that Vectorize never confirmed a namespace
+ * clean. A PostgreSQL wipe has no such unknown and always writes false; the
+ * columns stay for the history imported from D1 (#348).
  */
 import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
 import type { TenantId } from "./ids";
+import { fromTimestamp, toTimestamp } from "./pg-time";
 
-export type WipePhase = "vectors" | "objects" | "done";
+export type WipePhase = "rows" | "objects" | "done";
 
 /** One tenant's wipe state as stored. */
 export interface WipeProgress {
@@ -70,25 +64,6 @@ export interface WipeProgress {
   r2Cursor?: string;
   force: boolean;
   objectsDeleted: number;
-  mutationIds: string[];
-  /** True once the whole-index baseline has been sampled for this pass. */
-  indexCountSampled: boolean;
-  /** The baseline itself; null when the binding has no `describe()`. */
-  indexCountStart: number | null;
-  probeAttempts: number;
-  probeSawResidue: boolean;
-  /**
-   * The seed step's R2 list cursor, and when it finished.
-   *
-   * The wipe records every reading id derivable from its own key root into the
-   * ledger before deleting anything, so coverage is established rather than
-   * asserted. The cursor resumes that walk across deliveries; the stamp
-   * separates "not started" from "finished" so a resume does not re-page a
-   * corpus it has already covered. A reopen clears both — leftover objects may
-   * belong to readings the earlier pass never saw.
-   */
-  seedCursor?: string;
-  seedCompletedAtMs: number | null;
   continuations: number;
   /** Current state: nothing left to do. Cleared by a reopen. */
   completedAtMs: number | null;
@@ -101,7 +76,7 @@ export interface WipeProgress {
 /**
  * A sibling delivery owns this wipe: our conditional UPDATE changed no rows.
  *
- * Not a failure to retry into the DLQ — the caller turns it into a `lease_held`
+ * Not a failure to retry into the DLQ. The caller turns it into a `lease_held`
  * skip and acks, because the owner is already doing the work.
  */
 export class AccountWipeProgressConflictError extends Error {
@@ -114,64 +89,37 @@ export class AccountWipeProgressConflictError extends Error {
 interface WipeProgressRow {
   phase: string;
   lease_seq: number;
-  updated_at_ms: number;
+  updated_at: string;
   r2_cursor: string | null;
-  force: number;
+  force: boolean;
   objects_deleted: number;
-  mutation_ids: string;
-  index_count_sampled: number;
-  index_count_start: number | null;
-  probe_attempts: number;
-  probe_saw_residue: number;
-  seed_cursor: string | null;
-  seed_completed_at_ms: number | null;
   continuations: number;
-  completed_at_ms: number | null;
-  residue: number;
-  first_completed_at_ms: number | null;
-  first_residue: number;
+  completed_at: string | null;
+  residue: boolean;
+  first_completed_at: string | null;
+  first_residue: boolean;
 }
 
-const COLUMNS = `phase, lease_seq, updated_at_ms, r2_cursor, force,
-    objects_deleted, mutation_ids, index_count_sampled, index_count_start,
-    probe_attempts, probe_saw_residue, continuations, completed_at_ms, residue,
-    first_completed_at_ms, first_residue, seed_cursor, seed_completed_at_ms`;
+const COLUMNS = `phase, lease_seq, updated_at, r2_cursor, force, objects_deleted, continuations,
+    completed_at, residue, first_completed_at, first_residue`;
 
 function parsePhase(value: string): WipePhase {
-  return value === "objects" || value === "done" ? value : "vectors";
-}
-
-function parseMutationIds(value: string): string[] {
-  // Written by this module only, but it is a stored value and reads of stored
-  // values are parsed everywhere else in this codebase too.
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
-  } catch {
-    return [];
-  }
+  return value === "objects" || value === "done" ? value : "rows";
 }
 
 function toProgress(row: WipeProgressRow): WipeProgress {
   return {
     phase: parsePhase(row.phase),
     leaseSeq: row.lease_seq,
-    updatedAtMs: row.updated_at_ms,
+    updatedAtMs: fromTimestamp(row.updated_at),
     r2Cursor: row.r2_cursor ?? undefined,
-    force: row.force !== 0,
+    force: row.force,
     objectsDeleted: row.objects_deleted,
-    mutationIds: parseMutationIds(row.mutation_ids),
-    indexCountSampled: row.index_count_sampled !== 0,
-    indexCountStart: row.index_count_start,
-    probeAttempts: row.probe_attempts,
-    probeSawResidue: row.probe_saw_residue !== 0,
-    seedCursor: row.seed_cursor ?? undefined,
-    seedCompletedAtMs: row.seed_completed_at_ms,
     continuations: row.continuations,
-    completedAtMs: row.completed_at_ms,
-    residue: row.residue !== 0,
-    firstCompletedAtMs: row.first_completed_at_ms,
-    firstResidue: row.first_residue !== 0,
+    completedAtMs: fromTimestamp(row.completed_at),
+    residue: row.residue,
+    firstCompletedAtMs: fromTimestamp(row.first_completed_at),
+    firstResidue: row.first_residue,
   };
 }
 
@@ -191,7 +139,7 @@ export async function listUnfinishedWipes(
   db: ControlPlaneDb,
 ): Promise<Map<string, WipeProgress>> {
   const rows = await db.all<WipeProgressRow & { tenant_id: string }>(
-    `SELECT tenant_id, ${COLUMNS} FROM wipe_progress WHERE completed_at_ms IS NULL`,
+    `SELECT tenant_id, ${COLUMNS} FROM wipe_progress WHERE completed_at IS NULL`,
   );
   return new Map(rows.map((row) => [row.tenant_id, toProgress(row)]));
 }
@@ -199,17 +147,11 @@ export async function listUnfinishedWipes(
 /** The state a brand-new wipe starts in. Not yet written. */
 export function emptyWipeProgress(nowMs: number, force = false): WipeProgress {
   return {
-    phase: "vectors",
+    phase: "rows",
     leaseSeq: 0,
     updatedAtMs: nowMs,
     force,
     objectsDeleted: 0,
-    mutationIds: [],
-    indexCountSampled: false,
-    indexCountStart: null,
-    probeAttempts: 0,
-    probeSawResidue: false,
-    seedCompletedAtMs: null,
     continuations: 0,
     completedAtMs: null,
     residue: false,
@@ -219,40 +161,25 @@ export function emptyWipeProgress(nowMs: number, force = false): WipeProgress {
 }
 
 /**
- * A finished wipe with leftover objects under its prefix is reopened as a fresh
- * pass: new probe budget, new count baseline, new continuation budget, cursors
- * cleared. Carrying a used-up `probe_attempts` into a pass that has just
- * submitted new deletes made its very first probe declare residue.
+ * A finished wipe with leftover objects under its prefix is reopened as a
+ * fresh pass from `rows`: new continuation budget, cursor cleared. Leftover
+ * objects may come with rows a late writer added, so the pass deletes rows
+ * again before it touches R2.
  *
- * `leaseSeq` is deliberately preserved — it is the row's identity for the CAS,
- * not part of the wipe's state.
- *
- * `firstCompletedAtMs`/`firstResidue` are preserved too, and that is the point
- * of their existing. Clearing `completedAtMs` here is correct — a reopened wipe
- * genuinely has work left and the teardown gate must not fire — but if this
- * reopen's enqueue fails, or the new pass dead-letters, the row would otherwise
- * be left with no trace that the earlier wipe ever finished. That is the one
- * piece of evidence the non-cascading foreign key exists to keep.
+ * `leaseSeq` is preserved: it is the row's identity for the CAS, not part of
+ * the wipe's state. `firstCompletedAtMs`/`firstResidue` are preserved too, and
+ * that is the point of their existing: if this reopen's enqueue fails, or the
+ * new pass dead-letters, the row still shows the earlier wipe finished.
  */
 export function reopenWipeProgress(progress: WipeProgress, force: boolean): WipeProgress {
   return {
     ...progress,
-    phase: "vectors",
+    phase: "rows",
     r2Cursor: undefined,
     force,
-    probeAttempts: 0,
-    probeSawResidue: false,
-    // A reopened wipe re-seeds: leftover objects may belong to readings the
-    // earlier pass never saw, and their ids are only derivable while those
-    // objects are still there.
-    seedCursor: undefined,
-    seedCompletedAtMs: null,
-    indexCountSampled: false,
-    indexCountStart: null,
     continuations: 0,
     completedAtMs: null,
     residue: false,
-    // Deliberately NOT reset: the durable history of the first completion.
     firstCompletedAtMs: progress.firstCompletedAtMs,
     firstResidue: progress.firstResidue,
   };
@@ -288,19 +215,15 @@ export class WipeProgressWriter {
    * Claim or extend the lease and persist `progress`.
    *
    * The first write for a tenant with no row inserts it, and a concurrent
-   * inserter loses on the primary key rather than silently overwriting: the
-   * `INSERT … WHERE NOT EXISTS` changes no rows and raises the same conflict a
-   * lost UPDATE does.
+   * inserter loses on the primary key rather than silently overwriting.
    *
    * The insert also requires the `users` row to still exist (issue 195 S4).
    * Queues are at-least-once, so a redelivered wipe job can read `users` as
-   * `deleting` just before teardown commits and then insert a fresh row for an
-   * account that is already gone. That row would carry a NULL
-   * `completed_at_ms`, so it would sit in `listUnfinishedWipes` forever while
-   * the tenant is no longer in `listDeletingUsers` — an orphan nothing
-   * enumerates and nothing cleans up. Losing this way takes the existing
-   * conflict path, which acks, and acking is the right answer for a wipe whose
-   * tenant no longer exists.
+   * `deleting` just before teardown commits and then try to insert a fresh
+   * row for an account that is already gone. PostgreSQL's foreign key would
+   * refuse it with an error; the guard turns that into the ordinary conflict,
+   * which acks, and acking is the right answer for a wipe whose tenant no
+   * longer exists.
    */
   async write(progress: WipeProgress): Promise<void> {
     const next = this.leaseSeq + 1;
@@ -316,12 +239,9 @@ export class WipeProgressWriter {
     try {
       return await this.insertRow(progress, nextSeq);
     } catch (error) {
-      // `INSERT … WHERE NOT EXISTS` only turns a concurrent insert into
-      // `changes = 0` when the two writers are serialized. If both evaluate
-      // NOT EXISTS before either commits, the loser gets a raw unique-constraint
-      // error instead — which would escape the conflict path and burn queue
-      // retry budget rather than acking as a clean `lease_held` skip. Same
-      // outcome either way: someone else created this row first.
+      // Under READ COMMITTED two inserters can both pass NOT EXISTS; the loser
+      // then fails on the primary key. Same outcome as a lost update: someone
+      // else created this row first.
       if (isUniqueConstraintError(error)) return 0;
       throw error;
     }
@@ -330,34 +250,24 @@ export class WipeProgressWriter {
   private async insertRow(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `INSERT INTO wipe_progress (
-         tenant_id, phase, lease_seq, updated_at_ms, r2_cursor,
-         force, objects_deleted, mutation_ids, index_count_sampled,
-         index_count_start, probe_attempts, probe_saw_residue, continuations,
-         completed_at_ms, residue, first_completed_at_ms, first_residue,
-         seed_cursor, seed_completed_at_ms
+         tenant_id, phase, lease_seq, updated_at, r2_cursor, force, objects_deleted,
+         continuations, completed_at, residue, first_completed_at, first_residue
        )
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
        WHERE NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id = ?)
          AND EXISTS (SELECT 1 FROM users WHERE id = ?)`,
       this.tenantId,
       progress.phase,
       nextSeq,
-      progress.updatedAtMs,
+      toTimestamp(progress.updatedAtMs),
       progress.r2Cursor ?? null,
-      progress.force ? 1 : 0,
+      progress.force,
       progress.objectsDeleted,
-      JSON.stringify(progress.mutationIds),
-      progress.indexCountSampled ? 1 : 0,
-      progress.indexCountStart,
-      progress.probeAttempts,
-      progress.probeSawResidue ? 1 : 0,
       progress.continuations,
-      progress.completedAtMs,
-      progress.residue ? 1 : 0,
-      progress.firstCompletedAtMs,
-      progress.firstResidue ? 1 : 0,
-      progress.seedCursor ?? null,
-      progress.seedCompletedAtMs,
+      toTimestamp(progress.completedAtMs),
+      progress.residue,
+      toTimestamp(progress.firstCompletedAtMs),
+      progress.firstResidue,
       this.tenantId,
       this.tenantId,
     );
@@ -367,39 +277,29 @@ export class WipeProgressWriter {
   private async update(progress: WipeProgress, nextSeq: number): Promise<number> {
     const result = await this.db.run(
       `UPDATE wipe_progress
-          SET phase = ?, lease_seq = ?, updated_at_ms = ?,
-              r2_cursor = ?, force = ?, objects_deleted = ?, mutation_ids = ?,
-              index_count_sampled = ?, index_count_start = ?, probe_attempts = ?,
-              probe_saw_residue = ?, continuations = ?, completed_at_ms = ?,
-              residue = ?, seed_cursor = ?, seed_completed_at_ms = ?,
+          SET phase = ?, lease_seq = ?, updated_at = ?, r2_cursor = ?, force = ?,
+              objects_deleted = ?, continuations = ?, completed_at = ?, residue = ?,
               -- Write-once, enforced here rather than only in the caller: every
               -- SET expression reads the pre-UPDATE row, so once
-              -- first_completed_at_ms is set these two are pinned for the life
-              -- of the row and no later write, reopen included, can move them.
-              first_completed_at_ms = COALESCE(first_completed_at_ms, ?),
+              -- first_completed_at is set these two are pinned for the life of
+              -- the row and no later write, reopen included, can move them.
+              first_completed_at = COALESCE(first_completed_at, ?),
               first_residue = CASE
-                WHEN first_completed_at_ms IS NULL THEN ?
+                WHEN first_completed_at IS NULL THEN ?
                 ELSE first_residue
               END
         WHERE tenant_id = ? AND lease_seq = ?`,
       progress.phase,
       nextSeq,
-      progress.updatedAtMs,
+      toTimestamp(progress.updatedAtMs),
       progress.r2Cursor ?? null,
-      progress.force ? 1 : 0,
+      progress.force,
       progress.objectsDeleted,
-      JSON.stringify(progress.mutationIds),
-      progress.indexCountSampled ? 1 : 0,
-      progress.indexCountStart,
-      progress.probeAttempts,
-      progress.probeSawResidue ? 1 : 0,
       progress.continuations,
-      progress.completedAtMs,
-      progress.residue ? 1 : 0,
-      progress.seedCursor ?? null,
-      progress.seedCompletedAtMs,
-      progress.firstCompletedAtMs,
-      progress.firstResidue ? 1 : 0,
+      toTimestamp(progress.completedAtMs),
+      progress.residue,
+      toTimestamp(progress.firstCompletedAtMs),
+      progress.firstResidue,
       this.tenantId,
       this.leaseSeq,
     );
@@ -407,19 +307,11 @@ export class WipeProgressWriter {
   }
 
   /**
-   * The terminal transition. Writes the completion record and keeps it.
+   * The terminal transition. Writes the completion record and keeps it, with
+   * the R2 cursor cleared.
    *
-   * The R2 cursor is cleared first. Nothing this record carries names a
-   * reading: the vectors phase's `vector_cursor` — the one field that held a
-   * reading id — went with `collectReadingIds` when S3's ledger took R2 out of
-   * the id-source role (migration `0010`). Everything left is a count, a flag,
-   * an opaque R2 continuation token, or a Vectorize mutation handle.
-   *
-   * Two pairs are written. `completedAtMs`/`residue` describe the current state
-   * and a later reopen clears them. `firstCompletedAtMs`/`firstResidue` are set
-   * only if this is the row's first ever completion, and nothing clears them —
-   * the UPDATE pins them in SQL as well, so the history survives a reopen that
-   * never finishes.
+   * `firstCompletedAtMs`/`firstResidue` are set only if this is the row's
+   * first ever completion, and the UPDATE pins them in SQL as well.
    */
   async complete(
     progress: WipeProgress,

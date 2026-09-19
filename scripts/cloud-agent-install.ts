@@ -143,8 +143,10 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
 
   if (envVars.CLOUD_AGENT_FOUNDER_BOOTSTRAP === "1" && stgVars) {
     log("[cloud-agent-install] running idempotent founder-bootstrap for staging");
+    // Staging's control plane is PostgreSQL on the candidate (ADR 0005):
+    // DATABASE_URL must hold its direct connection string.
     const result = await founderBootstrap(
-      { execute: true, env: "staging", confirmProduction: false },
+      { execute: true, env: "staging", confirmProduction: false, databaseUrlEnv: "DATABASE_URL" },
       {
         envVars: {
           ...envVars,
@@ -152,9 +154,9 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
         },
         nowMs: Date.now(),
         write: (line) => log(`[founder-bootstrap] ${line.trimEnd()}`),
-        openDb: async () => {
-          const { makeWranglerD1 } = await import("./lib/founder-bootstrap");
-          return makeWranglerD1({ database: "reading-lite-control-staging", local: false, wranglerEnv: "staging" });
+        openDb: async (databaseUrl) => {
+          const { openPostgresControlPlane } = await import("./lib/founder-bootstrap");
+          return openPostgresControlPlane(databaseUrl);
         },
       },
     );
