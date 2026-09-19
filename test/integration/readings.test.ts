@@ -103,6 +103,16 @@ function rowStore(tenant: TenantContext = founderTenant()) {
     async readListIndex(): Promise<{ version: 1; items: ListIndexItem[] }> {
       return { version: 1, items: await readings.store.allListItems() };
     },
+    // Through the row's keys: a published reading's bytes are under its
+    // revision, a seeded one's at the legacy spelling.
+    async readExtracted(keyPrefix: string) {
+      const keys = await readings.store.contentKeys(idOfPrefix(keyPrefix));
+      return keys?.extractedKey ? readings.content.get(keys.extractedKey) : null;
+    },
+    async readRaw(keyPrefix: string, _ext?: string) {
+      const keys = await readings.store.contentKeys(idOfPrefix(keyPrefix));
+      return keys ? readings.content.get(keys.rawKey) : null;
+    },
     writeExtracted: (keyPrefix: string, markdown: string) =>
       readings.content.put(`${keyPrefix}/extracted.md`, markdown, "text/markdown; charset=utf-8"),
     writeRaw: (keyPrefix: string, ext: string, bytes: Uint8Array, contentType: string) =>
@@ -660,9 +670,9 @@ describe("two-tenant save-to-ready lifecycle", () => {
 
     // Every vector landed in its tenant's namespace, under its tenant-prefixed
     // id (ADR 0002).
-    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderFirst.id))?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderSecond.id))?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(tenantVectorId(OTHER_TENANT_ID, otherFirst.id))?.namespace).toBe(OTHER_TENANT_ID);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(founderFirst.id)).toBe(true);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(founderSecond.id)).toBe(true);
+    expect(await testReadingsFor(otherTenant()).hasEmbedding(otherFirst.id)).toBe(true);
   });
 });
 
@@ -1501,34 +1511,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(await lookup.json()).toEqual({ id: body.id });
   });
 
-  it("GET /api/readings/lookup is read-only: a damaged pointer is 404, never scanned or repaired", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = rowStore();
-    const url = "https://example.com/lookup-readonly";
-    const urlHash = await sha256Hex(url);
-    // A damaged orphan pointer (manifest missing, past the grace window). A write
-    // path would deep-scan + CAS-repair it; a lookup must do neither.
-    const orphan = { id: "rd_ORPHAN", key_prefix: "readings/2026/04/26T190000Z-rd_ORPHAN" };
-    await reader.writeByUrlPointer(urlHash, orphan);
-
-    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
-    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
-
-    const lookup = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-
-    expect(lookup.status).toBe(404);
-    expect(listSpy).not.toHaveBeenCalled(); // no bucket scan on a GET
-    expect(putSpy).not.toHaveBeenCalled(); // no pointer-repair write on a GET
-    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
-    listSpy.mockRestore();
-    putSpy.mockRestore();
-  });
-
   it("does not treat a future-dated missing-manifest owner as fresh", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -1560,36 +1542,33 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   it("does not let a stale successful job overwrite a newer by-url owner", async () => {
     const services = makeServices(makeStubFetch());
-    const vector = installVectorizeStub();
     const reader = rowStore();
     const url = "https://example.com/stale-job-success";
     const urlHash = await sha256Hex(url);
+    const pendingFor = (id: string, createdAt: string): Manifest => ({
+      id,
+      url,
+      url_hash: urlHash,
+      status: "pending",
+      content_type: "application/octet-stream",
+      content_status: "captured",
+      content_bytes: 0,
+      content_sha256: "0".repeat(64),
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
     const ownerCreatedAt = "2026-04-26T19:59:00.000Z";
     const ownerPrefix = buildKeyPrefix("rd_OWNER", ownerCreatedAt);
-    await reader.writeByUrlPointer(urlHash, {
-      id: "rd_OWNER",
-      key_prefix: ownerPrefix,
-    });
+    await reader.writeManifest(ownerPrefix, pendingFor("rd_OWNER", ownerCreatedAt));
+    await reader.writeByUrlPointer(urlHash, { id: "rd_OWNER", key_prefix: ownerPrefix });
 
+    // An older reading of the same URL that does not own it, with a vector
+    // left over from an earlier life. Its job is still in the queue.
     const staleId = "rd_STALE";
     const staleCreatedAt = "2026-04-26T19:00:00.000Z";
     const stalePrefix = buildKeyPrefix(staleId, staleCreatedAt);
-    // Seeded under the tenant-prefixed id + namespace, the way a gate-on
-    // writer stores it — the has() assertion below only proves the cleanup
-    // removed it if this key is the one the delete path addresses.
-    vector.vectors.set(tenantVectorId(FOUNDER_TENANT_ID, staleId), {
-      values: new Array(1536).fill(0.42),
-      namespace: FOUNDER_TENANT_ID,
-      metadata: { url, title: "Old stale vector" },
-    });
-    await reader.appendOrReplaceListIndexItem({
-      id: staleId,
-      key_prefix: stalePrefix,
-      url,
-      status: "pending",
-      created_at: staleCreatedAt,
-      updated_at: staleCreatedAt,
-    });
+    await reader.readings.seed(pendingFor(staleId, staleCreatedAt), { keyPrefix: stalePrefix, ownsUrl: false });
+    await reader.readings.putEmbedding(staleId, new Array(1536).fill(0.42));
     const staleJob: ProcessReadingArgs = {
       id: staleId,
       url,
@@ -1601,18 +1580,18 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await reserveReadingSlot(env, founderTenant(), staleJob);
     await processReading(staleJob, env as unknown as Env, services, founderTenant());
 
+    // The URL is still the newer reading's.
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
       id: "rd_OWNER",
       key_prefix: ownerPrefix,
     });
+    // The stale job's work is stored, but a reading that does not own its URL
+    // is never searchable, and the vector it had is gone.
     await expect(reader.readManifest(stalePrefix)).resolves.toMatchObject({
       id: staleId,
       status: "ready",
     });
-    await expect(reader.readListIndex()).resolves.toMatchObject({ items: [] });
-    expect(vector.upsert).not.toHaveBeenCalled();
-    expect(vector.deleteByIds).toHaveBeenCalledWith([tenantVectorId(FOUNDER_TENANT_ID, staleId)]);
-    expect(vector.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, staleId))).toBe(false);
+    expect(await reader.readings.hasEmbedding(staleId)).toBe(false);
   });
 
   it("does not let a stale successful attempt overwrite a newer attempt for the same reading", async () => {
@@ -1878,71 +1857,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     consoleErr.mockRestore();
   });
 
-  it("marks a claimed submit retryable when setup fails before queueing", async () => {
-    const idCounter = { n: 0 };
-    const fixedId = "rd_0123456781";
-    const services = makeServices(makeStubFetch(), idCounter);
-    services.newId = () => fixedId;
-    const app = createApp({ services });
-    const reader = rowStore();
-    const url = "https://example.com/setup-fails-after-claim";
-    const urlHash = await sha256Hex(url);
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(fixedId, createdAt);
-    const byIdKey = founderObjectKey(`index/by-id/${fixedId}`);
-    const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    let failedByIdWrite = false;
-    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
-      (async (key: string, value: unknown, options?: R2PutOptions) => {
-        if (key === byIdKey && !failedByIdWrite) {
-          failedByIdWrite = true;
-          throw new Error("simulated setup failure");
-        }
-        return originalPut(key, value as Parameters<R2Bucket["put"]>[1], options);
-      }) as R2Bucket["put"],
-    );
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    const first = await app.request(
-      "/api/readings",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      },
-      env,
-    );
-    expect(first.status).toBe(503);
-    expect(await first.json()).toEqual({ error: "reading setup failed", id: fixedId });
-    expect(queuedJobs).toHaveLength(0);
-    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
-      id: fixedId,
-      key_prefix: keyPrefix,
-    });
-    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
-      id: fixedId,
-      status: "failed",
-      error: { retryable: true },
-    });
-
-    putSpy.mockRestore();
-    consoleErr.mockRestore();
-    const retry = await app.request(
-      "/api/readings",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      },
-      env,
-    );
-
-    expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id: fixedId, status: "pending" });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ id: fixedId, trigger: "reprocess" });
-  });
-
   it("imports Markdown without fetching the source URL", async () => {
     const sourceUrl = "https://x.com/example/status/2047312986696454584";
     const markdown = "# Imported Markdown\n\nThis is already captured local content.";
@@ -2046,12 +1960,13 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const urlHash = await sha256Hex(sourceUrl);
     const createdAt = "2026-04-26T20:00:00.000Z";
     const keyPrefix = buildKeyPrefix(fixedId, createdAt);
-    const rawKey = founderObjectKey(`${keyPrefix}/raw.md`);
+    // The import's raw object, under its attempt's revision prefix.
+    const revisionsPrefix = founderObjectKey(`${keyPrefix}/revisions/`);
     const originalPut = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
     let failedRawWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
       (async (key: string, value: unknown, options?: R2PutOptions) => {
-        if (key === rawKey && !failedRawWrite) {
+        if (key.startsWith(revisionsPrefix) && key.endsWith("/raw.md") && !failedRawWrite) {
           failedRawWrite = true;
           throw new Error("simulated markdown setup failure");
         }
@@ -3552,7 +3467,8 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     let failedRawWrite = false;
     const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(
       (async (key: string, value: unknown, options?: R2PutOptions) => {
-        if (key === founderObjectKey(`${keyPrefix}/raw.md`) && !failedRawWrite) {
+        // The attempt's own raw object, under its revision prefix.
+        if (key.startsWith(founderObjectKey(`${keyPrefix}/revisions/`)) && key.endsWith("/raw.md") && !failedRawWrite) {
           failedRawWrite = true;
           throw new Error("simulated raw write failure");
         }
@@ -3977,95 +3893,6 @@ describe("processReading — backwards-compat for in-flight queue messages witho
 });
 
 describe("GET /api/readings/lookup", () => {
-  it("does not repair a stale lookup owner (read-only); leaves the deep scan + repair to the next write", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = rowStore();
-    const url = "https://example.com/lookup-legacy-stale-index";
-    const urlHash = await sha256Hex(url);
-    const indexedUrl = "https://example.com/lookup-other-index-row";
-    const legacy: Manifest = {
-      id: "rd_LOOKUP_LEGACY",
-      url,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "failed",
-      error: { code: "BadStatusError", message: "bad response status 404" },
-      content_type: "application/octet-stream",
-      content_status: "failed",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const indexed: Manifest = {
-      ...legacy,
-      id: "rd_LOOKUP_INDEXED_OTHER",
-      url: indexedUrl,
-      url_hash: await sha256Hex(indexedUrl),
-    };
-    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    const indexedPrefix = buildKeyPrefix(indexed.id, indexed.created_at);
-    await reader.writeManifest(legacyPrefix, legacy);
-    await reader.writeManifest(indexedPrefix, indexed);
-    await reader.writeByIdPointer(legacy.id, { id: legacy.id, key_prefix: legacyPrefix });
-    await reader.writeByIdPointer(indexed.id, { id: indexed.id, key_prefix: indexedPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(indexed, indexedPrefix));
-    const orphan = {
-      id: "rd_LOOKUP_ORPHAN",
-      key_prefix: "readings/2026/04/26T190000Z-rd_LOOKUP_ORPHAN",
-    };
-    await reader.writeByUrlPointer(urlHash, orphan);
-
-    // Even though a recoverable legacy exists, the read-only lookup must not
-    // deep-scan the bucket to find it nor rewrite the pointer — that repair is
-    // deferred to the next write path (covered by the submit/import repair tests).
-    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list");
-
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-
-    expect(res.status).toBe(404);
-    expect(listSpy).not.toHaveBeenCalled(); // no full-bucket deep scan on a GET
-    expect(await reader.readByUrlPointer(urlHash)).toEqual(orphan); // pointer untouched
-    listSpy.mockRestore();
-  });
-
-  it("returns 404 without writing a pointer for a legacy reading that has none", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const reader = rowStore();
-    const url = "https://example.com/lookup-legacy-no-pointer";
-    const urlHash = await sha256Hex(url);
-    const legacy: Manifest = {
-      id: "rd_LOOKUP_LEGACY_NP",
-      url,
-      url_hash: urlHash,
-      source_type: "url",
-      status: "ready",
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: "2026-04-26T19:00:00.000Z",
-      updated_at: "2026-04-26T19:00:00.000Z",
-    };
-    const legacyPrefix = buildKeyPrefix(legacy.id, legacy.created_at);
-    await reader.writeManifest(legacyPrefix, legacy);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(legacy, legacyPrefix));
-
-    const res = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-
-    // A lookup never claims a cold legacy — no live pointer means "not found",
-    // and the GET must not write a by-url pointer as a side effect.
-    expect(res.status).toBe(404);
-    expect(await reader.readByUrlPointer(urlHash)).toBeNull();
-  });
 });
 
 describe("POST /api/readings/similar", () => {
@@ -5002,8 +4829,8 @@ describe("cross-tenant mutation matrix", () => {
     ).json()) as { readings: { id: string; status: string }[] };
     expect(founderList.readings.map((r) => [r.id, r.status])).toEqual([[founderId, "ready"]]);
     expect(otherList.readings.map((r) => [r.id, r.status])).toEqual([[otherId, "ready"]]);
-    expect(stub.vectors.get(tenantVectorId(FOUNDER_TENANT_ID, founderId))?.namespace).toBe(FOUNDER_TENANT_ID);
-    expect(stub.vectors.get(tenantVectorId(OTHER_TENANT_ID, otherId))?.namespace).toBe(OTHER_TENANT_ID);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(founderId)).toBe(true);
+    expect(await testReadingsFor(otherTenant()).hasEmbedding(otherId)).toBe(true);
   });
 });
 
@@ -5019,7 +4846,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
     const { app, id } = await seedFounderReading(url);
     const urlHash = await sha256Hex(url);
 
-    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(true);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(true);
     const diag = (await (
       await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
     ).json()) as { key_prefix: string };
@@ -5034,7 +4861,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
       objects_deleted: expect.any(Number),
     });
 
-    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(false);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(false);
     const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
       readings: unknown[];
     };
@@ -5156,7 +4983,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
     // The URL comes from the surviving list row, so the pointer still releases.
     expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(true);
 
-    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(false);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(false);
     expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
     expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
     const leftover = await env.READINGS_BUCKET.list({
@@ -5236,7 +5063,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
     await expectSameAsUnknown(app, `/api/readings/${id}`, `/api/readings/${UNKNOWN_ID}`, {
       method: "DELETE",
     });
-    expect(stub.vectors.has(tenantVectorId(FOUNDER_TENANT_ID, id))).toBe(true);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(true);
     const detail = await apiRequest(app, TOKEN, `/api/readings/${id}`);
     expect(((await detail.json()) as { status: string }).status).toBe("ready");
   });

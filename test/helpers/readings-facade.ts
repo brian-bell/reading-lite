@@ -140,6 +140,16 @@ export class TestReadings {
     return row?.reading_id ?? null;
   }
 
+  // An embedding row written directly, for a test that needs a vector to exist
+  // beside a reading whatever its status (seed only embeds ready readings).
+  async putEmbedding(id: string, embedding: readonly number[]): Promise<void> {
+    await this.sql.query(
+      `INSERT INTO reading_embeddings (tenant_id, reading_id, embedding) VALUES ($1, $2, $3::vector)
+       ON CONFLICT (tenant_id, reading_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
+      [String(this.tenant.tenantId), id, `[${embedding.join(",")}]`],
+    );
+  }
+
   async hasEmbedding(id: string): Promise<boolean> {
     return (await this.similarity.queryByVectorId(id, 1)) !== null;
   }

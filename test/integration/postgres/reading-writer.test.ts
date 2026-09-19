@@ -304,6 +304,26 @@ describe("reprocessing", () => {
     expect((await pgReadingStoreFor(s, tenant).loadReadingById("rd_busy"))!.manifest.active_attempt!.id).toBe("at_running");
   });
 
+  it("re-activates under the same attempt id without failing, keeping a paid checkpoint", async () => {
+    const s = sql();
+    const tenant = mintTenant();
+    const p = await pendingFor("rd_again", "https://example.com/again", "at_1");
+    const writer = pgReadingWriterFor(s, tenant);
+    await writer.claimUrl(p.manifest, p.keyPrefix, p.attempt);
+    const ref = { id: "rd_again", attemptId: "at_1" };
+    await writer.writeCheckpoint(ref, { embed_source: { tokens: 3 } });
+    const failed = finished(p.attempt.summary, "failed");
+    await writer.failActivation(ref, { ...p.manifest, status: "failed", content_status: "failed", active_attempt: undefined, last_attempt: failed }, failed);
+
+    // The caller could not confirm its activation and tries again, same id.
+    const started = await writer.startAttempt(p.manifest, p.attempt, undefined);
+
+    expect(started).toEqual({ kind: "started" });
+    expect(await jobState(s, tenant, "rd_again", "at_1")).toBe("queued");
+    expect(await writer.readCheckpoint(ref)).toEqual({ embed_source: { tokens: 3 } });
+    expect((await writer.listAttempts("rd_again"))[0]).toMatchObject({ id: "at_1", status: "running" });
+  });
+
   it("fails a reading that was never published", async () => {
     const s = sql();
     const tenant = mintTenant();

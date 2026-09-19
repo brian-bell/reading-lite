@@ -444,9 +444,17 @@ export class PgReadingWriter {
 
   private async insertAttempt(tx: SqlQuery, readingId: string, attempt: NewAttempt): Promise<void> {
     const s = attempt.summary;
+    // Idempotent on the attempt id. Ids are random, so a conflict means the same
+    // attempt is being activated again (a caller retrying an activation it
+    // could not confirm): restart its row rather than fail the request. A paid
+    // checkpoint already stored under the id is kept, which is its whole point.
     await tx.query(
       `INSERT INTO reading_attempts (tenant_id, reading_id, id, trigger, status, stage, started_at, raw_key, extracted_key)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (tenant_id, reading_id, id) DO UPDATE SET
+         trigger = EXCLUDED.trigger, status = EXCLUDED.status, stage = EXCLUDED.stage,
+         started_at = EXCLUDED.started_at, finished_at = NULL, error = NULL, events = '[]',
+         raw_key = EXCLUDED.raw_key, extracted_key = EXCLUDED.extracted_key`,
       [
         this.tenantId, readingId, s.id, s.trigger, s.status, s.stage ?? null, s.started_at,
         attempt.content?.rawKey ?? null, attempt.content?.extractedKey ?? null,
@@ -454,7 +462,9 @@ export class PgReadingWriter {
     );
     await tx.query(
       `INSERT INTO reading_jobs (tenant_id, reading_id, attempt_id, state, payload, created_at, updated_at)
-       VALUES ($1, $2, $3, 'queued', $4::jsonb, $5, $5)`,
+       VALUES ($1, $2, $3, 'queued', $4::jsonb, $5, $5)
+       ON CONFLICT (tenant_id, reading_id, attempt_id) DO UPDATE SET
+         state = 'queued', payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at`,
       [this.tenantId, readingId, s.id, JSON.stringify(attempt.payload), s.started_at],
     );
   }
