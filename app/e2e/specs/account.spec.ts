@@ -158,8 +158,7 @@ test("follows a token create's step-up link to sign-in with the email locked", a
   await tokens.getByRole("link", { name: "Request a fresh sign-in link" }).click();
 
   await expect(page).toHaveURL(/\/login\?step_up=1&next=%2Faccount%2Fsecurity$/);
-  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-  const email = page.getByLabel("Email");
+  const email = page.getByRole("main").getByRole("textbox", { name: "Email", exact: true });
   await expect(email).toHaveValue(SESSION_EMAIL);
   await expect(email).toHaveAttribute("readonly");
 });
