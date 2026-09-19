@@ -57,7 +57,7 @@ import { readingIdFromRelativeKey } from "../../../src/account-wipe";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { ListIndexSchema } from "../../../src/schemas/api";
 import { parseReadingId } from "../../../src/services";
-import { insertMissingLedgerRows } from "../../../src/control-plane/vector-ledger";
+import { insertMissingLedgerRows } from "../../account-lib/vector-ledger";
 import { parseTenantId } from "../../../src/control-plane/ids";
 import { controlPlaneDbForBucket } from "../../account-lib/control-plane";
 import { loadDotVars } from "../../lib/dotvars";

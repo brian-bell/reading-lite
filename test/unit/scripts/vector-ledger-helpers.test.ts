@@ -12,7 +12,7 @@ import {
   clearLedgerRows,
   clearTenantLedger,
   d1VectorLedger,
-} from "../../../src/control-plane/vector-ledger";
+} from "../../../scripts/account-lib/vector-ledger";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
 const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");

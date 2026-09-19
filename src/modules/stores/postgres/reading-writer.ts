@@ -383,16 +383,6 @@ export class PgReadingWriter {
     });
   }
 
-  // Account wipe: every reading row the tenant owns, children by cascade.
-  async deleteAllReadings(): Promise<number> {
-    const [row] = await this.sql.query<{ deleted: number }>(
-      `WITH gone AS (DELETE FROM readings WHERE tenant_id = $1 RETURNING 1)
-       SELECT count(*)::int AS deleted FROM gone`,
-      [this.tenantId],
-    );
-    return row!.deleted;
-  }
-
   // The attempt log. Returns false when the reading is gone: a purged reading
   // must not get an attempt recreated, and the foreign key refuses it.
   async recordAttempt(attempt: ProcessingAttempt): Promise<boolean> {

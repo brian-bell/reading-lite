@@ -8,6 +8,7 @@ import type { TenantContext } from "../../../src/control-plane/ids";
 import type { Sql } from "../../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../../src/modules/manifest-drafting";
 import { buildKeyPrefix, r2KeyLayout } from "../../../src/modules/stores/layout";
+import { deleteTenantReadings } from "../../../src/modules/stores/postgres/manifest-rows";
 import { pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
 import { pgReadingWriterFor, type NewAttempt } from "../../../src/modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "../../../src/modules/stores/postgres/similarity-store";
@@ -599,7 +600,9 @@ describe("content of a reading that was never published", () => {
   });
 });
 
-describe("deleteAllReadings", () => {
+// The account wipe's delete predicate, which is `tenant_id` and nothing else.
+// Owned here rather than in the wipe's own tests, which cover the phases.
+describe("deleteTenantReadings", () => {
   it("removes one tenant's readings and leaves the other's", async () => {
     const s = sql();
     const gone = await mintTenant();
@@ -607,7 +610,7 @@ describe("deleteAllReadings", () => {
     await publishNew(s, gone, "rd_a", "https://example.com/a");
     await publishNew(s, kept, "rd_a", "https://example.com/a");
 
-    expect(await pgReadingWriterFor(s, gone).deleteAllReadings()).toBe(1);
+    expect(await deleteTenantReadings(s, gone.tenantId)).toBe(1);
 
     expect(await pgReadingStoreFor(s, gone).loadReadingById("rd_a")).toBeNull();
     expect(await pgReadingStoreFor(s, kept).loadReadingById("rd_a")).not.toBeNull();

@@ -6,13 +6,19 @@
  *
  * ## Phases
  *
- * `rows` deletes the tenant's reading rows, and with them their embeddings,
- * in one PostgreSQL statement. `objects` pages the tenant's R2 prefix. `done`
- * is terminal. Rows go first: a reading whose objects outlive its row is
- * invisible, where the reverse would be a listed reading whose content 404s.
- * D1's `vectors` phase, its Vectorize bookkeeping (mutation ids, index
- * baseline, probes) and the ledger seed have no counterpart: an embedding is a
- * row now, so there is nothing to submit, confirm or seed.
+ * `rows` deletes the tenant's reading rows — embeddings, revisions, URLs,
+ * relationships and attempts by cascade — and its `relationship_refresh_jobs`
+ * checkpoints, and advances the phase, all in one transaction. `objects` pages
+ * the tenant's R2 prefix. `done` is terminal. Rows go first: a reading whose
+ * objects outlive its row is invisible, where the reverse would be a listed
+ * reading whose content 404s. D1's `vectors` phase, its Vectorize bookkeeping
+ * (mutation ids, index baseline, probes) and the ledger seed have no
+ * counterpart: an embedding is a row now, so there is nothing to submit,
+ * confirm or seed.
+ *
+ * Because the phase advance shares the deletes' transaction, a row that reads
+ * `objects` is reporting a fact a resuming delivery can rely on, not an
+ * intention that a crash could have left half-done.
  *
  * ## The lease is a version, not a timestamp
  *
@@ -224,20 +230,30 @@ export class WipeProgressWriter {
    * refuse it with an error; the guard turns that into the ordinary conflict,
    * which acks, and acking is the right answer for a wipe whose tenant no
    * longer exists.
+   *
+   * `db` overrides the writer's own handle for this one write, so the caller
+   * can put the CAS inside a transaction it is already holding. The wipe's
+   * `rows` phase does exactly that: the reading deletes, the refresh-checkpoint
+   * delete and the phase advance commit together or not at all. The CAS goes
+   * LAST in such a transaction — a conflict then rolls the deletes back
+   * instead of leaving a sibling's wipe half-advanced, and `leaseSeq` is only
+   * advanced by a write that returned, so a rollback after it would leave this
+   * writer stale. That is safe because the delivery throws out of the
+   * transaction and the next one re-reads the row.
    */
-  async write(progress: WipeProgress): Promise<void> {
+  async write(progress: WipeProgress, db: ControlPlaneDb = this.db): Promise<void> {
     const next = this.leaseSeq + 1;
     const changes = this.inserted
-      ? await this.update(progress, next)
-      : await this.insert(progress, next);
+      ? await this.update(db, progress, next)
+      : await this.insert(db, progress, next);
     if (changes === 0) throw new AccountWipeProgressConflictError(this.tenantId);
     this.leaseSeq = next;
     this.inserted = true;
   }
 
-  private async insert(progress: WipeProgress, nextSeq: number): Promise<number> {
+  private async insert(db: ControlPlaneDb, progress: WipeProgress, nextSeq: number): Promise<number> {
     try {
-      return await this.insertRow(progress, nextSeq);
+      return await this.insertRow(db, progress, nextSeq);
     } catch (error) {
       // Under READ COMMITTED two inserters can both pass NOT EXISTS; the loser
       // then fails on the primary key. Same outcome as a lost update: someone
@@ -247,8 +263,8 @@ export class WipeProgressWriter {
     }
   }
 
-  private async insertRow(progress: WipeProgress, nextSeq: number): Promise<number> {
-    const result = await this.db.run(
+  private async insertRow(db: ControlPlaneDb, progress: WipeProgress, nextSeq: number): Promise<number> {
+    const result = await db.run(
       `INSERT INTO wipe_progress (
          tenant_id, phase, lease_seq, updated_at, r2_cursor, force, objects_deleted,
          continuations, completed_at, residue, first_completed_at, first_residue
@@ -274,8 +290,8 @@ export class WipeProgressWriter {
     return result.changes;
   }
 
-  private async update(progress: WipeProgress, nextSeq: number): Promise<number> {
-    const result = await this.db.run(
+  private async update(db: ControlPlaneDb, progress: WipeProgress, nextSeq: number): Promise<number> {
+    const result = await db.run(
       `UPDATE wipe_progress
           SET phase = ?, lease_seq = ?, updated_at = ?, r2_cursor = ?, force = ?,
               objects_deleted = ?, continuations = ?, completed_at = ?, residue = ?,
@@ -317,6 +333,7 @@ export class WipeProgressWriter {
     progress: WipeProgress,
     completedAtMs: number,
     residue: boolean,
+    db: ControlPlaneDb = this.db,
   ): Promise<WipeProgress> {
     const first = progress.firstCompletedAtMs === null;
     const done: WipeProgress = {
@@ -329,7 +346,7 @@ export class WipeProgressWriter {
       firstCompletedAtMs: first ? completedAtMs : progress.firstCompletedAtMs,
       firstResidue: first ? residue : progress.firstResidue,
     };
-    await this.write(done);
+    await this.write(done, db);
     return { ...done, leaseSeq: this.leaseSeq };
   }
 }

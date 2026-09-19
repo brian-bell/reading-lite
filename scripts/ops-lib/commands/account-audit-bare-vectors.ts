@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { parseTenantId } from "../../../src/control-plane/ids";
 import { parseReadingId } from "../../../src/services";
-import { d1VectorLedger } from "../../../src/control-plane/vector-ledger";
+import { d1VectorLedger } from "../../account-lib/vector-ledger";
 import { ListIndexSchema } from "../../../src/schemas/api";
 import { readingIdFromRelativeKey } from "../../../src/account-wipe";
 import { accountRemote } from "../../account-lib/remote";

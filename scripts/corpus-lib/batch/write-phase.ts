@@ -19,7 +19,7 @@ import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import {
   NO_OP_VECTOR_LEDGER,
   type VectorLedger,
-} from "../../../src/control-plane/vector-ledger";
+} from "../../account-lib/vector-ledger";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";

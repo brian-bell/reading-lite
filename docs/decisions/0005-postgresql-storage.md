@@ -262,9 +262,16 @@ Slice 1b switched the router's reads and the whole write path together.
 - **`wipe_progress` drops its Vectorize-only columns** (`vector_cursor`,
   `mutation_ids`, `index_count_sampled`, `index_count_start`, `probe_attempts`,
   `probe_saw_residue`, `seed_cursor`, `seed_completed_at_ms`). Its phases are
-  `objects`, `rows`, `done`: R2 objects go first and the reading rows and
-  embeddings after them, keeping the rule that a wipe deletes rows after
-  objects. Both completion pairs stay, as history.
+  `rows`, `objects`, `done`. The `rows` phase deletes the tenant's reading
+  rows, their embeddings by cascade, and its `relationship_refresh_jobs`
+  checkpoints, and advances the phase, all in one transaction; the `objects`
+  phase then pages R2. Rows go FIRST, which is the same contract D1's wipe
+  kept by submitting vector deletes before object deletes: an embedding is a
+  row now, so "vectors before objects" reads as "rows before objects". Both
+  completion pairs stay, as history. 0003's own comment got that backwards and
+  is applied, so 0005 carries the correction as a `COMMENT ON COLUMN` rather
+  than editing it; the `CHECK (phase IN (...))` list is a set, not a sequence,
+  and needs no change.
 
 `fromSql` (`src/control-plane/db.ts`) is the PostgreSQL `ControlPlaneDb`.
 Control-plane SQL keeps its `?` placeholders and the adapter numbers them
