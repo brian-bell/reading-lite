@@ -84,6 +84,21 @@ test("revokes an API token from the keyboard and keeps focus in the section", as
   expect(await revokes[0]!.headerValue("x-csrf-token")).toBeTruthy();
 });
 
+test("keeps focus in the section when a revoke fails", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  await serveTokensInBrowser(page, { revoke: { status: 503, json: { error: "control plane unavailable" } } });
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+
+  await tokens.getByRole("button", { name: "Revoke CI" }).click();
+  await page.getByRole("dialog", { name: "Revoke this API token?" }).getByRole("button", { name: "Revoke token" }).click();
+
+  await expect(tokens.getByText("control plane unavailable")).toBeVisible();
+  await expect(tokens.getByRole("heading", { name: "API tokens" })).toBeFocused();
+});
+
 function deleteDialog(page: Page) {
   return page.getByRole("dialog", { name: "Delete your account?" });
 }

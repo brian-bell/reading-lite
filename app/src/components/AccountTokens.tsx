@@ -30,8 +30,9 @@ import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
 // A revoke is confirmed first: a script using the token stops working. Once
 // the backend has revoked it (or answers 404, gone from another tab), the row
 // shows revoked at once and stays that way through the list read that
-// follows, as the SPA's revoked-ids overlay does, and focus moves from the
-// Revoke button that went with it to the section heading.
+// follows, as the SPA's revoked-ids overlay does. Focus the browser dropped
+// from the row's Revoke button, on success or failure, goes to the section
+// heading.
 
 export interface TokensSectionProps {
   view: AccountView<TokensList>;
@@ -63,11 +64,14 @@ export function TokensSection({ view, onRetry }: TokensSectionProps) {
     },
   });
 
-  // Focus went back to the row's Revoke button when the dialog closed, and
-  // that button goes once the row shows revoked: keep focus in the section.
+  // Focus went back to the row's Revoke button when the dialog closed, and a
+  // browser drops it to the body when that button is disabled for the request
+  // or goes once the row shows revoked. Once the revoke settles either way,
+  // keep focus in the section, just above any failure notice.
+  const settled = revoke.isSuccess || revoke.isError;
   useEffect(() => {
-    if (revokedIds.size > 0 && document.activeElement === document.body) headingRef.current?.focus();
-  }, [revokedIds]);
+    if (settled && document.activeElement === document.body) headingRef.current?.focus();
+  }, [settled, revokedIds]);
 
   const listed = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
   const shown = listed ? withRevokedTokens(listed, revokedIds, Date.now()) : undefined;

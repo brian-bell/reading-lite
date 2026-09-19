@@ -330,11 +330,11 @@ export const E2E_TOKENS = {
  * GET /api/auth/tokens and DELETE /api/auth/tokens/:id (#340.7). Awaited for
  * the same reason as the sessions route: the account page reads the tokens on
  * mount. A revoke is recorded and answered 200, and the list shows that token
- * revoked from then on.
+ * revoked from then on, unless `revoke` gives the answer instead.
  */
 export async function serveTokensInBrowser(
   page: Page,
-  answer: { status?: number; json?: unknown } = {},
+  answer: { status?: number; json?: unknown; revoke?: { status: number; json: unknown } } = {},
 ): Promise<{ revokes: Request[] }> {
   const revokes: Request[] = [];
   const revoked = new Set<string>();
@@ -352,6 +352,10 @@ export async function serveTokensInBrowser(
     }
     if (request.method() === "DELETE" && path.startsWith("/api/auth/tokens/")) {
       revokes.push(request);
+      if (answer.revoke) {
+        await route.fulfill(answer.revoke);
+        return;
+      }
       revoked.add(decodeURIComponent(path.slice("/api/auth/tokens/".length)));
       await route.fulfill({ status: 200, json: { ok: true } });
       return;
