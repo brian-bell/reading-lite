@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  datetimeLocalValue,
+  TOKEN_MAX_TTL_MS,
   tokenCreateFromResponse,
+  tokenExpiryFrom,
   tokenHeading,
   tokenRevokeFromResponse,
   tokensFromResponse,
@@ -68,6 +71,28 @@ describe("tokenCreateFromResponse", () => {
     [201, { id: "tok_1" }, "token create returned an unexpected body"],
   ])("throws %i", (status, body, message) => {
     expect(() => tokenCreateFromResponse(status, body)).toThrow(expect.objectContaining({ status, message }));
+  });
+});
+
+describe("tokenExpiryFrom", () => {
+  const now = Date.parse("2026-09-18T12:00:00");
+
+  it.each([
+    ["", { kind: "default" }],
+    ["   ", { kind: "default" }],
+    ["2026-09-19T12:00", { kind: "at", ms: Date.parse("2026-09-19T12:00") }],
+    ["not a date", { kind: "invalid" }],
+    ["2026-09-18T12:00", { kind: "past" }],
+    ["2026-09-01T09:00", { kind: "past" }],
+    [datetimeLocalValue(now + TOKEN_MAX_TTL_MS), { kind: "at", ms: now + TOKEN_MAX_TTL_MS }],
+    [datetimeLocalValue(now + TOKEN_MAX_TTL_MS + 60_000), { kind: "too-far" }],
+  ])("reads %j", (value, expiry) => {
+    expect(tokenExpiryFrom(value, now)).toEqual(expiry);
+  });
+
+  it("writes a time the field reads back as the same minute", () => {
+    const ms = Date.parse("2026-12-31T23:59");
+    expect(datetimeLocalValue(ms)).toBe("2026-12-31T23:59");
   });
 });
 

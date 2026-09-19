@@ -6,7 +6,13 @@
 // computed styles would credit as an indicator.
 
 import { expect, test, type Page } from "@playwright/test";
-import { expectVisibleFocusOnEveryStop, walkTabStops, type TabStop } from "../checks/keyboard";
+import {
+  expectNoFocusTrap,
+  expectVisibleFocusOnEveryStop,
+  MAX_FIELD_PARTS,
+  walkTabStops,
+  type TabStop,
+} from "../checks/keyboard";
 import { harnessBaseUrl } from "../harness";
 
 // Ways to lose the ring. All of them must fail the check.
@@ -60,6 +66,22 @@ for (const [how, css] of Object.entries(UNPAINTED_SUBSTITUTES)) {
     expect(() => expectVisibleFocusOnEveryStop(stops)).toThrow(/a\.nav-item/);
   });
 }
+
+// A native date or time field takes one tab stop per part; anything else
+// visited twice in a row, or a field that keeps focus past its parts, is stuck.
+function stop(documentIndex: number, segmented = false): TabStop {
+  const signature = segmented ? "input#expiry.text-input" : `button#b${documentIndex}`;
+  return { signature, proxy: signature, focusIndicator: true, documentIndex, segmented };
+}
+
+test("lets a date field take one stop per part, and no more", () => {
+  const parts = Array.from({ length: 6 }, () => stop(2, true));
+  expectNoFocusTrap([stop(1), ...parts, stop(3)]);
+
+  const held = Array.from({ length: MAX_FIELD_PARTS + 1 }, () => stop(2, true));
+  expect(() => expectNoFocusTrap([stop(1), ...held, stop(3)])).toThrow(/focus never sticks/);
+  expect(() => expectNoFocusTrap([stop(1), stop(2), stop(2), stop(3)])).toThrow(/focus never sticks/);
+});
 
 for (const [how, css] of Object.entries(RING_SUPPRESSED)) {
   test(`fails once that ring is ${how}`, async ({ page }) => {

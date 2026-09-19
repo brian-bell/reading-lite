@@ -26,6 +26,8 @@ export interface TabStop {
   focusIndicator: boolean;
   /** Document order among focusable elements, or -1 when focus left the page. */
   documentIndex: number;
+  /** A native date or time field, which the browser tabs through one part at a time. */
+  segmented: boolean;
 }
 
 interface ProbedStop {
@@ -33,7 +35,15 @@ interface ProbedStop {
   proxy: string;
   focusedStyle: string;
   documentIndex: number;
+  segmented: boolean;
 }
+
+/**
+ * The most tab stops one native date or time field may take in a row: Chromium
+ * gives datetime-local six (month, day, year, hour, minute, AM/PM). More than
+ * this on one element is focus stuck, as for any other element.
+ */
+export const MAX_FIELD_PARTS = 7;
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
@@ -62,6 +72,7 @@ export async function walkTabStops(page: Page, limit = 100): Promise<TabStop[]> 
     proxy: stop.proxy,
     focusIndicator: stop.focusedStyle !== resting[index],
     documentIndex: stop.documentIndex,
+    segmented: stop.segmented,
   }));
 }
 
@@ -204,6 +215,8 @@ async function probeActiveElement(page: Page): Promise<ProbedStop | null> {
       proxy: probe.describe(proxy),
       focusedStyle: probe.styleSignature(proxy),
       documentIndex: probe.order(focusable, el),
+      segmented:
+        el instanceof HTMLInputElement && ["date", "datetime-local", "month", "time", "week"].includes(el.type),
     };
   }, FOCUSABLE);
 }
@@ -245,10 +258,15 @@ export function expectNoFocusTrap(stops: TabStop[]): void {
   expect([...inOrder].sort((a, b) => a - b)).toEqual(inOrder);
   // Same accessible name twice in a row is not a trap: legal pages link
   // "Privacy" or the operator address more than once. Stuck focus is the
-  // same document position visited twice.
+  // same document position visited twice — except a native date or time
+  // field, which the browser tabs through one part at a time, up to
+  // MAX_FIELD_PARTS stops before focus must move on.
+  let run = 1;
   const stuck = stops.slice(0, -1).filter((stop, i) => {
     const next = stops[i + 1];
-    return stop.documentIndex >= 0 && stop.documentIndex === next.documentIndex;
+    const repeated = stop.documentIndex >= 0 && stop.documentIndex === next.documentIndex;
+    run = repeated ? run + 1 : 1;
+    return repeated && (!stop.segmented || run > MAX_FIELD_PARTS);
   });
   expect(
     stuck.map((stop) => stop.signature),
