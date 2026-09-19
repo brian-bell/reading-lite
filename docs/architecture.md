@@ -1,8 +1,11 @@
 # Architecture
 
 Reading Lite runs on one Cloudflare Worker plus managed D1, Durable Objects,
-R2, Vectorize, and Queues. Cloudflare Pages serves the React SPA. The Worker
-owns `/api/*`, `/health`, and `/mcp*`; Pages handles the other routes.
+R2, Vectorize, and Queues. The Worker owns `/api/*`, `/health`, and `/mcp*`;
+the TanStack Start frontend in `app/`, a separate Worker, handles the other
+routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). Cloudflare
+Pages still serves the legacy React SPA in `web/` on the same hosts as the
+rollback target.
 [Configuration](configuration.md) lists environment defaults, and
 [operations](operations.md) covers deployment and maintenance.
 

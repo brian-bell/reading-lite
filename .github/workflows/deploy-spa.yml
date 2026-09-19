@@ -1,12 +1,15 @@
 # Deploy the production SPA after the Worker release succeeds. The Worker run's
 # release artifact pins this upload to the same tested and released main SHA.
 #
-# The same run also deploys the new frontend Worker (app/) to its preview host,
-# next.readinglite.ai (ADR 0003, amended 2026-09-13). It is a job here rather
-# than its own workflow: the release concurrency group keeps only one pending
-# run, so a second workflow queued behind the Worker release could cancel this
-# one or be cancelled by it. The two jobs are independent, so a frontend
-# failure never blocks the SPA that serves readinglite.ai.
+# The same run also deploys the new frontend Worker (app/), which owns
+# next.readinglite.ai and, since the Phase 5 cutover (reading-lite-gh340.4), the
+# apex hosts readinglite.ai and readinglite.app (ADR 0003). It is a job here
+# rather than its own workflow: the release concurrency group keeps only one
+# pending run, so a second workflow queued behind the Worker release could
+# cancel this one or be cancelled by it. The two jobs are independent: a
+# frontend failure leaves the previous frontend version serving the apex hosts,
+# and the SPA keeps deploying to Pages, which stays bound there as the rollback
+# target (delete the frontend's apex routes to fall back to it).
 
 name: Deploy production SPA
 
@@ -89,7 +92,7 @@ jobs:
           npm run ops -- deploy web --branch main --execute
 
   app:
-    name: Build and deploy frontend Worker (next.readinglite.ai)
+    name: Build and deploy frontend Worker (readinglite.ai, readinglite.app, next.readinglite.ai)
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.event == 'workflow_run' &&
@@ -98,7 +101,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://next.readinglite.ai
+      url: https://readinglite.ai
     steps:
       - name: Download the released Worker SHA
         uses: actions/download-artifact@v7
@@ -157,5 +160,8 @@ jobs:
             exit 1
           }
           npx wrangler deploy
-      - name: Smoke-check route precedence
-        run: app/scripts/smoke-host.sh https://next.readinglite.ai
+      - name: Smoke-check route precedence on every production host
+        run: |
+          app/scripts/smoke-host.sh https://next.readinglite.ai
+          app/scripts/smoke-host.sh https://readinglite.ai
+          app/scripts/smoke-host.sh https://readinglite.app

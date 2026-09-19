@@ -123,8 +123,8 @@ describe("coordinated production deployment workflows", () => {
     expect(allCommands).not.toMatch(/deploy worker|wrangler deploy/);
   });
 
-  it("deploys the frontend Worker to next.readinglite.ai from the same released SHA", async () => {
-    // ADR 0003 (amended 2026-09-13). A job in the SPA run, not its own
+  it("deploys the frontend Worker to every production host from the same released SHA", async () => {
+    // ADR 0003 (amended 2026-09-13; apex cutover reading-lite-gh340.4). A job in the SPA run, not its own
     // workflow: the release group keeps one pending run, so a second workflow
     // queued behind the Worker release could cancel the SPA release.
     const workflow = await readWorkflow(".github/workflows/deploy-spa.yml");
@@ -149,7 +149,9 @@ describe("coordinated production deployment workflows", () => {
     expect(deploy?.["working-directory"]).toBe("app");
     expectBoundaryCheck(deploy?.run, "npx wrangler deploy");
     expect(appSteps.indexOf(smoke!)).toBeGreaterThan(appSteps.indexOf(deploy!));
-    expect(smoke?.run).toContain("https://next.readinglite.ai");
+    for (const host of ["https://next.readinglite.ai", "https://readinglite.ai", "https://readinglite.app"]) {
+      expect(smoke?.run).toContain(`app/scripts/smoke-host.sh ${host}`);
+    }
     expect(commands(app)).not.toMatch(/deploy worker|deploy web|--env/);
   });
 });

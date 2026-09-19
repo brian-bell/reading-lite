@@ -22,7 +22,11 @@
 // 2026-09-16): the staging frontend also owns staging.readinglite.ai/* and
 // staging.readinglite.app/*, ahead of the Pages custom domains still bound
 // there, which stay as the rollback target (delete the two routes to roll
-// back). The apex hosts get routes only at the Phase 5 cutover.
+// back). Production switched at the Phase 5 cutover (reading-lite-gh340.4,
+// authorized 2026-09-19) the same way: the production frontend also owns
+// readinglite.ai/* and readinglite.app/*, ahead of the Pages custom domains
+// that stay bound and deployed as the rollback target (delete the two routes
+// to roll back).
 //
 // BACKEND binds the backend's read-only FrontendReads entrypoint (the repo
 // root's src/frontend-reads.ts), used for server renders; browser API calls go
@@ -64,7 +68,11 @@
       "name": "reading-lite-app",
       "workers_dev": false,
       "preview_urls": false,
-      "routes": [{ "pattern": "next.readinglite.ai/*", "zone_name": "readinglite.ai" }],
+      "routes": [
+        { "pattern": "next.readinglite.ai/*", "zone_name": "readinglite.ai" },
+        { "pattern": "readinglite.ai/*", "zone_name": "readinglite.ai" },
+        { "pattern": "readinglite.app/*", "zone_name": "readinglite.app" }
+      ],
       "services": [{ "binding": "BACKEND", "service": "reading-lite", "entrypoint": "FrontendReads" }]
     }
   }

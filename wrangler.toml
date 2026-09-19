@@ -612,8 +612,11 @@ class_name = "TenantUsageGuard"
 name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
-# Worker routes scoped to API, health, and MCP; Pages (attached to the same custom
-# domain) serves the SPA at every other path. Worker routes win over Pages.
+# Worker routes scoped to API, health, and MCP. Since the Phase 5 apex cutover
+# (reading-lite-gh340.4) the frontend Worker (app/wrangler.jsonc,
+# reading-lite-app) owns every other path with `host/*`; these more specific
+# routes win over it. Pages stays attached to the same custom domain as the
+# rollback target and serves the SPA again if the frontend routes are deleted.
 #
 # Production dual-serves the two public hosts on the same Worker script, bucket,
 # D1 and Vectorize index. The data plane does not branch on hostname, so /api/*
