@@ -75,7 +75,10 @@ export async function purgeReading(
   // Second pass: an attempt that was mid-put during the first.
   objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
 
-  await deps.deleteRefreshCheckpoint?.(id);
+  // Best-effort: the purge already happened and a retry is a 404, so a failed
+  // cleanup must not report it as an error. A leftover checkpoint is inert,
+  // since the refresh it describes finds no reading and stops.
+  await deps.deleteRefreshCheckpoint?.(id)?.catch((err) => console.error(err));
 
   return {
     kind: "purged",
