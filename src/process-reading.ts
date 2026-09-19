@@ -112,7 +112,7 @@ async function runAttempt(
     // diagnostics. Content a prior crashed delivery of this attempt captured
     // is swept: nothing references it.
     if ((await io.readManifest()) === null) {
-      await io.discardUnreferencedContent();
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
       // A purged target cannot finish processing. Retire the attempt and
       // recover leftover capacity, retrying any unconfirmed cleanup.
@@ -132,7 +132,7 @@ async function runAttempt(
     }
     await writeAttemptSafe(io, attempt);
     if (!(await readingCanWriteAttemptArtifacts(io, args))) {
-      await io.discardUnreferencedContent();
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
       await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;
@@ -169,7 +169,7 @@ async function runAttempt(
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
     if (!(await readingCanWriteAttemptArtifacts(io, args))) {
-      await io.discardUnreferencedContent();
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
       await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;

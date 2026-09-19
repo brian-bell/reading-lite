@@ -1,5 +1,6 @@
 import { env as testEnv } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { AttemptIo } from "../../../src/attempt-io";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
 import { PgReadingWriter } from "../../../src/modules/stores/postgres/reading-writer";
@@ -184,5 +185,30 @@ describe("processReading — content sweep on early return", () => {
     expect((await readings.manifest(ID))?.status).toBe("ready");
     expect(await readings.extractedText(ID)).toBe("published");
     expect(await readings.rawText(ID)).toBe("<p>published</p>");
+  });
+
+  // The sweep is housekeeping. A transient error in it must not reach the
+  // failure path, which would stamp the published attempt's last_attempt failed.
+  it("leaves a published reading's attempt succeeded when the sweep throws on redelivery", async () => {
+    const readings = await seeded(null);
+    const running = { id: ATTEMPT_ID, trigger: "submit" as const, status: "running" as const, started_at: "2026-04-26T20:00:00.000Z" };
+    await readings.writer.claimUrl(pending({ active_attempt: running }), KEY_PREFIX, { summary: running, payload: args() });
+    const succeeded = { ...running, status: "succeeded" as const, finished_at: "2026-04-26T20:00:01.000Z" };
+    await readings.writer.publish(
+      args(),
+      pending({ status: "ready", title: "Published", tldr: "Published", connections: [], summary_markdown: "## Summary", last_attempt: succeeded }),
+      {
+        keyPrefix: KEY_PREFIX,
+        content: { rawKey: `${OWN_PREFIX}/raw.html`, extractedKey: `${OWN_PREFIX}/extracted.md` },
+        embedding: axisVector(1),
+        claimMissingUrl: true,
+      },
+    );
+    vi.spyOn(AttemptIo.prototype, "discardUnreferencedContent").mockRejectedValue(new Error("R2 blip"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await processReading(args(), env(), services(), readings.tenant);
+
+    expect(await readings.manifest(ID)).toMatchObject({ status: "ready", last_attempt: { id: ATTEMPT_ID, status: "succeeded" } });
   });
 });
