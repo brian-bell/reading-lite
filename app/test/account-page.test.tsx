@@ -279,6 +279,26 @@ describe("the account page", () => {
     await waitFor(() => expect(screen.queryByText("Phone")).not.toBeInTheDocument());
   });
 
+  it("labels only the row being revoked while the request is in flight", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const request = asRequest(input);
+        const path = new URL(request.url).pathname;
+        if (path === "/api/auth/sessions" && request.method === "GET") return Response.json(listed);
+        if (request.method === "DELETE") return new Promise<Response>(() => {});
+        return Response.json(reader);
+      }),
+    );
+    await openAccount();
+    expect(await screen.findByText("Phone")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Revoke" }));
+
+    expect(await screen.findByRole("button", { name: "Revoking…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Revoke this device" })).toBeDisabled();
+  });
+
   it("revoking this device signs the reader out and sends them to sign in", async () => {
     mockApi({ listed: { sessions: [HERE], session_cap_warning: null } });
     const { router, queryClient } = await openAccount();
@@ -1442,6 +1462,13 @@ describe("email change on the account page", () => {
     await userEvent.type(field(), address);
     await userEvent.click(send());
   }
+
+  it("names the address mail goes to now", async () => {
+    mockApi();
+    await openAccount();
+
+    expect(within(section()).getByText("a@example.com")).toBeVisible();
+  });
 
   it("sends the new address and says to check the inbox, keeping what was typed", async () => {
     const fetchMock = mockApi();
