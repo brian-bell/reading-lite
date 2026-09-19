@@ -8,6 +8,7 @@ import { expectedLayoutOf, readingQueryKey } from "../reading";
 import { limitSentence } from "../capture-refusal";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
+import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, OfflineNotice, ServerError } from "./ReadingStates";
 import { ViewTabs, type TabItem } from "./ViewTabs";
@@ -210,56 +211,63 @@ export function SavePage() {
           <div className="page save-page">
             <PageHeading>Save reading</PageHeading>
             <SaveNoticeBanner notice={current.notice} onRetry={() => trySubmit(url)} />
-            <ViewTabs label="What to save" idPrefix="save" tabs={SAVE_TABS} selected={tab} onSelect={setTab}>
-              {/* The browser's own URL check would replace our message with
-                  its bubble, which is neither in the page nor linked to the
-                  field. */}
-              <form className="save-form" onSubmit={onSubmit} noValidate>
-                <div className="field">
-                  <label className="field-label" htmlFor={urlId}>
-                    URL
-                  </label>
-                  <input
-                    id={urlId}
-                    ref={inputRef}
-                    className="text-input"
-                    type="text"
-                    inputMode="url"
-                    name="url"
-                    autoComplete="url"
-                    spellCheck={false}
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                    aria-invalid={problem ? true : undefined}
-                    aria-describedby={problem ? problemId : undefined}
-                  />
-                  {problem ? (
-                    <p className="field-error" id={problemId}>
-                      {problem}
-                    </p>
-                  ) : null}
-                </div>
-                <div className="form-actions">
-                  {/* aria-disabled, not disabled: a disabled button is blurred
-                      by the browser, and the reader would lose their place
-                      while the save runs — and with it the focus the state
-                      page takes when one replaces this form. The submit is
-                      refused by submittingRef either way. */}
-                  <button
-                    type="submit"
-                    className="button button-primary"
-                    aria-disabled={save.isPending || undefined}
-                  >
-                    Save
-                  </button>
-                </div>
-              </form>
-            </ViewTabs>
+            {/* The form is a card (design spec, Forms/status cards), with the
+                tabs inside it as in the accepted prototype. */}
+            <div className="save-card">
+              <ViewTabs label="What to save" idPrefix="save" tabs={SAVE_TABS} selected={tab} onSelect={setTab}>
+                {/* The browser's own URL check would replace our message with
+                    its bubble, which is neither in the page nor linked to the
+                    field. */}
+                <form className="save-form" onSubmit={onSubmit} noValidate>
+                  <div className="field">
+                    <label className="field-label" htmlFor={urlId}>
+                      URL
+                    </label>
+                    <input
+                      id={urlId}
+                      ref={inputRef}
+                      className="text-input"
+                      type="text"
+                      inputMode="url"
+                      name="url"
+                      autoComplete="url"
+                      spellCheck={false}
+                      value={url}
+                      onChange={(event) => setUrl(event.target.value)}
+                      aria-invalid={problem ? true : undefined}
+                      aria-describedby={problem ? problemId : undefined}
+                    />
+                    {problem ? (
+                      <p className="field-error" id={problemId}>
+                        {problem}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="form-actions">
+                    {/* aria-disabled, not disabled: a disabled button is blurred
+                        by the browser, and the reader would lose their place
+                        while the save runs — and with it the focus the state
+                        page takes when one replaces this form. The submit is
+                        refused by submittingRef either way. */}
+                    <button
+                      type="submit"
+                      className="button button-primary button-leading-icon"
+                      aria-disabled={save.isPending || undefined}
+                    >
+                      <Icon name="plus" size={16} strokeWidth={2} />
+                      Save
+                    </button>
+                  </div>
+                </form>
+              </ViewTabs>
+            </div>
             {/* The page's standing polite region: on screen before there is
                 anything to say, so what lands in it is announced. A refusal's
                 sentence comes through here too, which is why its notice is
-                not a second region. */}
-            <p className="form-status" role="status">
+                not a second region, and why the region is only heard while
+                that notice is on screen: sighted readers would get the
+                sentence twice. */}
+            <p className={refused ? "form-status visually-hidden" : "form-status"} role="status">
               {announcement}
             </p>
           </div>

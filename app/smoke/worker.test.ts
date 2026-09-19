@@ -279,7 +279,7 @@ describe("signed-in identity", () => {
     const html = await response.text();
     expect(html).toContain(heading("Save reading"));
     expect(html).toContain('role="tab"');
-    expect(html).toContain('<button type="submit" class="button button-primary">Save</button>');
+    expect(html).toMatch(/<button type="submit" class="button button-primary button-leading-icon"><svg[^>]*>.*?<\/svg>Save<\/button>/);
     expect(html).toContain('name="url"');
   });
 
