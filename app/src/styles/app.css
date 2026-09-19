@@ -500,6 +500,48 @@ textarea {
   accent-color: var(--accent);
 }
 
+/* API tokens (#340.7): the create form under the list, and a new token's
+   value, shown once, above the form. */
+.token-create-form {
+  margin-top: var(--space-5);
+}
+
+.token-scopes {
+  display: grid;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  border: 0;
+}
+
+.token-reveal {
+  margin: var(--space-5) 0 0;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--accent-soft);
+}
+
+.token-reveal-title {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+/* Long and unbroken: wrap anywhere rather than scroll the page sideways. */
+.token-secret {
+  display: block;
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
 /* Account deletion is the last section, set apart from sessions above it. */
 .account-delete {
   margin-top: var(--space-9);

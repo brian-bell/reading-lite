@@ -9,10 +9,14 @@
 //
 // API token revoke (#340.7.2): the confirmation from the keyboard alone, the
 // request the browser sent, and focus once the row's Revoke button is gone.
+//
+// API token create (#340.7.3): the form from the keyboard alone, the request
+// the browser sent, and the value gone after Dismiss and a reload.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
 import {
+  E2E_TOKEN_SECRET,
   serveAccountDeleteInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -97,6 +101,43 @@ test("keeps focus in the section when a revoke fails", async ({ page, baseURL })
 
   await expect(tokens.getByText("control plane unavailable")).toBeVisible();
   await expect(tokens.getByRole("heading", { name: "API tokens" })).toBeFocused();
+});
+
+test("creates an API token from the keyboard and shows its value once", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  const { creates } = await serveTokensInBrowser(page);
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+  const name = tokens.getByRole("textbox", { name: "Name" });
+
+  await name.focus();
+  await page.keyboard.type("Laptop");
+  for (let i = 0; i < 4; i += 1) await page.keyboard.press("Tab");
+  await expect(tokens.getByRole("checkbox", { name: "readings:delete" })).toBeFocused();
+  await page.keyboard.press("Space");
+  await page.keyboard.press("Tab");
+  await expect(tokens.getByRole("button", { name: "Create token" })).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  const reveal = tokens.locator(".token-reveal");
+  await expect(reveal).toBeFocused();
+  await expect(reveal.getByText(E2E_TOKEN_SECRET)).toBeVisible();
+  await expect(tokens.getByText("Laptop (standard) · usable")).toBeVisible();
+  expect(creates).toHaveLength(1);
+  expect(creates[0]!.postDataJSON()).toEqual({
+    name: "Laptop",
+    scopes: ["readings:read", "readings:write", "readings:import"],
+  });
+  expect(await creates[0]!.headerValue("x-csrf-token")).toBeTruthy();
+
+  await reveal.getByRole("button", { name: "Dismiss" }).press("Enter");
+  await expect(tokens.getByText(E2E_TOKEN_SECRET)).toHaveCount(0);
+  await expect(name).toBeFocused();
+  await page.reload();
+  await expect(tokens.getByText("Laptop (standard) · usable")).toBeVisible();
+  await expect(page.getByText(E2E_TOKEN_SECRET)).toHaveCount(0);
 });
 
 function deleteDialog(page: Page) {

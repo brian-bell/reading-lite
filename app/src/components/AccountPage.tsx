@@ -46,7 +46,7 @@ import {
 import { settingsQueryOptions } from "../settings-query";
 import type { TokensList } from "../tokens";
 import { tokensQueryOptions } from "../tokens-query";
-import { TokensSection, type TokensSectionProps } from "./AccountTokens";
+import { TokensSection, type RevealedToken, type TokensSectionProps } from "./AccountTokens";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { BackToLibrary } from "./BackToLibrary";
@@ -105,6 +105,10 @@ export function AccountPage() {
   // An email-change request refused for the account, not the address: the
   // page's own state, like a refused read.
   const [emailRefusal, setEmailRefusal] = useState<EmailRefusal | undefined>(undefined);
+  // A new API token's value, shown once. Held here, not in the tokens section
+  // or any cache: the page outlives every section and page state, so a failed
+  // read can hide the value but not lose it before the reader copies it.
+  const [revealedToken, setRevealedToken] = useState<RevealedToken | null>(null);
 
   const emailChange = useMutation({
     mutationFn: (email: string) => requestEmailChange(queryClient, email, expectedTenant),
@@ -314,6 +318,9 @@ export function AccountPage() {
         tokens: {
           view: tokensView,
           onRetry: () => void tokensQuery.refetch(),
+          revealed: revealedToken,
+          onReveal: setRevealedToken,
+          onDismiss: () => setRevealedToken(null),
         },
         deletion: {
           confirming: confirmDelete,

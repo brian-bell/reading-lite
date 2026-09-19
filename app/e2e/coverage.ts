@@ -27,6 +27,7 @@ import {
   serveSessionsInBrowser,
   serveSettingsInBrowser,
   serveTokensInBrowser,
+  E2E_TOKEN_SECRET,
   serveSourceInBrowser,
 } from "./test";
 
@@ -577,6 +578,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await page.getByRole("button", { name: "Revoke CI" }).click();
       await expect(page.getByRole("dialog", { name: "Revoke this API token?" })).toBeVisible();
+    },
+  },
+  {
+    name: "account-token-created",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const tokens = page.getByRole("region", { name: "API tokens" });
+      await tokens.getByRole("textbox", { name: "Name" }).fill("Laptop");
+      await tokens.getByRole("button", { name: "Create token" }).click();
+      await expect(tokens.getByText(E2E_TOKEN_SECRET)).toBeVisible();
     },
   },
   {

@@ -330,24 +330,45 @@ export const E2E_TOKENS = {
  * GET /api/auth/tokens and DELETE /api/auth/tokens/:id (#340.7). Awaited for
  * the same reason as the sessions route: the account page reads the tokens on
  * mount. A revoke is recorded and answered 200, and the list shows that token
- * revoked from then on, unless `revoke` gives the answer instead.
+ * revoked from then on, unless `revoke` gives the answer instead. A create is
+ * recorded and answered 201 with E2E_TOKEN_SECRET, and the list shows the new
+ * token, unless `create` gives the answer instead.
  */
 export async function serveTokensInBrowser(
   page: Page,
-  answer: { status?: number; json?: unknown; revoke?: { status: number; json: unknown } } = {},
-): Promise<{ revokes: Request[] }> {
+  answer: {
+    status?: number;
+    json?: unknown;
+    revoke?: { status: number; json: unknown };
+    create?: { status: number; json: unknown };
+  } = {},
+): Promise<{ revokes: Request[]; creates: Request[] }> {
   const revokes: Request[] = [];
+  const creates: Request[] = [];
   const revoked = new Set<string>();
+  const minted: (typeof E2E_TOKENS.tokens)[number][] = [];
   await page.route("**/api/auth/tokens**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (request.method() === "GET" && path === "/api/auth/tokens") {
       const listed = answer.json ?? {
-        tokens: E2E_TOKENS.tokens.map((token) =>
+        tokens: [...E2E_TOKENS.tokens, ...minted].map((token) =>
           revoked.has(token.id) ? { ...token, usable: false, revoked_at_ms: token.revoked_at_ms ?? 3 } : token,
         ),
       };
       await route.fulfill({ status: answer.status ?? 200, json: listed });
+      return;
+    }
+    if (request.method() === "POST" && path === "/api/auth/tokens") {
+      creates.push(request);
+      if (answer.create) {
+        await route.fulfill(answer.create);
+        return;
+      }
+      const body = request.postDataJSON() as { name: string; scopes: string[] };
+      const token = { ...E2E_TOKENS.tokens[0]!, id: `tok_${minted.length + 1}`, name: body.name, scopes: body.scopes };
+      minted.push(token);
+      await route.fulfill({ status: 201, json: { ...token, token: E2E_TOKEN_SECRET } });
       return;
     }
     if (request.method() === "DELETE" && path.startsWith("/api/auth/tokens/")) {
@@ -362,8 +383,11 @@ export async function serveTokensInBrowser(
     }
     await route.fallback();
   });
-  return { revokes };
+  return { revokes, creates };
 }
+
+/** The value a stubbed create answers with: a real token's length, unbroken. */
+export const E2E_TOKEN_SECRET = `tok_0b9e3c1a-5d2f-4e7a-9c8b-6f1d2e3a4b5c.${"7f".repeat(32)}`;
 
 export const E2E_SETTINGS = {
   schema_version: 1,
