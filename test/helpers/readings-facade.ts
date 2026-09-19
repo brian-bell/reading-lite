@@ -59,10 +59,17 @@ export class TestReadings {
   async seed(manifest: Manifest, opts: SeedOptions = {}): Promise<string> {
     const parsed = ManifestSchema.parse(manifest);
     const keyPrefix = opts.keyPrefix ?? buildKeyPrefix(parsed.id, parsed.created_at);
+    // One reading owns a URL. Unless the test says otherwise, the first
+    // reading seeded for a URL owns it and later ones are orphan duplicates,
+    // which is how the importer resolves fixtures that share a URL.
+    const [owner] = await this.sql.query<{ reading_id: string }>(
+      "SELECT reading_id FROM reading_urls WHERE tenant_id = $1 AND url_hash = $2",
+      [String(this.tenant.tenantId), parsed.url_hash],
+    );
     const rows = manifestToRows(parsed, {
       tenantId: String(this.tenant.tenantId),
       keyPrefix,
-      ownsUrl: opts.ownsUrl ?? true,
+      ownsUrl: opts.ownsUrl ?? (owner === undefined || owner.reading_id === parsed.id),
       embedding: opts.embedding,
     });
     await this.sql.transaction((tx) => writeReadingRows(tx, rows));

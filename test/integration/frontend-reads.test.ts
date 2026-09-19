@@ -4,8 +4,6 @@ import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { FrontendReads, type Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
-import { buildKeyPrefix } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-index";
 import type { Manifest } from "../../src/schemas/manifest";
 import {
   FOUNDER_TENANT_ID,
@@ -13,8 +11,8 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 
 // The backend's read-only entrypoint for the frontend Worker (ADR 0003, Server
 // reads). Reached only through a service binding; these tests construct it
@@ -97,11 +95,7 @@ function manifest(id: string): Manifest {
 }
 
 async function seed(tenant: ReturnType<typeof founderTenant>, m: Manifest) {
-  const reader = testReadingStore(workerEnv, tenant);
-  const keyPrefix = buildKeyPrefix(m.id, m.created_at);
-  await reader.writeManifest(keyPrefix, m);
-  await reader.writeByIdPointer(m.id, { id: m.id, key_prefix: keyPrefix });
-  await reader.appendOrReplaceListIndexItem(manifestToIndexItem(m, keyPrefix));
+  await testReadingsFor(tenant).seed(m);
 }
 
 function entrypoint(): FrontendReads {
