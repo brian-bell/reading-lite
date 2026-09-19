@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AccountRead } from "./account-state";
+import type { AccountRead, AccountRefusal } from "./account-state";
 import { ApiError } from "./api/errors";
 import { actingTenantOf, messageOf } from "./reading";
 import { formatSessionTime } from "./sessions";
@@ -47,6 +47,40 @@ export function tokensFromResponse(status: number, body: unknown): TokensResult 
   if (status === 403) return { state: "forbidden" };
   if (status === 412) return { state: "account-changed", acting_tenant: actingTenantOf(body) };
   throw new ApiError(status, messageOf(body) ?? `tokens returned ${status}`);
+}
+
+/**
+ * What DELETE /api/auth/tokens/:id answered. A 404 is `gone`: the token is
+ * not this account's to revoke any more — revoked, or removed, from another
+ * tab — so the page treats it like a revoke and reads the list again. 403
+ * and 412 are values so the page can render the shared state; a 401 and
+ * anything else throw.
+ */
+export type TokenRevokeOutcome = { kind: "revoked" } | { kind: "gone" } | AccountRefusal;
+
+export function tokenRevokeFromResponse(status: number, body: unknown): TokenRevokeOutcome {
+  if (status === 200) return { kind: "revoked" };
+  if (status === 404) return { kind: "gone" };
+  if (status === 403) return { kind: "forbidden" };
+  if (status === 412) return { kind: "account-changed", actingTenant: actingTenantOf(body) };
+  throw new ApiError(status, messageOf(body) ?? "failed to revoke token");
+}
+
+/**
+ * The list with every token in `revokedIds` shown revoked, as the SPA's
+ * revoked-ids overlay does: a list read that started before the revoke
+ * landed must not bring the token back as usable.
+ */
+export function withRevokedTokens(listed: TokensList, revokedIds: ReadonlySet<string>, nowMs: number): TokensList {
+  if (revokedIds.size === 0) return listed;
+  return {
+    ...listed,
+    tokens: listed.tokens.map((token) =>
+      revokedIds.has(token.id) && token.usable
+        ? { ...token, usable: false, revoked_at_ms: token.revoked_at_ms ?? nowMs }
+        : token,
+    ),
+  };
 }
 
 /** The SPA's status word: revoked wins over expired, and a usable token is usable. */

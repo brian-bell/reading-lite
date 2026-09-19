@@ -565,6 +565,21 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   {
+    name: "account-token-revoke-confirm",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Revoke CI" }).click();
+      await expect(page.getByRole("dialog", { name: "Revoke this API token?" })).toBeVisible();
+    },
+  },
+  {
     name: "account-delete-step-up",
     path: "/account/security",
     state: "signed-in",
