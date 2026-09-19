@@ -297,6 +297,53 @@ export async function serveSessionsInBrowser(
   return { revokeAll };
 }
 
+export const E2E_TOKENS = {
+  tokens: [
+    {
+      id: "tok_ci",
+      name: "CI",
+      format: "standard",
+      scopes: ["readings:read", "readings:write"],
+      created_at_ms: 1,
+      expires_at_ms: 4_102_444_800_000,
+      revoked_at_ms: null,
+      last_used_at_ms: null,
+      user_agent_label: "Firefox",
+      usable: true,
+    },
+    {
+      id: "tok_old",
+      name: "Old script",
+      format: "standard",
+      scopes: ["readings:read"],
+      created_at_ms: 1,
+      expires_at_ms: 2,
+      revoked_at_ms: 2,
+      last_used_at_ms: 2,
+      user_agent_label: null,
+      usable: false,
+    },
+  ],
+};
+
+/**
+ * GET /api/auth/tokens (#340.7). Awaited for the same reason as the sessions
+ * route: the account page reads the tokens on mount.
+ */
+export async function serveTokensInBrowser(
+  page: Page,
+  answer: { status?: number; json?: unknown } = {},
+): Promise<void> {
+  await page.route("**/api/auth/tokens**", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET" && new URL(request.url()).pathname === "/api/auth/tokens") {
+      await route.fulfill({ status: answer.status ?? 200, json: answer.json ?? E2E_TOKENS });
+      return;
+    }
+    await route.fallback();
+  });
+}
+
 export const E2E_SETTINGS = {
   schema_version: 1,
   notify_immediate: true,

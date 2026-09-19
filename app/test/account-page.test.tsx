@@ -20,6 +20,7 @@ import { whoamiQueryKey, type Identity } from "../src/identity";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 import type { SessionListItem } from "../src/sessions";
+import type { TokenListItem } from "../src/tokens";
 
 // Session management on /account/security (#340.1): list, revoke one, revoke
 // all, including this device, and the acceptance matrix's common states. The
@@ -120,6 +121,7 @@ function mockApi(options?: {
   settingsStatus?: number;
   onSaveSettings?: (body: Record<string, unknown>) => Response | Promise<Response>;
   onEmailChange?: (body: { email: string }) => Response;
+  onListTokens?: () => Response;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -133,6 +135,9 @@ function mockApi(options?: {
     }
     if (path === "/api/auth/sessions" && request.method === "GET") {
       return Response.json(options?.listed ?? listed, { status: options?.listStatus ?? 200 });
+    }
+    if (path === "/api/auth/tokens" && request.method === "GET") {
+      return options?.onListTokens?.() ?? Response.json({ tokens: [] });
     }
     if (path === "/api/auth/email-change" && request.method === "POST") {
       const body = (await request.clone().json()) as { email: string };
@@ -412,6 +417,7 @@ describe("the account page", () => {
         if (path === "/api/whoami") return Response.json(other);
         if (path === "/api/auth/sessions" && request.method === "GET") return Response.json(listed);
         if (path === "/api/auth/settings" && request.method === "GET") return Response.json(SETTINGS);
+        if (path === "/api/auth/tokens" && request.method === "GET") return Response.json({ tokens: [] });
         return Response.json({ error: "forbidden" }, { status: 403 });
       }),
     );
@@ -604,6 +610,105 @@ describe("notification settings on the account page", () => {
 
     await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Your session ended."));
     expect(router.state.location.href).toBe("/account/security");
+  });
+});
+
+// API tokens (#340.7): the list and the common states on its read. Parsing
+// and the status words are tokens.test.ts's; request shape is
+// tokens-api.test.ts's.
+describe("API tokens on the account page", () => {
+  const token = (over: Partial<TokenListItem> = {}): TokenListItem => ({
+    id: "tok_ci",
+    name: "CI",
+    format: "standard",
+    scopes: ["readings:read", "readings:write"],
+    created_at_ms: 1,
+    expires_at_ms: 2,
+    revoked_at_ms: null,
+    last_used_at_ms: null,
+    usable: true,
+    ...over,
+  });
+  const section = () => screen.getByRole("region", { name: "API tokens" });
+
+  it("lists each token's name, status, scopes, and times, revoked and expired included", async () => {
+    mockApi({
+      onListTokens: () =>
+        Response.json({
+          tokens: [
+            token(),
+            token({ id: "tok_old", name: "Old", usable: false }),
+            token({ id: "tok_gone", name: "Gone", usable: false, revoked_at_ms: 3, last_used_at_ms: 2 }),
+          ],
+        }),
+    });
+    await openAccount();
+
+    const list = await within(section()).findByRole("list", { name: "API tokens" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows.map((row) => row.querySelector("p")?.textContent)).toEqual([
+      "CI (standard) · usable",
+      "Old (standard) · expired",
+      "Gone (standard) · revoked",
+    ]);
+    expect(within(rows[0]!).getByText("readings:read, readings:write")).toBeVisible();
+    expect(within(rows[0]!).getByText(/never used$/)).toBeVisible();
+    expect(within(rows[2]!).getByText(/last used/)).toBeVisible();
+  });
+
+  it("says when there are no tokens", async () => {
+    mockApi();
+    await openAccount();
+
+    expect(await within(section()).findByText("No API tokens yet.")).toBeVisible();
+  });
+
+  it.each([
+    [403, "You don't have access to this."],
+    [412, "This tab is signed in to a different account than the page expects."],
+  ])("shows the page's refusal state for a token list %i", async (status, heading) => {
+    const body =
+      status === 412 ? { error: "expected tenant mismatch", acting_tenant: "usr_b" } : { error: "forbidden" };
+    mockApi({ onListTokens: () => Response.json(body, { status }) });
+    const { queryClient } = await openAccount();
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading));
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+  });
+
+  it("shows a list 5xx inside the section, keeps the rest of the page, and Retry reads the tokens again", async () => {
+    let fail = true;
+    mockApi({
+      onListTokens: () => {
+        if (!fail) return Response.json({ tokens: [] });
+        fail = false;
+        return Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+
+    expect(await within(section()).findByText("control plane unavailable")).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    expect(await within(section()).findByText("No API tokens yet.")).toBeVisible();
+    expect(within(section()).queryByText("control plane unavailable")).not.toBeInTheDocument();
+  });
+
+  it("shows the offline notice in the section when the list cannot reach the network", async () => {
+    mockApi({
+      onListTokens: () => {
+        onlineManager.setOnline(false);
+        throw new TypeError("Failed to fetch");
+      },
+    });
+    await openAccount();
+
+    expect(await within(section()).findByText(/offline/i)).toBeVisible();
+    expect(within(section()).getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
   });
 });
 

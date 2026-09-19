@@ -44,6 +44,8 @@ import {
   type UserSettings,
 } from "../settings";
 import { settingsQueryOptions } from "../settings-query";
+import { tokenHeading, tokenStatus, tokenTimes, type TokensList } from "../tokens";
+import { tokensQueryOptions } from "../tokens-query";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { BackToLibrary } from "./BackToLibrary";
@@ -56,9 +58,10 @@ import {
   ServerError,
 } from "./ReadingStates";
 
-// The account page (#340.1, #340.6, #340.8; Phase 5 of #340). Email change,
-// notification settings, and session management — the list, a single revoke,
-// and revoke-all — match the SPA (`web/src/App.tsx`); the common states are
+// The account page (#340.1, #340.6, #340.7, #340.8; Phase 5 of #340). Email
+// change, notification settings, session management — the list, a single
+// revoke, and revoke-all — and API tokens match the SPA (`web/src/App.tsx`);
+// the common states are
 // the acceptance matrix's, shared with the library and save. A 403 or 412
 // that refuses the account (from a read, a settings save, an email-change
 // request, or a delete) is the whole page's state; a failed settings or
@@ -92,6 +95,7 @@ export function AccountPage() {
   const settingsKey = settingsQueryKey(identity?.user_id ?? "");
   const { data, error, fetchStatus, refetch } = useQuery(sessionsQueryOptions(queryClient, identity));
   const settingsQuery = useQuery(settingsQueryOptions(queryClient, identity));
+  const tokensQuery = useQuery(tokensQueryOptions(queryClient, identity));
   const [confirmAll, setConfirmAll] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
@@ -177,10 +181,15 @@ export function AccountPage() {
     error: settingsQuery.error,
     fetchStatus: settingsQuery.fetchStatus,
   });
+  const tokensView = accountViewOf({
+    data: tokensQuery.data,
+    error: tokensQuery.error,
+    fetchStatus: tokensQuery.fetchStatus,
+  });
   const saveError = isUnauthorized(save.error) ? null : save.error;
   const saveFailure = saveError == null ? undefined : failureOf(saveError);
   const emailError = isUnauthorized(emailChange.error) ? null : emailChange.error;
-  const view = pageViewOf(sessionsView, settingsView, emailRefusal);
+  const view = pageViewOf(sessionsView, settingsView, tokensView, emailRefusal);
   // A state page replaces the page with any dialog open on it, and a dialog
   // removed that way fires no `close`, so its flag would stay set and the
   // dialog reopen by itself once Retry brings the page back.
@@ -301,6 +310,10 @@ export function AccountPage() {
           onRetrySave: retrySave,
           onDiscard: discardSave,
         },
+        tokens: {
+          view: tokensView,
+          onRetry: () => void tokensQuery.refetch(),
+        },
         deletion: {
           confirming: confirmDelete,
           notice: deleteNotice,
@@ -342,12 +355,13 @@ type PageView =
 function pageViewOf(
   sessions: AccountView<SessionsList>,
   settings: AccountView<UserSettings>,
+  tokens: AccountView<TokensList>,
   emailChange: EmailRefusal | undefined,
 ): PageView {
-  for (const view of [sessions, settings]) {
+  for (const view of [sessions, settings, tokens]) {
     if (view.kind === "forbidden") return { kind: "forbidden" };
   }
-  for (const view of [sessions, settings]) {
+  for (const view of [sessions, settings, tokens]) {
     if (view.kind === "account-changed") return view;
   }
   if (emailChange?.kind === "account-changed") return emailChange;
@@ -396,6 +410,7 @@ function pageFor(
     revokeAllRef: RefObject<HTMLButtonElement | null>;
     email: EmailActions;
     settings: SettingsActions;
+    tokens: TokensActions;
     deletion: DeletionActions;
   },
 ) {
@@ -439,6 +454,7 @@ function pageFor(
             {sessions.kind === "loading" ? <LoadingRegion /> : null}
             {listed ? <SessionsList listed={listed} busy={actions.busy} onRevoke={actions.onRevoke} /> : null}
           </section>
+          <TokensSection {...actions.tokens} />
           <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
           {actions.confirmAll ? (
             <ConfirmDialog
@@ -795,6 +811,58 @@ function SessionsList({
         ))}
       </ul>
     </>
+  );
+}
+
+interface TokensActions {
+  view: AccountView<TokensList>;
+  /** Reads the tokens again after a failed read. */
+  onRetry: () => void;
+}
+
+/**
+ * API tokens (#340.7), as the SPA's API tokens section: each token's name,
+ * format, status, scopes, and times. The section carries its read's loading,
+ * offline, and server-error states itself; a refusal never reaches here
+ * (pageViewOf).
+ */
+function TokensSection({ view, onRetry }: TokensActions) {
+  const listed = view.kind === "ready" || view.kind === "offline" ? view.value : undefined;
+  return (
+    <section className="account-section" aria-labelledby="api-tokens-heading">
+      <h2 id="api-tokens-heading" className="account-section-title">
+        API tokens
+      </h2>
+      {view.kind === "loading" ? <LoadingRegion /> : null}
+      {view.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
+      {view.kind === "server-error" ? (
+        <InlineNotice message="Something went wrong on our side." onAction={onRetry}>
+          <p className="form-hint">{view.message}</p>
+        </InlineNotice>
+      ) : null}
+      {listed?.tokens.length === 0 ? <p className="session-meta">No API tokens yet.</p> : null}
+      {listed && listed.tokens.length > 0 ? (
+        <ul className="session-list" aria-label="API tokens">
+          {listed.tokens.map((token) => {
+            const status = tokenStatus(token);
+            return (
+              <li
+                key={token.id}
+                className={
+                  status === "revoked" ? "session-revoked" : status === "expired" ? "session-expired" : undefined
+                }
+              >
+                <div>
+                  <p>{tokenHeading(token)}</p>
+                  <p className="session-meta">{token.scopes.join(", ")}</p>
+                  <p className="session-meta">{tokenTimes(token)}</p>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 
