@@ -2,6 +2,7 @@ import { parsePresentedToken } from "./bearer";
 import { TOKEN_LAST_USED_COALESCE_MS } from "./constants";
 import { deriveHmacKey, hmacHex, timingSafeEqualHex, type AuthRoot } from "./crypto";
 import type { ControlPlaneDb } from "./db";
+import { fromTimestamp, toTimestamp } from "./pg-time";
 import { createApiTokenPrincipal, type AuthenticatedPrincipal } from "./principal";
 import { authenticateSession } from "./sessions";
 
@@ -25,6 +26,32 @@ interface TokenRow {
   expires_at_ms: number;
   revoked_at_ms: number | null;
   last_used_at_ms: number | null;
+}
+
+interface TokenDbRow {
+  id: string;
+  user_id: string;
+  format: string;
+  secret_hmac: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
+}
+
+const TOKEN_COLUMNS = "id, user_id, format, secret_hmac, expires_at, revoked_at, last_used_at";
+
+async function selectToken(db: ControlPlaneDb, where: string, param: string): Promise<TokenRow | null> {
+  const row = await db.first<TokenDbRow>(`SELECT ${TOKEN_COLUMNS} FROM api_tokens WHERE ${where}`, param);
+  if (!row) return null;
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    format: row.format,
+    secret_hmac: row.secret_hmac,
+    expires_at_ms: fromTimestamp(row.expires_at),
+    revoked_at_ms: fromTimestamp(row.revoked_at),
+    last_used_at_ms: fromTimestamp(row.last_used_at),
+  };
 }
 
 interface UserRow {
@@ -156,11 +183,7 @@ async function findLegacyByRoot(
   root: AuthRoot,
 ): Promise<TokenRow | null> {
   const digest = await hmacHex(await deriveHmacKey(root, "api_token"), secret);
-  return db.first<TokenRow>(
-    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms, last_used_at_ms
-     FROM api_tokens WHERE secret_hmac = ? AND format = 'legacy'`,
-    digest,
-  );
+  return selectToken(db, "secret_hmac = ? AND format = 'legacy'", digest);
 }
 
 async function lookupStandardToken(
@@ -170,11 +193,7 @@ async function lookupStandardToken(
   authRoot: AuthRoot,
   previousAuthRoot?: AuthRoot,
 ): Promise<TokenMatch | null> {
-  const row = await db.first<TokenRow>(
-    `SELECT id, user_id, format, secret_hmac, expires_at_ms, revoked_at_ms, last_used_at_ms
-     FROM api_tokens WHERE id = ? AND format = 'standard'`,
-    selector,
-  );
+  const row = await selectToken(db, "id = ? AND format = 'standard'", selector);
   if (!row) return null;
   const activeDigest = await hmacHex(await deriveHmacKey(authRoot, "api_token"), secret);
   if (timingSafeEqualHex(activeDigest, row.secret_hmac)) {
@@ -193,8 +212,8 @@ async function touchLastUsed(db: ControlPlaneDb, row: TokenRow, nowMs: number): 
   }
   try {
     await db.run(
-      `UPDATE api_tokens SET last_used_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL`,
-      nowMs,
+      `UPDATE api_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL`,
+      toTimestamp(nowMs),
       row.id,
     );
   } catch {
@@ -209,12 +228,12 @@ async function persistRotatedHmac(
   authRoot: AuthRoot,
 ): Promise<void> {
   const secretHmac = await hmacHex(await deriveHmacKey(authRoot, "api_token"), secret);
-  await db.batch([
-    {
-      sql: "UPDATE api_tokens SET secret_hmac = ?, hash_key_version = ? WHERE id = ?",
-      params: [secretHmac, authRoot.version, tokenId],
-    },
-  ]);
+  await db.run(
+    "UPDATE api_tokens SET secret_hmac = ?, hash_key_version = ? WHERE id = ?",
+    secretHmac,
+    authRoot.version,
+    tokenId,
+  );
 }
 
 export async function revokeAllApiTokensForUser(
@@ -222,8 +241,8 @@ export async function revokeAllApiTokensForUser(
   input: { userId: string; nowMs: number },
 ): Promise<number> {
   const result = await db.run(
-    `UPDATE api_tokens SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL`,
-    input.nowMs,
+    `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+    toTimestamp(input.nowMs),
     input.userId,
   );
   return result.changes;

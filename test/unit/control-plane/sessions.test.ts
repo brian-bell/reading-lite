@@ -21,14 +21,17 @@ import {
   revokeSession,
 } from "../../../src/control-plane/sessions";
 import { parseUserId } from "../../../src/control-plane/ids";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 
 async function issuedSession() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -54,7 +57,7 @@ async function issuedSession() {
   });
   if (redeemed.kind !== "ok" || !redeemed.sessionId || !redeemed.credential) throw new Error("expected session");
   return {
-    sqlite,
+    raw,
     db,
     cookieHeader: `${SESSION_COOKIE_NAME}=${redeemed.credential}`,
     sessionId: redeemed.sessionId,
@@ -63,10 +66,11 @@ async function issuedSession() {
 
 describe("authenticateSession", () => {
   it("coalesces last-seen writes to at most once per hour and extends idle expiry", async () => {
-    const { sqlite, db, cookieHeader, sessionId } = await issuedSession();
-    const before = sqlite
-      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms FROM sessions WHERE id = ?")
-      .get(sessionId) as { last_seen_at_ms: number; idle_expires_at_ms: number };
+    const { raw, db, cookieHeader, sessionId } = await issuedSession();
+    const before = withMs(await raw.first(
+      "SELECT last_seen_at, idle_expires_at FROM sessions WHERE id = ?",
+      sessionId,
+    )) as { last_seen_at_ms: number; idle_expires_at_ms: number };
     expect(before.last_seen_at_ms).toBe(NOW_MS);
     expect(before.idle_expires_at_ms).toBe(NOW_MS + SESSION_IDLE_TTL_MS);
 
@@ -76,9 +80,10 @@ describe("authenticateSession", () => {
       nowMs: NOW_MS + SESSION_LAST_SEEN_COALESCE_MS - 1,
     });
     expect(withinHour.kind).toBe("ok");
-    const unchanged = sqlite
-      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms FROM sessions WHERE id = ?")
-      .get(sessionId) as { last_seen_at_ms: number; idle_expires_at_ms: number };
+    const unchanged = withMs(await raw.first(
+      "SELECT last_seen_at, idle_expires_at FROM sessions WHERE id = ?",
+      sessionId,
+    )) as { last_seen_at_ms: number; idle_expires_at_ms: number };
     expect(unchanged.last_seen_at_ms).toBe(NOW_MS);
     expect(unchanged.idle_expires_at_ms).toBe(NOW_MS + SESSION_IDLE_TTL_MS);
 
@@ -89,9 +94,10 @@ describe("authenticateSession", () => {
       nowMs: laterMs,
     });
     expect(afterHour.kind).toBe("ok");
-    const touched = sqlite
-      .prepare("SELECT last_seen_at_ms, idle_expires_at_ms, absolute_expires_at_ms FROM sessions WHERE id = ?")
-      .get(sessionId) as {
+    const touched = withMs(await raw.first(
+      "SELECT last_seen_at, idle_expires_at, absolute_expires_at FROM sessions WHERE id = ?",
+      sessionId,
+    )) as {
       last_seen_at_ms: number;
       idle_expires_at_ms: number;
       absolute_expires_at_ms: number;
@@ -112,10 +118,11 @@ describe("authenticateSession", () => {
   });
 
   it("rejects a session after 90-day absolute expiry", async () => {
-    const { sqlite, db, cookieHeader, sessionId } = await issuedSession();
-    sqlite
-      .prepare("UPDATE sessions SET idle_expires_at_ms = ? WHERE id = ?")
-      .run(NOW_MS + SESSION_ABSOLUTE_TTL_MS + 1, sessionId);
+    const { raw, db, cookieHeader, sessionId } = await issuedSession();
+    await raw.run(
+      "UPDATE sessions SET idle_expires_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS + SESSION_ABSOLUTE_TTL_MS + 1), sessionId,
+    );
     const absolute = await authenticateSession(db, {
       cookieHeader,
       authRoot,
@@ -127,7 +134,7 @@ describe("authenticateSession", () => {
 
 describe("issueSessionForClaim", () => {
   it("does not hand out another user's session for a reused claim id", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, {
       email: "Founder@Example.com",
       legacyToken: "test-token",
@@ -149,9 +156,7 @@ describe("issueSessionForClaim", () => {
     });
     expect(sessionA.kind).toBe("ok");
     if (sessionA.kind !== "ok") return;
-    const hmacA = sqlite
-      .prepare("SELECT secret_hmac FROM sessions WHERE id = ?")
-      .get(sessionA.sessionId) as { secret_hmac: string };
+    const hmacA = withMs(await raw.first("SELECT secret_hmac FROM sessions WHERE id = ?", sessionA.sessionId)) as { secret_hmac: string };
 
     const userB = await ensureUserWithDefaults(db, {
       emailCanonical: "other@example.com",
@@ -170,9 +175,10 @@ describe("issueSessionForClaim", () => {
 
     expect(sessionB.sessionId).not.toBe(sessionA.sessionId);
     expect(sessionB.credential).not.toBe(sessionA.credential);
-    const hmacAAfter = sqlite
-      .prepare("SELECT secret_hmac, user_id FROM sessions WHERE id = ?")
-      .get(sessionA.sessionId) as { secret_hmac: string; user_id: string };
+    const hmacAAfter = withMs(await raw.first(
+      "SELECT secret_hmac, user_id FROM sessions WHERE id = ?",
+      sessionA.sessionId,
+    )) as { secret_hmac: string; user_id: string };
     expect(hmacAAfter.secret_hmac).toBe(hmacA.secret_hmac);
     expect(hmacAAfter.user_id).toBe(userA);
 
@@ -196,7 +202,7 @@ describe("issueSessionForClaim", () => {
   });
 
   it("treats a revoked claim row as invalid instead of inserting a new session", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, {
       email: "Founder@Example.com",
       legacyToken: "test-token",
@@ -226,14 +232,14 @@ describe("issueSessionForClaim", () => {
       userAgentLabel: "a",
     });
     expect(retry.kind).toBe("invalid");
-    const count = sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    const count = withMs(await raw.first("SELECT COUNT(*) AS n FROM sessions")) as { n: number };
     expect(count.n).toBe(1);
   });
 });
 
 describe("session list, cap warning, and revoke", () => {
   it("marks the current session and warns at the 10-session cap before LRU", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, {
       email: "Founder@Example.com",
       legacyToken: "test-token",
@@ -281,11 +287,9 @@ describe("session list, cap warning, and revoke", () => {
       userAgentLabel: "ua-10",
     });
     expect(eleventh.kind).toBe("ok");
-    const after = sqlite
-      .prepare(
-        "SELECT id, revoked_at_ms, revocation_reason FROM sessions ORDER BY created_at_ms ASC",
-      )
-      .all() as { id: string; revoked_at_ms: number | null; revocation_reason: string | null }[];
+    const after = withMs(await raw.all(
+      "SELECT id, revoked_at, revocation_reason FROM sessions ORDER BY created_at ASC",
+    )) as { id: string; revoked_at_ms: number | null; revocation_reason: string | null }[];
     expect(after).toHaveLength(11);
     expect(after[0]?.revocation_reason).toBe("session_cap");
     expect(after[0]?.revoked_at_ms).toBe(NOW_MS + 10);
@@ -300,10 +304,10 @@ describe("session list, cap warning, and revoke", () => {
   });
 
   it("keeps idle-expired rows visible as usable false", async () => {
-    const { sqlite, db, sessionId } = await issuedSession();
+    const { raw, db, sessionId } = await issuedSession();
     const userId = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000");
     if (!userId) throw new Error("expected founder id");
-    sqlite.prepare("UPDATE sessions SET idle_expires_at_ms = ? WHERE id = ?").run(NOW_MS, sessionId);
+    await raw.run("UPDATE sessions SET idle_expires_at = ? WHERE id = ?", toTimestamp(NOW_MS), sessionId);
 
     const live = await issueSessionForClaim(db, {
       userId,
@@ -335,22 +339,20 @@ describe("session list, cap warning, and revoke", () => {
   });
 
   it("refreshes authenticated_at_ms on the same row", async () => {
-    const { sqlite, db, sessionId } = await issuedSession();
+    const { raw, db, sessionId } = await issuedSession();
     const refreshed = await refreshSessionAuthenticatedAt(db, {
       sessionId,
       userId: parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!,
       nowMs: NOW_MS + 60_000,
     });
     expect(refreshed.kind).toBe("ok");
-    const row = sqlite
-      .prepare("SELECT authenticated_at_ms FROM sessions WHERE id = ?")
-      .get(sessionId) as { authenticated_at_ms: number };
+    const row = withMs(await raw.first("SELECT authenticated_at FROM sessions WHERE id = ?", sessionId)) as { authenticated_at_ms: number };
     expect(row.authenticated_at_ms).toBe(NOW_MS + 60_000);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 1 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM sessions"))).toEqual({ n: 1 });
   });
 
   it("revokes one owned session without touching others, and revoke-all clears the rest", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, {
       email: "Founder@Example.com",
       legacyToken: "test-token",
@@ -383,7 +385,7 @@ describe("session list, cap warning, and revoke", () => {
     expect(await revokeOwnedSession(db, { sessionId: a.sessionId, userId, nowMs: NOW_MS + 2, reason: "user" })).toBe(
       "ok",
     );
-    const afterOne = sqlite.prepare("SELECT id, revoked_at_ms, revocation_reason FROM sessions").all() as {
+    const afterOne = withMs(await raw.all("SELECT id, revoked_at, revocation_reason FROM sessions")) as {
       id: string;
       revoked_at_ms: number | null;
       revocation_reason: string | null;
@@ -392,7 +394,7 @@ describe("session list, cap warning, and revoke", () => {
     expect(afterOne.find((row) => row.id === b.sessionId)?.revoked_at_ms).toBeNull();
 
     expect(await revokeAllSessionsForUser(db, { userId, nowMs: NOW_MS + 3 })).toBe(1);
-    const afterAll = sqlite.prepare("SELECT revoked_at_ms, revocation_reason FROM sessions").all() as {
+    const afterAll = withMs(await raw.all("SELECT revoked_at, revocation_reason FROM sessions")) as {
       revoked_at_ms: number | null;
       revocation_reason: string | null;
     }[];

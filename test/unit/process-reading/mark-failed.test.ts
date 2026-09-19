@@ -6,6 +6,7 @@ import type { Env } from "../../../src/index";
 import { PgReadingWriter } from "../../../src/modules/stores/postgres/reading-writer";
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { Services } from "../../../src/services";
+import { insertActiveUser } from "../../helpers/control-plane-db";
 import { axisVector, mintTenant } from "../../helpers/pg-fixtures";
 import { PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
 import { testReadingsFor, type TestReadings } from "../../helpers/test-readings";
@@ -74,9 +75,10 @@ function pending(over: Partial<Manifest> = {}): Manifest {
 }
 
 // Intake always commits the pending reading before enqueueing, so that is the
-// state a consumer finds. Each test gets its own tenant.
+// state a consumer finds. Each test gets its own tenant, an active user.
 async function seeded(manifest: Manifest | null = pending()): Promise<TestReadings> {
   const readings = testReadingsFor(mintTenant());
+  await insertActiveUser(testEnv, String(readings.tenant.tenantId));
   if (manifest) await readings.seed(manifest, { keyPrefix: KEY_PREFIX });
   return readings;
 }

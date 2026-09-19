@@ -20,6 +20,8 @@ import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store"
 import type { Manifest } from "../../src/schemas/manifest";
 
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { interceptSql, TENANT_STATUS_LOOKUP } from "../helpers/sql-faults";
 
 const READING_ID = "rd_0123456780";
 const KEY_PREFIX = buildKeyPrefix(READING_ID, "2026-05-07T12:00:00.000Z");
@@ -177,17 +179,13 @@ describe("markDeadLettered", () => {
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
-      .bind(FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     try {
       await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
       expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
       expect((await reader.findListIndexItem(READING_ID))?.status).toBe("pending");
     } finally {
-      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
-        .bind(FOUNDER_TENANT_ID)
-        .run();
+      await testControlPlane(env).run("UPDATE users SET status = 'active' WHERE id = ?", FOUNDER_TENANT_ID);
     }
   });
 
@@ -197,34 +195,14 @@ describe("markDeadLettered", () => {
     await reader.writeManifest(KEY_PREFIX, manifest);
     await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: {
-        prepare(sql: string) {
-          const stmt = workerEnv.CONTROL_PLANE.prepare(sql);
-          if (!/SELECT\s+status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\?/i.test(sql)) return stmt;
-          return {
-            bind(...params: unknown[]) {
-              const bound = stmt.bind(...params);
-              return {
-                first: async () => {
-                  throw new Error("D1 hiccup");
-                },
-                run: () => bound.run(),
-                all: () => bound.all(),
-              };
-            },
-          };
-        },
-      } as unknown as D1Database,
-    };
+    const lookup = interceptSql(TENANT_STATUS_LOOKUP, () => new Error("database hiccup"));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      await markDeadLettered(args(), wrapped, services(), founderTenant());
+      await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
     } finally {
       consoleErr.mockRestore();
+      lookup.mockRestore();
     }
 
     const after = await reader.readManifest(KEY_PREFIX);

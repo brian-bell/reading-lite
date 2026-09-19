@@ -61,111 +61,79 @@ Then `--tenant "$TENANT"`.
 `DELETE /api/account` marks the account deleting and revokes its credentials.
 The founder and staging fixtures follow the same path as every other tenant.
 The request does not enqueue a wipe. Every 15 minutes, cron starts eligible
-`ACCOUNT_WIPE_JOBS` work after the seven-day `deleting_at_ms` grace period.
+`ACCOUNT_WIPE_JOBS` work after the seven-day `deleting_at` grace period.
 `{ force: true }` skips grace for a new wipe. Cron resumes unfinished or reopened
 wipes during grace and preserves the record's force flag.
 
 The wipe refuses an unset tenant gate or empty key root with `no_tenant_prefix`.
-It never falls back to global R2 keys or unnamespaced vectors. A missing
-`READINGS_INDEX` throws `index_unbound` before any object deletion, including
-on a resumed objects phase. A deleting user with no deletion timestamp logs
+It never falls back to global R2 keys. A deleting user with no deletion timestamp logs
 `account_wipe_missing_deleting_at`; investigate before repairing the timestamp
 or forcing the wipe.
 
-### Progress, seeding, and confirmation
+### Progress and phases
 
-D1 `wipe_progress` holds the seed/object cursors, phase, lease sequence,
-heartbeat, probe/continuation counts, force flag, and completion. The old
-`vector_cursor` column is retired and remains NULL. Writes compare and advance
-`lease_seq`; a delivery that loses ownership reports `lease_held` and acks.
-The queue consumer runs at concurrency 1. `updated_at_ms` is advisory for cron,
-not proof that a job has ended, even after a long delayed retry.
+`wipe_progress` (PostgreSQL, [ADR 0005](decisions/0005-postgresql-storage.md))
+holds the phase, the R2 object cursor, lease sequence, heartbeat, continuation
+count, force flag, and completion. Writes compare and advance `lease_seq`; a
+delivery that loses ownership reports `lease_held` and acks. The queue consumer
+runs at concurrency 1. `updated_at` is advisory for cron, not proof that a job
+has ended, even after a long delayed retry.
 
-Heartbeats are throttled to one minute. Cursor, phase, lease, continuation,
-probe, and completion updates persist whenever a later delivery needs them.
+The phases run in order:
+
+1. `rows` deletes every reading row the tenant owns in one statement. Revisions,
+   URLs, relationships, attempts and embeddings go with them by cascade, so a
+   reading leaves search as it leaves the list. A database error fails the
+   delivery before any object is deleted, and the queue retries it.
+2. `objects` pages the tenant's R2 root, 1000 keys at a time, and ends by
+   deleting rows once more, for a publisher that passed its tenant check before
+   the account was fenced and committed after the rows phase.
+3. `done` writes the completion record.
+
+Heartbeats are throttled to one minute. Cursor, phase, lease, continuation, and
+completion updates persist whenever a later delivery needs them.
 `ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds self-sent continuation messages so a
 stalled wipe cannot reset its retry budget forever. Exceeding that bound throws
-and eventually reaches the wipe DLQ, which logs and acks without touching reading
-manifests. Reopening resets the continuation count and repeats seeding.
+and eventually reaches the wipe DLQ, which logs and acks without touching the
+tenant. A finished wipe whose prefix gains objects again is reopened from
+`rows` with a fresh continuation count.
 
-Before either deletion phase, the wipe pages its tenant R2 root, derives IDs
-with `readingIdFromRelativeKey`, and inserts missing vector-ledger rows.
-Existing rows, including delete stamps and confirmation streaks, remain intact.
-Seeding resumes from `seed_cursor` and finishes at `seed_completed_at_ms`.
-No reading object is deleted before its ID is in the ledger.
+Embeddings are rows, so there is no vector ledger, `deleteByIds` or namespace
+probe on this path. Vectors written to Vectorize before cutover are left to
+its retirement at cutover. A PostgreSQL wipe always completes with
+`residue=false`; the column keeps the history imported from D1.
 
-`account_wipe_ledger_seeded` reports `rows_created`. Nonzero is expected for a
-corpus predating the ledger; investigate it on a corpus whose writers should
-have covered every ID. Operator seeding is a live-tenant repair or rehearsal
-option, never a wipe prerequisite:
-
-```sh
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
-```
-
-The operator command uses the same insert-only helper and refuses `global`.
-Extra ledger rows cost harmless delete requests; missing rows can leave vectors
-unaddressable by the wipe.
-
-The vector phase selects live ledger rows, submits composed-ID `deleteByIds`,
-and marks each batch `delete_submitted`. That query advances itself without a
-vector cursor. Vector deletes precede paged R2 deletion. The publisher also
-removes its vector promptly when it detects account deletion; the durable
-ledger lets later cleanup address a missed publisher compensation.
-
-Clean completion requires both an empty ledger and a clean namespace probe.
-The probe runs even with an empty ledger. Confirmation follows the measured
-constants in `src/control-plane/vector-ledger.ts`:
-
-- Wait at least 120 seconds after delete submission before counting confirmation.
-- An empty namespaced query clears only `delete_submitted` rows, never live rows.
-- Otherwise, `getByIds` requests contain at most 20 IDs. Clearing a row needs two
-  successful absent observations at least 60 seconds apart. Non-200 responses
-  provide no absence evidence and reset the streak.
-- Retry backoff is 120, 240, then 480 seconds, capped at four confirmation
-  attempts. That bound must stay strictly below the wipe queue's `max_retries`,
-  currently six, because first-confirmation deferral and transient retries do
-  not all spend a probe attempt.
-
-`describe()`, `vectorCount`, and `processedUpToMutation` are not confirmation
-signals; staging measurements saw them move backwards between replicas.
-At the confirmation bound, the wipe logs `account_wipe_namespace_residue` with
-tenant ID only, completes with `residue=1`, and retains unconfirmed ledger rows
-for repair. `probe_saw_residue` records whether a probe saw vectors rather than
-only errors. Completion with residue requires investigation; it is not a clean
-namespace certification.
-
-`completed_at_ms` and `residue` describe current completion and clear on reopen.
-`first_completed_at_ms` and `first_residue` are written once and pinned in SQL.
+`completed_at` and `residue` describe current completion and clear on reopen.
+`first_completed_at` and `first_residue` are written once and pinned in SQL.
 Teardown gates on current completion; reports preserve first-completion history.
-Completion clears cursors and keeps the progress row until teardown.
+Completion clears the cursor and keeps the progress row until teardown.
 
 ### Control-plane teardown and email reuse
 
 Cron runs `src/control-plane/account-teardown.ts` after wipe completion and an
-empty-prefix check. A failure retries on the next tick. Teardown also runs for
-a completed `residue=1` wipe; it copies that flag to the audit record and retains
-unconfirmed vector-ledger rows.
+empty-prefix check. A failure retries on the next tick. It copies the wipe's
+residue flags to the audit record.
 
 1. Write `account_deletions` first. It retains tenant ID, deletion/completion/
    teardown timestamps, and current/first residue flags. It has no foreign key,
    email, display name, or reading IDs. Its presence proves an attempt, not
    successful teardown.
 2. Purge the tenant's TenantUsageGuard storage/alarm and its GlobalUsageGuard
-   leases and spend records. Guard errors stop teardown before D1 deletion.
+   leases and spend records. Guard errors stop teardown before any row deletion.
    Incurred charges remain in the global daily aggregate. AuthRateGuard retains
    hashed TTL-windowed email/IP counters because it has no tenant key.
 3. Resolve owned address history, then recheck the R2 prefix immediately before
-   `db.batch`. Only confirmed-empty permits the batch. Leftover objects reopen
-   the wipe on a later tick; unknown/error observations leave teardown for retry.
-4. Delete child rows before parents in one D1 batch: token scopes/tokens,
-   sessions, challenges, digest deliveries, relationship refresh checkpoints,
-   settings, limits, eligible invites,
-   wipe progress, then users. D1 enforces foreign keys; none cascade.
-   Migration 0012 lets unconfirmed vector-ledger rows outlive users.
+   the final transaction. Only confirmed-empty permits it. Leftover objects
+   reopen the wipe on a later tick; unknown/error observations leave teardown
+   for retry.
+4. In one transaction, lock the `users` and `wipe_progress` rows, re-check that
+   the account is still `deleting` and the wipe still complete, then delete
+   child rows before parents: token scopes/tokens, sessions, challenges, digest
+   deliveries, relationship refresh checkpoints, settings, limits, eligible
+   invites, wipe progress, then users. PostgreSQL enforces the foreign keys;
+   none cascade.
 
-An object arriving between the final prefix verdict and D1 commit can still be
+An object arriving between the final prefix verdict and the commit can still be
 orphaned after cron loses the users row it enumerates. The recheck narrows this
 race; it does not close it. Keep that #261 limit in deletion reports.
 
@@ -675,8 +643,8 @@ the existing token.
 Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
 an existing SPA build.
 
-Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
-bootstrap of `dev-local-token`).
+Local `npm run dev` runs `dev:setup` first (local Postgres and D1 migrations,
+then the founder bootstrap of `dev-local-token` into Postgres).
 
 The legacy SPA is served from Cloudflare Pages on the same hostname as the
 Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
@@ -1320,11 +1288,11 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
 ```
 
-Expect a deferral after new delete submissions. Confirmation cannot count until
-120 seconds after submission, then follows the 120/240/480-second backoff and
-four-attempt bound described under [confirmation](#progress-seeding-and-confirmation).
-A clean probe can complete immediately when there are no submitted rows requiring
-the initial delay. Do not judge a wipe by its number of deliveries alone.
+On the PostgreSQL candidate a wipe has no confirmation wait: it completes in
+the delivery that empties the prefix, one delivery per 20,000 objects (see
+[progress and phases](#progress-and-phases)). The query above reads D1 until
+the operator commands move in slice 1d; on the candidate, read `wipe_progress`
+from PostgreSQL instead.
 
 `probe_saw_residue=1` can record normal propagation even when the final wipe is
 clean. `residue=1` means the bounded wipe completed without confirmation and
@@ -2539,8 +2507,8 @@ To reset local R2 to a pristine pack, stop the dev server and run:
 rm -rf .wrangler/state/v3/r2 && npm run seed:local
 ```
 
-Then start `npm run dev` again. Local D1 (accounts, sessions) lives
-elsewhere under `.wrangler/state/v3/` and is untouched.
+Then start `npm run dev` again. Accounts and sessions live in local Postgres
+and are untouched.
 
 Local dev leaves `TENANT_DATA_PLANE` unset, so the local founder account reads
 global-rooted keys — which is exactly what the seeder writes. Do not seed under

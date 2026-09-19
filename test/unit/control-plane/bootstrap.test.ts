@@ -9,7 +9,10 @@ import {
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { deriveHmacKey, hmacHex } from "../../../src/control-plane/crypto";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { fromTimestamp, toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
@@ -30,7 +33,7 @@ function input() {
 
 describe("bootstrapFounder", () => {
   it("creates the founder user, defaults, explicit limits, and a 90-day legacy token", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     const result = await bootstrapFounder(db, input());
 
     expect(result.userId).toBe(`usr_${USER_UUID}`);
@@ -49,14 +52,14 @@ describe("bootstrapFounder", () => {
       status: "active",
     });
 
-    const settings = await db.first<{ digest_cadence: string; time_zone: string; notify_immediate: number }>(
+    const settings = await db.first<{ digest_cadence: string; time_zone: string; notify_immediate: boolean }>(
       "SELECT digest_cadence, time_zone, notify_immediate FROM user_settings WHERE user_id = ?",
       result.userId,
     );
     expect(settings).toEqual({
       digest_cadence: "off",
       time_zone: "UTC",
-      notify_immediate: 1,
+      notify_immediate: true,
     });
 
     const limits = await db.first<typeof FOUNDER_PLACEHOLDER_LIMITS & { policy_version: number }>(
@@ -68,15 +71,15 @@ describe("bootstrapFounder", () => {
 
     const token = await db.first<{
       format: string;
-      expires_at_ms: number;
+      expires_at: string;
       hash_key_version: number;
     }>(
-      "SELECT format, expires_at_ms, hash_key_version FROM api_tokens WHERE id = ?",
+      "SELECT format, expires_at, hash_key_version FROM api_tokens WHERE id = ?",
       result.tokenId,
     );
     expect(token?.format).toBe("legacy");
     expect(token?.hash_key_version).toBe(1);
-    expect(token?.expires_at_ms).toBe(NOW_MS + TOKEN_MAX_TTL_MS);
+    expect(fromTimestamp(token?.expires_at)).toBe(NOW_MS + TOKEN_MAX_TTL_MS);
 
     const scopes = await db.all<{ scope: string }>(
       "SELECT scope FROM api_token_scopes WHERE token_id = ? ORDER BY scope",
@@ -96,7 +99,7 @@ describe("bootstrapFounder", () => {
   });
 
   it("is idempotent and keeps the original founder identity on re-run", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     const first = await bootstrapFounder(db, input());
     const second = await bootstrapFounder(db, {
       ...input(),
@@ -116,26 +119,28 @@ describe("bootstrapFounder", () => {
   });
 
   it("repairs an expired or revoked legacy token on re-run", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     const first = await bootstrapFounder(db, input());
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ?, revoked_at_ms = ? WHERE id = ?").run(
-      NOW_MS - 1,
-      NOW_MS,
+    await raw.run(
+      "UPDATE api_tokens SET expires_at = ?, revoked_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS - 1),
+      toTimestamp(NOW_MS),
       first.tokenId,
     );
 
     const second = await bootstrapFounder(db, input());
     expect(second.createdToken).toBe(false);
 
-    const token = sqlite
-      .prepare("SELECT expires_at_ms, revoked_at_ms FROM api_tokens WHERE id = ?")
-      .get(first.tokenId) as { expires_at_ms: number; revoked_at_ms: number | null };
+    const token = withMs(await raw.first(
+      "SELECT expires_at, revoked_at FROM api_tokens WHERE id = ?",
+      first.tokenId,
+    )) as { expires_at_ms: number; revoked_at_ms: number | null };
     expect(token.revoked_at_ms).toBeNull();
     expect(token.expires_at_ms).toBe(NOW_MS + TOKEN_MAX_TTL_MS);
   });
 
   it("plans without writing when apply is false", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     const result = await bootstrapFounder(db, input(), { apply: false });
     expect(result.createdUser).toBe(true);
     expect(result.createdToken).toBe(true);
@@ -143,42 +148,43 @@ describe("bootstrapFounder", () => {
   });
 
   it("refuses a HMAC that already belongs to a different user", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, input());
-    sqlite
-      .prepare(
-        `INSERT INTO users (
+    await raw.run(
+      `INSERT INTO users (
            id, email_canonical, email_display, status,
-           email_verified_at_ms, created_at_ms, updated_at_ms
+           email_verified_at, created_at, updated_at
          ) VALUES (?, 'other@example.com', 'other@example.com', 'active', ?, ?, ?)`,
-      )
-      .run("usr_11111111-1111-4111-8111-111111111111", NOW_MS, NOW_MS, NOW_MS);
-    sqlite
-      .prepare("UPDATE api_tokens SET user_id = ? WHERE id = ?")
-      .run("usr_11111111-1111-4111-8111-111111111111", `tok_${TOKEN_UUID}`);
+      "usr_11111111-1111-4111-8111-111111111111", toTimestamp(NOW_MS), toTimestamp(NOW_MS), toTimestamp(NOW_MS),
+    );
+    await raw.run(
+      "UPDATE api_tokens SET user_id = ? WHERE id = ?",
+      "usr_11111111-1111-4111-8111-111111111111", `tok_${TOKEN_UUID}`,
+    );
 
     await expect(bootstrapFounder(db, input())).rejects.toThrow(/different user|owned by a different user/i);
 
-    const scopes = sqlite
-      .prepare("SELECT COUNT(*) AS n FROM api_token_scopes WHERE token_id = ?")
-      .get(`tok_${TOKEN_UUID}`) as { n: number };
+    const scopes = withMs(await raw.first(
+      "SELECT COUNT(*) AS n FROM api_token_scopes WHERE token_id = ?",
+      `tok_${TOKEN_UUID}`,
+    )) as { n: number };
     expect(scopes.n).toBe(API_SCOPES.length);
-    const users = sqlite.prepare("SELECT email_canonical FROM users ORDER BY email_canonical").all() as {
+    const users = withMs(await raw.all("SELECT email_canonical FROM users ORDER BY email_canonical")) as {
       email_canonical: string;
     }[];
     expect(users.map((row) => row.email_canonical)).toEqual(["founder@example.com", "other@example.com"]);
   });
 
   it("refuses when the HMAC matches a standard-format token", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     await bootstrapFounder(db, input());
-    sqlite.prepare("UPDATE api_tokens SET format = 'standard'").run();
+    await raw.run("UPDATE api_tokens SET format = 'standard'");
 
     await expect(bootstrapFounder(db, input())).rejects.toThrow(/non-legacy|standard/i);
   });
 
   it("refuses to change an existing system_policy signup_mode", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     await bootstrapFounder(db, input());
     await expect(bootstrapFounder(db, { ...input(), signupMode: "closed" })).rejects.toThrow(
       /signup_mode/,
@@ -188,7 +194,7 @@ describe("bootstrapFounder", () => {
   });
 
   it("resolves an existing legacy token stored under the previous auth root", async () => {
-    const { db } = openMigratedControlPlane();
+    const { db } = openControlPlane();
     const previousRoot = {
       secret: parseAuthRootSecret(
         "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
@@ -205,20 +211,20 @@ describe("bootstrapFounder", () => {
       {
         sql: `INSERT INTO users (
                 id, email_canonical, email_display, status,
-                email_verified_at_ms, created_at_ms, updated_at_ms
+                email_verified_at, created_at, updated_at
               ) VALUES (?, 'founder@example.com', 'Founder@Example.com', 'active', ?, ?, ?)`,
-        params: [`usr_${USER_UUID}`, NOW_MS, NOW_MS, NOW_MS],
+        params: [`usr_${USER_UUID}`, toTimestamp(NOW_MS), toTimestamp(NOW_MS), toTimestamp(NOW_MS)],
       },
       {
         sql: `INSERT INTO api_tokens (
-                id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+                id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
               ) VALUES (?, ?, 'legacy', 'legacy', ?, 0, ?, ?)`,
         params: [
           `tok_${TOKEN_UUID}`,
           `usr_${USER_UUID}`,
           previousHmac,
-          NOW_MS,
-          NOW_MS + TOKEN_MAX_TTL_MS,
+          toTimestamp(NOW_MS),
+          toTimestamp(NOW_MS + TOKEN_MAX_TTL_MS),
         ],
       },
     ]);

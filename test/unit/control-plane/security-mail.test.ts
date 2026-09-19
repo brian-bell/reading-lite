@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { latestLocalMagicLink, storeLocalMagicLink } from "../../../src/control-plane/magic-link-mail";
 import { deliverSecurityMail, renderSecurityMail } from "../../../src/control-plane/security-mail";
 import { buildAuthResendPayload } from "../../../src/control-plane/resend-mail";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
 import type { Env } from "../../../src/index";
+
+const openControlPlane = useControlPlane();
 
 describe("renderSecurityMail", () => {
   it("describes revoke-all without secrets", () => {
@@ -97,7 +99,7 @@ describe("deliverSecurityMail", () => {
   });
 
   it("does not write local-sink security mail into the magic-link outbox", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     const verifyUrl = "https://reading.test.example/auth/verify#ml_live";
     await storeLocalMagicLink(db, {
       to: "founder@example.com",
@@ -113,6 +115,6 @@ describe("deliverSecurityMail", () => {
     });
     const latest = await latestLocalMagicLink(db, "founder@example.com");
     expect(latest?.verify_url).toBe(verifyUrl);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM dev_mail_outbox").get()).toEqual({ n: 1 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM dev_mail_outbox"))).toEqual({ n: 1 });
   });
 });

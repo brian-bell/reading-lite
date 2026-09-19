@@ -1,6 +1,7 @@
 import { TenantRecoveryRequestSchema, tenantLeaseRecovery, type TenantRecoveryRequest } from "./processing-lease-recovery";
 import { inspectTenant } from "./operator-inspection";
 import type { Env } from "../index";
+import { withControlPlane } from "./db";
 import { bumpWindow } from "./auth-rate-guard";
 import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
@@ -165,12 +166,12 @@ function positiveInt(value: unknown): number | null {
 
 async function loadLimits(env: Env, tenantId: string): Promise<TenantIngressLimits | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT submissions_per_hour, monthly_readings
-       FROM tenant_limits WHERE tenant_id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ submissions_per_hour: number; monthly_readings: number }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ submissions_per_hour: number; monthly_readings: number }>(
+        "SELECT submissions_per_hour, monthly_readings FROM tenant_limits WHERE tenant_id = ?",
+        tenantId,
+      ),
+    );
     if (!row) return null;
     const submissionsPerHour = positiveInt(row.submissions_per_hour);
     const monthlyReadings = positiveInt(row.monthly_readings);
@@ -183,11 +184,9 @@ async function loadLimits(env: Env, tenantId: string): Promise<TenantIngressLimi
 
 async function loadConcurrencyLimit(env: Env, tenantId: string): Promise<number | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT max_concurrent_work FROM tenant_limits WHERE tenant_id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ max_concurrent_work: number }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ max_concurrent_work: number }>("SELECT max_concurrent_work FROM tenant_limits WHERE tenant_id = ?", tenantId),
+    );
     if (!row) return null;
     return positiveInt(row.max_concurrent_work);
   } catch {
@@ -296,7 +295,9 @@ export class TenantUsageGuard implements DurableObject {
     return this.state.blockConcurrencyWhile(async () => {
       if (body.kind === "peek_lease" || body.kind === "retire_lease") return json(await tenantLeaseRecovery(this.state.storage, body));
       if (body.kind === "tenant_status") {
-        const limits = await this.env.CONTROL_PLANE.prepare("SELECT policy_version, submissions_per_hour, monthly_readings, max_concurrent_work FROM tenant_limits WHERE tenant_id = ?").bind(body.tenantId).first();
+        const limits = await withControlPlane(this.env, (db) =>
+          db.first("SELECT policy_version, submissions_per_hour, monthly_readings, max_concurrent_work FROM tenant_limits WHERE tenant_id = ?", body.tenantId),
+        );
         return json(await inspectTenant(this.state.storage, Date.now(), limits));
       }
       if (body.kind === "purge_tenant") return this.purgeTenant();

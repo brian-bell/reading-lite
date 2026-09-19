@@ -1,12 +1,16 @@
 // Founder-bootstrap library: argument parsing, the idempotent bootstrap run,
-// and the wrangler-backed D1 adapter. The operator entry point is
-// `ops founder bootstrap` (scripts/ops-lib/commands/founder-bootstrap.ts);
-// dev-setup and cloud-agent-install reuse the same run function.
+// the PostgreSQL connection it writes through (ADR 0005), and the
+// wrangler-backed D1 adapter the remaining D1 operator commands still use
+// until 1c.5. The operator entry point is `ops founder bootstrap`
+// (scripts/ops-lib/commands/founder-bootstrap.ts); dev-setup and
+// cloud-agent-install reuse the same run function.
 import { parseArgs } from "node:util";
 import { bootstrapFounder, signupModeForEnv, type SignupMode } from "../../src/control-plane/bootstrap";
 import { parseAuthRootKeyVersion, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import { redactEmail } from "../../src/control-plane/email";
-import type { ControlPlaneDb, SqlStatement } from "../../src/control-plane/db";
+import { fromSql, type ControlPlaneDb, type SqlStatement } from "../../src/control-plane/db";
+import { sqlFromConnectionString } from "../../src/modules/db/sql";
+import { localDatabase } from "../pg-lib/local-postgres";
 import { loadDotVars } from "./dotvars";
 import { spawnWrangler } from "./wrangler-cli";
 
@@ -17,17 +21,42 @@ export interface FounderBootstrapCliArgs {
   email?: string;
   env: BootstrapEnvName;
   confirmProduction: boolean;
+  // Staging and production: the environment variable holding a DIRECT
+  // PostgreSQL connection string. Local uses the dev database.
+  databaseUrlEnv: string;
 }
 
 export interface FounderBootstrapRunResult {
   exitCode: number;
 }
 
+export interface OpenedControlPlane {
+  db: ControlPlaneDb;
+  close(): Promise<void>;
+}
+
 export interface FounderBootstrapDeps {
   envVars: Record<string, string | undefined>;
   nowMs: number;
   write: (line: string) => void;
-  openDb: (env: BootstrapEnvName) => Promise<ControlPlaneDb>;
+  openDb: (databaseUrl: string) => Promise<OpenedControlPlane>;
+}
+
+// A direct connection, never Hyperdrive: the bootstrap's advisory lock and
+// transaction need one session.
+export async function openPostgresControlPlane(databaseUrl: string): Promise<OpenedControlPlane> {
+  const sql = sqlFromConnectionString(databaseUrl);
+  return { db: fromSql(sql), close: () => sql.end() };
+}
+
+// Where the founder goes: the local dev database, or the direct connection
+// string the operator named for staging and production.
+export function founderDatabaseUrl(
+  args: Pick<FounderBootstrapCliArgs, "env" | "databaseUrlEnv">,
+  envVars: Record<string, string | undefined>,
+): string | null {
+  if (args.env === "local") return localDatabase(envVars).url;
+  return envVars[args.databaseUrlEnv]?.trim() || null;
 }
 
 const ENV_NAMES = new Set<BootstrapEnvName>(["local", "staging", "production"]);
@@ -54,6 +83,7 @@ export function parseFounderBootstrapArgs(
       email: { type: "string" },
       env: { type: "string", default: "local" },
       "confirm-production": { type: "boolean", default: false },
+      "database-url-env": { type: "string", default: "DATABASE_URL" },
       help: { type: "boolean", default: false },
     },
   });
@@ -69,6 +99,7 @@ export function parseFounderBootstrapArgs(
     ...(values.email ? { email: values.email } : {}),
     env: env as BootstrapEnvName,
     confirmProduction: values["confirm-production"] === true,
+    databaseUrlEnv: values["database-url-env"] ?? "DATABASE_URL",
   };
 }
 
@@ -103,11 +134,17 @@ export async function runFounderBootstrap(
     return { exitCode: 2 };
   }
 
+  const databaseUrl = founderDatabaseUrl(args, deps.envVars);
+  if (!databaseUrl) {
+    deps.write(`missing ${args.databaseUrlEnv} (a direct PostgreSQL connection string for ${args.env})\n`);
+    return { exitCode: 2 };
+  }
+
   const signupMode: SignupMode = signupModeForEnv(args.env);
-  const db = await deps.openDb(args.env);
+  const opened = await deps.openDb(databaseUrl);
   const previousRootSecret = deps.envVars.AUTH_PREVIOUS_ROOT_SECRET;
   const result = await bootstrapFounder(
-    db,
+    opened.db,
     {
       email,
       legacyToken,
@@ -127,7 +164,7 @@ export async function runFounderBootstrap(
         : {}),
     },
     { apply: args.execute },
-  );
+  ).finally(() => opened.close());
 
   deps.write(`founder email: ${redactEmail(email)}\n`);
   deps.write(`environment:   ${args.env} (signup_mode=${signupMode})\n`);
@@ -141,7 +178,7 @@ export async function runFounderBootstrap(
     deps.write("\n[DRY RUN] not writing. Pass --execute to apply.\n");
     return { exitCode: 0 };
   }
-  deps.write("\n[EXECUTE] founder principal and imported legacy token are in D1.\n");
+  deps.write("\n[EXECUTE] founder principal and imported legacy token are in PostgreSQL.\n");
   return { exitCode: 0 };
 }
 
@@ -188,7 +225,7 @@ export function makeWranglerD1(opts: {
     return { changes: wranglerChangeCount(changes, "meta.changes") };
   };
 
-  return {
+  const db: ControlPlaneDb = {
     async first<T>(sql: string, ...params: unknown[]) {
       const [{ results: rows }] = await exec(sql, params);
       return (rows[0] as T | undefined) ?? null;
@@ -206,7 +243,10 @@ export function makeWranglerD1(opts: {
     async run(sql, ...params) {
       return write(sql, params);
     },
+    // No interactive transactions through wrangler: runs on the same handle.
+    transaction: (work) => work(db),
   };
+  return db;
 }
 
 export function renderSql(sql: string, params: readonly unknown[]): string {

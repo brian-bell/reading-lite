@@ -8,7 +8,6 @@ import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { consumeProcessReadingMessage } from "../../src/control-plane/envelope";
-import { fromD1 } from "../../src/control-plane/db";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
 import {
   FOUNDER_TENANT_ID,
@@ -16,6 +15,8 @@ import {
   PUBLIC_LOOKUP,
   insertSecondTenant,
 } from "../helpers/tenant-fixtures";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const TOKEN_ID = "tok_550e8400-e29b-41d4-a716-446655440000";
@@ -113,26 +114,26 @@ async function redeemUser(redemptionId: string, email = "founder@test.example") 
 
 async function restoreFounder(): Promise<void> {
   const workerEnv = env as unknown as Env;
-  await workerEnv.CONTROL_PLANE.prepare(
-    "UPDATE users SET status = 'active', deleting_at_ms = NULL WHERE id = ?",
-  )
-    .bind(FOUNDER_TENANT_ID)
-    .run();
-  await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = NULL WHERE user_id = ?")
-    .bind(FOUNDER_TENANT_ID)
-    .run();
+  await testControlPlane(workerEnv).run(
+    "UPDATE users SET status = 'active', deleting_at = NULL WHERE id = ?",
+    FOUNDER_TENANT_ID,
+  );
+  await testControlPlane(workerEnv).run(
+    "UPDATE api_tokens SET revoked_at = NULL WHERE user_id = ?",
+    FOUNDER_TENANT_ID,
+  );
 }
 
 async function restoreOtherTenant(): Promise<void> {
   const workerEnv = env as unknown as Env;
-  await workerEnv.CONTROL_PLANE.prepare(
-    "UPDATE users SET status = 'active', deleting_at_ms = NULL WHERE id = ?",
-  )
-    .bind(OTHER_TENANT_ID)
-    .run();
-  await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = NULL WHERE user_id = ?")
-    .bind(OTHER_TENANT_ID)
-    .run();
+  await testControlPlane(workerEnv).run(
+    "UPDATE users SET status = 'active', deleting_at = NULL WHERE id = ?",
+    OTHER_TENANT_ID,
+  );
+  await testControlPlane(workerEnv).run(
+    "UPDATE api_tokens SET revoked_at = NULL WHERE user_id = ?",
+    OTHER_TENANT_ID,
+  );
 }
 
 describe("DELETE /api/account", () => {
@@ -157,12 +158,14 @@ describe("DELETE /api/account", () => {
     expect(await deleted.res.json()).toEqual({ ok: true });
 
     const [founderRow, otherRow] = await Promise.all([
-      workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
-        .bind(founder.userId)
-        .first<{ status: string }>(),
-      workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
-        .bind(other.userId)
-        .first<{ status: string }>(),
+      testControlPlane(workerEnv).first<{ status: string }>(
+        "SELECT status FROM users WHERE id = ?",
+        founder.userId,
+      ),
+      testControlPlane(workerEnv).first<{ status: string }>(
+        "SELECT status FROM users WHERE id = ?",
+        other.userId,
+      ),
     ]);
     expect(founderRow?.status).toBe("active");
     expect(otherRow?.status).toBe("deleting");
@@ -174,9 +177,9 @@ describe("DELETE /api/account", () => {
     const session = await redeemUser("clm_acct_gates");
     const workerEnv = env as unknown as Env;
     const current = (
-      await workerEnv.CONTROL_PLANE.prepare(
-        "SELECT id FROM sessions WHERE revoked_at_ms IS NULL ORDER BY created_at_ms DESC LIMIT 1",
-      ).first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM sessions WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
     )?.id;
     expect(current).toBeTruthy();
 
@@ -188,9 +191,10 @@ describe("DELETE /api/account", () => {
     expect(bearer.res.status).toBe(403);
     expect(await bearer.res.json()).toEqual({ error: "forbidden" });
 
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(Date.parse(NOW) - 11 * 60 * 1000, current)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(Date.parse(NOW) - 11 * 60 * 1000), current,
+    );
     const stale = await request("/api/account", {
       method: "DELETE",
       cookie: session.cookie,
@@ -200,9 +204,10 @@ describe("DELETE /api/account", () => {
     expect(stale.res.status).toBe(403);
     expect(await stale.res.json()).toEqual({ error: "recent authentication required" });
 
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(Date.parse(NOW), current)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(Date.parse(NOW)), current,
+    );
 
     const missingConfirm = await request("/api/account", {
       method: "DELETE",
@@ -227,9 +232,10 @@ describe("DELETE /api/account", () => {
     });
     expect(missingCsrf.res.status).toBe(403);
 
-    const still = await workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?").bind(
+    const still = await testControlPlane(workerEnv).first<{ status: string }>(
+      "SELECT status FROM users WHERE id = ?",
       FOUNDER_TENANT_ID,
-    ).first<{ status: string }>();
+    );
     expect(still?.status).toBe("active");
   });
 
@@ -245,14 +251,13 @@ describe("DELETE /api/account", () => {
       ),
       `acct-del-${extraTokenId}`,
     );
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       `INSERT INTO api_tokens (
          id, user_id, name, format, secret_hmac, hash_key_version,
-         created_at_ms, expires_at_ms
+         created_at, expires_at
        ) VALUES (?, ?, 'cli', 'standard', ?, 1, ?, ?)`,
-    )
-      .bind(extraTokenId, session.userId, extraHmac, now, now + 90 * 24 * 60 * 60 * 1000)
-      .run();
+      extraTokenId, session.userId, extraHmac, toTimestamp(now), toTimestamp(now + 90 * 24 * 60 * 60 * 1000),
+    );
 
     const securityMail: SecurityMail[] = [];
     const deleted = await request("/api/account", {
@@ -274,26 +279,23 @@ describe("DELETE /api/account", () => {
       /secret|token|cookie|credential|authorization|hmac/i,
     );
 
-    const user = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT status, deleting_at_ms FROM users WHERE id = ?",
-    )
-      .bind(session.userId)
-      .first<{ status: string; deleting_at_ms: number }>();
+    const user = await testControlPlane(workerEnv).first<{ status: string; deleting_at: string }>(
+      "SELECT status, deleting_at FROM users WHERE id = ?",
+      session.userId,
+    );
     expect(user?.status).toBe("deleting");
-    expect(user?.deleting_at_ms).toBe(Date.parse(NOW));
+    expect(user?.deleting_at).toBe(NOW);
 
-    const liveSessions = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND revoked_at_ms IS NULL",
-    )
-      .bind(session.userId)
-      .first<{ n: number }>();
+    const liveSessions = await testControlPlane(workerEnv).first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND revoked_at IS NULL",
+      session.userId,
+    );
     expect(Number(liveSessions?.n)).toBe(0);
 
-    const liveTokens = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ? AND revoked_at_ms IS NULL",
-    )
-      .bind(session.userId)
-      .first<{ n: number }>();
+    const liveTokens = await testControlPlane(workerEnv).first<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ? AND revoked_at IS NULL",
+      session.userId,
+    );
     expect(Number(liveTokens?.n)).toBe(0);
 
     const cookieAfter = await request("/api/whoami", { cookie: session.cookie });
@@ -327,7 +329,7 @@ describe("DELETE /api/account", () => {
     let acked = false;
     const wrapped = { ...msg, ack: () => { acked = true; } };
     await consumeProcessReadingMessage(wrapped, {
-      db: fromD1(workerEnv.CONTROL_PLANE),
+      db: testControlPlane(workerEnv),
       nowMs: Date.parse(NOW),
       process,
     });
@@ -352,9 +354,10 @@ describe("DELETE /api/account", () => {
     expect(await pinned.res.json()).toEqual(mismatch);
 
     // A stale sign-in on the wrong account is not sent to step-up first.
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE user_id = ?")
-      .bind(Date.parse(NOW) - 11 * 60 * 1000, session.userId)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE user_id = ?",
+      toTimestamp(Date.parse(NOW) - 11 * 60 * 1000), session.userId,
+    );
     const stale = await request("/api/account", {
       method: "DELETE",
       cookie: session.cookie,
@@ -364,14 +367,16 @@ describe("DELETE /api/account", () => {
     });
     expect(stale.res.status).toBe(412);
 
-    const row = await workerEnv.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
-      .bind(session.userId)
-      .first<{ status: string }>();
+    const row = await testControlPlane(workerEnv).first<{ status: string }>(
+      "SELECT status FROM users WHERE id = ?",
+      session.userId,
+    );
     expect(row?.status).toBe("active");
 
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE user_id = ?")
-      .bind(Date.parse(NOW), session.userId)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE user_id = ?",
+      toTimestamp(Date.parse(NOW)), session.userId,
+    );
     const matching = await request("/api/account", {
       method: "DELETE",
       cookie: session.cookie,

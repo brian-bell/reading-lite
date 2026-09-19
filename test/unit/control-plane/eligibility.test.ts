@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { resolveLoginEligibility, loadSignupMode } from "../../../src/control-plane/eligibility";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
@@ -11,7 +14,7 @@ const FOUNDER = "usr_550e8400-e29b-41d4-a716-446655440000";
 const SUSPENDED = "usr_660e8400-e29b-41d4-a716-446655440000";
 
 async function seeded(signupMode: "open" | "invite_only" | "closed") {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -21,15 +24,14 @@ async function seeded(signupMode: "open" | "invite_only" | "closed") {
     newUserId: () => FOUNDER,
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  sqlite
-    .prepare(
-      `INSERT INTO users (
+  await raw.run(
+    `INSERT INTO users (
          id, email_canonical, email_display, status,
-         created_at_ms, updated_at_ms, suspended_at_ms
+         created_at, updated_at, suspended_at
        ) VALUES (?, 'suspended@example.com', 'Suspended@example.com', 'suspended', ?, ?, ?)`,
-    )
-    .run(SUSPENDED, NOW_MS, NOW_MS, NOW_MS);
-  return { sqlite, db };
+    SUSPENDED, toTimestamp(NOW_MS), toTimestamp(NOW_MS), toTimestamp(NOW_MS),
+  );
+  return { raw, db };
 }
 
 describe("resolveLoginEligibility matrix", () => {
@@ -59,13 +61,12 @@ describe("resolveLoginEligibility matrix", () => {
   });
 
   it("invite_only unknown with a live invite is provisionable", async () => {
-    const { sqlite, db } = await seeded("invite_only");
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, expires_at_ms)
+    const { raw, db } = await seeded("invite_only");
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at, expires_at)
          VALUES ('invited@example.com', 'Invited@example.com', ?, ?)`,
-      )
-      .run(NOW_MS, NOW_MS + 86_400_000);
+      toTimestamp(NOW_MS), toTimestamp(NOW_MS + 86_400_000),
+    );
     const result = await resolveLoginEligibility(db, "invited@example.com", NOW_MS);
     expect(result).toEqual({
       kind: "provisionable",
@@ -75,30 +76,27 @@ describe("resolveLoginEligibility matrix", () => {
   });
 
   it("closed ignores a live invite for an unknown address", async () => {
-    const { sqlite, db } = await seeded("closed");
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms)
+    const { raw, db } = await seeded("closed");
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at)
          VALUES ('invited@example.com', 'Invited@example.com', ?)`,
-      )
-      .run(NOW_MS);
+      toTimestamp(NOW_MS),
+    );
     expect(await resolveLoginEligibility(db, "invited@example.com", NOW_MS)).toEqual({ kind: "ineligible" });
   });
 
   it("invite_only treats consumed or expired invites as ineligible", async () => {
-    const { sqlite, db } = await seeded("invite_only");
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, consumed_at_ms)
+    const { raw, db } = await seeded("invite_only");
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at, consumed_at)
          VALUES ('used@example.com', 'Used@example.com', ?, ?)`,
-      )
-      .run(NOW_MS, NOW_MS);
-    sqlite
-      .prepare(
-        `INSERT INTO signup_invites (email_canonical, email_display, created_at_ms, expires_at_ms)
+      toTimestamp(NOW_MS), toTimestamp(NOW_MS),
+    );
+    await raw.run(
+      `INSERT INTO signup_invites (email_canonical, email_display, created_at, expires_at)
          VALUES ('stale@example.com', 'Stale@example.com', ?, ?)`,
-      )
-      .run(NOW_MS, NOW_MS);
+      toTimestamp(NOW_MS), toTimestamp(NOW_MS),
+    );
     expect(await resolveLoginEligibility(db, "used@example.com", NOW_MS)).toEqual({ kind: "ineligible" });
     expect(await resolveLoginEligibility(db, "stale@example.com", NOW_MS)).toEqual({ kind: "ineligible" });
   });
@@ -106,8 +104,8 @@ describe("resolveLoginEligibility matrix", () => {
 
 describe("loadSignupMode", () => {
   it("defaults to closed when system_policy is missing", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
-    sqlite.prepare("DELETE FROM system_policy").run();
+    const { raw, db } = openControlPlane();
+    await raw.run("DELETE FROM system_policy");
     expect(await loadSignupMode(db)).toBe("closed");
   });
 });

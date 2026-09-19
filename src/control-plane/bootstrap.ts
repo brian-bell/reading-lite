@@ -1,8 +1,9 @@
 import { TOKEN_MAX_TTL_MS } from "./constants";
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
-import type { ControlPlaneDb, SqlStatement } from "./db";
+import { lockKey, type ControlPlaneDb, type SqlStatement } from "./db";
 import { canonicalizeEmail } from "./email";
 import { mintTokenId, mintUserId, parseTokenId, parseUserId, type TokenId, type UserId } from "./ids";
+import { toTimestamp } from "./pg-time";
 import { API_SCOPES } from "./principal";
 
 export { TOKEN_MAX_TTL_MS };
@@ -44,10 +45,25 @@ export function signupModeForEnv(env: "local" | "staging" | "production"): Signu
   return "open";
 }
 
+// Reads what exists, then writes what is missing, as one transaction under a
+// fixed advisory lock: two bootstraps racing on an empty database would
+// otherwise both decide to create, and the rows they would lock FOR UPDATE do
+// not exist yet.
 export async function bootstrapFounder(
   db: ControlPlaneDb,
   input: FounderBootstrapInput,
   opts: { apply?: boolean } = {},
+): Promise<FounderBootstrapResult> {
+  return db.transaction(async (tx) => {
+    await lockKey(tx, "founder_bootstrap");
+    return bootstrapFounderLocked(tx, input, opts);
+  });
+}
+
+async function bootstrapFounderLocked(
+  db: ControlPlaneDb,
+  input: FounderBootstrapInput,
+  opts: { apply?: boolean },
 ): Promise<FounderBootstrapResult> {
   const apply = opts.apply !== false;
   const emailDisplay = input.email.trim();
@@ -109,28 +125,30 @@ export async function bootstrapFounder(
     return { userId, tokenId, createdUser, createdToken, actions };
   }
 
+  const now = toTimestamp(input.nowMs);
+  const tokenExpires = toTimestamp(input.nowMs + TOKEN_MAX_TTL_MS);
   const statements: SqlStatement[] = [
     {
       sql: `INSERT INTO users (
               id, email_canonical, email_display, status,
-              email_verified_at_ms, created_at_ms, updated_at_ms
+              email_verified_at, created_at, updated_at
             ) VALUES (?, ?, ?, 'active', ?, ?, ?)
             ON CONFLICT(email_canonical) DO NOTHING`,
-      params: [userId, emailCanonical, emailDisplay, input.nowMs, input.nowMs, input.nowMs],
+      params: [userId, emailCanonical, emailDisplay, now, now, now],
     },
     {
       sql: `INSERT INTO user_settings (
               user_id, schema_version, notify_immediate, digest_cadence,
-              time_zone, digest_hour_local, digest_weekday, created_at_ms, updated_at_ms
-            ) SELECT id, 1, 1, 'off', 'UTC', 9, 1, ?, ?
+              time_zone, digest_hour_local, digest_weekday, created_at, updated_at
+            ) SELECT id, 1, true, 'off', 'UTC', 9, 1, ?, ?
               FROM users WHERE email_canonical = ?
             ON CONFLICT(user_id) DO NOTHING`,
-      params: [input.nowMs, input.nowMs, emailCanonical],
+      params: [now, now, emailCanonical],
     },
     {
       sql: `INSERT INTO tenant_limits (
               tenant_id, policy_version, submissions_per_hour, monthly_readings,
-              max_concurrent_work, daily_spend_microdollars, created_at_ms, updated_at_ms
+              max_concurrent_work, daily_spend_microdollars, created_at, updated_at
             ) SELECT id, 1, ?, ?, ?, ?, ?, ?
               FROM users WHERE email_canonical = ?
             ON CONFLICT(tenant_id) DO NOTHING`,
@@ -139,8 +157,8 @@ export async function bootstrapFounder(
         FOUNDER_PLACEHOLDER_LIMITS.monthly_readings,
         FOUNDER_PLACEHOLDER_LIMITS.max_concurrent_work,
         FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
-        input.nowMs,
-        input.nowMs,
+        now,
+        now,
         emailCanonical,
       ],
     },
@@ -148,32 +166,20 @@ export async function bootstrapFounder(
       ? [
           {
             sql: `UPDATE api_tokens
-                  SET secret_hmac = ?, hash_key_version = ?, expires_at_ms = ?, revoked_at_ms = NULL
+                  SET secret_hmac = ?, hash_key_version = ?, expires_at = ?, revoked_at = NULL
                   WHERE id = ?`,
-            params: [
-              secretHmac,
-              input.authRoot.version,
-              input.nowMs + TOKEN_MAX_TTL_MS,
-              tokenId,
-            ],
+            params: [secretHmac, input.authRoot.version, tokenExpires, tokenId],
           },
         ]
       : [
           {
             sql: `INSERT INTO api_tokens (
                     id, user_id, name, format, secret_hmac, hash_key_version,
-                    created_at_ms, expires_at_ms
+                    created_at, expires_at
                   ) SELECT ?, id, 'Imported legacy READER_API_TOKEN', 'legacy', ?, ?, ?, ?
                     FROM users WHERE email_canonical = ?
                   ON CONFLICT(secret_hmac) DO NOTHING`,
-            params: [
-              tokenId,
-              secretHmac,
-              input.authRoot.version,
-              input.nowMs,
-              input.nowMs + TOKEN_MAX_TTL_MS,
-              emailCanonical,
-            ],
+            params: [tokenId, secretHmac, input.authRoot.version, now, tokenExpires, emailCanonical],
           },
         ]),
     ...API_SCOPES.map((scope) => ({
@@ -188,9 +194,9 @@ export async function bootstrapFounder(
           {
             sql: `INSERT INTO system_policy (
                     id, signup_mode, paid_work_enabled, policy_version, catalog_version,
-                    updated_at_ms, max_concurrent_work
-                  ) VALUES (1, ?, 1, 1, 1, ?, ?)`,
-            params: [input.signupMode, input.nowMs, GLOBAL_PLACEHOLDER_CONCURRENCY],
+                    updated_at, max_concurrent_work
+                  ) VALUES (1, ?, true, 1, 1, ?, ?)`,
+            params: [input.signupMode, now, GLOBAL_PLACEHOLDER_CONCURRENCY],
           },
         ]),
   ];
@@ -239,25 +245,12 @@ async function lookupExistingLegacyToken(
   legacyToken: string,
   authRoot: AuthRoot,
   previousAuthRoot?: AuthRoot,
-): Promise<{
-  id: string;
-  user_id: string;
-  format: string;
-  expires_at_ms: number;
-  revoked_at_ms: number | null;
-} | null> {
+): Promise<{ id: string; user_id: string; format: string } | null> {
   const roots = previousAuthRoot ? [authRoot, previousAuthRoot] : [authRoot];
   for (const root of roots) {
     const digest = await legacyTokenHmac(legacyToken, root);
-    const row = await db.first<{
-      id: string;
-      user_id: string;
-      format: string;
-      expires_at_ms: number;
-      revoked_at_ms: number | null;
-    }>(
-      `SELECT id, user_id, format, expires_at_ms, revoked_at_ms
-       FROM api_tokens WHERE secret_hmac = ?`,
+    const row = await db.first<{ id: string; user_id: string; format: string }>(
+      "SELECT id, user_id, format FROM api_tokens WHERE secret_hmac = ?",
       digest,
     );
     if (row) return row;

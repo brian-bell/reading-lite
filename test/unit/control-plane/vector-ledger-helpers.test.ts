@@ -6,8 +6,6 @@
 // once R2 is empty. Failing to clear one merely costs another pass.
 
 import { describe, expect, it } from "vitest";
-import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
-import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { parseTenantId } from "../../../src/control-plane/ids";
 import {
   VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS,
@@ -17,7 +15,6 @@ import {
 } from "../../../src/control-plane/vector-ledger";
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
 
-const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");
 const USER = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TENANT = parseTenantId(USER)!;
@@ -28,16 +25,15 @@ const ID_B = "rd_0123456781";
 const CONFIRMABLE_AT = NOW_MS - VECTOR_LEDGER_FIRST_CONFIRM_DELAY_MS - 1;
 
 async function seeded() {
+  // The D1 ledger the operator scripts still read (until 1d); the user row is
+  // written directly because the founder bootstrap now speaks PostgreSQL.
   const { sqlite, db } = openMigratedControlPlane();
-  await bootstrapFounder(db, {
-    email: "founder@example.com",
-    legacyToken: "test-token",
-    signupMode: "open",
-    nowMs: NOW_MS,
-    authRoot: { secret: parseAuthRootSecret(ROOT_HEX), version: 1 },
-    newUserId: () => USER,
-    newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
-  });
+  sqlite
+    .prepare(
+      `INSERT INTO users (id, email_canonical, email_display, status, created_at_ms, updated_at_ms)
+       VALUES (?, 'founder@example.com', 'founder@example.com', 'active', ?, ?)`,
+    )
+    .run(USER, NOW_MS, NOW_MS);
   const ledger = d1VectorLedger(db, TENANT);
   const rows = () =>
     sqlite
