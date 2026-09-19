@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSignedIn } from "../src/auth/guards";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
 import { AccountPage } from "../src/components/AccountPage";
+import { TokensSection } from "../src/components/AccountTokens";
 import { AppFrame } from "../src/components/AppFrame";
 import { PageHeading } from "../src/components/PageHeading";
 import { SignInPage } from "../src/components/SignInPage";
@@ -214,6 +215,7 @@ beforeEach(() => {
 
 afterEach(() => {
   onlineManager.setOnline(true);
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   cleanup();
 });
@@ -1039,30 +1041,36 @@ describe("API tokens on the account page", () => {
     }
   });
 
-  it("turns create back on once a cached token expires", async () => {
+  it("turns create back on once a cached token expires", () => {
     const now = Date.parse("2026-09-19T12:00:00Z");
     vi.useFakeTimers({ now, toFake: ["setTimeout", "clearTimeout", "Date"] });
-    mockApi({
-      onListTokens: () =>
-        Response.json({
-          tokens: [...fullList(9), token({ id: "tok_soon", name: "Soon", expires_at_ms: now + 1_000 })],
-        }),
+    const queryClient = createQueryClient(() => "/");
+    queryClient.setQueryData(whoamiQueryKey, reader);
+    render(
+      <QueryClientProvider client={queryClient}>
+        <TokensSection
+          view={{
+            kind: "ready",
+            value: { tokens: [...fullList(9), token({ id: "tok_soon", name: "Soon", expires_at_ms: now + 1_000 })] },
+          }}
+          onRetry={() => undefined}
+          revealed={null}
+          onReveal={() => undefined}
+          onDismiss={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(within(section()).getByText(LIMIT_WARNING)).toBeVisible();
+    expect(createButton()).toBeDisabled();
+
+    act(() => {
+      vi.advanceTimersByTime(1_000);
     });
-    try {
-      await openAccount();
-      expect(await within(section()).findByText(LIMIT_WARNING)).toBeVisible();
-      expect(createButton()).toBeDisabled();
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_000);
-      });
-
-      await waitFor(() => expect(within(section()).queryByText(LIMIT_WARNING)).not.toBeInTheDocument());
-      expect(createButton()).toBeEnabled();
-      expect(within(section()).getByText("Soon (standard) · expired")).toBeVisible();
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(within(section()).queryByText(LIMIT_WARNING)).not.toBeInTheDocument();
+    expect(createButton()).toBeEnabled();
+    expect(within(section()).getByText("Soon (standard) · expired")).toBeVisible();
   });
 
   it("turns create back on once a revoke brings the account under the limit", async () => {
