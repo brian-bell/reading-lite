@@ -9,7 +9,13 @@
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
-import { serveAccountDeleteInBrowser, serveSessionsInBrowser, serveSettingsInBrowser, signIn } from "../test";
+import {
+  serveAccountDeleteInBrowser,
+  serveSessionsInBrowser,
+  serveSettingsInBrowser,
+  serveTokensInBrowser,
+  signIn,
+} from "../test";
 
 const test = base.extend({
   baseURL: async ({}, use) => {
@@ -20,6 +26,7 @@ const test = base.extend({
 async function openAccount(page: Page, baseURL: string) {
   await signIn(page.context(), baseURL);
   await serveSettingsInBrowser(page);
+  await serveTokensInBrowser(page);
   const writes = await serveSessionsInBrowser(page);
   await page.goto("/account/security");
   await expect(page.getByRole("heading", { level: 1, name: "Account" })).toBeVisible();
@@ -57,6 +64,7 @@ function deleteDialog(page: Page) {
 test("deletes the account from the keyboard after typing delete", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   const { deletes } = await serveAccountDeleteInBrowser(page);
   await page.goto("/account/security");
@@ -83,6 +91,7 @@ test("deletes the account from the keyboard after typing delete", async ({ page,
 test("Escape after typing delete closes the dialog without a request", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   const { deletes } = await serveAccountDeleteInBrowser(page);
   await page.goto("/account/security");

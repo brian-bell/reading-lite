@@ -26,6 +26,7 @@ import {
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
+  serveTokensInBrowser,
   serveSourceInBrowser,
 } from "./test";
 
@@ -410,6 +411,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
@@ -417,6 +419,8 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(page.getByRole("button", { name: "Revoke this device" })).toBeVisible();
       await expect(page.getByRole("region", { name: "Sessions" }).getByRole("status")).toContainText("10-session limit");
       await expect(page.getByRole("checkbox", { name: "Email me when a reading is ready" })).toBeChecked();
+      await expect(page.getByText("CI (standard) · usable")).toBeVisible();
+      await expect(page.getByText("Old script (standard) · revoked")).toBeVisible();
     },
   },
   {
@@ -426,6 +430,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "You don't have access to this.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
     },
   },
@@ -436,6 +441,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "This tab is signed in to a different account than the page expects.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, {
         status: 412,
         json: { error: "expected tenant mismatch", acting_tenant: "usr_bbbbbbbb" },
@@ -449,6 +455,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Something went wrong on our side.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
     },
     prepare: async (page) => {
@@ -462,6 +469,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await page.route("**/api/auth/email-change", (route) =>
         route.fulfill({ status: 403, json: { error: "recent authentication required" } }),
@@ -482,6 +490,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     // Weekly from off opens the draft: every schedule control plus Save digest.
@@ -499,6 +508,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page, { status: 503, json: { error: "control plane unavailable" } });
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
@@ -514,6 +524,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
     prepare: async (page) => {
@@ -541,6 +552,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page);
     },
@@ -559,6 +571,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page, {
         status: 403,
@@ -583,6 +596,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page);
     },

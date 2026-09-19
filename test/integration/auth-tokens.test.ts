@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { SESSION_COOKIE_NAME, TOKEN_MAX_TTL_MS } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { SecurityMail } from "../../src/control-plane/security-mail";
-import { CSRF_HEADER } from "../../src/schemas/api";
+import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
@@ -31,6 +31,7 @@ async function request(
     cookie?: string;
     origin?: string;
     csrf?: string;
+    expectedTenant?: string;
     now?: string;
     securityMail?: SecurityMail[];
   } = {},
@@ -56,6 +57,7 @@ async function request(
   if (init.cookie) headers.set("cookie", init.cookie);
   if (init.origin !== "") headers.set("origin", origin);
   if (init.csrf) headers.set(CSRF_HEADER, init.csrf);
+  if (init.expectedTenant !== undefined) headers.set(EXPECTED_TENANT_HEADER, init.expectedTenant);
   if (init.body !== undefined) headers.set("content-type", "application/json");
   const res = await app.fetch(
     new Request(`http://t${path}`, {
@@ -407,5 +409,60 @@ describe("API token lifecycle", () => {
         .bind(NOW_MS, id)
         .run();
     }
+  });
+});
+
+describe("x-expected-tenant on token routes", () => {
+  it("returns 412 when the pin is not the acting tenant, and mints or revokes nothing", async () => {
+    const session = await redeemSession("clm_token_expected_tenant");
+    const whoami = await request("/api/whoami", { cookie: session.cookie });
+    const identity = (await whoami.res.json()) as { tenant_id: string };
+    const mismatch = { error: "expected tenant mismatch", acting_tenant: identity.tenant_id };
+
+    const listed = await request("/api/auth/tokens", { cookie: session.cookie, expectedTenant: "global" });
+    expect(listed.res.status).toBe(412);
+    expect(listed.res.headers.get("cache-control")).toBe("no-store");
+    expect(await listed.res.json()).toEqual(mismatch);
+    expect((await request("/api/auth/tokens", { cookie: session.cookie })).res.status).toBe(200);
+    expect(
+      (await request("/api/auth/tokens", { cookie: session.cookie, expectedTenant: identity.tenant_id })).res.status,
+    ).toBe(200);
+
+    const securityMail: SecurityMail[] = [];
+    const refusedCreate = await request("/api/auth/tokens", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+      body: { name: "pinned", scopes: ["readings:read"] },
+      securityMail,
+    });
+    expect(refusedCreate.res.status).toBe(412);
+    expect(await refusedCreate.res.json()).toEqual(mismatch);
+    expect(securityMail).toHaveLength(0);
+
+    const created = await request("/api/auth/tokens", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: identity.tenant_id,
+      body: { name: "pinned", scopes: ["readings:read"] },
+    });
+    expect(created.res.status).toBe(201);
+    const token = (await created.res.json()) as CreatedToken;
+    const minted = (await (await request("/api/auth/tokens", { cookie: session.cookie })).res.json()) as {
+      tokens: { name: string }[];
+    };
+    expect(minted.tokens.filter((row) => row.name === "pinned")).toHaveLength(1);
+
+    const refusedRevoke = await request(`/api/auth/tokens/${token.id}`, {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      expectedTenant: "global",
+    });
+    expect(refusedRevoke.res.status).toBe(412);
+    expect(await refusedRevoke.res.json()).toEqual(mismatch);
+    expect((await request("/api/whoami", { authorization: `Bearer ${token.token}` })).res.status).toBe(200);
   });
 });

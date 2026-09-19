@@ -112,8 +112,8 @@ export function createApp(opts: AppOptions = {}) {
     requireRecentAuth(authNowMs),
   );
   app.post("/api/auth/email-change", (c) => handleEmailChangeRequest(c, authNowMs(), authRuntime));
-  app.use("/api/auth/tokens", requirePrincipal(authNowMs), requireSession());
-  app.use("/api/auth/tokens/*", requirePrincipal(authNowMs), requireSession());
+  app.use("/api/auth/tokens", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
+  app.use("/api/auth/tokens/*", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.post("/api/auth/tokens", requireRecentAuth(authNowMs), (c) =>
     handleCreateApiToken(c, authNowMs(), authRuntime),
   );

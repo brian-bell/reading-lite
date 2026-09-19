@@ -410,7 +410,10 @@ paths:
         Session cookie only (bearer 403). CSRF is not required (GET). Returns
         token metadata without secrets (`id`, name, format, scopes, timestamps,
         `usable`). Revoked and expired rows stay in the list with
-        `usable: false`. The founder legacy token is included.
+        `usable: false`. The founder legacy token is included. Optional
+        `X-Expected-Tenant` mismatch returns 412, as on `/api/readings`.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: Token list
@@ -422,6 +425,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
     post:
@@ -438,8 +443,11 @@ paths:
         `expires_at_ms` may not exceed now + 90 days. Empty or unknown scopes
         are rejected. At 10 active tokens (including the founder legacy row)
         returns 409. Sends a security notification on create (no secrets).
+        Optional `X-Expected-Tenant` mismatch returns 412 after CSRF and
+        before the recent-authentication check.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       requestBody:
         required: true
         content:
@@ -471,6 +479,8 @@ paths:
                 $ref: "#/components/schemas/ErrorMessage"
               example:
                 error: too many active tokens
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
@@ -485,7 +495,8 @@ paths:
         Session cookie plus `X-CSRF-Token`. Recent-auth is not required.
         Bearer 403. Soft-revokes a token owned by the caller. Does not send
         security mail. Does not mark pending work failed; queued jobs recheck
-        the token on admit. 404 if the id is not owned.
+        the token on admit. 404 if the id is not owned. Optional
+        `X-Expected-Tenant` mismatch returns 412 after CSRF.
       parameters:
         - name: id
           in: path
@@ -494,6 +505,7 @@ paths:
             type: string
             pattern: "^tok_"
         - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
       responses:
         "200":
           description: Token revoked
@@ -509,6 +521,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
 
   /api/auth/email-change:
     post:
