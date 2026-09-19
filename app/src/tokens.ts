@@ -49,6 +49,52 @@ export function tokensFromResponse(status: number, body: unknown): TokensResult 
   throw new ApiError(status, messageOf(body) ?? `tokens returned ${status}`);
 }
 
+/** The scopes a token can carry, in the SPA's order (API_SCOPES in src/control-plane/principal.ts). */
+export const TOKEN_SCOPES = ["readings:read", "readings:write", "readings:import", "readings:delete"] as const;
+export type TokenScope = (typeof TOKEN_SCOPES)[number];
+
+/** POST /api/auth/tokens (PostAuthTokensBodySchema). */
+export interface TokenCreateBody {
+  name: string;
+  scopes: TokenScope[];
+}
+
+/** The backend's longest token name (PostAuthTokensBodySchema). */
+export const TOKEN_NAME_MAX = 80;
+
+const CreatedTokenSchema = z.looseObject({
+  token: z.string().min(1),
+  id: z.string().min(1),
+  name: z.string().min(1),
+});
+
+const RECENT_AUTH_REQUIRED = "recent authentication required";
+
+/**
+ * What POST /api/auth/tokens answered. `created` carries the token's secret,
+ * the one time the backend returns it. 400 is `invalid`; a 403 that names
+ * recent authentication is `step-up` (a sign-in from the last ten minutes is
+ * needed), and any other 403 or a 412 refuses the account. A 401 and anything
+ * else throw.
+ */
+export type TokenCreateOutcome =
+  | { kind: "created"; id: string; name: string; secret: string }
+  | { kind: "invalid" }
+  | { kind: "step-up" }
+  | AccountRefusal;
+
+export function tokenCreateFromResponse(status: number, body: unknown): TokenCreateOutcome {
+  if (status === 201) {
+    const parsed = CreatedTokenSchema.safeParse(body);
+    if (!parsed.success) throw new ApiError(status, "token create returned an unexpected body");
+    return { kind: "created", id: parsed.data.id, name: parsed.data.name, secret: parsed.data.token };
+  }
+  if (status === 400) return { kind: "invalid" };
+  if (status === 403) return messageOf(body) === RECENT_AUTH_REQUIRED ? { kind: "step-up" } : { kind: "forbidden" };
+  if (status === 412) return { kind: "account-changed", actingTenant: actingTenantOf(body) };
+  throw new ApiError(status, messageOf(body) ?? "failed to create token");
+}
+
 /**
  * What DELETE /api/auth/tokens/:id answered. A 404 is `gone`: the token is
  * not this account's to revoke any more — revoked, or removed, from another

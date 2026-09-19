@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER } from "../src/api/client";
 import { EXPECTED_TENANT_HEADER } from "../src/api/readings";
-import { fetchTokens, revokeToken } from "../src/api/tokens";
+import { createToken, fetchTokens, revokeToken } from "../src/api/tokens";
 import { whoamiQueryKey } from "../src/identity";
 
 function lastRequest(): Request {
@@ -26,6 +26,27 @@ describe("fetchTokens", () => {
     expect(request.method).toBe("GET");
     expect(request.credentials).toBe("include");
     expect(request.headers.get(EXPECTED_TENANT_HEADER)).toBe(header);
+  });
+});
+
+describe("createToken", () => {
+  it("posts the name and scopes as JSON with CSRF and the tenant pin", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ token: "tok_1.abc", id: "tok_1", name: "CI" }, { status: 201 })),
+    );
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(whoamiQueryKey, { csrf_token: "csrf-a" });
+
+    await createToken(queryClient, { name: "CI", scopes: ["readings:read"] }, "usr_a");
+
+    const request = lastRequest();
+    expect(new URL(request.url).pathname).toBe("/api/auth/tokens");
+    expect(request.method).toBe("POST");
+    expect(request.headers.get("content-type")).toBe("application/json");
+    expect(request.headers.get(CSRF_HEADER)).toBe("csrf-a");
+    expect(request.headers.get(EXPECTED_TENANT_HEADER)).toBe("usr_a");
+    await expect(request.json()).resolves.toEqual({ name: "CI", scopes: ["readings:read"] });
   });
 });
 

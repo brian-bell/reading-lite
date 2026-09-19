@@ -123,6 +123,7 @@ function mockApi(options?: {
   onEmailChange?: (body: { email: string }) => Response;
   onListTokens?: () => Response;
   onRevokeToken?: (id: string) => Response;
+  onCreateToken?: (body: { name: string; scopes: string[] }) => Response;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -139,6 +140,16 @@ function mockApi(options?: {
     }
     if (path === "/api/auth/tokens" && request.method === "GET") {
       return options?.onListTokens?.() ?? Response.json({ tokens: [] });
+    }
+    if (path === "/api/auth/tokens" && request.method === "POST") {
+      const body = (await request.clone().json()) as { name: string; scopes: string[] };
+      return (
+        options?.onCreateToken?.(body) ??
+        Response.json(
+          { token: "tok_new.secret", id: "tok_new", name: body.name, scopes: body.scopes, created_at_ms: 1, expires_at_ms: 2 },
+          { status: 201 },
+        )
+      );
     }
     if (request.method === "DELETE" && path.startsWith("/api/auth/tokens/")) {
       const id = decodeURIComponent(path.slice("/api/auth/tokens/".length));
@@ -527,7 +538,7 @@ describe("notification settings on the account page", () => {
     const section = screen.getByRole("region", { name: "Notifications" });
     expect(await within(section).findByText("Something went wrong on our side.")).toBeVisible();
     expect(within(section).getByText("settings returned an unexpected body")).toBeVisible();
-    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(within(section).queryByRole("checkbox")).not.toBeInTheDocument();
     expect(await screen.findByText("Firefox (this device)")).toBeVisible();
   });
 
@@ -814,6 +825,175 @@ describe("API tokens on the account page", () => {
 
     expect(await within(section()).findByText("You're offline. The token wasn't revoked.")).toBeVisible();
     expect(within(section()).getByText("CI (standard) · usable")).toBeVisible();
+  });
+
+  const nameField = () => within(section()).getByRole("textbox", { name: "Name" });
+  const createButton = () => within(section()).getByRole("button", { name: "Create token" });
+
+  it("creates a token with every scope by default, shows its value once, and lists it", async () => {
+    let tokens: TokenListItem[] = [];
+    const fetchMock = mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onCreateToken: (body) => {
+        tokens = [token({ id: "tok_new", name: body.name, scopes: body.scopes })];
+        return Response.json(
+          { token: "tok_new.s3cret", id: "tok_new", name: body.name, scopes: body.scopes, created_at_ms: 1, expires_at_ms: 2 },
+          { status: 201 },
+        );
+      },
+    });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "  Laptop  ");
+    await userEvent.click(createButton());
+
+    const reveal = await within(section()).findByText("tok_new.s3cret");
+    expect(within(section()).getByText("Copy the token for “Laptop” now. It won't be shown again.")).toBeVisible();
+    await waitFor(() => expect(reveal.closest(".token-reveal")).toHaveFocus());
+    expect(await within(section()).findByText("Laptop (standard) · usable")).toBeVisible();
+    expect(nameField()).toHaveValue("");
+    const [created] = requestsOf(fetchMock, "POST", "/api/auth/tokens");
+    await expect(created!.json()).resolves.toEqual({
+      name: "Laptop",
+      scopes: ["readings:read", "readings:write", "readings:import", "readings:delete"],
+    });
+    expect(created!.headers.get("x-csrf-token")).toBe("csrf-a");
+    expect(created!.headers.get("x-expected-tenant")).toBe("usr_a");
+  });
+
+  it("sends only the scopes left checked", async () => {
+    const fetchMock = mockApi();
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "Reader");
+    await userEvent.click(within(section()).getByRole("checkbox", { name: "readings:write" }));
+    await userEvent.click(within(section()).getByRole("checkbox", { name: "readings:delete" }));
+    await userEvent.click(createButton());
+
+    await within(section()).findByText("tok_new.secret");
+    const [created] = requestsOf(fetchMock, "POST", "/api/auth/tokens");
+    await expect(created!.json()).resolves.toEqual({ name: "Reader", scopes: ["readings:read", "readings:import"] });
+  });
+
+  it.each([
+    ["a blank name", "Enter a name.", async (): Promise<void> => {}, "textbox"],
+    [
+      "no scope",
+      "Select at least one scope.",
+      async (): Promise<void> => {
+        await userEvent.type(nameField(), "CI");
+        for (const scope of ["readings:read", "readings:write", "readings:import", "readings:delete"]) {
+          await userEvent.click(within(section()).getByRole("checkbox", { name: scope }));
+        }
+      },
+      "checkbox",
+    ],
+  ] as const)("refuses %s before any request", async (_, message, fill, focused) => {
+    const fetchMock = mockApi();
+    await openAccount();
+    await within(section()).findByRole("textbox", { name: "Name" });
+
+    await fill();
+    await userEvent.click(createButton());
+
+    expect(within(section()).getByText(message)).toBeVisible();
+    expect(document.activeElement?.getAttribute("type")).toBe(focused === "textbox" ? "text" : "checkbox");
+    expect(requestsOf(fetchMock, "POST", "/api/auth/tokens")).toHaveLength(0);
+  });
+
+  it("keeps the value only until Dismiss, and never in the query client", async () => {
+    mockApi();
+    const { router, queryClient } = await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+    await within(section()).findByText("tok_new.secret");
+
+    const cached = JSON.stringify([
+      queryClient.getQueryCache().getAll().map((query) => query.state.data),
+      queryClient.getMutationCache().getAll().map((mutation) => mutation.state),
+    ]);
+    expect(cached).not.toContain("tok_new.secret");
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Dismiss" }));
+    expect(within(section()).queryByText("tok_new.secret")).not.toBeInTheDocument();
+    expect(nameField()).toHaveFocus();
+
+    await userEvent.type(nameField(), "Again");
+    await userEvent.click(createButton());
+    await within(section()).findByText("tok_new.secret");
+    await router.navigate({ to: "/" });
+    await router.navigate({ to: "/account/security" });
+    await within(section()).findByRole("textbox", { name: "Name" });
+    expect(screen.queryByText("tok_new.secret")).not.toBeInTheDocument();
+  });
+
+  it("copies the value to the clipboard", async () => {
+    mockApi();
+    await openAccount();
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+    await userEvent.click(await within(section()).findByRole("button", { name: "Copy" }));
+
+    expect(writeText).toHaveBeenCalledWith("tok_new.secret");
+    expect(within(section()).getByRole("button", { name: "Copied" })).toBeVisible();
+  });
+
+  it.each([
+    [403, { error: "recent authentication required" }, "Recent sign-in required. The token wasn't created."],
+    [400, { error: "invalid body" }, "The token wasn't created. Check the name and scopes, then try again."],
+  ])("says why a create %i was refused, in the section", async (status, body, message) => {
+    mockApi({ onCreateToken: () => Response.json(body, { status }) });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByRole("alert")).toHaveTextContent(message);
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(nameField()).toHaveValue("CI");
+  });
+
+  it("shows a failed create in the section, keeps the form, and Retry reads the list without creating again", async () => {
+    let listReads = 0;
+    const fetchMock = mockApi({
+      onListTokens: () => {
+        listReads += 1;
+        return Response.json({ tokens: [] });
+      },
+      onCreateToken: () => Response.json({ error: "control plane unavailable" }, { status: 503 }),
+    });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByText("control plane unavailable")).toBeVisible();
+    expect(within(section()).getByText(/The token wasn't created/)).toBeVisible();
+    expect(nameField()).toHaveValue("CI");
+    const readsBefore = listReads;
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(listReads).toBe(readsBefore + 1));
+    expect(within(section()).queryByText("control plane unavailable")).not.toBeInTheDocument();
+    expect(requestsOf(fetchMock, "POST", "/api/auth/tokens")).toHaveLength(1);
+  });
+
+  it.each([
+    [403, { error: "forbidden" }, "You don't have access to this."],
+    [412, { error: "expected tenant mismatch", acting_tenant: "usr_b" }, "This tab is signed in to a different account than the page expects."],
+  ])("shows the page's refusal state for a create %i", async (status, body, heading) => {
+    mockApi({ onCreateToken: () => Response.json(body, { status }) });
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading));
   });
 
   it.each([

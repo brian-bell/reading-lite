@@ -1,7 +1,10 @@
 import type { QueryClient } from "@tanstack/react-query";
 import {
+  tokenCreateFromResponse,
   tokenRevokeFromResponse,
   tokensFromResponse,
+  type TokenCreateBody,
+  type TokenCreateOutcome,
   type TokenRevokeOutcome,
   type TokensResult,
 } from "../tokens";
@@ -26,6 +29,20 @@ export async function fetchTokens(
 ): Promise<TokensResult> {
   const response = await apiFetch(queryClient, "/api/auth/tokens", { headers: pin(expectedTenant) });
   return tokensFromResponse(response.status, await jsonOrNull(response));
+}
+
+export async function createToken(
+  queryClient: QueryClient,
+  body: TokenCreateBody,
+  expectedTenant: string | undefined,
+): Promise<TokenCreateOutcome> {
+  const response = await apiFetch(queryClient, "/api/auth/tokens", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...pin(expectedTenant) },
+    body: JSON.stringify(body),
+  });
+  const outcome = tokenCreateFromResponse(response.status, await jsonOrNull(response));
+  return outcome.kind === "forbidden" ? forbiddenOrSwitched(queryClient) : outcome;
 }
 
 export async function revokeToken(

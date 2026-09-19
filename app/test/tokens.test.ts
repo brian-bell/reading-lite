@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  tokenCreateFromResponse,
   tokenHeading,
   tokenRevokeFromResponse,
   tokensFromResponse,
@@ -42,6 +43,31 @@ describe("tokensFromResponse", () => {
     [200, { tokens: [{ id: "tok_1" }] }, "tokens returned an unexpected body"],
   ])("throws status %i with its message", (status, body, message) => {
     expect(() => tokensFromResponse(status, body)).toThrow(expect.objectContaining({ status, message }));
+  });
+});
+
+describe("tokenCreateFromResponse", () => {
+  it.each([
+    [
+      201,
+      { token: "tok_1.abc", id: "tok_1", name: "CI", scopes: ["readings:read"], created_at_ms: 1, expires_at_ms: 2 },
+      { kind: "created", id: "tok_1", name: "CI", secret: "tok_1.abc" },
+    ],
+    [400, { error: "invalid body" }, { kind: "invalid" }],
+    [403, { error: "recent authentication required" }, { kind: "step-up" }],
+    [403, { error: "forbidden" }, { kind: "forbidden" }],
+    [412, { error: "expected tenant mismatch", acting_tenant: "usr_b" }, { kind: "account-changed", actingTenant: "usr_b" }],
+  ])("maps %i %j to an outcome", (status, body, outcome) => {
+    expect(tokenCreateFromResponse(status, body)).toEqual(outcome);
+  });
+
+  it.each([
+    [401, { error: "unauthorized" }, "unauthorized"],
+    [409, { error: "too many active tokens" }, "too many active tokens"],
+    [503, null, "failed to create token"],
+    [201, { id: "tok_1" }, "token create returned an unexpected body"],
+  ])("throws %i", (status, body, message) => {
+    expect(() => tokenCreateFromResponse(status, body)).toThrow(expect.objectContaining({ status, message }));
   });
 });
 
