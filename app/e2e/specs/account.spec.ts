@@ -12,9 +12,14 @@
 //
 // API token create (#340.7.3): the form from the keyboard alone, the request
 // the browser sent, and the value gone after Dismiss and a reload.
+//
+// Step-up (#340.7.4): a create refused for a stale sign-in links to sign-in
+// with the email locked, in a real browser. The return to the account page is
+// test/sign-in-flow.test.tsx's.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
+import { SESSION_EMAIL } from "../sessions";
 import {
   E2E_TOKEN_SECRET,
   serveAccountDeleteInBrowser,
@@ -138,6 +143,24 @@ test("creates an API token from the keyboard and shows its value once", async ({
   await page.reload();
   await expect(tokens.getByText("Laptop (standard) · usable")).toBeVisible();
   await expect(page.getByText(E2E_TOKEN_SECRET)).toHaveCount(0);
+});
+
+test("follows a token create's step-up link to sign-in with the email locked", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  await serveTokensInBrowser(page, { create: { status: 403, json: { error: "recent authentication required" } } });
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+
+  await tokens.getByRole("textbox", { name: "Name" }).fill("CI");
+  await tokens.getByRole("button", { name: "Create token" }).click();
+  await tokens.getByRole("link", { name: "Request a fresh sign-in link" }).click();
+
+  await expect(page).toHaveURL(/\/login\?step_up=1&next=%2Faccount%2Fsecurity$/);
+  const email = page.getByRole("main").getByRole("textbox", { name: "Email", exact: true });
+  await expect(email).toHaveValue(SESSION_EMAIL);
+  await expect(email).toHaveAttribute("readonly");
 });
 
 function deleteDialog(page: Page) {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useRouter } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { DELETE_CONFIRM_PHRASE, type AccountDeleteOutcome } from "../account-delete";
 import { accountViewOf, readRefusedBy, type AccountRefusal, type AccountView } from "../account-state";
@@ -8,7 +8,6 @@ import { requestEmailChange } from "../api/email-change";
 import { saveSettings } from "../api/settings";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
 import { isUnauthorized, NetworkError } from "../api/errors";
-import { STEP_UP_LOGIN_HREF } from "../auth/return-path";
 import { closeAccount, dropSignedInAccount, hrefOnScreen } from "../auth/session";
 import {
   changeDigest,
@@ -47,6 +46,7 @@ import { settingsQueryOptions } from "../settings-query";
 import type { TokensList } from "../tokens";
 import { tokensQueryOptions } from "../tokens-query";
 import { TokensSection, type RevealedToken, type TokensSectionProps } from "./AccountTokens";
+import { StepUpNotice } from "./StepUpNotice";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { BackToLibrary } from "./BackToLibrary";
@@ -513,12 +513,7 @@ function EmailSection({ sending, outcome, failure, onSend, onEdit, onRetry }: Em
           {failure.kind === "server-error" ? <p className="form-hint">{failure.message}</p> : null}
         </InlineNotice>
       ) : null}
-      {outcome?.kind === "step-up" ? (
-        <p className="form-error" role="alert">
-          Recent sign-in required. <a href={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</a> to confirm a
-          sensitive change.
-        </p>
-      ) : null}
+      {outcome?.kind === "step-up" ? <StepUpNotice lead="Recent sign-in required." /> : null}
       <form
         className="email-change-form"
         noValidate
@@ -861,9 +856,7 @@ function DeleteAccountSection({
       </p>
       <p className="account-delete-text">This needs a sign-in from the last 10 minutes.</p>
       {notice?.kind === "step-up" ? (
-        <p className="account-delete-step-up" role="alert">
-          <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a sensitive change.
-        </p>
+        <StepUpNotice className="account-delete-step-up" />
       ) : null}
       {notice?.kind === "offline" ? <OfflineNotice onRetry={onOpen} /> : null}
       {notice?.kind === "server-error" ? (

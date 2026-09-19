@@ -598,6 +598,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   {
+    name: "account-token-step-up",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveTokensInBrowser(page, { create: { status: 403, json: { error: "recent authentication required" } } });
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const tokens = page.getByRole("region", { name: "API tokens" });
+      await tokens.getByRole("textbox", { name: "Name" }).fill("CI");
+      await tokens.getByRole("button", { name: "Create token" }).click();
+      await expect(tokens.getByRole("link", { name: "Request a fresh sign-in link" })).toBeVisible();
+    },
+  },
+  {
     name: "account-delete-step-up",
     path: "/account/security",
     state: "signed-in",
