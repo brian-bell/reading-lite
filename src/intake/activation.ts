@@ -55,7 +55,8 @@ export interface AttemptActivation {
 // durable before anything is sent. It writes the import artifacts under the
 // attempt's own revision keys, then enqueues. A throw at either step rolls the
 // reading back to a failed (retryable) state in one transaction and leaves the
-// job marked `send_failed`.
+// job marked `send_failed`. A content write that fails also drops the
+// attempt's content keys, so no reader resolves content that never landed.
 //
 // The deletion fence needs no check here. A reading purged in between has no
 // row: failActivation finds nothing to roll back, and the consumer drops the
@@ -80,7 +81,10 @@ export async function activateAttempt(
   } catch (err) {
     console.error(err);
     const failed = queueSendRollback(a.rollbackManifest, a.rollbackAttempt, err, services.now());
-    await writer.failActivation(ref, failed, failed.last_attempt!);
+    // Past the content writes only once the failure is the send itself.
+    await writer.failActivation(ref, failed, failed.last_attempt!, {
+      contentCaptured: failureReason === "queue_send_failed",
+    });
     return { kind: "unavailable", reason: failureReason, id: a.manifest.id };
   }
   // Bookkeeping only: the message is already queued, so a failure here must

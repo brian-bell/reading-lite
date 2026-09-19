@@ -224,7 +224,7 @@ describe("activateAttempt", () => {
     const ready = pendingManifest({ status: "ready", connections: [], title: "Kept", last_attempt: undefined });
     const readings = testReadingsFor(mintTenant());
     await readings.seed({ ...ready, active_attempt: undefined }, { keyPrefix: KEY_PREFIX });
-    await readings.writer.startAttempt(ready, { summary: activeAttempt("reprocess"), payload: queueMessage() }, undefined);
+    await readings.writer.startAttempt(ready, { summary: activeAttempt("reprocess"), payload: queueMessage() }, (await readings.manifest(ID))!);
 
     const out = await activate(
       readings,

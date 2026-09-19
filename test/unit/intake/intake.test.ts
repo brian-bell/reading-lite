@@ -190,6 +190,25 @@ describe("ReadingIntake.submit", () => {
     expect(manifest?.active_attempt?.status).toBe("running");
   });
 
+  it("claims the url afresh when its failed owner is purged before the start", async () => {
+    const { intake, reader, sent } = makeIntake();
+    const url = "https://example.com/failed-owner-purged";
+    const owner = await writeOwnedReading(reader, url, { id: "rd_PURGED", status: "failed", content_status: "failed" });
+    const start = reader.writer.startAttempt.bind(reader.writer);
+    vi.spyOn(reader.writer, "startAttempt").mockImplementationOnce(async (...args) => {
+      await reader.writer.purge(owner.id, () => false);
+      return start(...args);
+    });
+
+    const out = await intake.submit(url, { email: true });
+
+    expect(out).toMatchObject({ kind: "activated", status: "pending" });
+    if (out.kind !== "activated") throw new Error("unreachable");
+    expect(out.id).not.toBe(owner.id);
+    await expect(reader.urlOwnerId(url)).resolves.toBe(out.id);
+    expect(sent.map((m) => m.job.trigger)).toEqual(["submit"]);
+  });
+
   it("reports claim_contention when the claim keeps losing to an owner that is gone by the next look", async () => {
     const { intake, reader, sent } = makeIntake();
     const url = "https://example.com/claim-contended";

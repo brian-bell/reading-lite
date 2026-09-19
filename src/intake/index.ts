@@ -139,18 +139,25 @@ export class ReadingIntake {
   ): Promise<IntakeOutcome> {
     const gated = await this.gateRequest();
     if (gated) return gated;
-    const found = await this.deps.store.loadReadingById(id);
-    if (!found) return { kind: "not_found" };
-    return this.reprocessManifest(found, opts);
+    // A reading changed under the start (see startAttempt) is re-read and
+    // decided again; one purged meanwhile is a 404 on the next pass.
+    for (let pass = 0; pass < OWNER_RESOLVE_ATTEMPTS; pass++) {
+      const found = await this.deps.store.loadReadingById(id);
+      if (!found) return { kind: "not_found" };
+      const out = await this.reprocessManifest(found, opts);
+      if (out !== RETRY) return out;
+    }
+    return { kind: "unavailable", reason: "claim_contention" };
   }
 
   // Who owns this URL decides the verb. A claim that loses to a concurrent
-  // submission hands back `RETRY`, and so does an owner purged between the
-  // lookup and the load; the next pass sees the settled owner (or a free URL).
+  // submission hands back `RETRY`, and so does an owner purged or changed
+  // between the lookup and the start; the next pass sees the settled owner
+  // (or a free URL).
   private async resolving(
     url: string,
     on: {
-      owned: (owner: Owner) => Promise<IntakeOutcome>;
+      owned: (owner: Owner) => Promise<IntakeOutcome | typeof RETRY>;
       unclaimed: (retry: typeof RETRY) => Promise<IntakeOutcome | typeof RETRY>;
     },
   ): Promise<IntakeOutcome> {
@@ -162,7 +169,9 @@ export class ReadingIntake {
         continue;
       }
       const found = await this.deps.store.loadReadingById(owner.id);
-      if (found) return on.owned(found);
+      if (!found) continue;
+      const out = await on.owned(found);
+      if (out !== RETRY) return out;
     }
     return { kind: "unavailable", reason: "claim_contention" };
   }
@@ -223,7 +232,7 @@ export class ReadingIntake {
 
   // A submit that lands on a settled owner: ready/pending owners return the
   // existing manifest; failed owners reprocess in place (same reading id).
-  private async submitOwned(owner: Owner, email: boolean): Promise<IntakeOutcome> {
+  private async submitOwned(owner: Owner, email: boolean): Promise<IntakeOutcome | typeof RETRY> {
     const effective = this.annotate(owner.manifest);
     if (effective.status !== "failed") {
       return { kind: "existing", manifest: effective };
@@ -276,7 +285,7 @@ export class ReadingIntake {
     owner: Owner,
     markdown: string,
     opts: { title?: string; email: boolean },
-  ): Promise<IntakeOutcome> {
+  ): Promise<IntakeOutcome | typeof RETRY> {
     const effective = this.annotate(owner.manifest);
     if (effective.status !== "failed") {
       return { kind: "existing", manifest: effective };
@@ -326,7 +335,7 @@ export class ReadingIntake {
       const started = await this.deps.writer.startAttempt(
         pendingManifest,
         newAttempt(activeAttempt, args, artifacts),
-        owner.manifest.active_attempt?.id,
+        owner.manifest,
       );
       if (started.kind !== "started") return startRefused(started.kind);
       return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
@@ -392,7 +401,7 @@ export class ReadingIntake {
   private async reprocessManifest(
     owner: Owner,
     opts: { force?: boolean; email: boolean; source?: MarkdownSource },
-  ): Promise<IntakeOutcome> {
+  ): Promise<IntakeOutcome | typeof RETRY> {
     const effective = this.annotate(owner.manifest);
     if (effective.active_attempt?.status === "running" && !opts.force) {
       return { kind: "conflict", reason: "active_attempt" };
@@ -450,12 +459,12 @@ export class ReadingIntake {
       email: opts.email,
     };
     return this.withReservedSlot(attemptId, async () => {
-      // The row's own active attempt, not the stale-annotated one: a forced or
-      // expired attempt is still what the row holds until this one replaces it.
+      // The row as loaded, not the stale-annotated one: a forced or expired
+      // attempt is still what the row holds until this one replaces it.
       const started = await this.deps.writer.startAttempt(
         nextManifest,
         { summary: activeAttempt, payload: args },
-        owner.manifest.active_attempt?.id,
+        owner.manifest,
       );
       if (started.kind !== "started") return startRefused(started.kind);
       return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
@@ -492,10 +501,12 @@ function markdownArtifacts(
   };
 }
 
-// startAttempt lost under the row lock: the reading was purged, or another
-// attempt activated after this request read it.
-function startRefused(kind: "not_found" | "conflict"): IntakeOutcome {
-  return kind === "not_found" ? { kind: "not_found" } : { kind: "conflict", reason: "active_attempt" };
+// startAttempt lost under the row lock. Another attempt that activated after
+// this request read the reading is a conflict. A reading purged or changed
+// since goes back to the caller's loop to be resolved again: a purged owner
+// frees its URL for a fresh claim, and a changed one is re-read.
+function startRefused(kind: "not_found" | "conflict" | "changed"): IntakeOutcome | typeof RETRY {
+  return kind === "conflict" ? { kind: "conflict", reason: "active_attempt" } : RETRY;
 }
 
 function nowMs(services: { now: () => string }): number {

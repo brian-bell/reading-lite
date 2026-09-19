@@ -58,7 +58,10 @@ export type StartAttemptOutcome =
   | { kind: "started" }
   | { kind: "not_found" }
   // The reading's active attempt is not the one the caller decided on.
-  | { kind: "conflict" };
+  | { kind: "conflict" }
+  // Same active attempt, but another writer (the relationship judge) changed
+  // the reading since the caller read it. The caller re-reads and decides again.
+  | { kind: "changed" };
 
 export interface CommitOutcome {
   // The terminal state was written by this attempt.
@@ -150,17 +153,17 @@ export class PgReadingWriter {
   }
 
   // A new attempt on an existing reading: reprocess, or a failed owner taken
-  // up again in place. `seenActiveAttemptId` is the active attempt the caller
-  // made its decision on; if another attempt activated since, this one yields.
-  async startAttempt(
-    next: Manifest,
-    attempt: NewAttempt,
-    seenActiveAttemptId: string | undefined,
-  ): Promise<StartAttemptOutcome> {
+  // up again in place. `seen` is the reading as the caller loaded it and built
+  // `next` from. `next` replaces every mutable column, so it may only land on
+  // that exact reading: if another attempt activated since, this one yields,
+  // and if anything else changed, the caller must rebuild `next`.
+  async startAttempt(next: Manifest, attempt: NewAttempt, seen: Manifest): Promise<StartAttemptOutcome> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, next.id);
       if (!row) return { kind: "not_found" };
-      if (row.active_attempt?.id !== seenActiveAttemptId) return { kind: "conflict" };
+      if (row.active_attempt?.id !== seen.active_attempt?.id) return { kind: "conflict" };
+      const current = await new PgReadingStore(tx, this.tenantId).loadReadingById(next.id);
+      if (!current || JSON.stringify(current.manifest) !== JSON.stringify(seen)) return { kind: "changed" };
       await this.updateReading(tx, next);
       await this.insertAttempt(tx, next.id, attempt);
       return { kind: "started" };
@@ -174,12 +177,34 @@ export class PgReadingWriter {
   // The queue send failed after the attempt committed. `rolledBack` is the
   // reading as it should stand without this attempt. The job row stays, marked
   // send_failed, as the record that the work was asked for and never queued.
-  async failActivation(ref: AttemptRef, rolledBack: Manifest, failed: ProcessingAttemptSummary): Promise<boolean> {
+  //
+  // A published reading only records the failed attempt, as `fail` does:
+  // `rolledBack` was built before this lock, and the relationship judge may
+  // have rewritten the reading since. `contentCaptured` is false when the
+  // attempt's import content never reached R2; its keys are then cleared, so
+  // the reading's content resolves to an earlier attempt's instead.
+  async failActivation(
+    ref: AttemptRef,
+    rolledBack: Manifest,
+    failed: ProcessingAttemptSummary,
+    opts: { contentCaptured: boolean },
+  ): Promise<boolean> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, ref.id);
       if (!row || !attemptOwnership(row, ref).isActive) return false;
-      await this.updateReading(tx, rolledBack);
+      if (isPublished(row)) {
+        await this.recordFailedAttempt(tx, ref.id, failed, rolledBack.updated_at);
+      } else {
+        await this.updateReading(tx, rolledBack);
+      }
       await this.finishAttempt(tx, ref.id, failed, "send_failed");
+      if (!opts.contentCaptured) {
+        await tx.query(
+          `UPDATE reading_attempts SET raw_key = NULL, extracted_key = NULL
+           WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
+          [this.tenantId, ref.id, failed.id],
+        );
+      }
       return true;
     });
   }
@@ -248,12 +273,8 @@ export class PgReadingWriter {
       if (!owner.isActive && !owner.isLegacyPending && !(opts.allowLastAttempt && owner.isLast)) {
         return { committed: false, published: false };
       }
-      if (row.status === "ready" && row.current_revision_id !== null) {
-        await tx.query(
-          `UPDATE readings SET active_attempt = NULL, last_attempt = $3::jsonb, updated_at = $4
-           WHERE tenant_id = $1 AND id = $2`,
-          [this.tenantId, ref.id, json(failed.last_attempt ?? null), opts.now],
-        );
+      if (isPublished(row)) {
+        await this.recordFailedAttempt(tx, ref.id, failed.last_attempt, opts.now);
       } else {
         await this.updateReading(tx, failed);
         await this.deleteEmbedding(tx, ref.id);
@@ -428,6 +449,21 @@ export class PgReadingWriter {
     return owner === undefined || owner.reading_id === ref.id;
   }
 
+  // A published reading keeps its revision, summary and embedding; only the
+  // attempt summaries change.
+  private async recordFailedAttempt(
+    tx: SqlQuery,
+    id: string,
+    lastAttempt: ProcessingAttemptSummary | undefined,
+    now: string,
+  ): Promise<void> {
+    await tx.query(
+      `UPDATE readings SET active_attempt = NULL, last_attempt = $3::jsonb, updated_at = $4
+       WHERE tenant_id = $1 AND id = $2`,
+      [this.tenantId, id, json(lastAttempt ?? null), now],
+    );
+  }
+
   private async updateReading(tx: SqlQuery, manifest: Manifest, revisionId?: string): Promise<void> {
     const row = manifestToRows(manifest, { tenantId: this.tenantId, keyPrefix: "", ownsUrl: false }).reading;
     const values: unknown[] = [this.tenantId, manifest.id];
@@ -498,4 +534,8 @@ export class PgReadingWriter {
     );
     return gone.length > 0;
   }
+}
+
+function isPublished(row: LockedRow): boolean {
+  return row.status === "ready" && row.current_revision_id !== null;
 }
