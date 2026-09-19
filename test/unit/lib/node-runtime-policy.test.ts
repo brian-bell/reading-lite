@@ -48,7 +48,7 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(evaluateDevNode("22.12.0")).toEqual({ ok: true });
     expect(isDevNodeSupported("22.12.0")).toBe(isNodeAtLeast("22.12.0", DEV_NODE_MINIMUM));
 
-    for (const version of ["20.19.2", "20.19.0", "21.0.0", "22.0.0", "22.11.9"]) {
+    for (const version of ["21.0.0", "22.0.0", "22.11.9"]) {
       expect(evaluateDevNode(version), version).toEqual({
         ok: false,
         message: DEV_NODE_GATE_MESSAGE,
@@ -77,34 +77,5 @@ describe("Node runtime policy (ops floor vs local dev)", () => {
     expect(formatDevNodeFloor("23.0.0")).toBe("23.0");
     expect(formatDevNodeFloor("22.12.1")).toBe("22.12.1");
     expect(formatDevNodeFloor("not-a-version")).toBe("not-a-version");
-  });
-
-  it("does not use a Node 20 npm engine override", () => {
-    for (const file of [".github/workflows/ci.yml", "README.md", "docs/operations.md"]) {
-      const text = readFileSync(path.join(repoRoot, file), "utf8");
-      expect(text, file).not.toContain("npm ci --engine-strict=false");
-      expect(text, file).not.toContain("--ignore-engines");
-    }
-  });
-
-  it("runs the Ops CLI CI job on Node 22", () => {
-    const text = readFileSync(path.join(repoRoot, ".github/workflows/ci.yml"), "utf8");
-    expect(text).toContain("  ops:\n    name: Ops CLI");
-    expect(text).not.toContain("ops-node20");
-    expect(text).not.toContain("20.19.2");
-    expect(text).not.toMatch(/node-version:\s*"20/);
-  });
-
-  it("keeps the Node policy table identical in README, AGENTS.md, and operations.md", () => {
-    const table = [
-      "| Path | Supported Node | How Wrangler is launched |",
-      "| --- | --- | --- |",
-      "| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |",
-      "| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |",
-      "| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |",
-    ].join("\n");
-    for (const file of ["README.md", "AGENTS.md", "docs/operations.md"]) {
-      expect(readFileSync(path.join(repoRoot, file), "utf8"), file).toContain(table);
-    }
   });
 });

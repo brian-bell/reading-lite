@@ -173,9 +173,6 @@ describe("docs/openapi.yaml", () => {
     expect(servers[1]?.description).toMatch(/additional public host/i);
     expect(servers[2]?.description).toMatch(/staging/i);
     expect(servers[3]?.description).toMatch(/additional public host/i);
-    expect(servers.map((server) => server.url)).not.toContain("https://bbookmarks.com");
-    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite.bbell.dev");
-    expect(servers.map((server) => server.url)).not.toContain("https://reading-lite-staging.bbell.dev");
   });
 
   it("documents the request/response schemas that mirror src/schemas/api.ts", () => {

@@ -32,12 +32,10 @@ const RULES: Rule[] = [
   // test/unit/deploy reads the deploy workflows.
   [/^\.github\/workflows\//, ["worker"]],
 
-  // Documentation. The Worker suite pins the Node policy table in README.md,
-  // AGENTS.md, and docs/operations.md, and checks routes against
-  // docs/openapi.yaml.
-  [/^(README\.md|AGENTS\.md|CLAUDE\.md|docs\/operations\.md|docs\/openapi\.yaml)$/, ["worker"]],
+  // Documentation. The Worker suite checks routes against docs/openapi.yaml.
+  [/^docs\/openapi\.yaml$/, ["worker"]],
   [/^docs\//, NONE],
-  [/^(CONTEXT\.md|LICENSE|skills-lock\.json|\.gitignore|\.dockerignore|Dockerfile|docker-compose\.yml)$/, NONE],
+  [/^(README\.md|AGENTS\.md|CLAUDE\.md|CONTEXT\.md|LICENSE|skills-lock\.json|\.gitignore|\.dockerignore|Dockerfile|docker-compose\.yml)$/, NONE],
   [/^evaluations\/|^\.beads\/|^\.claude\/skills\//, NONE],
   [/^(\.agents|\.claude)\/.*\.(md|yaml)$/, NONE],
   // Agent hooks and rules. .cursor/environment.json stays with the Worker
