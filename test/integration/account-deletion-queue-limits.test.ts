@@ -1,7 +1,6 @@
 import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { tearDownAccount } from "../../src/control-plane/account-teardown";
-import { fromD1 } from "../../src/control-plane/db";
 import { digestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
 import { claimPendingDigestDelivery, getDigestDelivery } from "../../src/control-plane/digest-ledger";
 import { admitProcessReadingEnvelope, type ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
@@ -20,6 +19,8 @@ import {
   otherTenant,
 } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 // #288: these are local runtime characterizations, including known limits.
 // They exercise hard deletion, not only status='deleting'. No provider calls
@@ -33,7 +34,7 @@ const CREATED_AT = "2026-09-05T08:00:00.000Z";
 const KEY_PREFIX = buildKeyPrefix(READING_ID, CREATED_AT);
 
 // Guard internals have their own direct-storage suite. Keep this fixture on
-// real D1/R2 with successful bound purge replies, without opening DO storage.
+// real PostgreSQL/R2 with successful bound purge replies, without opening DO storage.
 const purgeNamespace = {
   idFromName: (name: string) => name,
   get: () => ({ fetch: async () => Response.json({ ok: true }) }),
@@ -60,15 +61,17 @@ async function tearDownFixture(): Promise<void> {
   const objects = await env.READINGS_BUCKET.list({ prefix: PREFIX });
   expect(objects.truncated).toBe(false);
   for (const object of objects.objects) await env.READINGS_BUCKET.delete(object.key);
-  await env.CONTROL_PLANE.prepare(
-    "UPDATE users SET status = 'deleting', deleting_at_ms = ? WHERE id = ?",
-  ).bind(NOW_MS - 8 * 24 * 60 * 60_000, OTHER_TENANT_ID).run();
-  await env.CONTROL_PLANE.prepare(
+  await testControlPlane(env).run(
+    "UPDATE users SET status = 'deleting', deleting_at = ? WHERE id = ?",
+    toTimestamp(NOW_MS - 8 * 24 * 60 * 60_000), OTHER_TENANT_ID,
+  );
+  await testControlPlane(env).run(
     `INSERT INTO wipe_progress
-       (tenant_id, phase, updated_at_ms, completed_at_ms, first_completed_at_ms)
+       (tenant_id, phase, updated_at, completed_at, first_completed_at)
      VALUES (?, 'done', ?, ?, ?)`,
-  ).bind(OTHER_TENANT_ID, NOW_MS, NOW_MS, NOW_MS).run();
-  const result = await tearDownAccount(fromD1(env.CONTROL_PLANE), {
+    OTHER_TENANT_ID, toTimestamp(NOW_MS), toTimestamp(NOW_MS), toTimestamp(NOW_MS),
+  );
+  const result = await tearDownAccount(testControlPlane(env), {
     TENANT_USAGE_GUARD: purgeNamespace,
     GLOBAL_USAGE_GUARD: purgeNamespace,
   }, {
@@ -84,12 +87,11 @@ async function tearDownFixture(): Promise<void> {
 }
 
 async function expectNoTenantState(): Promise<void> {
-  const db = fromD1(env.CONTROL_PLANE);
+  const db = testControlPlane(env);
   expect(await db.first("SELECT id FROM users WHERE id = ?", OTHER_TENANT_ID)).toBeNull();
   expect(await db.all("SELECT * FROM api_token_scopes WHERE token_id = ?", OTHER_TOKEN_ID)).toEqual([]);
   expect(await db.all("SELECT * FROM digest_deliveries WHERE user_id = ?", OTHER_TENANT_ID)).toEqual([]);
   expect(await db.all("SELECT * FROM wipe_progress WHERE tenant_id = ?", OTHER_TENANT_ID)).toEqual([]);
-  expect(await db.all("SELECT * FROM vector_ledger WHERE tenant_id = ?", OTHER_TENANT_ID)).toEqual([]);
   expect(await db.first("SELECT tenant_id FROM account_deletions WHERE tenant_id = ?", OTHER_TENANT_ID))
     .toEqual({ tenant_id: OTHER_TENANT_ID });
   const page = await env.READINGS_BUCKET.list({ prefix: PREFIX });
@@ -108,12 +110,13 @@ function digestEnvelope() {
 }
 
 async function seedPendingDigest() {
-  await env.CONTROL_PLANE.prepare(
+  await testControlPlane(env).run(
     "UPDATE user_settings SET digest_cadence = 'daily', time_zone = 'UTC' WHERE user_id = ?",
-  ).bind(OTHER_TENANT_ID).run();
+    OTHER_TENANT_ID,
+  );
   const key = { userId: OTHER_TENANT_ID, cadence: "daily" as const, periodKey: "2026-09-05" };
-  expect(await claimPendingDigestDelivery(fromD1(env.CONTROL_PLANE), key, NOW_MS)).toBe("inserted");
-  expect(await getDigestDelivery(fromD1(env.CONTROL_PLANE), key)).toMatchObject({ status: "pending" });
+  expect(await claimPendingDigestDelivery(testControlPlane(env), key, NOW_MS)).toBe("inserted");
+  expect(await getDigestDelivery(testControlPlane(env), key)).toMatchObject({ status: "pending" });
   return digestEnvelope();
 }
 
@@ -141,12 +144,12 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
       },
     };
     // A meaningful saved envelope was admissible while its owner existed.
-    expect(await admitProcessReadingEnvelope(fromD1(env.CONTROL_PLANE), saved, Date.now()))
+    expect(await admitProcessReadingEnvelope(testControlPlane(env), saved, Date.now()))
       .toEqual({ ok: true, tenant: otherTenant() });
     const savedWipe = accountWipeEnvelopeV1({ tenantId: otherTenant().tenantId, force: false });
     await env.READINGS_BUCKET.put(`${PREFIX}${KEY_PREFIX}/raw.md`, "Private fixture content");
     await tearDownFixture();
-    const auditBefore = await fromD1(env.CONTROL_PLANE).first(
+    const auditBefore = await testControlPlane(env).first(
       "SELECT * FROM account_deletions WHERE tenant_id = ?", OTHER_TENANT_ID,
     );
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected upstream call"));
@@ -167,7 +170,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
     expect(errors).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(errors.mock.calls[0]![0])))
       .toMatchObject({ event: "account_wipe_dead_lettered", tenant_id: OTHER_TENANT_ID });
-    expect(await fromD1(env.CONTROL_PLANE).first(
+    expect(await testControlPlane(env).first(
       "SELECT * FROM account_deletions WHERE tenant_id = ?", OTHER_TENANT_ID,
     )).toEqual(auditBefore);
   });
@@ -176,10 +179,10 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
     const saved = await seedPendingDigest();
     await tearDownFixture();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected mail"));
-    // Capture the actual D1 error at the write boundary; an unrelated failure
+    // Capture the actual database error at the write boundary; an unrelated failure
     // or parser rejection must not satisfy the retry/ack characterization.
     await expect(processDigestJob(saved, env, { nowMs: NOW_MS }))
-      .rejects.toThrow(/FOREIGN KEY constraint failed/);
+      .rejects.toThrow(/violates foreign key constraint/);
     const msg = queueMessage(saved);
     await dispatch("reading-lite-digest", msg);
     expect(msg.ack).not.toHaveBeenCalled();
@@ -192,7 +195,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
     await dispatch("reading-lite-digest-dlq", dlq);
     expect(dlq.ack).toHaveBeenCalledOnce();
     expect(dlq.retry).not.toHaveBeenCalled();
-    expect(errors.mock.calls.flat().map(String).join("\n")).toMatch(/FOREIGN KEY constraint failed/);
+    expect(errors.mock.calls.flat().map(String).join("\n")).toMatch(/violates foreign key constraint/);
     expect(fetchSpy).not.toHaveBeenCalled();
     await expectNoTenantState();
   });
@@ -226,7 +229,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
     const fetchSpy = vi.fn<typeof fetch>(async () => {
       // The send really occurs after hard deletion, not just before a delayed
       // response from the mail provider. The provider itself is a local stub.
-      expect(await fromD1(env.CONTROL_PLANE).first("SELECT id FROM users WHERE id = ?", OTHER_TENANT_ID))
+      expect(await testControlPlane(env).first("SELECT id FROM users WHERE id = ?", OTHER_TENANT_ID))
         .toBeNull();
       return Response.json({ id: "re_288_after_teardown" });
     });
@@ -242,7 +245,7 @@ describe("saved queue envelopes after hard teardown (#288)", () => {
     } finally {
       releaseRead();
     }
-    expect(String(await outcome)).toMatch(/FOREIGN KEY constraint failed/);
+    expect(String(await outcome)).toMatch(/violates foreign key constraint/);
     expect(fetchSpy).toHaveBeenCalledOnce();
     expect(fetchSpy.mock.calls[0]![0]).toBe("https://api.resend.com/emails");
     expect(JSON.parse(String(fetchSpy.mock.calls[0]![1]?.body)))

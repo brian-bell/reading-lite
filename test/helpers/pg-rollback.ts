@@ -41,19 +41,43 @@ export function useRolledBackSql(): () => Sql {
     await client.query("BEGIN");
     outer = client;
     let depth = 0;
-    const handle: SqlQuery = { query: client.query, execute: client.execute };
+    // Advisory locks (lockKey) are held until the outer transaction ends,
+    // which here is the end of the test. Tests cannot see each other's rows,
+    // so a lock shared across them serializes nothing real and deadlocks
+    // against the unique-index waits above; each test gets its own key space.
+    const salt = crypto.randomUUID();
+    const salted = (text: string, values?: unknown[]): [string, unknown[] | undefined] =>
+      /pg_advisory_xact_lock/.test(text) && values && typeof values[0] === "string"
+        ? [text, [`${salt}:${values[0]}`, ...values.slice(1)]]
+        : [text, values];
+    const query: SqlQuery["query"] = (text, values) => client.query(...salted(text, values));
+    const execute: SqlQuery["execute"] = (text, values) => client.execute(...salted(text, values));
+    const handle: SqlQuery = { query, execute };
+    // One client, so operations queue behind each other as they do on a
+    // production session (sqlSession): two "concurrent" transactions run one
+    // after the other instead of interleaving statements, which would leave
+    // each one's savepoint inside the other's. Code inside a transaction uses
+    // its `tx` handle, which does not queue.
+    let queue: Promise<unknown> = Promise.resolve();
+    const serial = <T>(work: () => Promise<T>): Promise<T> => {
+      const result = queue.then(work);
+      queue = result.catch(() => undefined);
+      return result;
+    };
     current = {
-      query: (text, values) => inSavepoint(client, "autocommit", () => client.query(text, values)),
-      execute: (text, values) => inSavepoint(client, "autocommit", () => client.execute(text, values)),
-      async transaction(run, opts = {}) {
+      query: (text, values) => serial(() => inSavepoint(client, "autocommit", () => query(text, values))),
+      execute: (text, values) => serial(() => inSavepoint(client, "autocommit", () => execute(text, values))),
+      transaction(run, opts = {}) {
         // READ ONLY cannot be undone inside the outer transaction, and no
         // control-plane caller asks for it.
         if (opts.readOnly) throw new Error("useRolledBackSql does not support read-only transactions");
-        try {
-          return await inSavepoint(client, `nested_${++depth}`, () => run(handle));
-        } finally {
-          depth--;
-        }
+        return serial(async () => {
+          try {
+            return await inSavepoint(client, `nested_${++depth}`, () => run(handle));
+          } finally {
+            depth--;
+          }
+        });
       },
       end: async () => undefined,
     };

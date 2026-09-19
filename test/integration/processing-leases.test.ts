@@ -17,6 +17,7 @@ import { PgReadingWriter } from "../../src/modules/stores/postgres/reading-write
 import type { Manifest } from "../../src/schemas/manifest";
 import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -903,7 +904,7 @@ describe("processing leases (Workers pool)", () => {
       url: "https://lease.test/nolimit",
       attemptId: "at_nolimit",
     });
-    await env.CONTROL_PLANE.prepare("DELETE FROM tenant_limits WHERE tenant_id = ?").bind(tenantId).run();
+    await testControlPlane(env).run("DELETE FROM tenant_limits WHERE tenant_id = ?", tenantId);
     const fetchFn = makeFetch();
     await expect(
       processReading(job, env as unknown as Env, services(fetchFn), tenant),
@@ -1031,10 +1032,10 @@ describe("processing leases (Workers pool)", () => {
       max_concurrent_work: 2,
     });
     const tenant = tenantOf(tenantId);
-    const previous = await env.CONTROL_PLANE.prepare(
+    const previous = await testControlPlane(env).first<{ max_concurrent_work: number }>(
       "SELECT max_concurrent_work FROM system_policy WHERE id = 1",
-    ).first<{ max_concurrent_work: number }>();
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = 1 WHERE id = 1").run();
+    );
+    await testControlPlane(env).run("UPDATE system_policy SET max_concurrent_work = 1 WHERE id = 1");
     let holderFence: string | undefined;
     try {
       const held = await globalLease({
@@ -1076,9 +1077,10 @@ describe("processing leases (Workers pool)", () => {
           nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
         });
       }
-      await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = ? WHERE id = 1")
-        .bind(previous?.max_concurrent_work ?? 3)
-        .run();
+      await testControlPlane(env).run(
+        "UPDATE system_policy SET max_concurrent_work = ? WHERE id = 1",
+        previous?.max_concurrent_work ?? 3,
+      );
     }
   });
 

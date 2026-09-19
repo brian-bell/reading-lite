@@ -4,6 +4,7 @@ import { OperatorStatus } from "../../src/control-plane/operator-status";
 import type { Env } from "../../src/index";
 import { GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, insertSecondTenant } from "../helpers/tenant-fixtures";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 function endpoint(bindings = env as unknown as Env) {
   return new OperatorStatus(createExecutionContext(), bindings);
@@ -115,9 +116,9 @@ describe("operator status entrypoint", () => {
       tenantId: FOUNDER_TENANT_ID,
       tenantChargedMicrodollars: 25,
     });
-    await env.CONTROL_PLANE.prepare(
-      "UPDATE system_policy SET paid_work_enabled = 0, policy_version = policy_version + 1",
-    ).run();
+    await testControlPlane(env).run(
+      "UPDATE system_policy SET paid_work_enabled = false, policy_version = policy_version + 1",
+    );
     expect(
       await (
         await endpoint().fetch(
@@ -125,9 +126,9 @@ describe("operator status entrypoint", () => {
         )
       ).json(),
     ).toMatchObject({ globalChargedMicrodollars: 25 });
-    await env.CONTROL_PLANE.prepare(
-      "UPDATE system_policy SET paid_work_enabled = 1, policy_version = policy_version + 1",
-    ).run();
+    await testControlPlane(env).run(
+      "UPDATE system_policy SET paid_work_enabled = true, policy_version = policy_version + 1",
+    );
     expect(await call("mark_spend_dispatched")).toMatchObject({
       ok: true,
       fresh: false,

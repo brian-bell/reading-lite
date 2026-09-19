@@ -15,6 +15,7 @@ function fixture() {
     INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, 0);
     INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440001', 11, 300000, 0);`);
   const db: ControlPlaneDb = {
+    transaction: (work) => work(db),
     first: async <T>(query: string, ...args: unknown[]) =>
       (sql.prepare(query).get(...args) as T) ?? null,
     all: async <T>(query: string, ...args: unknown[]) =>

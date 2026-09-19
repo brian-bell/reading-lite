@@ -1,6 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fromD1 } from "../../src/control-plane/db";
 import {
   consumeProcessReadingMessage,
   type ProcessReadingEnvelopeV1,
@@ -31,6 +30,7 @@ import {
 import { rowStore } from "../helpers/row-store";
 import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 // Vectorize is stubbed in the env at the integration boundary because Miniflare
 // has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per
@@ -121,7 +121,7 @@ async function drainQueue(services: Services): Promise<void> {
     await consumeProcessReadingMessage(
       { body: envelope, ack() {} },
       {
-        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        db: testControlPlane((env as unknown as Env)),
         nowMs: Date.now(),
         process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
       },
@@ -287,16 +287,14 @@ afterEach(clearBucket);
 
 async function founderIds(): Promise<{ tenantId: string; tokenId: string }> {
   const workerEnv = env as unknown as Env;
-  const user = await workerEnv.CONTROL_PLANE.prepare(
+  const user = await testControlPlane(workerEnv).first<{ id: string }>(
     "SELECT id FROM users WHERE email_canonical = ?",
-  )
-    .bind("founder@test.example")
-    .first<{ id: string }>();
-  const token = await workerEnv.CONTROL_PLANE.prepare(
+    "founder@test.example",
+  );
+  const token = await testControlPlane(workerEnv).first<{ id: string }>(
     "SELECT id FROM api_tokens WHERE user_id = ?",
-  )
-    .bind(user!.id)
-    .first<{ id: string }>();
+    user!.id,
+  );
   return { tenantId: user!.id, tokenId: token!.id };
 }
 
@@ -319,7 +317,7 @@ describe("versioned tenant queue envelope cutover", () => {
     await consumeProcessReadingMessage(
       { body: leftover, ack: leftoverAck },
       {
-        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        db: testControlPlane((env as unknown as Env)),
         nowMs: Date.now(),
         process,
       },
@@ -4523,7 +4521,7 @@ describe("cross-tenant mutation matrix", () => {
     await handleDeadLetter(
       { body: envelope, ack, retry: vi.fn() } as unknown as Message<unknown>,
       {
-        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        db: testControlPlane((env as unknown as Env)),
         nowMs: Date.now(),
         mark: (body, tenant) => markDeadLettered(body, env as unknown as Env, services, tenant),
       },
@@ -4593,7 +4591,7 @@ describe("cross-tenant mutation matrix", () => {
         consumeProcessReadingMessage(
           { body: envelope, ack() {} },
           {
-            db: fromD1((env as unknown as Env).CONTROL_PLANE),
+            db: testControlPlane((env as unknown as Env)),
             nowMs: Date.now(),
             process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
           },

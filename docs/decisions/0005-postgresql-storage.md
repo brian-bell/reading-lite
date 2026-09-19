@@ -226,9 +226,9 @@ Slice 1b switched the router's reads and the whole write path together.
   version opened a client per statement; under CI's parallel load that
   flooded the local Hyperdrive proxy (every open is a full handshake where
   nothing pools) and timed tests out.
-- **Account wipe.** Until the wipe moves in 1c, it deletes the tenant's reading
-  rows after its objects phase, failing closed when Hyperdrive is unbound. Its
-  Vectorize and vector-ledger phases stay for vectors written before cutover.
+- **Account wipe.** In 1b the wipe deleted the tenant's reading rows after its
+  objects phase and kept its Vectorize and vector-ledger phases. Slice 1c.2
+  replaced both; see "Control plane wired" below.
 
 ### Control-plane tables (slice 1c)
 
@@ -288,6 +288,82 @@ better-sqlite3 helper for `test/helpers/pg-rollback.ts` at the same time. 1c.1
 ships the schema, the seam, the adapter and the helpers, tested on PostgreSQL
 directly, and leaves the runtime on D1.
 
+#### Control plane wired (slice 1c.2)
+
+The plan sliced the wiring by module (auth in 1c.2, eligibility, digests and
+refresh jobs in 1c.3, the wipe in 1c.4). That cut cannot be made at the data:
+D1 enforces foreign keys, and `digest_deliveries`, `relationship_refresh_jobs`,
+`wipe_progress` and `vector_ledger` all reference D1 `users`, which eligibility,
+the digest pipeline and the wipe also read directly. Once sign-in created users
+in PostgreSQL, every later-slice module would have found no user. Decision
+(Brian, 2026-09-19): 1c.2 switches the whole control-plane store at once, with a
+direct port of every module; 1c.3 keeps moving tenant eligibility inside the
+claim and publish transactions, and 1c.4 keeps the deletion-race work.
+
+- **One client per request.** `sqlScope` is mounted on every route, so
+  authentication and the handler share one lazy client, closed once the
+  response is built. Queue batches, fan-outs and jobs use `sqlSessionFor`;
+  `AttemptIo` carries the attempt's session as `controlPlane`. The Durable
+  Object guards read limits and policy through `withControlPlane`, a
+  short-lived client per lookup.
+- **Lock, then act.** `ControlPlaneDb` gains `transaction`; given a
+  transaction handle it joins in a savepoint. Every site that relied on D1's
+  single writer to keep a read and its write together is one transaction that
+  locks first:
+  - magic-link and email-change issue take transaction-scoped advisory locks
+    (`lockKey`) on the address, and email change on the user first, because a
+    first issue has no row to lock. The partial unique index stays the last
+    word and a violation retries;
+  - redeem locks the challenge row `FOR UPDATE` for the whole claim and
+    completion, so parallel redeems of one link run in turn;
+  - session issue and token creation lock the `users` row, so the session cap
+    and the 10-token cap hold under parallel requests;
+  - founder bootstrap takes a fixed advisory lock, since a first bootstrap has
+    nothing to lock;
+  - teardown's final transaction locks `users` and `wipe_progress`, re-checks
+    that the account is still `deleting` and the wipe still complete, then
+    deletes, children first. D1 had no locks, so its batch carried both checks
+    as an EXISTS guard on every statement.
+
+  `test/integration/auth-concurrency.test.ts` runs these in parallel on real
+  connections. Without the advisory locks its issue tests fail. The redeem tests
+  still pass without the challenge lock, because the claim's compare-and-set,
+  the user-row lock in session issue and the `(user_id, claim)` unique index
+  already yield one session; the challenge lock keeps completion serial as D1
+  did.
+- **Insert order for challenges.** Rolling back a failed send restores the
+  newest predecessor, which D1 read as `ORDER BY rowid`. PostgreSQL has no
+  stable equivalent (`issued_at` ties within a millisecond; ids are random),
+  so `db/migrations/0004_auth_challenge_issue_seq.sql` adds `issue_seq`, an
+  identity column (see the mapping table).
+- **The wipe.** Its phases are `rows`, `objects`, `done`: the tenant's reading
+  rows, embeddings with them, in one statement, then the R2 prefix, then rows
+  once more for a publisher that committed after the rows phase. A database
+  error fails the delivery before any object goes. The vector-ledger seed,
+  `deleteByIds` batches and namespace probes are gone. `vector-ledger.ts`
+  stays only for the D1 operator commands that 1d ports or retires.
+- **Test isolation.** Per-file databases keep files apart, but a file's tests
+  share its database, where D1 gave each test its own. So
+  `test/apply-control-plane.ts` truncates the control-plane tables and
+  re-bootstraps the founder before each test. The usage guards run in the test
+  file's isolate but build their `env` from the pool's binding, which names the
+  base database (as `SELF` does), so the setup wraps their `fetch` and `alarm`
+  to point `HYPERDRIVE` at the clone. In the Node pool, `useRolledBackSql`
+  now queues operations on its one client, as a production session does, and
+  salts advisory-lock keys per test: a transaction-scoped lock lives until the
+  test's rollback, and tests that cannot see each other's rows must not block
+  each other on one. Real concurrency is tested in the workers pool. Tests
+  inject database faults at `pg.Client#query` (`test/helpers/sql-faults.ts`);
+  Node-pool guard tests answer the guards' lookups in memory
+  (`test/helpers/fake-control-plane.ts`).
+
+Still on D1 in this candidate, for 1c.5 and 1d: the `CONTROL_PLANE` binding
+itself, the D1 migrations in `npm run dev`, and the operator commands with their
+own control-plane SQL (system policy and status, the account wipe CLI and
+residue scan, the deploy wipe gate, staging token revocation, and the vector
+ledger commands). `ops founder bootstrap`, `npm run dev` and `seed:local` use
+PostgreSQL.
+
 #### D1 to PostgreSQL column mapping (for the #348 importer)
 
 Two conversions cover every changed column:
@@ -312,6 +388,7 @@ Columns not listed import unchanged (`TEXT` to `text`, `INTEGER` to `integer`).
 | `system_policy` | `updated_at_ms` | `updated_at` | ms |
 | `sessions` | `created_at_ms`, `authenticated_at_ms`, `last_seen_at_ms`, `idle_expires_at_ms`, `absolute_expires_at_ms`, `revoked_at_ms` | `created_at`, `authenticated_at`, `last_seen_at`, `idle_expires_at`, `absolute_expires_at`, `revoked_at` | ms |
 | `auth_challenges` | `issued_at_ms`, `expires_at_ms`, `claimed_at_ms`, `consumed_at_ms`, `mail_sent_at_ms` | `issued_at`, `expires_at`, `claimed_at`, `consumed_at`, `mail_sent_at` | ms |
+| `auth_challenges` | `rowid` | `issue_seq` | value unchanged; afterwards restart the identity above `max(issue_seq)` |
 | `signup_invites` | `created_at_ms`, `expires_at_ms`, `consumed_at_ms` | `created_at`, `expires_at`, `consumed_at` | ms |
 | `dev_mail_outbox` | `id` | `id` | value unchanged; afterwards restart the identity above `max(id)` |
 | `dev_mail_outbox` | `sent_at_ms` | `sent_at` | ms |

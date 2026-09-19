@@ -127,6 +127,7 @@ function remoteFixture() {
       all: vi.fn().mockResolvedValue([]),
       run: vi.fn(),
       batch: vi.fn(),
+      transaction: vi.fn(),
     },
     storage: {
       listObjects: vi.fn().mockResolvedValue([]),

@@ -1,6 +1,7 @@
 import { revokeAllApiTokensForUser } from "./authenticate";
 import type { ControlPlaneDb } from "./db";
 import { parseUserId } from "./ids";
+import { toTimestamp } from "./pg-time";
 import { revokeAllSessionsForUser } from "./sessions";
 
 // Account-deletion suppress (issue 195a / s1k.10.1). Marks the user `deleting`
@@ -36,7 +37,7 @@ export type BeginAccountDeletionResult =
 export const ACCOUNT_DELETE_REVOCATION_REASON = "account_delete";
 
 // Confirmed inactive: a row with status !== "active", or a confirmed missing
-// user (null row). Lookup failure (D1 throw/timeout) must not be treated as
+// user (null row). Lookup failure (a database throw or timeout) must not be treated as
 // inactive. The pre-spend gate wraps that throw as RateLimitedError so the
 // queue retries; post-CAS publish and the DLQ mark path fail-open instead.
 export async function tenantIsActive(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
@@ -75,11 +76,11 @@ export async function beginAccountDeletion(
   const marked = await db.run(
     `UPDATE users
      SET status = 'deleting',
-         deleting_at_ms = COALESCE(deleting_at_ms, ?),
-         updated_at_ms = ?
+         deleting_at = COALESCE(deleting_at, ?),
+         updated_at = ?
      WHERE id = ? AND status = 'active'`,
-    input.nowMs,
-    input.nowMs,
+    toTimestamp(input.nowMs),
+    toTimestamp(input.nowMs),
     userId,
   );
   if (marked.changes === 0) {

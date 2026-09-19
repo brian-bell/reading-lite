@@ -12,8 +12,9 @@ import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-
 import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
 import { deleteRefreshJob } from "../../src/control-plane/relationship-refresh-jobs";
-import { fromD1 } from "../../src/control-plane/db";
 import type { Services } from "../../src/services";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { interceptSql } from "../helpers/sql-faults";
 
 const createdAt = "2026-09-01T00:00:00.000Z";
 const runAt = "2026-09-06T03:07:00.000Z";
@@ -103,7 +104,10 @@ describe("hosted relationship judge", () => {
     expect((await testStore().findListIndexItem(id))!.novelty_verdict).toBe("familiar");
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
-    const checkpoint = await env.CONTROL_PLANE.prepare("SELECT result_json FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first<{ result_json: string }>();
+    const checkpoint = await testControlPlane(env).first<{ result_json: string }>(
+      "SELECT result_json::text AS result_json FROM relationship_refresh_jobs WHERE reading_id = ?",
+      id,
+    );
     expect(checkpoint!.result_json).not.toContain("Original summary");
   });
   it("leaves ready data untouched on a provider error and does not repeat an uncertain dispatch", async () => {
@@ -115,10 +119,13 @@ describe("hosted relationship judge", () => {
     expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
   it("honors spend denial before dispatch and before creating a job checkpoint", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run(
+      "UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    );
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow(/spend admission/);
     expect(provider).not.toHaveBeenCalled();
-    expect(await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).toMatchObject({ results: [] });
+    expect(await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs")).toEqual([]);
     expect(await testStore().readManifest(keyPrefix)).toEqual(original);
   });
   it("does not write over a reprocess that wins during the provider call", async () => {
@@ -155,7 +162,7 @@ describe("hosted relationship judge", () => {
     await testStore().readings.purge(id);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
     const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
     expect(logged).toContain(`"readingId":"${id}"`);
     expect(logged).toContain('"reason":"purged"');
@@ -178,7 +185,7 @@ describe("hosted relationship judge", () => {
     }
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toMatchObject({ name: "DeferPaidWorkError" });
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
     const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
     expect(logged).toContain(id);
     expect(logged).toContain(reason);
@@ -201,7 +208,10 @@ describe("hosted relationship judge", () => {
     }
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
-    expect(await env.CONTROL_PLANE.prepare("SELECT reading_id FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()).toEqual({ reading_id: id });
+    expect(await testControlPlane(env).first(
+      "SELECT reading_id FROM relationship_refresh_jobs WHERE reading_id = ?",
+      id,
+    )).toEqual({ reading_id: id });
     expect((await store.readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
   });
 
@@ -229,7 +239,7 @@ describe("hosted relationship judge", () => {
     expect(ack).toHaveBeenCalledOnce();
     expect(retry).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
     const logged = warn.mock.calls.map(call => String(call[0])).join("\n");
     expect(logged).toContain(id);
     expect(logged).toContain(reason);
@@ -239,38 +249,26 @@ describe("hosted relationship judge", () => {
   it("does not recreate a purged reading or its checkpoint after an in-flight call", async () => {
     const store = testStore();
     provider.mockImplementationOnce(async () => {
-      await purgeReading({ writer: store.readings.writer, content: store.readings.content, deleteRefreshCheckpoint: id => deleteRefreshJob(fromD1(env.CONTROL_PLANE), FOUNDER_TENANT_ID, id) }, id, { now: services.now(), pendingTtlSeconds: 300 });
+      await purgeReading({ writer: store.readings.writer, content: store.readings.content, deleteRefreshCheckpoint: id => deleteRefreshJob(testControlPlane(env), FOUNDER_TENANT_ID, id) }, id, { now: services.now(), pendingTtlSeconds: 300 });
       return response();
     });
     await processRelationshipJudge(job, runtime, services);
     expect(await store.readManifest(keyPrefix)).toBeNull();
     expect(await store.findListIndexItem(id)).toBeNull();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
   });
 
   it("removes a checkpoint claimed after purge has already completed", async () => {
-    const db = env.CONTROL_PLANE;
     const store = testStore();
-    runtime.CONTROL_PLANE = new Proxy(db, { get(target, key) {
-      if (key === "prepare") return (sql: string) => {
-        const statement = db.prepare(sql);
-        if (!sql.startsWith("INSERT INTO relationship_refresh_jobs")) return statement;
-        return { bind: (...values: unknown[]) => {
-          const bound = statement.bind(...values);
-          return { run: async () => {
-            await purgeReading({ writer: store.readings.writer, content: store.readings.content,
-              deleteRefreshCheckpoint: id => deleteRefreshJob(fromD1(db), FOUNDER_TENANT_ID, id),
-            }, id, { now: services.now(), pendingTtlSeconds: 300 });
-            return bound.run();
-          } };
-        } };
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
+    interceptSql(/^INSERT INTO relationship_refresh_jobs/, async (): Promise<"pass"> => {
+      await purgeReading({ writer: store.readings.writer, content: store.readings.content,
+        deleteRefreshCheckpoint: id => deleteRefreshJob(testControlPlane(env), FOUNDER_TENANT_ID, id),
+      }, id, { now: services.now(), pendingTtlSeconds: 300 });
+      return "pass";
+    });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("refresh input changed");
     expect(provider).not.toHaveBeenCalled();
-    expect((await db.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect(await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs")).toEqual([]);
   });
 
   it("retries a pre-fetch validation failure without an uncertain checkpoint", async () => {
@@ -279,7 +277,10 @@ describe("hosted relationship judge", () => {
     const load = PgReadingStore.prototype.loadReadingById;
     let fail = true;
     vi.spyOn(PgReadingStore.prototype, "loadReadingById").mockImplementation(async function (this: PgReadingStore, readingId) {
-      if (fail && await env.CONTROL_PLANE.prepare("SELECT owner FROM relationship_refresh_jobs WHERE reading_id = ?").bind(id).first()) {
+      if (fail && await testControlPlane(env).first(
+        "SELECT owner FROM relationship_refresh_jobs WHERE reading_id = ?",
+        id,
+      )) {
         fail = false;
         throw new Error("temporary validation failure");
       }
@@ -287,41 +288,26 @@ describe("hosted relationship judge", () => {
     });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("temporary validation failure");
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
   });
 
-  it("cleans up a claim when D1 commits but loses its response before fetch", async () => {
+  it("cleans up a claim when the database commits but loses its response before fetch", async () => {
     runtime.RETRY_MAX_ATTEMPTS = "1";
-    const db = env.CONTROL_PLANE;
-    let fail = true;
-    runtime.CONTROL_PLANE = new Proxy(db, { get(target, key) {
-      if (key === "prepare") return (sql: string) => {
-        const statement = db.prepare(sql);
-        if (!sql.startsWith("INSERT INTO relationship_refresh_jobs")) return statement;
-        return { bind: (...values: unknown[]) => {
-          const bound = statement.bind(...values);
-          return { run: async () => {
-            const result = await bound.run();
-            if (fail) { fail = false; throw new Error("lost D1 response"); }
-            return result;
-          } };
-        } };
-      };
-      const value = Reflect.get(target, key);
-      return typeof value === "function" ? value.bind(target) : value;
-    } });
-    await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("lost D1 response");
+    interceptSql(/^INSERT INTO relationship_refresh_jobs/, (call) =>
+      call === 1 ? { afterRunning: new Error("lost database response") } : "pass",
+    );
+    await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("lost database response");
     expect(provider).not.toHaveBeenCalled();
-    expect((await db.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect(await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs")).toEqual([]);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
   });
 
   it("rechecks spend admission inside provider retries", async () => {
     provider.mockImplementationOnce(async () => {
-      await env.CONTROL_PLANE.prepare("UPDATE system_policy SET paid_work_enabled = 0 WHERE id = 1").run();
+      await testControlPlane(env).run("UPDATE system_policy SET paid_work_enabled = false WHERE id = 1");
       return new Response("temporary failure", { status: 500 });
     });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow(/spend admission/);
@@ -350,7 +336,7 @@ describe("hosted relationship judge", () => {
   });
 
   it("skips a deleting founder before any spend", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
   });
@@ -369,20 +355,23 @@ describe("hosted relationship judge", () => {
     await processRelationshipJudge(job, runtime, services);
     expect(queryById).toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
   });
 
   it("soft-acks without taking a lease when the founder is suppressed after neighbourhood capture", async () => {
     runtime.READINGS_INDEX = {
       getByIds: async (ids: string[]) => ids.map(id => ({ id })),
       queryById: async () => {
-        await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").bind(FOUNDER_TENANT_ID).run();
+        await testControlPlane(env).run(
+          "UPDATE users SET status = 'deleting' WHERE id = ?",
+          FOUNDER_TENANT_ID,
+        );
         return { matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] };
       },
     } as unknown as VectorizeIndex;
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
-    expect((await env.CONTROL_PLANE.prepare("SELECT * FROM relationship_refresh_jobs").all()).results).toEqual([]);
+    expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
   });
 
   it("logs neighbours_changed when a neighbour version drifts before admission", async () => {
@@ -461,7 +450,10 @@ describe("hosted relationship judge", () => {
   });
 
   it("delays expected spend deferrals without consuming queue retries", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run(
+      "UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    );
     const send = vi.fn(async () => {});
     runtime.RELATIONSHIP_REFRESH_JOBS = { send } as unknown as Queue;
     const ack = vi.fn(); const retry = vi.fn();
@@ -472,7 +464,10 @@ describe("hosted relationship judge", () => {
   });
 
   it("falls back to retry if delayed enqueue fails", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run(
+      "UPDATE tenant_limits SET daily_spend_microdollars = 1 WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    );
     runtime.RELATIONSHIP_REFRESH_JOBS = { send: vi.fn(async () => { throw new Error("queue unavailable"); }) } as unknown as Queue;
     const ack = vi.fn(); const retry = vi.fn();
     await consumeRelationshipRefresh({ body: job, ack, retry } as unknown as Message<unknown>, runtime, undefined, services);

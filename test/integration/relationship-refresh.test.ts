@@ -7,6 +7,7 @@ import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, founderTenant } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const NOW = Date.parse("2026-09-06T03:07:00Z");
 const ROOT = `u/${FOUNDER_TENANT_ID}/`;
@@ -281,7 +282,7 @@ describe("relationship refresh scan", () => {
     await seed(1);
     await scheduleRelationshipRefresh(runtime, NOW);
     const before = await (await env.READINGS_BUCKET.get(KEY()))!.text();
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     await drainScans();
     expect(query).not.toHaveBeenCalled();
     expect(await (await env.READINGS_BUCKET.get(KEY()))!.text()).toBe(before);

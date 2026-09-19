@@ -1,5 +1,6 @@
 import { MAGIC_LINK_VERIFY_PATH } from "./constants";
 import { isPublicWebOrigin, originOfUrl } from "./origin";
+import { fromTimestamp, toTimestamp } from "./pg-time";
 
 export interface MagicLinkMail {
   to: string;
@@ -108,11 +109,11 @@ export async function storeLocalMagicLink(
   input: { to: string; subject: string; verifyUrl: string; nowMs: number },
 ): Promise<void> {
   await db.run(
-    "INSERT INTO dev_mail_outbox (to_email, subject, verify_url, sent_at_ms) VALUES (?, ?, ?, ?)",
+    "INSERT INTO dev_mail_outbox (to_email, subject, verify_url, sent_at) VALUES (?, ?, ?, ?)",
     input.to,
     input.subject,
     input.verifyUrl,
-    input.nowMs,
+    toTimestamp(input.nowMs),
   );
 }
 
@@ -120,13 +121,17 @@ export async function latestLocalMagicLink(
   db: import("./db").ControlPlaneDb,
   toEmail: string,
 ): Promise<{ to_email: string; subject: string; verify_url: string; sent_at_ms: number } | null> {
-  return db.first(
-    `SELECT to_email, subject, verify_url, sent_at_ms
+  const row = await db.first<{ to_email: string; subject: string; verify_url: string; sent_at: string }>(
+    `SELECT to_email, subject, verify_url, sent_at
      FROM dev_mail_outbox
      WHERE lower(to_email) = ?
-     ORDER BY sent_at_ms DESC, id DESC`,
+     ORDER BY sent_at DESC, id DESC
+     LIMIT 1`,
     toEmail,
   );
+  if (!row) return null;
+  const { sent_at, ...rest } = row;
+  return { ...rest, sent_at_ms: fromTimestamp(sent_at) };
 }
 
 function escapeText(s: string): string {

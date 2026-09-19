@@ -6,6 +6,7 @@ import {
 import { formatCredential, mintSecretHex, type RandomBytes } from "./credential";
 import { deriveHmacKey, hmacHex, type AuthRoot } from "./crypto";
 import type { ControlPlaneDb } from "./db";
+import { fromTimestamp, toTimestamp } from "./pg-time";
 import {
   mintTokenId,
   parseTokenId,
@@ -46,14 +47,14 @@ export type CreateApiTokenResult =
   | { kind: "invalid_scopes" }
   | { kind: "invalid_expiry" };
 
-interface TokenRow {
+interface TokenDbRow {
   id: string;
   name: string;
   format: "legacy" | "standard";
-  created_at_ms: number;
-  expires_at_ms: number;
-  revoked_at_ms: number | null;
-  last_used_at_ms: number | null;
+  created_at: string;
+  expires_at: string;
+  revoked_at: string | null;
+  last_used_at: string | null;
   user_agent_label: string | null;
 }
 
@@ -91,9 +92,9 @@ export async function countActiveApiTokens(
 ): Promise<number> {
   const row = await db.first<{ n: number }>(
     `SELECT COUNT(*) AS n FROM api_tokens
-     WHERE user_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?`,
+     WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?`,
     input.userId,
-    input.nowMs,
+    toTimestamp(input.nowMs),
   );
   return row?.n ?? 0;
 }
@@ -121,47 +122,51 @@ export async function createApiToken(
     return { kind: "invalid_expiry" };
   }
 
-  // No pre-count: a replica can still report 10 after a revoke. Admission is
-  // only the INSERT … SELECT WHERE count < 10 (results[0].changes !== 1 → cap).
+  // Admission is the INSERT … SELECT WHERE count < 10 and its change count
+  // (results[0].changes !== 1 → cap). Under READ COMMITTED two creates could
+  // both count 9, so the user row lock serializes them first, as D1's single
+  // writer did.
   const tokenId = mintTokenId(input.newUuid);
   const secret = mintSecretHex(input.randomBytes);
   const secretHmac = await hmacHex(await deriveHmacKey(input.authRoot, "api_token"), secret);
+  const now = toTimestamp(input.nowMs);
 
-  const results = await db.batch([
-    {
-      sql: `INSERT INTO api_tokens (
-              id, user_id, name, format, secret_hmac, hash_key_version,
-              created_at_ms, expires_at_ms, user_agent_label
-            )
-            SELECT ?, ?, ?, 'standard', ?, ?, ?, ?, ?
-            WHERE (
-              SELECT COUNT(*) FROM api_tokens
-              WHERE user_id = ? AND revoked_at_ms IS NULL AND expires_at_ms > ?
-            ) < ?`,
-      params: [
-        tokenId,
-        input.userId,
-        name,
-        secretHmac,
-        input.authRoot.version,
-        input.nowMs,
-        expiresAtMs,
-        input.userAgentLabel,
-        input.userId,
-        input.nowMs,
-        MAX_ACTIVE_TOKENS,
-      ],
-    },
-    ...scopes.map((scope) => ({
-      sql: `INSERT INTO api_token_scopes (token_id, scope)
-            SELECT ?, ?
-            WHERE EXISTS (SELECT 1 FROM api_tokens WHERE id = ?)`,
-      params: [tokenId, scope, tokenId],
-    })),
-  ]);
+  const results = await db.transaction(async (tx) => {
+    await tx.first("SELECT id FROM users WHERE id = ? FOR UPDATE", input.userId);
+    return tx.batch([
+      {
+        sql: `INSERT INTO api_tokens (
+                id, user_id, name, format, secret_hmac, hash_key_version,
+                created_at, expires_at, user_agent_label
+              )
+              SELECT ?, ?, ?, 'standard', ?, ?, ?, ?, ?
+              WHERE (
+                SELECT COUNT(*) FROM api_tokens
+                WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+              ) < ?`,
+        params: [
+          tokenId,
+          input.userId,
+          name,
+          secretHmac,
+          input.authRoot.version,
+          now,
+          toTimestamp(expiresAtMs),
+          input.userAgentLabel,
+          input.userId,
+          now,
+          MAX_ACTIVE_TOKENS,
+        ],
+      },
+      ...scopes.map((scope) => ({
+        sql: `INSERT INTO api_token_scopes (token_id, scope)
+              SELECT ?, ?
+              WHERE EXISTS (SELECT 1 FROM api_tokens WHERE id = ?)`,
+        params: [tokenId, scope, tokenId],
+      })),
+    ]);
+  });
 
-  // Admission is the write's change count, not a follow-up SELECT: D1 without
-  // Sessions may serve that read from a replica that has not seen the insert.
   if ((results[0]?.changes ?? 0) !== 1) return { kind: "cap" };
 
   return {
@@ -181,12 +186,13 @@ export async function listApiTokensForUser(
   db: ControlPlaneDb,
   input: { userId: UserId; nowMs: number },
 ): Promise<{ tokens: TokenListItem[] }> {
-  const rows = await db.all<TokenRow>(
-    `SELECT id, name, format, created_at_ms, expires_at_ms, revoked_at_ms,
-            last_used_at_ms, user_agent_label
+  // D1 sorted a NULL last use last under DESC; PostgreSQL sorts it first.
+  const rows = await db.all<TokenDbRow>(
+    `SELECT id, name, format, created_at, expires_at, revoked_at,
+            last_used_at, user_agent_label
      FROM api_tokens
      WHERE user_id = ?
-     ORDER BY last_used_at_ms DESC, created_at_ms DESC`,
+     ORDER BY last_used_at DESC NULLS LAST, created_at DESC`,
     input.userId,
   );
   const scopeRows = await db.all<{ token_id: string; scope: string }>(
@@ -204,18 +210,23 @@ export async function listApiTokensForUser(
     scopesByToken.set(row.token_id, list);
   }
   return {
-    tokens: rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      format: row.format,
-      scopes: (scopesByToken.get(row.id) ?? []).slice().sort(),
-      created_at_ms: row.created_at_ms,
-      expires_at_ms: row.expires_at_ms,
-      revoked_at_ms: row.revoked_at_ms,
-      last_used_at_ms: row.last_used_at_ms,
-      user_agent_label: row.user_agent_label,
-      usable: tokenUsable(row, input.nowMs),
-    })),
+    tokens: rows.map((row) => {
+      const times = {
+        created_at_ms: fromTimestamp(row.created_at),
+        expires_at_ms: fromTimestamp(row.expires_at),
+        revoked_at_ms: fromTimestamp(row.revoked_at),
+        last_used_at_ms: fromTimestamp(row.last_used_at),
+      };
+      return {
+        id: row.id,
+        name: row.name,
+        format: row.format,
+        scopes: (scopesByToken.get(row.id) ?? []).slice().sort(),
+        ...times,
+        user_agent_label: row.user_agent_label,
+        usable: tokenUsable(times, input.nowMs),
+      };
+    }),
   };
 }
 
@@ -225,15 +236,15 @@ export async function revokeOwnedApiToken(
 ): Promise<"ok" | "not_found"> {
   const tokenId = parseTokenId(input.tokenId);
   if (!tokenId) return "not_found";
-  const row = await db.first<{ id: string; user_id: string; revoked_at_ms: number | null }>(
-    "SELECT id, user_id, revoked_at_ms FROM api_tokens WHERE id = ?",
+  const row = await db.first<{ id: string; user_id: string; revoked_at: string | null }>(
+    "SELECT id, user_id, revoked_at FROM api_tokens WHERE id = ?",
     tokenId,
   );
   if (!row || row.user_id !== input.userId) return "not_found";
-  if (row.revoked_at_ms == null) {
+  if (row.revoked_at == null) {
     await db.run(
-      `UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ? AND revoked_at_ms IS NULL`,
-      input.nowMs,
+      `UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
+      toTimestamp(input.nowMs),
       tokenId,
     );
   }

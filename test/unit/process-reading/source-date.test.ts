@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   extractedFromMarkdown,
   processReading,
@@ -11,6 +11,14 @@ import type { Manifest } from "../../../src/schemas/manifest";
 import { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
 import { memoryBucket, NODE_HYPERDRIVE, nodeReadingsFor } from "../../helpers/node-readings";
 import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
+import { interceptSql, TENANT_STATUS_LOOKUP } from "../../helpers/sql-faults";
+
+// The consumer checks its tenant is active before it spends; this file's
+// tenant has no users row in the shared Node database, so the lookup is answered.
+beforeEach(() => {
+  interceptSql(TENANT_STATUS_LOOKUP, () => [{ status: "active" }]);
+});
+afterEach(() => vi.restoreAllMocks());
 
 const PREFIX = "readings/2026/04/26T200000Z-rd_TEST";
 

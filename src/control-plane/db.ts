@@ -1,4 +1,4 @@
-import type { Sql, SqlQuery } from "../modules/db/sql";
+import { sqlFor, type Sql, type SqlQuery } from "../modules/db/sql";
 
 export interface SqlStatement {
   sql: string;
@@ -14,6 +14,19 @@ export interface ControlPlaneDb {
   all<T>(sql: string, ...params: unknown[]): Promise<T[]>;
   batch(statements: readonly SqlStatement[]): Promise<BatchResult[]>;
   run(sql: string, ...params: unknown[]): Promise<{ changes: number }>;
+  // One transaction around `work`, for the sites that must lock before they
+  // act (SELECT … FOR UPDATE, or lockKey for rows that may not exist yet).
+  // Already inside one, `work` joins it in a savepoint: all of it or none.
+  transaction<T>(work: (tx: ControlPlaneDb) => Promise<T>): Promise<T>;
+}
+
+// A transaction-scoped advisory lock on `key`, held until the caller's
+// transaction ends. For lock-then-act where the contended row may not exist
+// yet: a first sign-in has no users row and a first challenge no challenge row
+// to lock FOR UPDATE. Hyperdrive pools in transaction mode, so only the xact
+// form is safe; call it inside `transaction`, never on a bare `Sql`.
+export async function lockKey(tx: ControlPlaneDb, key: string): Promise<void> {
+  await tx.first("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", key);
 }
 
 // SQLSTATE unique_violation, which pg puts on the error's `code`.
@@ -101,7 +114,7 @@ export function fromSql(sql: Sql | SqlQuery): ControlPlaneDb {
     }
     return results;
   };
-  return {
+  const db: ControlPlaneDb = {
     async first<T>(text: string, ...params: unknown[]) {
       const rows = await sql.query(numberPlaceholders(text), params);
       return (rows[0] as T | undefined) ?? null;
@@ -118,11 +131,34 @@ export function fromSql(sql: Sql | SqlQuery): ControlPlaneDb {
       const execute = () => sql.execute(numberPlaceholders(text), params);
       return { changes: await (joined ? inSavepoint(sql, execute) : execute()) };
     },
+    async transaction(work) {
+      if (joined) return inSavepoint(sql, () => work(db));
+      return (sql as Sql).transaction((tx) => work(fromSql(tx)));
+    },
   };
+  return db;
 }
 
+// One short-lived client for a lookup outside any request or session, as the
+// Durable Object guards make when they read policy and tenant state. Always
+// closed, whether `work` resolves or throws.
+export async function withControlPlane<T>(
+  env: { HYPERDRIVE: Hyperdrive },
+  work: (db: ControlPlaneDb) => Promise<T>,
+): Promise<T> {
+  const sql = sqlFor(env);
+  try {
+    return await work(fromSql(sql));
+  } finally {
+    await sql.end();
+  }
+}
+
+// D1 has no interactive transactions, so `transaction` runs `work` on the same
+// handle. Only operator scripts still reach D1 (retired in 1c.5); the runtime
+// is on PostgreSQL.
 export function fromD1(d1: D1Database): ControlPlaneDb {
-  return {
+  const db: ControlPlaneDb = {
     async first<T>(sql: string, ...params: unknown[]) {
       return (await d1.prepare(sql).bind(...params).first<T>()) ?? null;
     },
@@ -141,5 +177,7 @@ export function fromD1(d1: D1Database): ControlPlaneDb {
       const result = await d1.prepare(sql).bind(...params).run();
       return { changes: result.meta.changes ?? 0 };
     },
+    transaction: (work) => work(db),
   };
+  return db;
 }

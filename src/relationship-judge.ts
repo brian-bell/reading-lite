@@ -14,7 +14,7 @@ import type { Env } from "./index";
 import { sha256Hex, type Services } from "./services";
 import type { RefreshEnvelope } from "./relationship-refresh";
 import { activeRefreshFounder } from "./relationship-refresh";
-import { fromD1 } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readRefreshJob, markRefreshDispatched, saveRefreshResult, markRefreshRateLimited, type SavedRefreshResult } from "./control-plane/relationship-refresh-jobs";
@@ -40,7 +40,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
 
 async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: Env, services: Services): Promise<void> {
   const runAt = new Date(job.runAt).toISOString();
-  const db = fromD1(env.CONTROL_PLANE);
+  const db = fromSql(sql);
   const rows = pgReadingStoreFor(sql, tenant);
   const writer = pgReadingWriterFor(sql, tenant);
   const versionOf = (manifest: Manifest) => sha256Hex(JSON.stringify(manifest));
@@ -103,10 +103,10 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: En
   if (checkpoint && checkpoint.run_at > runAt) return;
 
   const stillCurrent = async (etag: string, deferIfRunning = false) =>
-    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId && (await liveTarget(deferIfRunning))?.etag === etag;
+    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env, db))?.tenantId === tenant.tenantId && (await liveTarget(deferIfRunning))?.etag === etag;
   const publish = async (saved: SavedRefreshResult, sourceEtag: string) => {
     const current = await liveTarget();
-    if (!current || (await activeRefreshFounder(env))?.tenantId !== tenant.tenantId) return;
+    if (!current || (await activeRefreshFounder(env, db))?.tenantId !== tenant.tenantId) return;
     // The hash identifies our exact committed manifest after a crash, without
     // retaining a copy of the summary in the D1 checkpoint.
     if (await sha256Hex(JSON.stringify(current.manifest)) !== saved.manifest_hash) {
@@ -171,7 +171,7 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: En
   if (!await stillCurrent(original.etag, true)) {
     // Gate/founder loss soft-acks; etag drift is a terminal noop. In-TTL
     // running already threw from liveTarget(true) inside stillCurrent.
-    if (env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId) {
+    if (env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env, db))?.tenantId === tenant.tenantId) {
       logNoop("etag_changed");
     }
     return;

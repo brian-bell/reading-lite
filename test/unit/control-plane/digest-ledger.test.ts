@@ -8,7 +8,9 @@ import {
   getDigestDelivery,
   touchPendingDigestDelivery,
 } from "../../../src/control-plane/digest-ledger";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane } from "../../helpers/control-plane-pg";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-09-02T09:00:00.000Z");
@@ -16,7 +18,7 @@ const USER_ID = "usr_550e8400-e29b-41d4-a716-446655440000";
 const KEY = { userId: USER_ID, cadence: "daily" as const, periodKey: "2026-09-02" };
 
 async function bootstrapped() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -26,7 +28,7 @@ async function bootstrapped() {
     newUserId: () => USER_ID,
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  return { sqlite, db };
+  return { raw, db };
 }
 
 describe("digest_deliveries ledger CAS", () => {
