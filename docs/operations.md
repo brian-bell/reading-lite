@@ -12,24 +12,18 @@ plan by default and acts only with `--execute`.
 
 | Path | Supported Node | How Wrangler is launched |
 | --- | --- | --- |
-| `npm run ops` | Node **20.19.x** (Debian); also runs on Node 22 | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
+| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
 | `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker + SPA: Node **22**; ops compatibility: **20.19.2** | Worker tests stay on workerd |
+| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
 
-`npm run ops` is supported on **Node 20.19.x** (`/usr/bin/node` on Debian).
-That is the supported operator path. Do not upgrade the operator laptop to
-Node 22. It will not launch under the security boundary Snipe runs in.
-Install on that machine with `npm ci --engine-strict=false` because
-Wrangler's own `engines` are ≥22.
+`npm run ops` runs on **Node 22**, the same floor as the rest of the repo.
+Install with `npm ci`. Wrangler child processes go through
+`scripts/lib/wrangler-cli.ts`, which execs
+`node_modules/wrangler/wrangler-dist/cli.js` with the current Node.
+`npm run dev` and `types:generate` use the npm bin wrapper (`bin/wrangler.js`)
+and require Node 22.12+. The production Worker stays on workerd.
 
-Wrangler 4.87+ hard-fails in `bin/wrangler.js` on Node < 22. Ops does not
-spawn that wrapper: it execs `node_modules/wrangler/wrangler-dist/cli.js`
-with the current Node (see `scripts/lib/wrangler-cli.ts`). Corpus, deploy,
-staging, and founder commands therefore run on 20.19.x. Wrangler may print
-a Node 22 warning on the banner; that is wrangler's advertised floor, not a
-reading-lite failure. The production Worker stays on workerd.
-
-Root `package.json` `engines.node` (`>=20.19.0`) is the ops/install floor,
+Root `package.json` `engines.node` (`>=22.0.0`) is the install and ops floor,
 not a `npm run dev` guarantee. Local `npm run dev` is gated to Node 22.12+
 via `predev`.
 

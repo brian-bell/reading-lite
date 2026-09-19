@@ -66,8 +66,8 @@ There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; SPA verification is `npm test`
 plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
 `build`, `test:smoke`, and `test:browser` in `app/`. CI runs Worker and Node
-tests, SPA tests/build, the `app/` checks and its browser-evidence job on
-Node 22, and the ops compatibility check on Node 20.19.2. The browser-evidence
+tests, SPA tests/build, the `app/` checks and its browser-evidence job, and
+the Ops CLI job on Node 22. The browser-evidence
 job runs `test:browser:ci`, the essential subset; run the full `test:browser`
 locally before shipping a frontend change. On pull requests each job runs only
 for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
@@ -85,11 +85,11 @@ file. Generation excludes bindings; keep the application `Env` in `src/index.ts`
 
 | Path | Supported Node | How Wrangler is launched |
 | --- | --- | --- |
-| `npm run ops` | Node **20.19.x** (Debian); also runs on Node 22 | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
+| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
 | `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker + SPA: Node **22**; ops compatibility: **20.19.2** | Worker tests stay on workerd |
+| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
 
-`engines.node` (`>=20.19.0`) is the ops/install floor, not a `npm run dev`
+`engines.node` (`>=22.0.0`) is the install and ops floor, not a `npm run dev`
 guarantee. See [operator Node](docs/operations.md#operator-node).
 
 ## Where to work

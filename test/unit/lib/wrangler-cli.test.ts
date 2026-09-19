@@ -30,8 +30,8 @@ function captured(child: ChildProcess): Promise<{
   });
 }
 
-describe("wrangler CLI launcher (Node 20-compatible)", () => {
-  it("resolves wrangler-dist/cli.js, not the Node 22 bin wrapper", () => {
+describe("wrangler CLI launcher", () => {
+  it("resolves wrangler-dist/cli.js, not the npm bin wrapper", () => {
     const cli = resolveWranglerCliJs();
     expect(cli.replaceAll("\\", "/")).toMatch(/\/wrangler-dist\/cli\.js$/);
     expect(cli.replaceAll("\\", "/")).not.toMatch(/\/bin\/wrangler\.js$/);
@@ -40,7 +40,7 @@ describe("wrangler CLI launcher (Node 20-compatible)", () => {
     expect(readFileSync(wrapper, "utf8")).toMatch(/MIN_NODE_VERSION\s*=\s*"22\.0\.0"/);
   });
 
-  it("execs the current Node rather than a Node 22 binary", () => {
+  it("execs the current Node rather than a PATH wrangler binary", () => {
     const launched = wranglerSpawnArgs(["r2", "object", "get", "--help"]);
     expect(launched.command).toBe(process.execPath);
     expect(launched.args.slice(0, 3)).toEqual([
@@ -66,7 +66,7 @@ describe("wrangler CLI launcher (Node 20-compatible)", () => {
     });
   });
 
-  it("runs wrangler --version without the Node 22 hard-fail", async () => {
+  it("runs wrangler --version", async () => {
     const result = await captured(spawnWrangler(["--version"]));
     expect(result.code).toBe(0);
     expect(result.stderr).not.toMatch(/Wrangler requires at least Node\.js v22/i);
