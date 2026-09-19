@@ -1451,7 +1451,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
-| `npm run ops -- corpus backfill-source-date` | fill missing `manifest.source_date` by re-running `readabilityFromHtml` over stored `raw.html` (no refetch; writes only that field) |
+| `npm run ops -- corpus backfill-source-date` | fill missing `manifest.source_date` by re-running `readabilityFromHtml` over stored `raw.html` (no refetch; writes only that field; `--via` / `CORPUS_R2_*` like refresh-neighbours — S3 keys alone are enough) |
 | `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
 | `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
 | `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
@@ -1506,6 +1506,13 @@ direct, with manifest reads 25.7s → 3.4s and Vectorize queries 19.5s → 6.5s.
 Both paths write a byte-identical `refresh-report.json`, and each flushes
 `index/list.json` through its own client, so a direct run needs no wrangler auth
 at all.
+
+`corpus backfill-source-date` uses the same `--via` flag, credential auto-select,
+and `Storage:` header, but it is R2-only: `CORPUS_R2_*` S3 keys alone take the
+direct path. It does not query Vectorize, so a `CORPUS_CF_API_TOKEN` that 403s
+on the wrangler Workers R2 route is not required. `--via direct` forces that
+path (and fails on missing S3/REST credentials rather than falling back).
+`--local` still uses wrangler.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads`, the

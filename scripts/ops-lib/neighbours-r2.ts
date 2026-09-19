@@ -17,6 +17,7 @@
 import type { R2InventoryClient, VectorizeAdminClient } from "../lib/cf-clients";
 import type { R2Deps } from "../corpus-lib/wrangler-r2";
 import { parseVectorQueryMatch } from "../corpus-lib/wrangler-r2";
+import type { ListItem } from "../corpus-lib/types";
 import type { RefreshNeighbour, RefreshRow } from "../corpus-lib/refresh-neighbours";
 import type { CorpusRefreshNeighboursR2 } from "./commands/corpus-refresh-neighbours";
 import { casMergeListIndex, type ListIndexCasDeps } from "./list-index-cas";
@@ -58,10 +59,17 @@ export interface BackendInputs {
   vars: Record<string, string | undefined>;
 }
 
-// Direct tier 1 needs BOTH halves: an R2 credential for the manifest reads and
-// a Cloudflare API token for Vectorize, which has no S3-style access-key path.
-// An account with S3 keys but no token can still read manifests directly and
-// still cannot query the index, so it is not a usable direct backend.
+// R2-only commands (backfill-source-date) can run direct on S3 keys alone —
+// they never query Vectorize. Tier 1 still needs both halves.
+function r2DirectCredential(vars: Record<string, string | undefined>): string | undefined {
+  const accountId = first(vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
+  if (!accountId) return undefined;
+  if (vars.CORPUS_R2_ACCESS_KEY && vars.CORPUS_R2_SECRET_KEY) return "CORPUS_R2_* keys";
+  const apiToken = first(vars, ["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]);
+  if (apiToken) return "CLOUDFLARE_API_TOKEN";
+  return undefined;
+}
+
 function directCredential(vars: Record<string, string | undefined>): string | undefined {
   const accountId = first(vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
   const apiToken = first(vars, ["CORPUS_CF_API_TOKEN", "CLOUDFLARE_API_TOKEN"]);
@@ -79,6 +87,28 @@ function first(
     if (value) return value;
   }
   return undefined;
+}
+
+/**
+ * Which R2 path an R2-only corpus command should take. Same `--via` / `--local`
+ * rules as tier 1, but S3 keys alone are enough for direct — there is no
+ * Vectorize half. That is the OpsBot production path: `CORPUS_R2_*` can read
+ * the bucket when `CORPUS_CF_API_TOKEN` 403s on the wrangler Workers R2 route.
+ */
+export function chooseR2Backend(inputs: BackendInputs): BackendChoice {
+  if (inputs.via === "wrangler") return { backend: "wrangler", reason: "--via wrangler" };
+  if (inputs.local) {
+    return { backend: "wrangler", reason: "--local" };
+  }
+  const accountId = first(inputs.vars, ["CORPUS_R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID"]);
+  const account = accountId === undefined ? {} : { accountId };
+  if (inputs.via === "direct") return { backend: "direct", reason: "--via direct", ...account };
+  const credential = r2DirectCredential(inputs.vars);
+  if (credential) return { backend: "direct", reason: credential, ...account };
+  return {
+    backend: "wrangler",
+    reason: "no CORPUS_R2_*/CLOUDFLARE_API_TOKEN credentials",
+  };
 }
 
 /**
@@ -270,6 +300,77 @@ export function directNeighboursR2(deps: DirectNeighboursDeps): CorpusRefreshNei
         rooted(layout.listIndexKey(), r2Deps),
         patches,
         deps.listCas ?? {},
+      );
+    },
+  };
+}
+
+const HTML_EXT = "html";
+
+/**
+ * The R2 surface R2-only corpus commands (`backfill-source-date` and siblings)
+ * inject. Same keys and not-found/error split as wrangler-r2; the list flush
+ * is a plain put, matching that command's existing contract.
+ */
+export interface CorpusObjectR2 {
+  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
+  readManifest: (keyPrefix: string, deps: R2Deps) => Promise<unknown | null>;
+  readRawHtml: (keyPrefix: string, deps: R2Deps) => Promise<string | null>;
+  putManifest: (keyPrefix: string, body: unknown, deps: R2Deps) => Promise<void>;
+  writeListIndex: (items: ListItem[], deps: R2Deps) => Promise<void>;
+}
+
+export interface DirectCorpusObjectDeps {
+  r2: (bucket: string) => R2InventoryClient;
+}
+
+/** Direct (S3/REST) adapter for the CorpusObjectR2 surface. */
+export function directCorpusObjectR2(deps: DirectCorpusObjectDeps): CorpusObjectR2 {
+  const clients = new Map<string, R2InventoryClient>();
+  const client = (r2Deps: R2Deps): R2InventoryClient => {
+    const existing = clients.get(r2Deps.bucket);
+    if (existing) return existing;
+    const made = deps.r2(r2Deps.bucket);
+    clients.set(r2Deps.bucket, made);
+    return made;
+  };
+  const rooted = (key: string, r2Deps: R2Deps): string => `${r2Deps.keyRoot}${key}`;
+
+  return {
+    async readListIndex(r2Deps) {
+      const key = rooted(layout.listIndexKey(), r2Deps);
+      const raw = await client(r2Deps).get(key);
+      if (raw === null) {
+        throw new Error(`could not read ${layout.listIndexKey()} from bucket ${r2Deps.bucket}`);
+      }
+      const parsed: unknown = JSON.parse(raw);
+      const items = (parsed as { items?: unknown }).items;
+      if (!Array.isArray(items)) throw new Error(`${layout.listIndexKey()} has no items array`);
+      return items as ListItem[];
+    },
+
+    async readManifest(keyPrefix, r2Deps) {
+      const raw = await client(r2Deps).get(rooted(layout.manifestKey(keyPrefix), r2Deps));
+      return raw === null ? null : JSON.parse(raw);
+    },
+
+    async readRawHtml(keyPrefix, r2Deps) {
+      return client(r2Deps).get(rooted(layout.rawKey(keyPrefix, HTML_EXT), r2Deps));
+    },
+
+    async putManifest(keyPrefix, body, r2Deps) {
+      await client(r2Deps).put(
+        rooted(layout.manifestKey(keyPrefix), r2Deps),
+        JSON.stringify(body),
+        { contentType: "application/json" },
+      );
+    },
+
+    async writeListIndex(items, r2Deps) {
+      await client(r2Deps).put(
+        rooted(layout.listIndexKey(), r2Deps),
+        JSON.stringify({ version: 1, items }),
+        { contentType: "application/json" },
       );
     },
   };

@@ -16,6 +16,7 @@ import {
 import {
   corpusBackfillSourceDateCommand,
   type CorpusBackfillSourceDateDeps,
+  type CorpusBackfillSourceDateR2,
 } from "../../../scripts/ops-lib/commands/corpus-backfill-source-date";
 import { classifyStoredHtml } from "../../../scripts/corpus-lib/backfill-source-date";
 import {
@@ -1055,6 +1056,97 @@ describe("ops corpus backfill-source-date", () => {
     expect(text).toContain("turndown salvage failed");
     expect(text).toContain("Would gain a date: 1, written: 1");
     expect(text).toContain("run incomplete");
+  });
+
+  describe("storage backend selection", () => {
+    const S3_CREDS = {
+      CORPUS_R2_ACCOUNT_ID: "acct",
+      CORPUS_R2_ACCESS_KEY: "AKIA",
+      CORPUS_R2_SECRET_KEY: "secret",
+    };
+
+    function tracked(
+      deps: CorpusBackfillSourceDateDeps,
+      used: string[],
+      label: string,
+    ): CorpusBackfillSourceDateR2 {
+      return {
+        ...deps.r2,
+        readListIndex: async (d) => {
+          used.push(label);
+          return deps.r2.readListIndex(d);
+        },
+      };
+    }
+
+    it("uses wrangler and says so when no credentials are present", async () => {
+      const { deps, lines } = makeDeps();
+      const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global"], deps);
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler/m);
+    });
+
+    it("auto-selects the direct path when CORPUS_R2_* keys are present", async () => {
+      const { deps, lines } = makeDeps();
+      const used: string[] = [];
+      const direct = tracked(deps, used, "direct");
+      const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global"], {
+        ...deps,
+        r2: tracked(deps, used, "wrangler"),
+        directR2: () => direct,
+        storageVars: () => S3_CREDS,
+      });
+      expect(code).toBe(0);
+      expect(used).toEqual(["direct"]);
+      expect(lines.join("\n")).toMatch(/^Storage: direct \(S3\/REST\) — CORPUS_R2_\* keys/m);
+      expect(lines.join("\n")).toContain("Account: acct");
+    });
+
+    it("--via wrangler forces the fallback even with S3 keys present", async () => {
+      const { deps, lines } = makeDeps();
+      const used: string[] = [];
+      const direct = tracked(deps, used, "direct");
+      const code = await corpusBackfillSourceDateCommand.run(
+        ["--tenant", "global", "--via", "wrangler"],
+        { ...deps, r2: tracked(deps, used, "wrangler"), directR2: () => direct, storageVars: () => S3_CREDS },
+      );
+      expect(code).toBe(0);
+      expect(used).toEqual(["wrangler"]);
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler — --via wrangler/m);
+    });
+
+    it("reports the fallback it actually used when no direct client exists", async () => {
+      const { deps, lines } = makeDeps();
+      const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global"], {
+        ...deps,
+        storageVars: () => S3_CREDS,
+      });
+      expect(code).toBe(0);
+      expect(lines.join("\n")).toMatch(/^Storage: wrangler/m);
+      expect(lines.join("\n")).not.toMatch(/^Storage: direct/m);
+    });
+
+    it("rejects an unknown --via value as usage", async () => {
+      const { deps } = makeDeps();
+      await expect(
+        corpusBackfillSourceDateCommand.run(["--tenant", "global", "--via", "s3"], deps),
+      ).rejects.toThrow(/--via "s3" is not one of/);
+    });
+
+    it("rejects --via direct with --local", async () => {
+      const { deps } = makeDeps();
+      await expect(
+        corpusBackfillSourceDateCommand.run(
+          ["--tenant", "global", "--via", "direct", "--local"],
+          deps,
+        ),
+      ).rejects.toThrow(/--via direct cannot be combined with --local/);
+    });
+
+    it("documents --via in help", () => {
+      expect(corpusBackfillSourceDateCommand.helpText).toContain("--via <path>");
+      expect(corpusBackfillSourceDateCommand.helpText).toContain("S3 keys");
+    });
   });
 });
 

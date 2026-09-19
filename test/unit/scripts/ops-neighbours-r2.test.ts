@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   chooseNeighboursBackend,
+  chooseR2Backend,
   describeAccount,
   describeBackend,
+  directCorpusObjectR2,
   directNeighboursR2,
 } from "../../../scripts/ops-lib/neighbours-r2";
 import {
@@ -72,6 +74,85 @@ function listRow(id: string, extra: Record<string, unknown> = {}) {
     ...extra,
   };
 }
+
+describe("chooseR2Backend", () => {
+  it("picks direct on CORPUS_R2_* keys alone — no Vectorize token required", () => {
+    expect(
+      chooseR2Backend({
+        local: false,
+        vars: {
+          CORPUS_R2_ACCOUNT_ID: "acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+        },
+      }),
+    ).toEqual({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" });
+  });
+
+  it("picks direct on CLOUDFLARE_API_TOKEN alone", () => {
+    expect(
+      chooseR2Backend({
+        local: false,
+        vars: { CLOUDFLARE_ACCOUNT_ID: "acct", CLOUDFLARE_API_TOKEN: "tok" },
+      }),
+    ).toEqual({ backend: "direct", reason: "CLOUDFLARE_API_TOKEN", accountId: "acct" });
+  });
+
+  it("prefers S3 keys over a token when both are present", () => {
+    expect(
+      chooseR2Backend({
+        local: false,
+        vars: {
+          CORPUS_R2_ACCOUNT_ID: "acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+          CORPUS_CF_API_TOKEN: "tok",
+        },
+      }),
+    ).toEqual({ backend: "direct", reason: "CORPUS_R2_* keys", accountId: "acct" });
+  });
+
+  it("falls back to wrangler with no credentials at all", () => {
+    expect(chooseR2Backend({ local: false, vars: {} })).toEqual({
+      backend: "wrangler",
+      reason: "no CORPUS_R2_*/CLOUDFLARE_API_TOKEN credentials",
+    });
+  });
+
+  it("--via wrangler overrides present credentials", () => {
+    expect(
+      chooseR2Backend({
+        via: "wrangler",
+        local: false,
+        vars: {
+          CORPUS_R2_ACCOUNT_ID: "acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+        },
+      }),
+    ).toEqual({ backend: "wrangler", reason: "--via wrangler" });
+  });
+
+  it("--local uses wrangler even with S3 keys", () => {
+    expect(
+      chooseR2Backend({
+        local: true,
+        vars: {
+          CORPUS_R2_ACCOUNT_ID: "acct",
+          CORPUS_R2_ACCESS_KEY: "AKIA",
+          CORPUS_R2_SECRET_KEY: "secret",
+        },
+      }),
+    ).toEqual({ backend: "wrangler", reason: "--local" });
+  });
+
+  it("--via direct forces direct even with no credentials", () => {
+    expect(chooseR2Backend({ via: "direct", local: false, vars: {} })).toEqual({
+      backend: "direct",
+      reason: "--via direct",
+    });
+  });
+});
 
 describe("chooseNeighboursBackend", () => {
   it("picks direct when CORPUS_R2_* keys and a Cloudflare token are present", () => {
@@ -530,5 +611,56 @@ describe("directNeighboursR2 — client reuse", () => {
     expect(r2).toHaveBeenCalledTimes(1);
     // "idx" un-namespaced and "idx" in usr_1 are different clients.
     expect(vectorize).toHaveBeenCalledTimes(2);
+  });
+});
+
+function objectAdapter(fetchFn: FetchStub) {
+  return directCorpusObjectR2({
+    r2: (bucket) => makeR2Client({ ...S3_CONFIG, bucket }, fetchFn as unknown as typeof fetch),
+  });
+}
+
+describe("directCorpusObjectR2", () => {
+  it("reads index/list.json items over a single S3 GET", async () => {
+    const fetchFn = stub(() =>
+      new Response(JSON.stringify({ version: 1, items: [{ id: "rd_a" }] }), { status: 200 }),
+    );
+    await expect(objectAdapter(fetchFn).readListIndex(TENANT)).resolves.toEqual([{ id: "rd_a" }]);
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("GET");
+    expect(req.url).toContain("reading-lite-staging/u/usr_1/index/list.json");
+  });
+
+  it("reads raw.html at the tenant-rooted layout key", async () => {
+    const fetchFn = stub(() => new Response("<html>dated</html>", { status: 200 }));
+    await expect(objectAdapter(fetchFn).readRawHtml("readings/rd_a", TENANT)).resolves.toBe(
+      "<html>dated</html>",
+    );
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("GET");
+    expect(req.url).toContain("reading-lite-staging/u/usr_1/readings/rd_a/raw.html");
+  });
+
+  it("returns null only for a confirmed-absent raw.html", async () => {
+    const fetchFn = stub(() => new Response("", { status: 404 }));
+    await expect(objectAdapter(fetchFn).readRawHtml("readings/rd_a", GLOBAL)).resolves.toBeNull();
+  });
+
+  it("throws on a raw.html read error rather than reporting it absent", async () => {
+    const fetchFn = stub(() => new Response("denied", { status: 403 }));
+    await expect(objectAdapter(fetchFn).readRawHtml("readings/rd_a", GLOBAL)).rejects.toThrow(
+      /R2 GET .*failed: 403/,
+    );
+  });
+
+  it("PUTs the list index as a plain {version, items} document", async () => {
+    const fetchFn = stub(() => new Response("", { status: 200 }));
+    const items = [listRow("rd_a")];
+    await objectAdapter(fetchFn).writeListIndex(items, TENANT);
+    const req = fetchFn.mock.calls[0]![0] as Request;
+    expect(req.method).toBe("PUT");
+    expect(req.url).toContain("u/usr_1/index/list.json");
+    expect(req.headers.get("content-type")).toBe("application/json");
+    await expect(req.text()).resolves.toBe(JSON.stringify({ version: 1, items }));
   });
 });
