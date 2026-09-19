@@ -9,6 +9,7 @@ import {
 } from "./modules/stores/similarity-store";
 import { attemptIoFor, type AttemptIo } from "./attempt-io";
 import { sqlPerOperationFor } from "./modules/db/sql";
+import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import {
   extractFromUrl,
   sourceDateFromExtractOrPrior,
@@ -393,6 +394,30 @@ async function runAttempt(
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
       throw e instanceof DeferPaidWorkError ? e : new DeferPaidWorkError();
+    }
+    if (e instanceof PublishCommitError) {
+      // Fail closed on the publish transaction, but do not destroy anything to
+      // do it. The summarization is paid for and checkpointed; marking the
+      // reading failed would throw that away over a database blip. Requeue on
+      // the same terms as a 429 instead: the retry re-uses the cached summary
+      // rather than re-spending.
+      //
+      // The retry genuinely republishes because the transaction rolled back:
+      // nothing terminal landed, the reading is still pending, and
+      // `active_attempt` is still this attempt's. An error that repeats on
+      // every delivery still ends visibly, through the queue's retry limit and
+      // markDeadLettered.
+      console.error(
+        JSON.stringify({
+          event: "reading_publish_commit_failed",
+          reading_id: args.id,
+          tenant_id: tenantId,
+          message: e.message,
+          note: "publish transaction rolled back; requeuing without marking the reading failed",
+        }),
+      );
+      if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
+      throw e;
     }
     if (e instanceof RateLimitedError) {
       // Don't mark the manifest failed — the queue handler will requeue this

@@ -85,6 +85,19 @@ interface LockedRow extends OwnershipRow {
   updated_at: string;
 }
 
+// The publish transaction failed and rolled back: nothing was committed, so
+// the attempt still owns the reading and an ordinary queue retry republishes
+// for real. The consumer requeues on this instead of marking the reading
+// failed, because by publish time the summarization is paid for and
+// checkpointed and the retry re-uses it. (This is the contract the vector
+// ledger's fail-closed write used to carry.)
+export class PublishCommitError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(`publish transaction failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = "PublishCommitError";
+  }
+}
+
 // Thrown inside claimUrl's transaction to roll back the reading it inserted.
 class UrlAlreadyOwned extends Error {}
 
@@ -212,7 +225,10 @@ export class PgReadingWriter {
         await this.deleteEmbedding(tx, ref.id);
       }
       if (ready.last_attempt) await this.finishAttempt(tx, ref.id, ready.last_attempt, "done");
-      return { committed: true, published: searchable };
+      return { committed: true, published: searchable } satisfies CommitOutcome;
+    }).catch((cause: unknown) => {
+      // The transaction rolled back. See PublishCommitError.
+      throw new PublishCommitError(cause);
     });
   }
 
