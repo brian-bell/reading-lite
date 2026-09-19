@@ -24,6 +24,7 @@ import {
 } from "../tokens";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
+import { StepUpNotice } from "./StepUpNotice";
 
 // API tokens on the account page (#340.7, Phase 5 of #340), as the SPA's API
 // tokens section (`web/src/App.tsx`): each token's name, format, status,
@@ -349,9 +350,7 @@ function CreateTokenForm({
         </InlineNotice>
       ) : null}
       {outcome?.kind === "step-up" ? (
-        <p className="form-error" role="alert">
-          Recent sign-in required. The token wasn't created.
-        </p>
+        <StepUpNotice lead="Recent sign-in required. The token wasn't created." />
       ) : null}
       {outcome?.kind === "limit" ? (
         <p className="form-error" role="alert">

@@ -994,19 +994,50 @@ describe("API tokens on the account page", () => {
     expect(within(section()).getByRole("button", { name: "Copied" })).toBeVisible();
   });
 
-  it.each([
-    [403, { error: "recent authentication required" }, "Recent sign-in required. The token wasn't created."],
-    [400, { error: "invalid body" }, "The token wasn't created. Check the name and scopes, then try again."],
-  ])("says why a create %i was refused, in the section", async (status, body, message) => {
-    mockApi({ onCreateToken: () => Response.json(body, { status }) });
+  it("asks the reader to check the name and scopes when a create answers 400", async () => {
+    mockApi({ onCreateToken: () => Response.json({ error: "invalid body" }, { status: 400 }) });
     await openAccount();
 
     await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
     await userEvent.click(createButton());
 
-    expect(await within(section()).findByRole("alert")).toHaveTextContent(message);
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(await within(section()).findByRole("alert")).toHaveTextContent(
+      "The token wasn't created. Check the name and scopes, then try again.",
+    );
     expect(nameField()).toHaveValue("CI");
+  });
+
+  it("sends a stale sign-in to step-up, and creates once the reader is back with a fresh one", async () => {
+    let recent = false;
+    mockApi({
+      onCreateToken: (body) =>
+        recent
+          ? Response.json({ token: "tok_new.secret", id: "tok_new", name: body.name }, { status: 201 })
+          : Response.json({ error: "recent authentication required" }, { status: 403 }),
+    });
+    const { router, queryClient } = await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    const alert = await within(section()).findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Recent sign-in required. The token wasn't created. Request a fresh sign-in link to confirm a sensitive change.",
+    );
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Account");
+    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
+
+    await userEvent.click(within(alert).getByRole("link", { name: "Request a fresh sign-in link" }));
+    await waitFor(() => expect(router.state.location.href).toBe("/login?step_up=1&next=%2Faccount%2Fsecurity"));
+
+    // The emailed link signs in again and verify returns to `next`.
+    recent = true;
+    await router.navigate({ to: "/account/security" });
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    await userEvent.click(createButton());
+
+    expect(await within(section()).findByText("tok_new.secret")).toBeVisible();
+    expect(within(section()).queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("shows a failed create in the section, keeps the form, and Retry reads the list without creating again", async () => {
