@@ -134,7 +134,7 @@ async function committedAttempt(manifest: Manifest = pendingManifest()): Promise
 }
 
 function activate(readings: TestReadings, queue: Queue<ProcessReadingEnvelopeV1>, a: AttemptActivation) {
-  return activateAttempt(readings.writer, readings.content, queue, services(), a);
+  return activateAttempt(readings, queue, services(), a);
 }
 
 describe("activateAttempt", () => {
@@ -199,6 +199,21 @@ describe("activateAttempt", () => {
     expect(queue.send).not.toHaveBeenCalled();
     expect(await readings.manifest(ID)).toMatchObject({ status: "failed", error: { retryable: true } });
     expect(await readings.jobState(ID, ATTEMPT_ID)).toBe("send_failed");
+  });
+
+  // No later attempt revisits this attempt's revision prefix, so what the
+  // failed activation half-wrote must go now.
+  it("setup failure: deletes a raw object whose extracted write failed", async () => {
+    const readings = await committedAttempt();
+    const put = readings.content.put.bind(readings.content);
+    vi.spyOn(readings.content, "put")
+      .mockImplementationOnce(put)
+      .mockRejectedValueOnce(new Error("R2 put failed"));
+
+    const out = await activate(readings, captureQueue().queue, baseActivation({ artifacts: ARTIFACTS }));
+
+    expect(out).toMatchObject({ kind: "unavailable", reason: "activation_failed" });
+    expect(await readings.content.list(`${KEY_PREFIX}/revisions/${ATTEMPT_ID}`)).toEqual([]);
   });
 
   it("queue-send failure: reports queue_send_failed and leaves a failed, retryable owner with its job recorded", async () => {

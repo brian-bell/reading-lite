@@ -269,7 +269,7 @@ export class ReadingIntake {
         payload: queueMessage,
       });
       if (claimed.kind === "owned") return retry;
-      return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
+      return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
         rollbackManifest: pendingManifest,
         rollbackAttempt: activeAttempt,
@@ -338,7 +338,7 @@ export class ReadingIntake {
         owner.manifest,
       );
       if (started.kind !== "started") return startRefused(started.kind);
-      return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
+      return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
         artifacts,
         // Rollback lands on the freshly-built pending manifest (→ failed,
@@ -387,7 +387,7 @@ export class ReadingIntake {
         newAttempt(activeAttempt, queueMessage, artifacts),
       );
       if (claimed.kind === "owned") return retry;
-      return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
+      return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
         artifacts,
         rollbackManifest: pendingManifest,
@@ -467,7 +467,7 @@ export class ReadingIntake {
         owner.manifest,
       );
       if (started.kind !== "started") return startRefused(started.kind);
-      return activateAttempt(this.deps.writer, this.deps.content, queue, this.deps.services, {
+      return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: nextManifest,
         rollbackManifest: effective,
         rollbackAttempt: activeAttempt,
