@@ -35,9 +35,6 @@ import { testReadingsFor, type TestReadings } from "../helpers/test-readings";
 import type { TenantContext } from "../../src/control-plane/ids";
 import type { ListIndexItem } from "../../src/schemas/api";
 import type { Manifest } from "../../src/schemas/manifest";
-import { writeResults } from "../../scripts/corpus-lib/batch/write-phase";
-import type { BatchResult } from "../../scripts/corpus-lib/batch/clients";
-import type { Sidecar, SidecarTarget } from "../../scripts/corpus-lib/batch/types";
 
 // Reading state is PostgreSQL rows now (ADR 0005). Many tests here arrange a
 // reading the way the old storage spelled it: a manifest at a key prefix, the
@@ -562,11 +559,15 @@ describe("two-tenant save-to-ready lifecycle", () => {
     expect(await resubmit.res.json()).toMatchObject({ id: founderBody.id, status: "ready" });
     await waitOnExecutionContext(resubmit.ctx);
 
-    expect(await env.READINGS_BUCKET.head(`index/by-url/${urlHash}`)).toBeNull();
-    expect(await env.READINGS_BUCKET.head(`u/${FOUNDER_TENANT_ID}/index/by-url/${urlHash}`)).not.toBeNull();
-    expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/by-url/${urlHash}`)).not.toBeNull();
-    expect(await env.READINGS_BUCKET.head(`u/${FOUNDER_TENANT_ID}/index/list.json`)).not.toBeNull();
-    expect(await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/index/list.json`)).not.toBeNull();
+    // Each tenant owns the URL in its own rows, and every captured object is
+    // under one of the two tenant roots — nothing at the global root.
+    expect(await testReadingsFor(founderTenant()).urlOwnerId(url)).toBe(founderBody.id);
+    expect(await testReadingsFor(otherTenant()).urlOwnerId(url)).toBe(otherBody.id);
+    const keys = (await env.READINGS_BUCKET.list()).objects.map((object) => object.key);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.filter((key) => !key.startsWith(`u/${FOUNDER_TENANT_ID}/`) && !key.startsWith(`u/${OTHER_TENANT_ID}/`))).toEqual([]);
+    expect(keys.some((key) => key.startsWith(`u/${FOUNDER_TENANT_ID}/`))).toBe(true);
+    expect(keys.some((key) => key.startsWith(`u/${OTHER_TENANT_ID}/`))).toBe(true);
   });
 
   it("keeps similarity, novelty, and connections private to the active tenant", async () => {
@@ -1061,14 +1062,12 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
-  it("dedups: second POST with same URL returns the existing manifest, no second Vectorize upsert", async () => {
+  it("dedups: second POST with same URL returns the existing manifest, no second publication", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
     const app = createApp({ services });
-    const stub = installVectorizeStub();
-
-    // wire the fresh stub through process-reading's SimilarityStore via env mutation
-    void new SimilarityStore(env.READINGS_INDEX);
+    const revisions = async () =>
+      (await testReadingsFor(founderTenant()).sql.query("SELECT id FROM reading_revisions WHERE tenant_id = $1", [FOUNDER_TENANT_ID])).length;
 
     const ctx1 = createExecutionContext();
     const r1 = await app.fetch(
@@ -1084,7 +1083,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await drainQueue(services);
     await waitOnExecutionContext(ctx1);
 
-    const upsertsAfterFirst = stub.upsert.mock.calls.length;
+    const revisionsAfterFirst = await revisions();
+    expect(revisionsAfterFirst).toBe(1);
 
     const ctx2 = createExecutionContext();
     const r2 = await app.fetch(
@@ -1100,7 +1100,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await drainQueue(services);
     await waitOnExecutionContext(ctx2);
 
-    expect(stub.upsert.mock.calls.length).toBe(upsertsAfterFirst);
+    expect(await revisions()).toBe(revisionsAfterFirst);
   });
 
   it("records a measured similarity snapshot on the terminal manifest", async () => {
@@ -1145,11 +1145,13 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(first.similarity?.computed_at).toEqual(expect.any(String));
     expect(first.connections_neighbourhood_ids).toEqual([]);
 
-    // Second reading now has the first as a neighbour, at the stub's 0.9.
+    // Second reading now has the first as a neighbour. The score is measured,
+    // not scripted: both readings carry the stub embedding, so their cosine
+    // similarity is 1.
     const second = await submit("https://example.com/sim-second");
     expect(second.similarity?.count).toBe(1);
-    expect(second.similarity?.max).toBeCloseTo(0.9, 10);
-    expect(second.similarity?.mean).toBeCloseTo(0.9, 10);
+    expect(second.similarity?.max).toBeCloseTo(1, 10);
+    expect(second.similarity?.mean).toBeCloseTo(1, 10);
     expect(second.connections_neighbourhood_ids).toEqual([first.id]);
   });
 
@@ -1356,122 +1358,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       expect.objectContaining({ id, url }),
     ]);
     consoleErr.mockRestore();
-  });
-
-  it("reprocesses in place after a failed fresh batch releases its by-url claim", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const reader = rowStore();
-    const url = "https://example.com/failed-fresh-batch-release";
-    const urlHash = await sha256Hex(url);
-    const id = "rd_BATCH_FAILED_RELEASE";
-    const createdAt = "2026-04-26T19:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const pending: Manifest = {
-      id,
-      url,
-      url_hash: urlHash,
-      source_type: "markdown",
-      status: "pending",
-      active_attempt: {
-        id: `batch_${id}`,
-        trigger: "import",
-        status: "running",
-        stage: "summarize",
-        started_at: createdAt,
-      },
-      content_type: "text/markdown; charset=utf-8",
-      content_status: "captured",
-      content_bytes: 36,
-      content_sha256: "c".repeat(64),
-      extracted_bytes: 36,
-      created_at: createdAt,
-      updated_at: createdAt,
-    };
-    const pointer = { id, key_prefix: keyPrefix };
-    await reader.writeByUrlPointer(urlHash, pointer);
-    await reader.writeManifest(keyPrefix, pending);
-    await reader.writeByIdPointer(id, pointer);
-    await reader.writeExtracted(keyPrefix, "# Batch failed\n\nMarkdown in hand.");
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
-
-    const target: SidecarTarget = {
-      customId: id,
-      keyPrefix,
-      id,
-      url,
-      urlHash,
-      createdAt,
-      sourceType: "markdown",
-      contentType: "text/markdown; charset=utf-8",
-      contentStatus: "captured",
-      contentBytes: 36,
-      contentSha256: "c".repeat(64),
-      extractedBytes: 36,
-      queryEmbedTokens: 12,
-      releaseByUrlOnFailure: true,
-    };
-    const sidecar: Sidecar = {
-      version: 2,
-      provider: "anthropic",
-      phase: "submitted",
-      batchId: "msgbatch_failed_release",
-      model: "claude-opus-4-8",
-      processingStatus: "ended",
-      resultsUrl: "https://example.com/results.jsonl",
-      targets: [target],
-    };
-    const results: BatchResult[] = [
-      {
-        custom_id: id,
-        result: { type: "errored", error: { type: "api_error", message: "manual batch failure" } },
-      },
-    ];
-
-    await writeResults(sidecar, results, {
-      r2: r2ClientForBucket(env.READINGS_BUCKET, `u/${FOUNDER_TENANT_ID}/`),
-      vectorize: { upsert: vi.fn(), query: vi.fn() },
-      embedMany: vi.fn(async () => ({ embeddings: [], tokensByInput: [] })),
-      now: () => "2026-04-26T19:05:00.000Z",
-    } as any);
-
-    const failed = await reader.readManifest(keyPrefix);
-    expect(failed).toMatchObject({
-      id,
-      status: "failed",
-      error: { message: "manual batch failure", retryable: true },
-    });
-    expect(await reader.readByIdPointer(id)).toEqual(pointer);
-    expect(await reader.readByUrlPointer(urlHash)).toBeNull();
-    const failedIndex = await reader.readListIndex();
-    expect(failedIndex?.items.find((item) => item.id === id)).toMatchObject({
-      id,
-      status: "failed",
-      url,
-    });
-
-    const retry = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-
-    expect(retry.status).toBe(202);
-    expect(await retry.json()).toMatchObject({ id, status: "pending" });
-    expect(queuedJobs).toHaveLength(1);
-    expect(queuedJobs[0]).toMatchObject({ id, trigger: "reprocess" });
-
-    const lookup = await app.request(
-      `/api/readings/lookup?url=${encodeURIComponent(url)}`,
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(lookup.status).toBe(200);
-    expect(await lookup.json()).toEqual({ id });
   });
 
   it("repairs a stale by-url pointer whose manifest is missing", async () => {
@@ -3893,20 +3779,53 @@ describe("processReading — backwards-compat for in-flight queue messages witho
 });
 
 describe("GET /api/readings/lookup", () => {
+  const lookup = (app: ReturnType<typeof createApp>, url?: string) =>
+    apiRequest(app, TOKEN, `/api/readings/lookup${url === undefined ? "" : `?url=${encodeURIComponent(url)}`}`);
+
+  it("resolves the URL's owner, whatever its status, and 404s an unowned URL", async () => {
+    const url = "https://example.com/lookup-owned";
+    const { app, id } = await seedFounderReading(url);
+
+    const found = await lookup(app, url);
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual({ id });
+
+    const missing = await lookup(app, "https://example.com/lookup-never-saved");
+    expect(missing.status).toBe(404);
+    expect((await lookup(app)).status).toBe(400);
+  });
+
+  // Side-effect-free: a lookup claims nothing, so the URL is still free for the
+  // submit that follows it. (The store-level pin runs the owner query inside a
+  // READ ONLY transaction, test/integration/postgres/reading-store.test.ts.)
+  it("claims nothing for a URL nobody owns", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const readings = testReadingsFor(founderTenant());
+    const url = "https://example.com/lookup-claims-nothing";
+
+    expect((await lookup(app, url)).status).toBe(404);
+
+    expect(await readings.ids()).toEqual([]);
+    expect(await readings.urlOwnerId(url)).toBeNull();
+  });
 });
 
 describe("POST /api/readings/similar", () => {
   it("returns only the caller's neighbours when two tenants store identical vectors", async () => {
     await insertSecondTenant(env as unknown as Env);
-    const stub = installVectorizeStub();
     const embedding = new Array(1536).fill(0.1);
-    for (const [tenant, id] of [[FOUNDER_TENANT_ID, "rd_founder"], [OTHER_TENANT_ID, "rd_other"]]) {
-      stub.vectors.set(tenantVectorId(tenant!, id!), {
-        values: embedding, namespace: tenant,
-        metadata: { url: `https://example.com/${id}`, title: id!, created_at: "2026-04-25T00:00:00.000Z" },
-      });
+    // The same vector, and even the same URL, in both tenants' rows.
+    for (const [tenant, id] of [[founderTenant(), "rd_founder"], [otherTenant(), "rd_other"]] as const) {
+      const url = `https://example.com/${id}`;
+      await testReadingsFor(tenant).seed(
+        {
+          id, url, url_hash: await sha256Hex(url), status: "ready", title: id, tldr: id, connections: [],
+          content_type: "text/html", content_status: "captured", content_bytes: 0,
+          content_sha256: "0".repeat(64), created_at: "2026-04-25T00:00:00.000Z", updated_at: "2026-04-25T00:00:00.000Z",
+        },
+        { embedding },
+      );
     }
-    const before = structuredClone([...stub.vectors]);
     const app = createApp({ services: makeServices(makeStubFetch()) });
     for (const [token, id] of [[TOKEN, "rd_founder"], [OTHER_TOKEN_SECRET, "rd_other"]]) {
       const response = await apiRequest(app, token!, "/api/readings/similar", {
@@ -3917,30 +3836,12 @@ describe("POST /api/readings/similar", () => {
       const body = await response.json() as { items: { id: string; url: string }[] };
       expect(body.items.map(item => [item.id, item.url])).toEqual([[id, `https://example.com/${id}`]]);
     }
-    expect([...stub.vectors]).toEqual(before);
-    expect(stub.upsert).not.toHaveBeenCalled();
-    expect(stub.deleteByIds).not.toHaveBeenCalled();
+    // A query is a read: both vectors are still there, and nothing was queued.
+    expect(await testReadingsFor(founderTenant()).hasEmbedding("rd_founder")).toBe(true);
+    expect(await testReadingsFor(otherTenant()).hasEmbedding("rd_other")).toBe(true);
     expect(queuedEnvelopes).toEqual([]);
   });
 
-  it("returns an empty result set when the Vectorize binding is absent (local dev)", async () => {
-    // `wrangler dev` runs without a READINGS_INDEX binding (no local emulator).
-    // The route must degrade to empty results, not throw a 500.
-    delete (env as unknown as { READINGS_INDEX?: VectorizeIndex }).READINGS_INDEX;
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request(
-      "/api/readings/similar",
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ query_embedding: new Array(1536).fill(0.1), k: 5 }),
-      },
-      env,
-    );
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as { items: unknown[] };
-    expect(json.items).toEqual([]);
-  });
 });
 
 describe("GET /api/readings — list with q, tag, offset, limit", () => {
