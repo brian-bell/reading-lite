@@ -66,6 +66,15 @@ const OPENAI_RESPONSE_RATES: Record<string, OpenAIRates> = {
   },
 };
 
+// Flat on purpose: no model below has a long-context tier, so there is no
+// Anthropic counterpart to OPENAI_LONG_CONTEXT_TOKENS.  Verified 2026-09-19:
+// https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing
+// https://platform.claude.com/docs/en/build-with-claude/context-windows
+// Claude 4.6 and later bill the full 1M window at standard rates with no beta
+// header.  Opus 4.5 has a 200k window and rejects longer input with a 400
+// rather than billing it.  The older premium above 200k input tokens applied
+// to Sonnet 4 / 4.5 under the context-1m beta header, which this service never
+// sends.  Re-check both pages before adding a model here.
 const ANTHROPIC_MESSAGE_RATES: Record<string, AnthropicRates> = {
   "claude-sonnet-5": { input: 200, cacheRead: 20, cacheWrite: 250, cacheWrite1h: 400, output: 1000 },
   "claude-sonnet-4-6": { input: 300, cacheRead: 30, cacheWrite: 375, cacheWrite1h: 600, output: 1500 },

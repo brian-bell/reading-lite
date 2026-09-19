@@ -32,6 +32,14 @@ It includes OpenAI long-context tiers, pins hosted OpenAI requests to the
 standard service tier, and includes Anthropic's maximum geography surcharge
 without overriding the workspace's geography setting.
 
+Anthropic rates are flat by design. As verified on 2026-09-19 against
+[long-context pricing](https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing)
+and [context windows](https://platform.claude.com/docs/en/build-with-claude/context-windows),
+no cataloged Claude model has a long-context premium: Claude 4.6 and later bill
+the full 1M-token window at standard rates, and Opus 4.5 rejects input beyond
+its 200k window instead of billing it. Re-check both pages before adding a
+model (#316).
+
 A reservation charges the maximum to both budgets for its UTC admission day.
 Valid returned usage replaces that maximum atomically for both counters, before
 summary parsing. A response arriving after midnight still settles its original
