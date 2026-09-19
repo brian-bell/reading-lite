@@ -336,6 +336,28 @@ export async function serveSettingsInBrowser(
   return { saves };
 }
 
+/**
+ * Serves DELETE /api/account in the browser (#340.8). Nothing reaches the
+ * backend stub: the answer is whatever the spec asks for, and each request is
+ * recorded so a spec can prove the body, CSRF, and that cancel sent nothing.
+ */
+export async function serveAccountDeleteInBrowser(
+  page: Page,
+  answer: { status?: number; json?: unknown } = {},
+): Promise<{ deletes: Request[] }> {
+  const deletes: Request[] = [];
+  await page.route("**/api/account", async (route) => {
+    const request = route.request();
+    if (request.method() !== "DELETE") {
+      await route.fallback();
+      return;
+    }
+    deletes.push(request);
+    await route.fulfill({ status: answer.status ?? 200, json: answer.json ?? { ok: true } });
+  });
+  return { deletes };
+}
+
 export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {
   await context.addCookies([{ name: sessionCookieName(baseURL), value: session, url: baseURL }]);
 }

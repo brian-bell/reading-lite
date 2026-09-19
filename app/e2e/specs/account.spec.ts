@@ -2,10 +2,14 @@
 // list, revoke-one, revoke-all, and the common states; this proves what only
 // a browser's modal `<dialog>` does: Escape and Cancel close it without a
 // request and return focus.
+//
+// Account deletion (#340.8): the typed confirmation driven from the keyboard
+// alone, with the request the browser actually sent, and Escape after typing
+// sending nothing. The component tests own the outcomes.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
-import { serveSessionsInBrowser, serveSettingsInBrowser, signIn } from "../test";
+import { serveAccountDeleteInBrowser, serveSessionsInBrowser, serveSettingsInBrowser, signIn } from "../test";
 
 const test = base.extend({
   baseURL: async ({}, use) => {
@@ -45,3 +49,51 @@ for (const close of ["Escape", "Cancel"] as const) {
     expect(writes.revokeAll).toEqual([]);
   });
 }
+
+function deleteDialog(page: Page) {
+  return page.getByRole("dialog", { name: "Delete your account?" });
+}
+
+test("deletes the account from the keyboard after typing delete", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  await serveSessionsInBrowser(page);
+  const { deletes } = await serveAccountDeleteInBrowser(page);
+  await page.goto("/account/security");
+  await expect(page.getByText("Firefox (this device)")).toBeVisible();
+
+  await page.getByRole("button", { name: "Delete account…" }).focus();
+  await page.keyboard.press("Enter");
+  const field = deleteDialog(page).getByLabel("Type delete to confirm");
+  await expect(field).toBeFocused();
+  await page.keyboard.type("delete");
+  await page.keyboard.press("Tab");
+  await expect(deleteDialog(page).getByRole("button", { name: "Cancel" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(deleteDialog(page).getByRole("button", { name: "Delete account" })).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  await expect(page.getByRole("heading", { level: 1, name: "Your account is being deleted." })).toBeFocused();
+  await expect(page).toHaveURL(/\/account\/security$/);
+  expect(deletes).toHaveLength(1);
+  expect(deletes[0]!.postDataJSON()).toEqual({ confirm: "delete" });
+  expect(await deletes[0]!.headerValue("x-csrf-token")).toBeTruthy();
+});
+
+test("Escape after typing delete closes the dialog without a request", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  await serveSessionsInBrowser(page);
+  const { deletes } = await serveAccountDeleteInBrowser(page);
+  await page.goto("/account/security");
+  await expect(page.getByText("Firefox (this device)")).toBeVisible();
+  const trigger = page.getByRole("button", { name: "Delete account…" });
+
+  await trigger.click();
+  await deleteDialog(page).getByLabel("Type delete to confirm").fill("delete");
+  await page.keyboard.press("Escape");
+
+  await expect(deleteDialog(page)).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(deletes).toEqual([]);
+});

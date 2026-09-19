@@ -2,17 +2,19 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { dropLegacyBearerToken } from "../auth/legacy-storage";
-import { signOut, useSessionEndedAt } from "../auth/session";
+import { signOut, useAccountClosingAt, useSessionEndedAt } from "../auth/session";
 import { whoamiQueryOptions } from "../identity-query";
 import { isPublicLegalPath } from "../legal";
 import type { ThemePreference } from "../theme";
+import { AccountClosing } from "./AccountClosing";
 import { AppShell, type AccountState } from "./AppShell";
 import { focusPageHeading, useFocusHeadingOnNavigation } from "./PageHeading";
 import { useRenderedLocation } from "./rendered-location";
 import { SessionEnded } from "./SessionEnded";
 
 // The shell with its session behavior: account state from whoami, sign-out,
-// the expired-session page, and heading focus after navigation. The root
+// the expired-session and account-closing pages, and heading focus after
+// navigation. The root
 // route renders it inside the document.
 export function AppFrame({
   theme,
@@ -38,6 +40,7 @@ export function AppFrame({
     enabled: !publicLegal || typeof document !== "undefined",
   });
   const sessionEndedAt = useSessionEndedAt();
+  const accountClosingAt = useAccountClosingAt();
   useFocusHeadingOnNavigation();
   useEffect(dropLegacyBearerToken, []);
 
@@ -63,7 +66,13 @@ export function AppFrame({
 
   return (
     <AppShell theme={theme} onThemeChange={onThemeChange} account={account} onSignOut={onSignOut}>
-      {sessionEndedAt === href ? <SessionEnded href={href} /> : children}
+      {accountClosingAt === href ? (
+        <AccountClosing />
+      ) : sessionEndedAt === href ? (
+        <SessionEnded href={href} />
+      ) : (
+        children
+      )}
     </AppShell>
   );
 }

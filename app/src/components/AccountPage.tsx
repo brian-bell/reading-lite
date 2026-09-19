@@ -1,13 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "@tanstack/react-router";
+import { Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
+import { DELETE_CONFIRM_PHRASE, type AccountDeleteOutcome } from "../account-delete";
 import { accountViewOf, readRefusedBy, type AccountRefusal, type AccountView } from "../account-state";
+import { deleteAccount } from "../api/account";
 import { requestEmailChange } from "../api/email-change";
 import { saveSettings } from "../api/settings";
 import { revokeAllSessions, revokeSession } from "../api/sessions";
-import { isUnauthorized } from "../api/errors";
+import { isUnauthorized, NetworkError } from "../api/errors";
 import { STEP_UP_LOGIN_HREF } from "../auth/return-path";
-import { dropSignedInAccount } from "../auth/session";
+import { closeAccount, dropSignedInAccount, hrefOnScreen } from "../auth/session";
 import {
   changeDigest,
   digestBody,
@@ -54,19 +56,32 @@ import {
   ServerError,
 } from "./ReadingStates";
 
-// The account page (#340.1, #340.6; Phase 5 of #340). Email change,
+// The account page (#340.1, #340.6, #340.8; Phase 5 of #340). Email change,
 // notification settings, and session management — the list, a single revoke,
 // and revoke-all — match the SPA (`web/src/App.tsx`); the common states are
 // the acceptance matrix's, shared with the library and save. A 403 or 412
-// that refuses the account (from a read, a settings save, or an email-change
-// request) is the whole page's state; a failed settings or email-change
-// request stays inside its own section so the rest of the page keeps working,
-// and an email change's recent-auth 403 is the fresh sign-in message there.
-// Revoking this device, or every session, drops the account without calling
-// logout — the cookie is already cleared — and the signed-in guard sends the
-// reader to sign in.
+// that refuses the account (from a read, a settings save, an email-change
+// request, or a delete) is the whole page's state; a failed settings or
+// email-change request stays inside its own section so the rest of the page
+// keeps working, and an email change's recent-auth 403 is the fresh sign-in
+// message there. Revoking this device, or every session, drops the account
+// without calling logout — the cookie is already cleared — and the signed-in
+// guard sends the reader to sign in.
+//
+// Account deletion is the last section (acceptance matrix, Account deletion):
+// a typed `delete` in a modal, then DELETE /api/account. A stale sign-in is
+// told to request a fresh link; 403 and 412 are the page's shared states, as
+// for a revoke; offline and server errors stay in the section, and their
+// Retry reopens the dialog rather than sending another delete unasked.
+// Success drops the account and this tab alone shows the closing page.
 
 type RevokeTarget = { kind: "one"; session: SessionListItem } | { kind: "all" };
+
+/** What the deletion section says under its button, if anything. */
+type DeleteNotice =
+  | { kind: "step-up" }
+  | { kind: "offline" }
+  | { kind: "server-error"; message: string };
 
 export function AccountPage() {
   const queryClient = useQueryClient();
@@ -78,7 +93,9 @@ export function AccountPage() {
   const { data, error, fetchStatus, refetch } = useQuery(sessionsQueryOptions(queryClient, identity));
   const settingsQuery = useQuery(settingsQueryOptions(queryClient, identity));
   const [confirmAll, setConfirmAll] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const revokeAllRef = useRef<HTMLButtonElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
   const [digestDraft, setDigestDraft] = useState<DigestDraft | null>(null);
   // An email-change request refused for the account, not the address: the
   // page's own state, like a refused read.
@@ -133,6 +150,22 @@ export function AccountPage() {
     },
   });
 
+  const remove = useMutation({
+    mutationFn: (): Promise<AccountDeleteOutcome> => deleteAccount(queryClient, expectedTenant),
+    networkMode: "always",
+    retry: 0,
+    onSuccess: (outcome) => {
+      if (outcome.kind === "deleted") {
+        closeAccount(queryClient, hrefOnScreen(router));
+        return;
+      }
+      if (outcome.kind === "forbidden" || outcome.kind === "account-changed") {
+        queryClient.setQueryData<SessionsResult>(sessionsKey, readRefusedBy(outcome));
+      }
+      // step-up: the section shows the fresh-sign-in link from remove.data.
+    },
+  });
+
   // A failed revoke is shown as the list's own failure (a 401 is the shell's
   // page), and Retry reads the list again: the failure may mean it is stale.
   const revokeError = isUnauthorized(revoke.error) ? null : revoke.error;
@@ -148,7 +181,18 @@ export function AccountPage() {
   const saveFailure = saveError == null ? undefined : failureOf(saveError);
   const emailError = isUnauthorized(emailChange.error) ? null : emailChange.error;
   const view = pageViewOf(sessionsView, settingsView, emailRefusal);
-  const busy = revoke.isPending;
+  // A state page replaces the page with any dialog open on it, and a dialog
+  // removed that way fires no `close`, so its flag would stay set and the
+  // dialog reopen by itself once Retry brings the page back.
+  const replacedByState =
+    view.kind === "forbidden" || view.kind === "account-changed" || view.kind === "server-error";
+  useEffect(() => {
+    if (!replacedByState) return;
+    setConfirmAll(false);
+    setConfirmDelete(false);
+  }, [replacedByState]);
+  const busy = revoke.isPending || remove.isPending;
+  const deleteNotice = deleteNoticeOf(remove.data, remove.error);
 
   function retry() {
     revoke.reset();
@@ -210,6 +254,12 @@ export function AccountPage() {
     if (draftSaveFailed) setDigestDraft(null);
   }
 
+  function openDelete() {
+    if (busy) return;
+    remove.reset();
+    setConfirmDelete(true);
+  }
+
   return (
     <PageStateFocus kind={view.kind}>
       {pageFor(view, {
@@ -250,6 +300,17 @@ export function AccountPage() {
           onRetry: () => void settingsQuery.refetch(),
           onRetrySave: retrySave,
           onDiscard: discardSave,
+        },
+        deletion: {
+          confirming: confirmDelete,
+          notice: deleteNotice,
+          onOpen: openDelete,
+          onClose: () => setConfirmDelete(false),
+          onDelete: () => {
+            if (busy) return;
+            remove.mutate();
+          },
+          buttonRef: deleteRef,
         },
       })}
     </PageStateFocus>
@@ -335,6 +396,7 @@ function pageFor(
     revokeAllRef: RefObject<HTMLButtonElement | null>;
     email: EmailActions;
     settings: SettingsActions;
+    deletion: DeletionActions;
   },
 ) {
   switch (view.kind) {
@@ -377,6 +439,7 @@ function pageFor(
             {sessions.kind === "loading" ? <LoadingRegion /> : null}
             {listed ? <SessionsList listed={listed} busy={actions.busy} onRevoke={actions.onRevoke} /> : null}
           </section>
+          <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
           {actions.confirmAll ? (
             <ConfirmDialog
               title="Revoke all browser sessions?"
@@ -732,5 +795,75 @@ function SessionsList({
         ))}
       </ul>
     </>
+  );
+}
+
+interface DeletionActions {
+  confirming: boolean;
+  notice: DeleteNotice | null;
+  onOpen: () => void;
+  onClose: () => void;
+  onDelete: () => void;
+  buttonRef: RefObject<HTMLButtonElement | null>;
+}
+
+/** A 401 is the shell's page, so it is not repeated here. */
+function deleteNoticeOf(data: AccountDeleteOutcome | undefined, error: unknown): DeleteNotice | null {
+  if (data?.kind === "step-up") return { kind: "step-up" };
+  if (error === null || error === undefined || isUnauthorized(error)) return null;
+  if (error instanceof NetworkError && error.offline) return { kind: "offline" };
+  const message = error instanceof Error && error.message !== "" ? error.message : String(error);
+  return { kind: "server-error", message };
+}
+
+function DeleteAccountSection({
+  busy,
+  confirming,
+  notice,
+  onOpen,
+  onClose,
+  onDelete,
+  buttonRef,
+}: DeletionActions & { busy: boolean }) {
+  return (
+    <section className="account-section account-delete" aria-labelledby="delete-account-heading">
+      <h2 id="delete-account-heading" className="account-section-title">
+        Delete account
+      </h2>
+      <p className="account-delete-text">
+        Deleting your account signs you out and revokes every browser session and API token right away. Your
+        library and everything in it is permanently deleted after seven days, and you can't sign in to this
+        account in the meantime.
+      </p>
+      <p className="account-delete-text">This needs a sign-in from the last 10 minutes.</p>
+      {notice?.kind === "step-up" ? (
+        <p className="account-delete-step-up" role="alert">
+          <Link to={STEP_UP_LOGIN_HREF}>Request a fresh sign-in link</Link> to confirm a sensitive change.
+        </p>
+      ) : null}
+      {notice?.kind === "offline" ? <OfflineNotice onRetry={onOpen} /> : null}
+      {notice?.kind === "server-error" ? (
+        <InlineNotice message={`Something went wrong on our side. ${notice.message}`} onAction={onOpen} />
+      ) : null}
+      <div className="form-actions">
+        <button type="button" className="button button-danger" ref={buttonRef} onClick={onOpen} disabled={busy}>
+          Delete account…
+        </button>
+      </div>
+      {confirming ? (
+        <ConfirmDialog
+          title="Delete your account?"
+          confirmLabel="Delete account"
+          confirmPhrase={DELETE_CONFIRM_PHRASE}
+          onConfirm={onDelete}
+          onClose={onClose}
+          returnFocus={() => buttonRef.current}
+        >
+          <p>
+            Every session and API token is revoked now, and your library is permanently deleted after seven days.
+          </p>
+        </ConfirmDialog>
+      ) : null}
+    </section>
   );
 }

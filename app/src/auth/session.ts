@@ -14,10 +14,18 @@ import { whoamiQueryKey, type Identity } from "../identity";
 /** Holds the href where the session ended, or null. */
 export const sessionEndedQueryKey = ["session-ended"] as const;
 
+/**
+ * Holds the href where this tab deleted the account, or null (acceptance
+ * matrix, Account closing). Only the tab that sent the delete knows: other
+ * tabs see an ordinary 401 or 403, and a reload is an ordinary signed-out tab.
+ */
+export const accountClosingQueryKey = ["account-closing"] as const;
+
 /** Queries that hold nothing belonging to an account survive a change of identity. */
 const ACCOUNT_FREE_QUERIES = new Set<unknown>([
   whoamiQueryKey[0],
   sessionEndedQueryKey[0],
+  accountClosingQueryKey[0],
   loginOptionsQueryKey[0],
 ]);
 
@@ -58,9 +66,20 @@ export function useSessionEndedAt(): string | null {
   }).data;
 }
 
+/** The href where this tab deleted the account, or null. */
+export function useAccountClosingAt(): string | null {
+  return useQuery({
+    queryKey: accountClosingQueryKey,
+    queryFn: (): string | null => null,
+    initialData: null,
+    staleTime: Infinity,
+  }).data;
+}
+
 function forgetAccount(queryClient: QueryClient): void {
   queryClient.removeQueries({ predicate: (query) => !ACCOUNT_FREE_QUERIES.has(query.queryKey[0]) });
   queryClient.setQueryData(sessionEndedQueryKey, null);
+  queryClient.setQueryData(accountClosingQueryKey, null);
 }
 
 /**
@@ -71,6 +90,17 @@ function forgetAccount(queryClient: QueryClient): void {
 export function dropSignedInAccount(queryClient: QueryClient): void {
   forgetAccount(queryClient);
   queryClient.setQueryData(whoamiQueryKey, null);
+}
+
+/**
+ * DELETE /api/account succeeded: the backend revoked every credential and
+ * cleared the cookie. Drop the account's cached data and identity, then show
+ * the closing page at `href`. The router is not invalidated: the signed-in
+ * guard would replace this page with sign-in, which fails during the grace.
+ */
+export function closeAccount(queryClient: QueryClient, href: string): void {
+  dropSignedInAccount(queryClient);
+  queryClient.setQueryData(accountClosingQueryKey, href);
 }
 
 export type SignOutResult = "signed-out" | "still-signed-in" | "account-changed";
