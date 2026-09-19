@@ -262,6 +262,15 @@ export async function tearDownAccount(
     // under the lock, it is the last moment the answer can still be acted on:
     // afterwards the tenant is gone from `listDeletingUsers` and nothing
     // enumerates those rows again.
+    //
+    // The `users` lock above is what makes the count hold through the commit;
+    // this statement takes no lock of its own. `claimUrl`, the only live
+    // inserter of a `readings` row, takes `users` FOR SHARE in the same
+    // transaction as its insert: a claim already in flight blocks that FOR
+    // UPDATE until it commits, so this count sees its row and answers
+    // `rows_remain`; a claim arriving later blocks until this transaction
+    // commits and then finds no active `users` row. Unlike the prefix verdict
+    // above, which is taken before the lock, this one cannot be raced.
     const left = await tx.first<{ remaining: number }>(
       "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
       tenantId,

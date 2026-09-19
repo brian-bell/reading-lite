@@ -343,9 +343,10 @@ describe("account wipe job", () => {
   });
 
   // `relationship_refresh_jobs` hangs off no reading row, so nothing cascades
-  // it away with the readings. A checkpoint left behind is not cosmetic: the
-  // nightly refresh reads them by tenant and would dispatch a paid provider
-  // call for an account that no longer exists.
+  // it away with the readings. A checkpoint left behind cannot spend (the
+  // refresh writes require an `active` users row), but the wipe is what
+  // removes the account's data, so it clears them itself — per tenant, which
+  // is what this pins.
   it("clears the tenant's refresh checkpoints with its rows, and leaves another tenant's alone", async () => {
     await seedReadings([ID_A]);
     await markDeleting(OTHER_TENANT_ID, PAST_GRACE);

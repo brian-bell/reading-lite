@@ -32,7 +32,6 @@ import {
 } from "../../../schemas/manifest";
 import type { Sql, SqlQuery } from "../../db/sql";
 import {
-  deleteTenantReadings,
   insertReading,
   insertRelationships,
   insertRevision,
@@ -382,11 +381,6 @@ export class PgReadingWriter {
       await tx.query("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [this.tenantId, id]);
       return { kind: "purged", keyPrefix: row.key_prefix, urlReleased: url.length > 0, embeddingRemoved };
     });
-  }
-
-  // Account wipe: every reading row the tenant owns, children by cascade.
-  async deleteAllReadings(): Promise<number> {
-    return deleteTenantReadings(this.sql, this.tenantId);
   }
 
   // The attempt log. Returns false when the reading is gone: a purged reading

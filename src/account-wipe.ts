@@ -23,9 +23,11 @@
  * embeddings go by cascade, so a reading leaves search in the same transaction
  * it leaves the list. It also deletes the tenant's
  * `relationship_refresh_jobs` checkpoints, which hang off no reading row and
- * so cascade from nothing — a leftover one would have the nightly refresh
- * dispatch a paid provider call for an account that no longer exists. Only
- * then does the `objects` phase page R2. A reading whose objects outlive its
+ * so cascade from nothing — deleting a reading does not take its checkpoint
+ * with it, and nothing else but teardown would ever remove one. They cannot
+ * spend in the meantime (both refresh writes require an `active` users row),
+ * so this is about the wipe removing the account's data itself rather than
+ * about provider cost. Only then does the `objects` phase page R2. A reading whose objects outlive its
  * row is invisible; the reverse would be a listed reading whose content 404s.
  *
  * **The rows phase is one transaction, phase advance included.** The deletes
@@ -273,13 +275,19 @@ export function wipeGraceElapsed(deletingAtMs: number | null | undefined, nowMs:
   return nowMs - deletingAtMs >= ACCOUNT_WIPE_GRACE_MS;
 }
 
-/** Incomplete or leftover progress is a resume, not a new wipe. */
+/**
+ * Incomplete or leftover progress is a resume, not a new wipe.
+ *
+ * `hasLeftover` is rows **or** objects, the same question the cron fan-out
+ * asks. It was objects alone once, which left a finished wipe with rows
+ * standing reporting complete; do not narrow it back.
+ */
 export function wipeNeedsResume(
   progress: { completedAtMs: number | null } | null,
-  hasLeftoverObjects: boolean,
+  hasLeftover: boolean,
 ): boolean {
   if (!progress) return false;
-  return progress.completedAtMs === null || hasLeftoverObjects;
+  return progress.completedAtMs === null || hasLeftover;
 }
 
 /** True while cron should not enqueue a duplicate delivery. */
@@ -590,9 +598,12 @@ async function runAccountWipeJob(
    * Every reading the tenant owns — revisions, URLs, relationships, attempts
    * and embeddings by cascade — and its `relationship_refresh_jobs`
    * checkpoints, which hang off no reading row and so cascade from nothing.
-   * A leftover checkpoint is not cosmetic: the nightly refresh reads them by
-   * tenant and would dispatch a paid provider call for an account that no
-   * longer exists.
+   * A leftover checkpoint cannot spend: `markRefreshDispatched` and
+   * `saveRefreshResult` both write only against an `active` users row, and
+   * the judge noops once the reading is gone. It is deleted here because
+   * removing the account's data is the wipe's job — teardown deletes these
+   * too, but a completion record that left them standing would be claiming
+   * more than the wipe had actually done.
    *
    * `advance` puts the wipe's phase CAS in the same transaction, so a tenant
    * can never be recorded as past the `rows` phase without its rows actually
@@ -686,12 +697,24 @@ async function runAccountWipeJob(
   }
 
   // Completion has to mean the tenant's rows are gone, not that a DELETE
-  // reported a count. The sweep above committed; this asks the table, and does
-  // it in the same transaction as the terminal CAS so that a row committed
-  // between the two cannot still produce a completion record. A row that
-  // appears at all is a writer that got past the fence later than any sweep
-  // can cover, so the delivery fails and retries rather than recording a
+  // reported a count. The sweep above committed; this asks the table. A row
+  // that appears at all is a writer that got past the fence later than any
+  // sweep can cover, so the delivery fails and retries rather than recording a
   // completion teardown would then hard-delete the account on.
+  //
+  // What holds the answer true is the status fence, not this transaction.
+  // `claimUrl` is the only live inserter of a `readings` row, and it takes
+  // `users` FOR SHARE and requires `active` in the same transaction as its
+  // insert: `beginAccountDeletion`'s status UPDATE therefore waited on every
+  // claim already in flight, and every later one reads `deleting` and gives
+  // up. Do not read the shared transaction as doing that job — under READ
+  // COMMITTED the count takes no lock on `readings` and would not fence an
+  // inserter on its own.
+  //
+  // What the shared transaction does buy is a sibling delivery: `complete` is
+  // conditional on the lease this count was taken under, so a sibling that
+  // took the wipe over makes the CAS throw and rolls the verdict back with it,
+  // rather than stamping a completion over the owner's work.
   const completedAtMs = now();
   const done = await sql.transaction(async (tx) => {
     const remaining = await countTenantReadings(tx, tenantId);

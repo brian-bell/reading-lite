@@ -85,9 +85,9 @@ The phases run in order:
    relationships, attempts and embeddings go with them by cascade, so a reading
    leaves search as it leaves the list. It also deletes the tenant's
    `relationship_refresh_jobs` checkpoints, which name a reading but hold no
-   foreign key to one and so cascade from nothing; a leftover checkpoint would
-   have the nightly refresh dispatch a paid provider call for an account that
-   no longer exists. The deletes and the advance to `objects` are one
+   foreign key to one and so cascade from nothing. A leftover checkpoint cannot
+   spend — the refresh writes require an `active` users row — but removing the
+   account's data is the wipe's job rather than teardown's. The deletes and the advance to `objects` are one
    transaction, with the lease compare-and-set last, so no tenant is recorded
    past `rows` while its rows stand and a lost lease rolls the deletes back. A
    database error fails the delivery before any object is deleted, and the
@@ -153,7 +153,10 @@ residue flags to the audit record.
 
 An object arriving between the final prefix verdict and the commit can still be
 orphaned after cron loses the users row it enumerates. The recheck narrows this
-race; it does not close it. Keep that #261 limit in deletion reports.
+race; it does not close it. Keep that #261 limit in deletion reports. Reading
+rows are not exposed to it: the count in step 4 is taken after the `users` lock,
+and the only path that inserts one takes the same row FOR SHARE alongside its
+insert, so it either commits before the count or finds no active account.
 
 The current address remains unavailable until the users row is gone. Under
 `invite_only`, returning users need a fresh invite after teardown. Check directly:

@@ -313,9 +313,9 @@ export async function upsertEmbedding(
  * inside the transaction that also clears the tenant's refresh checkpoints and
  * advances the wipe phase.
  *
- * Single-homed here rather than written out at each caller: the predicate is
- * the tenant fence, and `PgReadingWriter.deleteAllReadings` and the wipe must
- * not drift apart on it.
+ * Single-homed here rather than written out at the wipe's two call sites (the
+ * `rows` phase and the sweep that closes the `objects` phase): the predicate
+ * is the tenant fence, and the two must not drift apart on it.
  */
 export async function deleteTenantReadings(tx: SqlQuery, tenantId: string): Promise<number> {
   const [row] = await tx.query<{ deleted: number }>(
