@@ -43,6 +43,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   import: ["markdown", "bookmarks", "reddit", "youtube"],
   "reading-list": ["check", "process"],
   deploy: ["worker", "web", "wipe-check", "release"],
+  db: ["migrate"],
   staging: ["setup", "teardown", "smoke", "prepare-context", "token-revocation"],
   founder: ["bootstrap"],
   extract: ["agent", "probe"],

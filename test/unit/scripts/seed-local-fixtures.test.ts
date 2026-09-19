@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runSeed, type ReadResult } from "../../../scripts/seed-local-fixtures";
-import type { LocalSeedObject } from "../../fixtures/local-seed";
+import type { LocalSeedObject, LocalSeedPlan } from "../../fixtures/local-seed";
 
 const NOW = "2026-09-11T10:00:00.000Z";
 const LIST_KEY = "index/list.json";
@@ -19,10 +19,12 @@ interface DepsOptions {
   flakyKeys?: Set<string>;
   /** What reads of index/list.json return, in call order. */
   listReads?: ReadResult[];
+  postgresError?: string;
 }
 
 function makeDeps(opts: DepsOptions = {}) {
   const puts: LocalSeedObject[] = [];
+  const postgresPlans: LocalSeedPlan[] = [];
   const attemptsByKey = new Map<string, number>();
   const logs: string[] = [];
   const errors: string[] = [];
@@ -65,7 +67,13 @@ function makeDeps(opts: DepsOptions = {}) {
       },
       nowIso: () => NOW,
       sleep: async () => {},
+      seedPostgres: async (plan: LocalSeedPlan) => {
+        postgresPlans.push(plan);
+        if (opts.postgresError) throw new Error(opts.postgresError);
+        return { tenantId: "usr_local", readings: plan.fixtures.length, embeddings: 0 };
+      },
     },
+    postgresPlans,
     puts,
     attemptsByKey,
     logs,
@@ -94,6 +102,23 @@ describe("seed-local-fixtures runSeed", () => {
       expect(logs.some((l) => l.includes("Pending reading id"))).toBe(true);
     } finally {
       restoreWarn();
+    }
+  });
+
+  it("seeds PostgreSQL with the same plan after R2 verifies, and fails the run when that fails", async () => {
+    const seeded = makeDeps();
+    const failing = makeDeps({ postgresError: "connection refused" });
+    try {
+      expect(await runSeed(seeded.deps)).toBe(0);
+      expect(seeded.postgresPlans).toHaveLength(1);
+      expect(seeded.postgresPlans[0]!.objects).toEqual(seeded.puts);
+      expect(seeded.logs.some((l) => l.startsWith("Seeded PostgreSQL:"))).toBe(true);
+
+      expect(await runSeed(failing.deps)).toBe(1);
+      expect(failing.errors.join("\n")).toContain("PostgreSQL seed failed: connection refused");
+    } finally {
+      seeded.restoreWarn();
+      failing.restoreWarn();
     }
   });
 

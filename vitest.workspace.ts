@@ -1,9 +1,16 @@
 import path from "node:path";
 import { defineWorkersProject, readD1Migrations } from "@cloudflare/vitest-pool-workers/config";
 import { configDefaults, defineProject } from "vitest/config";
+import { HYPERDRIVE_LOCAL_ENV, testDatabaseUrl } from "./test/helpers/test-database";
 
 const AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const migrations = await readD1Migrations(path.join(import.meta.dirname, "migrations"));
+
+// The workers pool reaches PostgreSQL through the HYPERDRIVE binding's local
+// connection string. Always force it to the database globalSetup migrates and
+// truncates: a developer may export this variable for `npm run dev`, and the
+// tests must never write to that dev database.
+process.env[HYPERDRIVE_LOCAL_ENV] = testDatabaseUrl();
 
 // Unit tests that need the Workers runtime: they import cloudflare:test or
 // cloudflare:workers (directly or through src/index.ts), or they assert on

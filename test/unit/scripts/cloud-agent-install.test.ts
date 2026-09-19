@@ -165,8 +165,31 @@ describe("cloud-agent-install", () => {
     });
 
     expect(code).toBe(0);
-    expect(runs).toEqual(expectedRuns);
+    expect(runs.filter((call) => call.startsWith("bd ") || call.startsWith("npm "))).toEqual(expectedRuns);
     expect(logs.some((line) => line.includes("warning: beads"))).toBe(warns);
+  });
+
+  it.each([
+    ["starts the compose Postgres", {}, 0, ["docker compose up -d --wait postgres"], "Postgres ready"],
+    ["warns without failing when Docker cannot start it", {}, 1, ["docker compose up -d --wait postgres"], "warning: could not start Postgres"],
+    ["leaves a supplied TEST_DATABASE_URL alone", { TEST_DATABASE_URL: "postgres://ci" }, 0, [], "not starting Postgres"],
+  ])("postgres setup %s", async (_name, envVars, dockerCode, expectedRuns, logged) => {
+    const runs: string[] = [];
+    const logs: string[] = [];
+    const code = await runCloudAgentInstall({
+      envVars,
+      writeFile: () => {},
+      chmod: () => {},
+      log: (line) => logs.push(line),
+      run: async (command, args) => {
+        const call = [command, ...args].join(" ");
+        runs.push(call);
+        return command === "docker" ? dockerCode : 0;
+      },
+    });
+    expect(code).toBe(0);
+    expect(runs.filter((call) => call.startsWith("docker "))).toEqual(expectedRuns);
+    expect(logs.some((line) => line.includes(logged))).toBe(true);
   });
 
   it("installs the SPA without leaving cwd in web/", () => {

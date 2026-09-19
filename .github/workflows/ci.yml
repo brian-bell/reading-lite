@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # epic/postgres-storage is the storage migration's long-lived candidate
+  # branch (ADR 0005): slice PRs into it and pushes to it run CI. The deploy
+  # workflows stay filtered to main, so branch CI cannot deploy.
   pull_request:
-    branches: [main]
+    branches: [main, epic/postgres-storage]
   push:
-    branches: [main]
+    branches: [main, epic/postgres-storage]
     # No CI run means no workflow_run production deployment for these pushes.
     # Documentation pushes neither test nor deploy. README.md, AGENTS.md,
     # docs/operations.md, and docs/openapi.yaml are pinned by Worker tests, so
@@ -84,6 +87,26 @@ jobs:
     needs: changes
     if: needs.changes.outputs.worker == 'true'
     runs-on: ubuntu-latest
+    # Matches Neon: PostgreSQL 18 with pgvector 0.8.x (ADR 0005). Tests never
+    # connect to Neon. The workers pool reaches this through the HYPERDRIVE
+    # binding's local connection string, which vitest.workspace.ts points at
+    # TEST_DATABASE_URL; globalSetup creates and migrates the database.
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg18
+        env:
+          POSTGRES_USER: reading_lite
+          POSTGRES_PASSWORD: reading_lite
+          POSTGRES_DB: reading_lite_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U reading_lite -d reading_lite_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://reading_lite:reading_lite@127.0.0.1:5432/reading_lite_test
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -113,7 +136,10 @@ jobs:
       - run: npm ci
       - run: npm run ops -- --help
       - run: npm run ops -- deploy worker --help
+      # This job has no Postgres service; no test it runs may need a database.
       - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
+        env:
+          SKIP_TEST_POSTGRES: "1"
 
   web:
     name: Web (test + build)

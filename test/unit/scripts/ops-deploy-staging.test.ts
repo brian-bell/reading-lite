@@ -26,6 +26,8 @@ describe("ops deploy worker", () => {
     const deps: DeployWorkerDeps = {
       io: cio,
       validateTenantActivation: async () => ({ ok: true, message: "already enabled" }),
+      // The PostgreSQL cutover guard has its own owner: test/unit/deploy/postgres-cutover.test.ts.
+      checkPostgresCutover: () => ({ ok: true, bound: false }),
       runWrangler: async (args) => {
         runs.push(args);
         return 0;

@@ -51,6 +51,20 @@ export function buildKeyPrefix(id: string, createdAtIso: string): string {
   return `${READINGS_PREFIX}${y}/${mo}/${d}T${h}${mi}${s}Z-${id}`;
 }
 
+// The raw object's extension token, as the writers spell it (process-reading's
+// extToken and the router's extFromContentType are private copies of this
+// rule). PostgreSQL revisions store the resulting relative raw key, so the
+// mapper and the #348 importer derive it here.
+export function rawExtFromContentType(contentType: string): string {
+  const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
+  if (major === "text/html" || major === "application/xhtml+xml") return "html";
+  if (major === "text/markdown") return "md";
+  if (major === "application/pdf") return "pdf";
+  if (major === "application/json") return "json";
+  if (major.startsWith("text/")) return "txt";
+  return "bin";
+}
+
 // Key builders bound to one tenant root. `keyPrefix` arguments are the stored
 // relative prefix (a buildKeyPrefix result); `urlHash` is the lowercase hex
 // sha256 of the exact submitted URL (worker: services.sha256Hex; scripts:

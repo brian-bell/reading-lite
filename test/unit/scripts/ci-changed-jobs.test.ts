@@ -21,6 +21,7 @@ describe("CI job selection for pull requests", () => {
     ["a Worker module", ["src/router.ts"], only("worker", "ops")],
     ["a Worker test", ["test/integration/submit.test.ts"], only("worker")],
     ["a D1 migration", ["migrations/0020_x.sql"], only("worker")],
+    ["a PostgreSQL migration", ["db/migrations/0002_x.sql"], only("worker")],
     ["a deploy workflow", [".github/workflows/deploy-spa.yml"], only("worker")],
     ["a frontend route", ["app/src/routes/index.tsx"], only("app", "appBrowser")],
     ["a frontend unit test", ["app/test/reading-state.test.ts"], only("app")],

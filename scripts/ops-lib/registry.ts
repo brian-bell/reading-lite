@@ -16,6 +16,7 @@ import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-ve
 import type { AnyCommand, CommandGroup } from "./contract";
 import { accountSweepWipePrefixCommand } from "./commands/account-sweep-wipe-prefix";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { dbMigrateCommand } from "./commands/db-migrate";
 import { deployWipeCheckCommand } from "./commands/deploy-wipe-check";
 import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
@@ -62,6 +63,7 @@ export const defaultRegistry: Registry = {
     { name: "import", summary: "Imports into the reading API" },
     { name: "reading-list", summary: "Reading-list JSON export triage and submission" },
     { name: "deploy", summary: "Worker and Pages deployment" },
+    { name: "db", summary: "PostgreSQL schema migrations" },
     { name: "staging", summary: "Staging environment lifecycle and smoke checks" },
     { name: "founder", summary: "Founder control-plane bootstrap" },
     { name: "extract", summary: "Local extraction agent and probe" },
@@ -101,6 +103,7 @@ export const defaultRegistry: Registry = {
     deployReleaseCommand,
     stagingTokenRevocationCommand,
     deployWorkerCommand,
+    dbMigrateCommand,
     deployWipeCheckCommand,
     deployWebCommand,
     stagingPrepareContextCommand,
