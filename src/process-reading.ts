@@ -27,7 +27,7 @@ import {
 } from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
 import { relationshipTargetIds } from "./modules/relationship-targets";
-import { tenantIsActive, tenantIsDeleting } from "./control-plane/account-delete";
+import { tenantIsActive } from "./control-plane/account-delete";
 import { redactEmailsInText } from "./control-plane/email";
 import {
   itemRequestsImmediateEmail,
@@ -119,12 +119,11 @@ async function runAttempt(
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
-    // not spend or write. A confirmed missing user is the same skip. A D1
-    // lookup failure here is not inactive — it throws RateLimitedError so the
-    // queue retries while extract/embed can still do useful work. After a
-    // terminal CAS, lookup throws fail-open instead (see
-    // tenantStillAllowsVisibility): retry cannot republish once
-    // active_attempt is cleared.
+    // not spend or write. A confirmed missing user is the same skip. A lookup
+    // failure here is not inactive — it throws RateLimitedError so the queue
+    // retries while extract/embed can still do useful work. This gate saves
+    // the spend; publish decides visibility for real, under the tenant lock
+    // inside its own transaction.
     if (!(await tenantAllowsSpend(io, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
@@ -347,7 +346,7 @@ async function runAttempt(
     await writeAttemptSafe(io, attempt);
 
     const { published } = await runStage(attempt, io, services, "write_manifest", () =>
-      publishReady(io, args, finalManifest, tldrEmbed.embedding, tenantId),
+      publishReady(io, args, finalManifest, tldrEmbed.embedding),
     );
 
     if (published && itemRequestsImmediateEmail(args)) {
@@ -879,15 +878,17 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
-// Publication. The tenant's eligibility is control-plane state (D1 until slice
-// 1c), so it cannot join the PostgreSQL transaction: it is checked immediately
-// before and again immediately after, and a tenant that stopped being eligible
-// in between is compensated in this same consumer. Everything else — attempt
-// ownership, URL ownership, the revision, the summary, the relationships and
-// the embedding — is one transaction in PgReadingWriter.publish.
+// Publication. Attempt ownership, URL ownership, the revision, the summary,
+// the relationships, the embedding AND the tenant's eligibility are one
+// transaction in PgReadingWriter.publish (slice 1c.3): `users` is in the same
+// database, so publish locks the tenant row FOR SHARE and reads `status`
+// there. `DELETE /api/account` waits behind that lock, so there is no window
+// between the check and the commit to compensate for — an ineligible tenant's
+// reading commits with no embedding and is never searchable, and the account
+// wipe removes it with the rest of the account.
 //
-// A lookup that throws is not a confirmed ineligible tenant: fail open. Once
-// publish commits, `active_attempt` is cleared and no retry can republish.
+// Once publish commits, `active_attempt` is cleared and no retry can
+// republish.
 //
 // Returns `published` so the caller can gate post-commit side effects (the
 // success path only emails when the reading became searchable).
@@ -896,52 +897,21 @@ async function publishReady(
   args: ProcessReadingArgs,
   manifest: Manifest,
   embedding: number[],
-  tenantId: string,
 ): Promise<{ committed: boolean; published: boolean }> {
   const content = io.capturedContent();
   if (!content) throw new Error("publishReady: the attempt captured no content");
-  const eligible = () => failOpen(() => tenantConfirmedAllowsVisibility(io, tenantId), true);
-
-  const eligibleBefore = await eligible();
   const out = await io.writer.publish(args, manifest, {
     keyPrefix: args.keyPrefix,
     content,
-    // An ineligible tenant's reading is stored but never made searchable.
-    embedding: eligibleBefore ? embedding : null,
+    embedding,
     claimMissingUrl: true,
   });
   if (!out.committed) {
     // Purged, or another attempt owns the reading: nothing references what
     // this one captured.
     await io.discardUnreferencedContent().catch((err) => console.error(err));
-    return out;
   }
-  if (eligibleBefore && (await eligible())) return out;
-
-  // Compensation must not throw: the reading is committed, and a throw would
-  // reach markFailed.
-  try {
-    if (await failOpen(() => tenantConfirmedDeleting(io, tenantId), false)) {
-      // A tenant being deleted keeps nothing. The account wipe may already
-      // have passed this reading by.
-      await io.writer.purge(args.id, () => false);
-      await io.content.deletePrefix(args.keyPrefix);
-    } else {
-      await io.writer.removeEmbedding(args.id);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-  return { committed: true, published: false };
-}
-
-async function failOpen(check: () => Promise<boolean>, fallback: boolean): Promise<boolean> {
-  try {
-    return await check();
-  } catch (err) {
-    console.error(err);
-    return fallback;
-  }
+  return out;
 }
 
 const TENANT_STATUS_LOOKUP_URL = "postgres://control-plane/users.status";
@@ -973,12 +943,6 @@ async function tenantConfirmedAllowsVisibility(io: AttemptIo, tenantId: string):
     console.error(error);
     return true;
   }
-}
-
-// Confirmed `deleting` only. A lookup failure is not a confirmation, so the
-// caller (through failOpen) keeps the ordinary ownership gates.
-async function tenantConfirmedDeleting(io: AttemptIo, tenantId: string): Promise<boolean> {
-  return tenantIsDeleting(io.controlPlane, tenantId);
 }
 
 // May this attempt still write for the reading? Only while it is the active

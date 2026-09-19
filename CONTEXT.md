@@ -116,16 +116,14 @@ submit, a markdown import, or a lookup. It lives in
   first, then revokes sessions and API tokens. Queue admit, DLQ, digest, and
   notification skip a non-active tenant. A confirmed inactive or missing user
   skips spend and visibility. A status-lookup failure **before extract/embed**
-  throws `RateLimitedError` so the queue retries. After a terminal CAS, and on
-  the DLQ mark path, lookup failure fail-opens (publish/keep, or write failed);
-  compensate/remove only on confirmed inactive. Visibility publish/remove
-  throws after that CAS log-and-continue so a deleting-tenant hide failure
-  cannot `markFailed` over the ready object. `commitTerminalManifest`
-  rechecks status immediately before visibility publish and again immediately
-  after (compensate with `visibility.removeForDeletedTenant` if the tenant
-  flipped deleting in between — the deletion fence deletes the vector directly
-  rather than gating on the `index/list.json` row, which a concurrent wipe may
-  already have removed). Wipe of the tenant's reading rows (embeddings with
+  throws `RateLimitedError` so the queue retries. On the DLQ mark path a
+  lookup failure fail-opens (write failed); act only on confirmed inactive.
+  Claim and publish decide eligibility inside their own transaction, under a
+  FOR SHARE lock on the `users` row, so the deletion's status UPDATE
+  serializes against them: a claim that lands after the flip writes no rows,
+  and a publish that holds the lock first completes whole. An ineligible
+  tenant's reading is stored without an embedding, never searchable, and a
+  deleting tenant's copy goes with the wipe. Wipe of the tenant's reading rows (embeddings with
   them) and then its R2 prefix is a deferred shared-queue job plus the */15
   cron sweep, honoring a 7-day `deleting_at` grace unless the job payload sets
   `force` (grace gates *new* wipes; cron resumes in-progress/leftover and

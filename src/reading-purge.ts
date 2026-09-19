@@ -4,8 +4,8 @@ import { effectivelyRunning } from "./modules/staleness";
 
 // Deletes a reading everywhere it exists: its PostgreSQL rows (the reading,
 // its URL ownership, revisions, relationships, embedding, attempts and jobs,
-// by cascade), every R2 object under its key_prefix, and the hosted refresh
-// checkpoint.
+// by cascade, and its hosted refresh checkpoint, which has no foreign key to
+// hang off), and every R2 object under its key_prefix.
 //
 // Two invariants shape the ordering:
 //
@@ -53,8 +53,6 @@ export type PurgeOutcome =
 export interface PurgeDeps {
   writer: PgReadingWriter;
   content: ContentStore;
-  // Hosted refresh work is control-plane state keyed by tenant and reading.
-  deleteRefreshCheckpoint?: (id: string) => Promise<void>;
 }
 
 export async function purgeReading(
@@ -74,11 +72,6 @@ export async function purgeReading(
   let objectsDeleted = await deps.content.deletePrefix(purged.keyPrefix);
   // Second pass: an attempt that was mid-put during the first.
   objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
-
-  // Best-effort: the purge already happened and a retry is a 404, so a failed
-  // cleanup must not report it as an error. A leftover checkpoint is inert,
-  // since the refresh it describes finds no reading and stops.
-  await deps.deleteRefreshCheckpoint?.(id)?.catch((err) => console.error(err));
 
   return {
     kind: "purged",

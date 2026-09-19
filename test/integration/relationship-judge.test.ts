@@ -11,7 +11,6 @@ import { PgReadingWriter } from "../../src/modules/stores/postgres/reading-write
 import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
 import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
-import { deleteRefreshJob } from "../../src/control-plane/relationship-refresh-jobs";
 import type { Services } from "../../src/services";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
@@ -249,7 +248,7 @@ describe("hosted relationship judge", () => {
   it("does not recreate a purged reading or its checkpoint after an in-flight call", async () => {
     const store = testStore();
     provider.mockImplementationOnce(async () => {
-      await purgeReading({ writer: store.readings.writer, content: store.readings.content, deleteRefreshCheckpoint: id => deleteRefreshJob(testControlPlane(env), FOUNDER_TENANT_ID, id) }, id, { now: services.now(), pendingTtlSeconds: 300 });
+      await purgeReading({ writer: store.readings.writer, content: store.readings.content }, id, { now: services.now(), pendingTtlSeconds: 300 });
       return response();
     });
     await processRelationshipJudge(job, runtime, services);
@@ -261,9 +260,7 @@ describe("hosted relationship judge", () => {
   it("removes a checkpoint claimed after purge has already completed", async () => {
     const store = testStore();
     interceptSql(/^INSERT INTO relationship_refresh_jobs/, async (): Promise<"pass"> => {
-      await purgeReading({ writer: store.readings.writer, content: store.readings.content,
-        deleteRefreshCheckpoint: id => deleteRefreshJob(testControlPlane(env), FOUNDER_TENANT_ID, id),
-      }, id, { now: services.now(), pendingTtlSeconds: 300 });
+      await purgeReading({ writer: store.readings.writer, content: store.readings.content }, id, { now: services.now(), pendingTtlSeconds: 300 });
       return "pass";
     });
     await expect(processRelationshipJudge(job, runtime, services)).rejects.toThrow("refresh input changed");

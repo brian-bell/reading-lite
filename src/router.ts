@@ -1,4 +1,3 @@
-import { deleteRefreshJob } from "./control-plane/relationship-refresh-jobs";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -330,9 +329,7 @@ export function createApp(opts: AppOptions = {}) {
     const { writer, content } = storesFor(c.env, principal, c.get("sql"));
     // One-reading purge inside a live tenant. Account deletion is
     // DELETE /api/account (195a) — do not fold that workflow in here.
-    const out = await purgeReading({ writer, content,
-      deleteRefreshCheckpoint: readingId => deleteRefreshJob(fromSql(c.get("sql")), principal.tenantId, readingId),
-    }, id, {
+    const out = await purgeReading({ writer, content }, id, {
       pendingTtlSeconds: pendingTtlSeconds(c.env),
       now: services.now(),
     });
@@ -423,7 +420,7 @@ const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 400 | 404 | 409 | 429 | 503;
+  status: 200 | 202 | 400 | 403 | 404 | 409 | 429 | 503;
   headers?: Record<string, string>;
 } {
   switch (out.kind) {
@@ -474,6 +471,11 @@ function toHttp(out: IntakeOutcome): {
         status: 429,
         headers: { "Retry-After": "5" },
       };
+    // The account was marked deleting after this request authenticated; the
+    // claim transaction saw it under the tenant lock and wrote nothing. Same
+    // 403 body the authenticated seam gives a tenant that is not active.
+    case "tenant_inactive":
+      return { body: { error: "forbidden" }, status: 403 };
   }
 }
 

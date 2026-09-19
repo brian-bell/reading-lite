@@ -32,5 +32,9 @@ export function interceptSql(
   } as never);
 }
 
-// The tenant-status lookup the consumer and the deletion fence make.
-export const TENANT_STATUS_LOOKUP = /SELECT status FROM users WHERE id = \$1/;
+// The tenant-status lookup the consumer makes before it spends, and the DLQ
+// mark path. Not the publish transaction's lock, which has its own pattern.
+export const TENANT_STATUS_LOOKUP = /SELECT status FROM users WHERE id = \$1(?! FOR SHARE)/;
+
+// The tenant lock claim and publish take inside their transaction.
+export const TENANT_STATUS_LOCK = /SELECT status FROM users WHERE id = \$1 FOR SHARE/;

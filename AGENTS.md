@@ -96,6 +96,15 @@ file. Generation excludes bindings; keep the application `Env` in `src/index.ts`
 `app/` also needs Node 22.12+. `engines.node` (`>=22.0.0`) is only the install
 and ops floor. See [operator Node](docs/operations.md#operator-node).
 
+Run the Worker suite on Node 22 (`mise.toml` pins it; `mise exec node@22 --`
+works from a worktree that does not inherit it). Node 24 and 25 fail it in ways
+that have nothing to do with the code under test: a pool worker aborts and the
+run exits 1 with every test passing, or the run dies on an EPIPE. After
+switching Node versions in a tree whose `node_modules` was installed under
+another one, run `npm rebuild better-sqlite3` — otherwise the Node-pool suites
+that open a SQLite fixture fail on the native module's ABI, not on their
+assertions.
+
 ## Where to work
 
 | Area | Entry points |

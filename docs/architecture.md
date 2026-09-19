@@ -32,13 +32,15 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
 4. Acquire tenant/global processing leases. Embed the source, query related
    readings, summarize, then embed the TL;DR. The paid checkpoint on the
    attempt row avoids repeating completed provider stages on recovery.
-5. Publish in one transaction (see below). Tenant eligibility is checked
-   immediately before and again immediately after it (slice 1c.3 moves the
-   check inside the transaction).
-6. If the tenant stopped being eligible in between, compensate in the same
-   consumer: a `deleting` tenant's reading is removed outright, any other
-   ineligible tenant's loses its embedding. Send any eligible immediate
-   notification after publication; mail failure does not fail a ready reading.
+5. Publish in one transaction (see below). Tenant eligibility is part of it:
+   the transaction locks the tenant's `users` row FOR SHARE and reads `status`
+   there, so `DELETE /api/account` waits behind an in-flight publish and there
+   is no window to compensate for. An ineligible tenant's reading is stored
+   with no embedding, so it is never searchable; a `deleting` tenant's copy is
+   removed by the account wipe, which sweeps rows again after its objects
+   phase for exactly this publisher.
+6. Send any eligible immediate notification after publication; mail failure
+   does not fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider

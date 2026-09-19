@@ -1,4 +1,11 @@
+import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
+import { fromSql } from "../../../src/control-plane/db";
+import {
+  markRefreshDispatched,
+  readRefreshJob,
+} from "../../../src/control-plane/relationship-refresh-jobs";
+import { insertActiveUser } from "../../helpers/control-plane-db";
 import type { TenantContext } from "../../../src/control-plane/ids";
 import type { Sql } from "../../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../../src/modules/manifest-drafting";
@@ -429,6 +436,29 @@ describe("purge", () => {
     }
   });
 
+  // The refresh checkpoint has no foreign key to hang off, so the purge
+  // transaction deletes it by hand: the reading and the hosted work queued
+  // about it go at the same instant.
+  it("takes the hosted refresh checkpoint with the reading", async () => {
+    const s = sql();
+    const tenant = mintTenant();
+    await insertActiveUser(env, String(tenant.tenantId));
+    await publishNew(s, tenant, "rd_chkpt", "https://example.com/checkpoint");
+    expect(
+      await markRefreshDispatched(fromSql(s), {
+        tenantId: String(tenant.tenantId),
+        readingId: "rd_chkpt",
+        runAt: LATER,
+        owner: "at_chkpt",
+        sourceEtag: "etag-1",
+      }),
+    ).toBe(true);
+
+    await pgReadingWriterFor(s, tenant).purge("rd_chkpt", never);
+
+    expect(await readRefreshJob(fromSql(s), String(tenant.tenantId), "rd_chkpt")).toBeNull();
+  });
+
   it("refuses while the caller's staleness rule says an attempt is running", async () => {
     const s = sql();
     const tenant = mintTenant();
@@ -473,6 +503,39 @@ describe("purge", () => {
     const store = pgReadingStoreFor(s, tenant);
     expect(await store.loadReadingById("rd_race")).toBeNull();
     expect(await store.findOwnerByUrl(p.manifest.url)).toBeNull();
+  });
+});
+
+// Slice 1c.3: `users` is in this database, so the verbs that create rows read
+// the tenant's status under a FOR SHARE lock inside their own transaction.
+// claimUrl's refusal is owned by the account-deletion race test; this covers
+// the other verb that activates an attempt.
+describe("tenant eligibility", () => {
+  it("refuses to start an attempt for a tenant that is no longer active", async () => {
+    const s = sql();
+    const tenant = mintTenant();
+    await insertActiveUser(env, String(tenant.tenantId));
+    const { manifest } = await (async () => {
+      const m = await readyManifest("rd_inelig");
+      await seedManifest(s, tenant, m, { embedding: axisVector(1) });
+      return { manifest: m };
+    })();
+    await fromSql(s).run("UPDATE users SET status = 'deleting' WHERE id = ?", String(tenant.tenantId));
+    const writer = pgReadingWriterFor(s, tenant);
+    const draft = reprocessPending(manifest, { attemptId: "at_re", startedAt: LATER }, LATER);
+
+    const started = await writer.startAttempt(
+      draft.manifest,
+      { summary: draft.attempt, payload: {} },
+      await loaded(s, tenant, "rd_inelig"),
+    );
+
+    expect(started).toEqual({ kind: "tenant_inactive" });
+    // Nothing was activated: the reading still stands as it was published.
+    expect((await pgReadingStoreFor(s, tenant).loadReadingById("rd_inelig"))!.manifest).toEqual(manifest);
+    expect(
+      await s.query("SELECT 1 FROM reading_attempts WHERE tenant_id = $1 AND id = $2", [String(tenant.tenantId), "at_re"]),
+    ).toEqual([]);
   });
 });
 

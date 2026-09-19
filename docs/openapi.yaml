@@ -1168,6 +1168,9 @@ components:
       description: |
         Authenticated but lacking scope, forbidden principal, or invalid
         cookie CSRF token (session stays; SPA must not treat this as logout).
+        On a write, also an account that stopped being active after the
+        request authenticated: the claim saw it under the tenant lock and
+        committed nothing.
       content:
         application/json:
           schema:
