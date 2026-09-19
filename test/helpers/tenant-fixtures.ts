@@ -3,6 +3,7 @@ import { parseTenantId, mintTokenId, mintUserId, type TenantContext } from "../.
 import { API_SCOPES } from "../../src/control-plane/principal";
 import { FOUNDER_PLACEHOLDER_LIMITS } from "../../src/control-plane/bootstrap";
 import type { Env } from "../../src/index";
+import { resolveAttemptId, type ProcessReadingArgs } from "../../src/attempt-ownership";
 import {
   readingStoreFor,
   type ListIndexCasDeps,
@@ -23,6 +24,27 @@ export function founderTenant(): TenantContext {
 
 export function otherTenant(): TenantContext {
   return { tenantId: parseTenantId(OTHER_TENANT_ID)! };
+}
+
+/**
+ * Reserve the attempt's reading slot, as intake does before it enqueues a job.
+ * Tests that seed a pending job and call processReading directly need this:
+ * summarize refuses to dispatch against a slot it no longer holds (#320).
+ */
+export async function reserveReadingSlot(
+  env: { TENANT_USAGE_GUARD?: DurableObjectNamespace },
+  tenant: TenantContext,
+  args: ProcessReadingArgs,
+): Promise<void> {
+  const ns = env.TENANT_USAGE_GUARD!;
+  const tenantId = String(tenant.tenantId);
+  const res = await ns.get(ns.idFromName(tenantId)).fetch("https://tenant-usage-guard/", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "reserve_reading", tenantId, opId: resolveAttemptId(args), nowMs: Date.now() }),
+  });
+  const decision = (await res.json()) as { ok?: boolean };
+  if (decision.ok !== true) throw new Error(`reserve_reading failed: ${JSON.stringify(decision)}`);
 }
 
 export function testReadingStore(

@@ -29,6 +29,7 @@ import {
   insertSecondTenant,
   otherTenant,
   PUBLIC_LOOKUP,
+  reserveReadingSlot,
   testReadingStore,
 } from "../helpers/tenant-fixtures";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -1926,19 +1927,16 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       created_at: staleCreatedAt,
       updated_at: staleCreatedAt,
     });
-    await processReading(
-      {
-        id: staleId,
-        url,
-        urlHash,
-        createdAt: staleCreatedAt,
-        keyPrefix: stalePrefix,
-        trigger: "submit",
-      },
-      env as unknown as Env,
-      services,
-      founderTenant(),
-    );
+    const staleJob: ProcessReadingArgs = {
+      id: staleId,
+      url,
+      urlHash,
+      createdAt: staleCreatedAt,
+      keyPrefix: stalePrefix,
+      trigger: "submit",
+    };
+    await reserveReadingSlot(env, founderTenant(), staleJob);
+    await processReading(staleJob, env as unknown as Env, services, founderTenant());
 
     await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({
       id: "rd_OWNER",
@@ -4719,6 +4717,7 @@ describe("processReading — backwards-compat for in-flight queue messages witho
       updated_at: createdAt,
     });
     await reader.writeByIdPointer(id, { id, key_prefix: prefix });
+    await reserveReadingSlot(env, founderTenant(), args);
 
     await processReading(args, env as unknown as Env, services, founderTenant());
 

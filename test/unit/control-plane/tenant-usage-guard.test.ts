@@ -9,6 +9,7 @@ import {
   utcMonthResetAt,
 } from "../../../src/control-plane/tenant-usage-guard";
 import type { Env } from "../../../src/index";
+import { READING_RESERVATION_TTL_MS } from "../../../src/control-plane/constants";
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const NOW = Date.parse("2026-09-03T02:14:00.000Z");
@@ -148,6 +149,29 @@ describe("TenantUsageGuard", () => {
     expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
   });
 
+  it.each([
+    ["was never held, or expired and was swept", []],
+    ["was released", [{ kind: "release_reading", opId: "at_gone" }]],
+  ])("commit_reading refuses a reservation that %s", async (_, before) => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    if (before.length > 0) {
+      expect((await post(guard, { kind: "reserve_reading", tenantId: TENANT, opId: "at_gone", nowMs: NOW })).ok).toBe(true);
+    }
+    for (const body of before) await post(guard, body);
+    expect(await post(guard, { kind: "commit_reading", opId: "at_gone" })).toEqual({ ok: false, reason: "expired" });
+    expect(map.get(`m:${utcMonthKey(NOW)}`)).toBeUndefined();
+  });
+
+  it("commit_reading is idempotent once consumed and charges the slot once", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new TenantUsageGuard(guardState(memoryStorage(false, map)), envWithLimits());
+    expect((await post(guard, { kind: "reserve_reading", tenantId: TENANT, opId: "at_twice", nowMs: NOW })).ok).toBe(true);
+    expect(await post(guard, { kind: "commit_reading", opId: "at_twice" })).toEqual({ ok: true });
+    expect(await post(guard, { kind: "commit_reading", opId: "at_twice" })).toEqual({ ok: true });
+    expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
+  });
+
   it("does not let a concurrent reserve burst all pass the monthly ceiling", async () => {
     const guard = new TenantUsageGuard(
       guardState(memoryStorage(true)),
@@ -260,7 +284,7 @@ describe("TenantUsageGuard", () => {
     ).toEqual({ ok: true });
     const row = map.get("op:at_defer") as { status: string; expiresAt: number };
     expect(row.status).toBe("held");
-    expect(row.expiresAt).toBe(later + 60 * 60 * 1000);
+    expect(row.expiresAt).toBe(later + READING_RESERVATION_TTL_MS);
     expect(map.get(`m:${utcMonthKey(NOW)}`)).toEqual({ count: 1 });
   });
 

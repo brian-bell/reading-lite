@@ -14,7 +14,7 @@ import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
 import type { Manifest } from "../../src/schemas/manifest";
-import { insertQuotaTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot, testReadingStore } from "../helpers/tenant-fixtures";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -290,11 +290,15 @@ async function seedReading(
   };
 }
 
+// Intake reserves the attempt's reading slot before enqueueing, so a seeded
+// pending job does too. `reserve: false` models a reservation that lapsed.
 async function seedPending(
   tenant: TenantContext,
-  opts: { id: string; url: string; attemptId: string; source?: ProcessReadingSource },
+  opts: { id: string; url: string; attemptId: string; source?: ProcessReadingSource; reserve?: false },
 ): Promise<ProcessReadingArgs> {
-  return seedReading(tenant, opts);
+  const job = await seedReading(tenant, opts);
+  if (opts.reserve !== false) await reserveReadingSlot(env, tenant, job);
+  return job;
 }
 
 async function tenantLease(
@@ -361,6 +365,44 @@ describe("processing leases (Workers pool)", () => {
     }
     await processReading(job,env as unknown as Env,services(fetchFn),tenant);
     expect(summaryCalls(fetchFn)).toBe(1);
+  });
+
+  it("fails a reading whose reservation lapsed before summarize, without an uncharged dispatch", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
+      submissions_per_hour: 20, monthly_readings: 1, max_concurrent_work: 1,
+    });
+    const tenant = tenantOf(tenantId);
+    // No held reservation: the guard's TTL sweep (or a release) already refunded it.
+    const job = await seedPending(tenant, {
+      id: "rd_RESERVATION_LAPSED", url: "https://lease.test/lapsed", attemptId: "at_lapsed", reserve: false,
+    });
+    const fetchFn = makeFetch();
+    const spendCalls: string[] = [];
+    const restoreGlobal = interceptGlobalLeaseFetch(async (body, next) => {
+      if (String(body.opId).includes(":summarize:")) spendCalls.push(String(body.kind));
+      return next();
+    });
+    const sendDelayed = vi.fn(async () => {});
+    const msg = fakeMessage({ version: 1, job });
+    try {
+      await dispatchQueueMessage(msg, () => processReading(job, env as unknown as Env, services(fetchFn), tenant), {
+        sendDelayed,
+      });
+    } finally {
+      restoreGlobal();
+    }
+    expect(summaryCalls(fetchFn)).toBe(0);
+    expect(spendCalls).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(sendDelayed).not.toHaveBeenCalled();
+    expect(msg.ack).toHaveBeenCalledOnce();
+    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "ReadingReservationExpiredError", stage: "summarize", retryable: true },
+    });
+    // Nothing was charged, so the tenant's single monthly slot is still free.
+    expect(
+      await tenantLease(tenantId, { kind: "reserve_reading", tenantId, opId: "at_next", nowMs: Date.now() }),
+    ).toMatchObject({ ok: true });
   });
 
   it("defers a second attempt when the tenant cap is 1 without draining pending", async () => {
@@ -829,13 +871,13 @@ describe("processing leases (Workers pool)", () => {
       monthly_readings: 20,
       max_concurrent_work: 2,
     });
-    await env.CONTROL_PLANE.prepare("DELETE FROM tenant_limits WHERE tenant_id = ?").bind(tenantId).run();
     const tenant = tenantOf(tenantId);
     const job = await seedPending(tenant, {
       id: "rd_LEASE_NOLIMIT",
       url: "https://lease.test/nolimit",
       attemptId: "at_nolimit",
     });
+    await env.CONTROL_PLANE.prepare("DELETE FROM tenant_limits WHERE tenant_id = ?").bind(tenantId).run();
     const fetchFn = makeFetch();
     await expect(
       processReading(job, env as unknown as Env, services(fetchFn), tenant),
@@ -1068,7 +1110,15 @@ describe("processing leases (Workers pool)", () => {
     } finally {
       restore();
     }
-    await processReading(job, env as unknown as Env, svc, tenant);
+    // The checkpoint proves the slot was charged before summarize dispatched,
+    // so a reservation that lapsed since then must not block publication.
+    const restoreTenant = interceptTenantUsageFetch(async (body, next) =>
+      body.kind === "commit_reading" ? Response.json({ ok: false, reason: "expired" }) : next());
+    try {
+      await processReading(job, env as unknown as Env, svc, tenant);
+    } finally {
+      restoreTenant();
+    }
     expect(summaryCalls(fetchFn)).toBe(1);
     expect(embedCalls(fetchFn)).toBe(2);
     await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({

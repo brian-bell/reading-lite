@@ -41,8 +41,13 @@ export const GLOBAL_USAGE_GUARD_NAME = "global-usage-guard";
 
 /** TenantUsageGuard: sliding window for every intake write request. */
 export const INGRESS_REQUEST_WINDOW_MS = 60 * 60 * 1000;
-/** Held reading-slot reservations expire if never committed or released. */
-export const READING_RESERVATION_TTL_MS = 60 * 60 * 1000;
+/**
+ * Reading-slot reservations expire if never committed or released, and a
+ * consumed one is forgotten at the same time. It must outlive every delivery
+ * of an attempt — the 24h defer loop plus up to three 12h rate-limit retries —
+ * because commit_reading refuses a reservation it no longer holds (#320).
+ */
+export const READING_RESERVATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 /** Undispatched paid-work holds are released after compensation has had time to run. */
 export const SPEND_RESERVATION_TTL_MS = 10 * 60 * 1000;
 

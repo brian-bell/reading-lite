@@ -98,7 +98,8 @@ export type UsageDenyReason =
   | "hourly"
   | "monthly"
   | "missing_limits"
-  | "unavailable";
+  | "unavailable"
+  | "expired";
 
 export type LeaseDenyReason = "contention" | "stale_fence" | "missing_limits" | "unavailable";
 
@@ -395,8 +396,10 @@ export class TenantUsageGuard implements DurableObject {
   private async commitReading(body: CommitReadingBody): Promise<Response> {
     const opKey = `op:${body.opId}`;
     const existing = (await this.state.storage.get(opKey)) as Reservation | undefined;
-    if (!existing || existing.status === "consumed") return json({ ok: true });
-    if (existing.status === "released") return json({ ok: true });
+    if (existing?.status === "consumed") return json({ ok: true });
+    // A swept or released slot was refunded; committing it would let the
+    // summary dispatch uncharged.
+    if (!existing || existing.status === "released") return json({ ok: false, reason: "expired" });
     await this.state.storage.put(opKey, { ...existing, status: "consumed" } satisfies Reservation);
     return json({ ok: true });
   }
@@ -542,7 +545,8 @@ function parseDecision(payload: unknown): UsageDecision {
     reason !== "hourly" &&
     reason !== "monthly" &&
     reason !== "missing_limits" &&
-    reason !== "unavailable"
+    reason !== "unavailable" &&
+    reason !== "expired"
   ) {
     return denyUnavailable();
   }
@@ -696,12 +700,18 @@ export async function refreshReadingSlot(env: Env, tenantId: string, opId: strin
   }
 }
 
-// Confirms RPC success, preserving commit_reading's existing no-op behavior
-// for missing/released slots. Reservation admission/expiry is a separate policy.
-export async function commitReadingSlot(env: Env, tenantId: string, opId: string): Promise<boolean> {
+// "expired" means the held slot was swept or released, so nothing is charged
+// for this attempt. Any other denial is an unconfirmed commit.
+export async function commitReadingSlot(
+  env: Env,
+  tenantId: string,
+  opId: string,
+): Promise<"committed" | "expired" | "unavailable"> {
   try {
-    return (await tenantUsageFor(env, tenantId).commitReading(opId)).ok;
+    const decision = await tenantUsageFor(env, tenantId).commitReading(opId);
+    if (decision.ok) return "committed";
+    return decision.reason === "expired" ? "expired" : "unavailable";
   } catch {
-    return false;
+    return "unavailable";
   }
 }
