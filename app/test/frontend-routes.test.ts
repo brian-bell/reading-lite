@@ -9,7 +9,8 @@ import type { EnvironmentLabel } from "../config/backend-bindings";
 // host would reach this Worker and 404, so a frontend route is only valid when
 // its own backend already routes the API there. Staging switched at Phase 4
 // parity (#339, 2026-09-16), so the staging frontend also owns both staging
-// hosts; production gains the apex hosts only at the Phase 5 cutover.
+// hosts. Production switched the same way at the Phase 5 cutover
+// (reading-lite-gh340.4, 2026-09-19) and also owns both apex hosts.
 
 type Route = { pattern: string; zone_name?: string };
 
@@ -27,7 +28,11 @@ const HOSTS: Record<Exclude<EnvironmentLabel, "local">, Route[]> = {
     { pattern: "staging.readinglite.ai/*", zone_name: "readinglite.ai" },
     { pattern: "staging.readinglite.app/*", zone_name: "readinglite.app" },
   ],
-  production: [{ pattern: "next.readinglite.ai/*", zone_name: "readinglite.ai" }],
+  production: [
+    { pattern: "next.readinglite.ai/*", zone_name: "readinglite.ai" },
+    { pattern: "readinglite.ai/*", zone_name: "readinglite.ai" },
+    { pattern: "readinglite.app/*", zone_name: "readinglite.app" },
+  ],
 };
 
 describe("frontend Worker routes", () => {

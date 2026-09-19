@@ -415,7 +415,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
 | staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
-| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (`/api/*` + `/health` + `/mcp*`); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
+| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -948,15 +948,18 @@ Deploying the frontend:
   `app/scripts/check-build.ts` refuses a build whose environment, name, routes,
   or `BACKEND` binding differ from that environment of `app/wrangler.jsonc`, or
   that binds another environment's backend; the staging workflow runs it too. It does not depend on the SPA job, and a failure
-  there does not block the SPA. Rerun that job to redeploy.
+  there does not block the SPA. Rerun that job to redeploy. Since the Phase 5
+  apex cutover (reading-lite-gh340.4, 2026-09-19) the same deploy also owns
+  `readinglite.ai/*` and `readinglite.app/*`, ahead of the Pages custom domains
+  that stay bound there; the SPA job keeps deploying to Pages so the rollback
+  target stays current. The job smoke-checks all three production hosts.
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
   Since the Phase 4 staging switch (#339, 2026-09-16) the same deploy also
   owns `staging.readinglite.ai/*` and `staging.readinglite.app/*`, ahead of
   the Pages custom domains that stay bound there. The workflow smoke-checks all
-  three hosts. Until Phase 5 lands, staging account pages are unavailable in
-  the browser; use local development or the API for account checks.
+  three hosts.
 - **Smoke check.** Both end with `app/scripts/smoke-host.sh <https://host>`,
   which also runs by hand from any machine. It passes only when `/health` is
   `ok` and a signed-out `/api/whoami` is a JSON 401 from the backend, and `/`
@@ -964,12 +967,15 @@ Deploying the frontend:
   not send).
 - **Rollback.** Delete the host's frontend route in the dashboard, or
   `wrangler rollback` the frontend Worker to its previous version. Neither
-  affects the backend or the apex hosts. On the two staging hosts, deleting
-  the `/*` route hands `/` back to the Pages SPA immediately; this is the
-  cutover and rollback rehearsal for Phase 5.
+  affects the backend. On the staging and apex hosts, deleting the `/*` route
+  hands `/` back to the Pages SPA immediately, with no rebuild. Every frontend
+  deploy re-applies the routes in `app/wrangler.jsonc`, so a route deleted in
+  the dashboard comes back on the next production release (every merge to
+  `main`) or staging dispatch: land a commit removing it from `app/wrangler.jsonc`
+  before the next deploy, or the rollback silently undoes itself.
 
-The deploy token's zone Workers Routes permission on `readinglite.ai` covers the
-frontend routes.
+The deploy token's zone Workers Routes permission on `readinglite.ai` and
+`readinglite.app` (the backend already routes both) covers the frontend routes.
 
 ### MCP connector
 
