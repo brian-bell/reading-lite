@@ -303,6 +303,7 @@ function submittedSidecarFrom(
     model: existing.model,
     reasoningEffort: existing.reasoningEffort,
     targets: existing.targets,
+    ...(existing.spend === undefined ? {} : { spend: existing.spend }),
   };
   return {
     ...base,

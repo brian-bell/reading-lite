@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { batchSpendAuthority } from "../../../helpers/operator-spend";
 import { createHash } from "node:crypto";
 import {
   runFreshMarkdownBatch,
@@ -79,6 +80,7 @@ function harness(seed: Record<string, string> = {}) {
   let n = 0;
   let inputJsonl: string | null = null;
   const deps: FreshMarkdownRunDeps = {
+    spend: batchSpendAuthority().spend,
     r2: r2 as any,
     vectorize: vectorize as any,
     batch: batch as any,

@@ -15,6 +15,7 @@ import { isBatchOwnedPending } from "../../../../src/modules/staleness";
 import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
 import type { AuditRow } from "../../../../scripts/corpus-lib/types";
 import type { ExtractedContent } from "../../../../src/modules/extractor";
+import { BILLING_TENANT, batchSpendAuthority } from "../../../helpers/operator-spend";
 import type {
   ExtractedTarget,
   PersistedSidecar,
@@ -149,10 +150,12 @@ function harness(seedManifests: Record<string, Manifest>) {
       title: "Fresh",
     }),
   );
+  const authority = batchSpendAuthority();
   const deps: BatchRunDeps = {
     r2: r2 as any,
     vectorize: vectorize as any,
     ledger,
+    spend: authority.spend,
     batch: batch as any,
     embed: {
       embedMany: vi.fn(async (inputs: string[]) => ({
@@ -183,7 +186,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, ledgered, batch, extract, deps, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
+  return { store, r2, vectorize, ledgered, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
 }
 
 // A minimal OpenAI batch client with sensible defaults so tests don't have to
@@ -1803,5 +1806,309 @@ describe("runBatch — recover resume", () => {
     expect(h.store.has(byUrlKey)).toBe(true);
     const index = JSON.parse(h.store.get("index/list.json")!);
     expect(index.items.filter((i: any) => i.id === "rd_a")).toHaveLength(1);
+  });
+});
+
+// reading-lite-gh319.2: a provider batch is one spend operation, admitted
+// before its first pending sidecar and settled from its results. The unit
+// tests in spend.test.ts own the bound and what settles; these own where the
+// calls sit in the lifecycle.
+describe("runBatch — spend admission", () => {
+  const OP_ID = "operator:anthropic-batch:op-1";
+
+  function traced(h: ReturnType<typeof harness>) {
+    const events: string[] = [];
+    const saved: PersistedSidecar[] = [];
+    const rpc = h.deps.spend.rpc;
+    h.deps.spend = {
+      ...h.deps.spend,
+      rpc: async (body) => {
+        events.push(String(body.kind));
+        return rpc(body);
+      },
+    };
+    const save = h.deps.saveSidecar;
+    h.deps.saveSidecar = async (s) => {
+      events.push(`sidecar:${s.phase}`);
+      saved.push(s);
+      await save(s);
+    };
+    const create = h.batch.create;
+    h.batch.create = vi.fn(async (requests: Array<{ custom_id: string }>) => {
+      events.push("create");
+      return create(requests);
+    });
+    return { events, saved };
+  }
+
+  it("reserves and marks before the first pending sidecar, which precedes create, then settles the results", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const { events, saved } = traced(h);
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(events).toEqual([
+      "reserve_spend",
+      "mark_spend_dispatched",
+      "sidecar:activating",
+      "sidecar:creating",
+      "create",
+      "sidecar:submitted",
+      "settle_spend",
+    ]);
+    expect(saved.map((s) => s.spend?.opId)).toEqual([OP_ID, OP_ID, OP_ID]);
+    // 5 input × 500 + 2 output × 2,500 hundredths of a µ$, × 1.1 geography.
+    expect(result.spend).toEqual({
+      state: "settled",
+      actualMicrodollars: 83,
+      maxMicrodollars: saved[0]!.spend!.quote.maxMicrodollars,
+    });
+    expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 83 });
+  });
+
+  it.each([
+    ["a budget denial", { ok: false, reason: "daily_spend" }],
+    ["a spend authority outage", { ok: false, reason: "unavailable" }],
+  ] as const)("%s writes no sidecar, claims nothing, and creates no batch, so a rerun is clean", async (_label, refusal) => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const before = h.store.get("readings/kp-rd_a/manifest.json");
+    h.authority.answers.reserve_spend = refusal;
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toMatchObject({
+      name: "SpendAdmissionError",
+      reason: refusal.reason,
+    });
+    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
+    expect(h.batch.create).not.toHaveBeenCalled();
+    expect(h.store.get("readings/kp-rd_a/manifest.json")).toBe(before);
+
+    delete h.authority.answers.reserve_spend;
+    const rerun = await runBatch([row("rd_a")], h.deps);
+    expect(rerun.report).toEqual([{ id: "rd_a", status: "ready" }]);
+  });
+
+  it("refuses a batch the price catalog cannot bound before any paid call", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.model = "claude-not-in-the-catalog";
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toMatchObject({ reason: "unbounded_request" });
+    expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
+    expect(h.authority.rpc).not.toHaveBeenCalled();
+    expect(h.deps.saveSidecar).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["activation leaves nothing to summarize", async () => ({
+      activated: [],
+      skipped: [{ id: "rd_a", status: "skipped" as const, reason: "by-url slot already owned at batch submit" }],
+    })],
+    ["activation fails", async () => {
+      throw new Error("batch activation lost the rd_a ownership revalidation race");
+    }],
+  ])("settles at zero when %s, since no batch was created", async (_label, activate) => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.activateExtracted = activate;
+
+    await runBatch([row("rd_a")], h.deps).catch(() => undefined);
+
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 0 });
+    expect(h.batch.create).not.toHaveBeenCalled();
+  });
+
+  const activatingSpend = {
+    tenantId: BILLING_TENANT,
+    opId: OP_ID,
+    quote: {
+      dayKey: "2026-09-19",
+      catalogVersion: 1,
+      requestFingerprint: "f".repeat(64),
+      maxMicrodollars: 900,
+    },
+  };
+
+  function activatingSidecar(
+    provider: "anthropic" | "openai",
+    spend = activatingSpend,
+  ): PersistedSidecar {
+    const spendField = spend ? { spend } : {};
+    if (provider === "openai") {
+      return {
+        version: 2,
+        provider: "openai",
+        phase: "activating",
+        runId: "run_1",
+        batchId: "",
+        inputFileId: null,
+        outputFileId: null,
+        errorFileId: null,
+        model: "gpt-5.6-terra",
+        reasoningEffort: "low",
+        processingStatus: "activating",
+        targets: [],
+        ...spendField,
+      };
+    }
+    return {
+      version: 2,
+      provider: "anthropic",
+      phase: "activating",
+      batchId: "",
+      model: "claude-opus-4-8",
+      processingStatus: "activating",
+      resultsUrl: null,
+      targets: [],
+      ...spendField,
+    };
+  }
+
+  async function writeActivatingThenSkip(
+    h: ReturnType<typeof harness>,
+    identity: { spend?: typeof activatingSpend },
+  ) {
+    await h.deps.saveSidecar(activatingSidecar("anthropic", identity.spend));
+    return {
+      activated: [] as ExtractedTarget[],
+      skipped: [{ id: "rd_a", status: "skipped" as const, reason: "by-url slot already owned at batch submit" }],
+    };
+  }
+
+  it.each(["anthropic", "openai"] as const)(
+    "resumes a %s activating sidecar by settling the known-zero hold before the sidecar may be deleted",
+    async (provider) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      const existing = activatingSidecar(provider);
+      h.setSidecar(existing);
+      h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/ownership activation/i);
+      expect(h.authority.kinds()).toEqual(["settle_spend"]);
+      expect(h.authority.calls[0]).toEqual({
+        kind: "settle_spend",
+        ...activatingSpend,
+        actualMicrodollars: 0,
+      });
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.batch.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["unavailable", { ok: false, reason: "unavailable" }],
+    ["refused", { ok: false, reason: "operation_state" }],
+  ] as const)(
+    "keeps an activating sidecar on resume when zero settlement is %s",
+    async (_label, answer) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      h.authority.answers.settle_spend = answer;
+      h.setSidecar(activatingSidecar("anthropic"));
+      h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar is retained/);
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.authority.kinds()).toEqual(["settle_spend"]);
+    },
+  );
+
+  it("clears the activating sidecar only after zero settlement is acknowledged when activation leaves nothing", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.deps.activateExtracted = async (_targets, identity) => writeActivatingThenSkip(h, identity);
+
+    const result = await runBatch([row("rd_a")], h.deps);
+
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 0 });
+    expect(h.deps.clearSidecar).toHaveBeenCalledOnce();
+    expect(h.getSidecar()).toBeNull();
+    expect(result.report).toEqual([
+      { id: "rd_a", status: "skipped", reason: "by-url slot already owned at batch submit" },
+    ]);
+  });
+
+  it.each([
+    ["unavailable", { ok: false, reason: "unavailable" }],
+    ["refused", { ok: false, reason: "operation_state" }],
+  ] as const)(
+    "keeps the activating sidecar when zero settlement is %s after activation leaves nothing",
+    async (_label, answer) => {
+      const h = harness({ rd_a: manifest("rd_a") });
+      h.authority.answers.settle_spend = answer;
+      h.deps.activateExtracted = async (_targets, identity) => writeActivatingThenSkip(h, identity);
+
+      await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar is retained/);
+      expect(h.deps.clearSidecar).not.toHaveBeenCalled();
+      expect(h.getSidecar()).toMatchObject({ phase: "activating", spend: { opId: OP_ID } });
+      expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+      expect(h.batch.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps the maximum held after an Anthropic create whose outcome is unknown, and never admits it again", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.batch.create.mockRejectedValueOnce(new Error("socket hang up"));
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow("socket hang up");
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched"]);
+    expect(h.getSidecar()).toMatchObject({ phase: "creating", spend: { opId: OP_ID } });
+
+    h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/no batch id/);
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched"]);
+    expect(h.batch.create).toHaveBeenCalledOnce();
+  });
+
+  it("adopts an OpenAI batch whose create response was lost and settles it under the persisted operation", async () => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    const { create } = installCompletedOpenAIBatch(h);
+    create.mockRejectedValueOnce(new Error("socket hang up"));
+
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow("socket hang up");
+    const persisted = h.getSidecar()!.spend!;
+    expect(h.getSidecar()).toMatchObject({ phase: "creating", spend: { opId: "operator:openai-batch:op-1" } });
+
+    const remote = {
+      id: "batch_openai", object: "batch", endpoint: "/v1/responses", input_file_id: "file_input",
+      completion_window: "24h", status: "completed", output_file_id: "file_output", error_file_id: null,
+      request_counts: { total: 1, completed: 1, failed: 0 }, metadata: { run_id: "run_recovery" },
+    };
+    h.deps.openaiBatch!.listBatches = vi.fn(async () => ({ data: [remote], raw: [remote], has_more: false }));
+    h.deps.loadSidecar = vi.fn(async () => h.getSidecar());
+    const resumed = await runBatch([row("rd_a")], h.deps);
+
+    expect(resumed.report).toEqual([{ id: "rd_a", status: "ready" }]);
+    expect(create).toHaveBeenCalledOnce();
+    expect(h.authority.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    // 5 input × 200 + 2 output × 1,200 hundredths of a µ$.
+    expect(h.authority.calls.at(-1)).toEqual({ kind: "settle_spend", ...persisted, actualMicrodollars: 34 });
+  });
+
+  it.each([
+    ["settles the persisted operation", { ok: true, state: "settled" }, { state: "settled", actualMicrodollars: 83 }],
+    // Operation records are discarded a day after the admission day ends.
+    ["reports the maximum permanently held once the operation record expired", { ok: false, reason: "operation_state" }, { state: "held", reason: "operation_state" }],
+  ] as const)("a resumed batch %s and completes", async (_label, answer, outcome) => {
+    const h = harness({ rd_a: manifest("rd_a") });
+    h.batch.results.mockRejectedValueOnce(new Error("results download reset"));
+    await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow("results download reset");
+    const submitted = h.getSidecar()!;
+    expect(submitted).toMatchObject({ phase: "submitted", spend: { opId: OP_ID } });
+
+    const resume = batchSpendAuthority({ settle_spend: answer });
+    h.deps.spend = resume.spend;
+    h.deps.loadSidecar = vi.fn(async () => submitted);
+    const first = await runBatch([row("rd_a")], h.deps);
+    const again = await runBatch([row("rd_a")], h.deps);
+
+    expect(first.report).toEqual([{ id: "rd_a", status: "ready" }]);
+    expect(first.spend).toMatchObject(outcome);
+    // A repeated reconciliation re-sends the identical settlement, which the
+    // authority applies at most once; it never reserves again.
+    expect(resume.kinds()).toEqual(["settle_spend", "settle_spend"]);
+    expect(resume.calls[1]).toEqual(resume.calls[0]);
+    const { tenantId, opId, quote } = submitted.spend!;
+    expect(resume.calls[0]).toEqual({ kind: "settle_spend", tenantId, opId, quote, actualMicrodollars: 83 });
+    expect(again.spend).toEqual(first.spend);
   });
 });

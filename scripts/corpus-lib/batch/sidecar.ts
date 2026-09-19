@@ -5,6 +5,8 @@ import {
   EnrichmentDegradationSchema,
   ProcessingAttemptTriggerSchema,
 } from "../../../src/schemas/manifest";
+import { parseTenantId } from "../../../src/control-plane/ids";
+import { validSpendQuote } from "../../../src/control-plane/spend-ledger";
 import { acquireReconcileLock } from "./reconcile-lock";
 import type { PersistedSidecar } from "./types";
 
@@ -85,11 +87,33 @@ const OpenAIReasoningEffortSchema = z.enum([
   "max",
 ]);
 
+// The batch's spend operation (reading-lite-gh319.2), persisted from the first
+// pending sidecar on so every resume settles the operation admitted at submit
+// and never admits another. Optional: batches submitted before batch spend
+// accounting still resume.
+const BatchSpendSchema = z
+  .object({
+    tenantId: z.string().refine((value) => parseTenantId(value) !== null),
+    opId: z.string().min(1).max(512),
+    quote: z
+      .object({
+        dayKey: z.string(),
+        catalogVersion: z.number(),
+        requestFingerprint: z.string(),
+        maxMicrodollars: z.number(),
+      })
+      .strict()
+      .refine(validSpendQuote),
+    anthropicCacheWriteRate: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 const V2SidecarSchema = z.union([
   z
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("activating"),
       batchId: z.literal(""),
@@ -103,6 +127,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("creating"),
       batchId: z.literal(""),
@@ -116,6 +141,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("anthropic"),
       phase: z.literal("submitted"),
       batchId: z.string().min(1),
@@ -129,6 +155,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("openai"),
       phase: z.literal("activating"),
       runId: z.string().min(1),
@@ -146,6 +173,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("openai"),
       phase: z.literal("uploading"),
       runId: z.string().min(1),
@@ -163,6 +191,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("openai"),
       phase: z.literal("creating"),
       runId: z.string().min(1),
@@ -180,6 +209,7 @@ const V2SidecarSchema = z.union([
     .object({
       version: z.literal(2),
       tenant: z.string().min(1).optional(),
+      spend: BatchSpendSchema.optional(),
       provider: z.literal("openai"),
       phase: z.literal("submitted"),
       runId: z.string().min(1),

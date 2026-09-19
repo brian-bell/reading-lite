@@ -5,6 +5,7 @@ import type {
   ProcessingAttemptTrigger,
 } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
+import type { BatchSpendIdentity } from "./spend";
 import type {
   OpenAIReasoningEffort,
   SimilarContext,
@@ -131,6 +132,12 @@ interface AnthropicSidecarV2 {
    * written under the global layout.
    */
   tenant?: string;
+  /**
+   * The spend operation admitted for this batch before its first pending
+   * sidecar. Resumes settle it and never admit again. Absent on sidecars
+   * written before batch spend accounting.
+   */
+  spend?: BatchSpendIdentity;
 }
 
 export interface Sidecar extends AnthropicSidecarV2 {
@@ -172,6 +179,8 @@ interface OpenAISidecarV2 {
   reasoningEffort: OpenAIReasoningEffort;
   /** See AnthropicSidecarV2.tenant. */
   tenant?: string;
+  /** See AnthropicSidecarV2.spend. */
+  spend?: BatchSpendIdentity;
 }
 
 export interface OpenAIActivatingSidecar extends OpenAISidecarV2 {
