@@ -15,7 +15,10 @@ import { ManifestSchema } from "../../src/schemas/manifest";
 
 export type SourceDateCandidateClass = "already-dated" | "skip-markdown" | "inspect-html";
 
-export type SourceDateInspectClass = "no-raw" | "unparseable" | "would-gain";
+export type SourceDateInspectResult =
+  | { kind: "no-raw" }
+  | { kind: "unparseable" }
+  | { kind: "would-gain"; source_date: string };
 
 export function classifySourceDateCandidate(input: {
   source_date?: unknown;
@@ -45,7 +48,7 @@ export function classifyStoredHtml(input: {
   rawHtml: string | null;
   url: string;
   nowMs: number;
-}): { kind: SourceDateInspectClass; source_date?: string } {
+}): SourceDateInspectResult {
   if (input.rawHtml === null) return { kind: "no-raw" };
   const source_date = sourceDateFromStoredHtml(input.rawHtml, input.url, input.nowMs);
   return source_date === undefined
