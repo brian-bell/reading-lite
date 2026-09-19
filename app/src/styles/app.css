@@ -528,6 +528,28 @@ textarea {
   line-height: 1.5;
 }
 
+/* The expiry field and its Choose date button. Chromium's own picker button
+   inside the field is a tab stop that no page style can give a focus ring,
+   so it is hidden and Choose date opens the same picker (showPicker). */
+.token-expiry {
+  display: flex;
+  gap: var(--space-2);
+  align-items: stretch;
+}
+
+.token-expiry .text-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.token-expiry .text-input::-webkit-calendar-picker-indicator {
+  display: none;
+}
+
+.token-expiry .button {
+  white-space: nowrap;
+}
+
 /* Long and unbroken: wrap anywhere rather than scroll the page sideways. */
 .token-secret {
   display: block;

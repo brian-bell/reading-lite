@@ -20,7 +20,7 @@ import { whoamiQueryKey, type Identity } from "../src/identity";
 import type { RouterContext } from "../src/router";
 import { plainSearch } from "../src/search";
 import type { SessionListItem } from "../src/sessions";
-import type { TokenListItem } from "../src/tokens";
+import { datetimeLocalValue, type TokenListItem } from "../src/tokens";
 
 // Session management on /account/security (#340.1): list, revoke one, revoke
 // all, including this device, and the acceptance matrix's common states. The
@@ -898,6 +898,51 @@ describe("API tokens on the account page", () => {
 
     expect(within(section()).getByText(message)).toBeVisible();
     expect(document.activeElement?.getAttribute("type")).toBe(focused === "textbox" ? "text" : "checkbox");
+    expect(requestsOf(fetchMock, "POST", "/api/auth/tokens")).toHaveLength(0);
+  });
+
+  const expiryField = () => within(section()).getByLabelText("Expires (optional)");
+  const inDays = (days: number) => datetimeLocalValue(Date.now() + days * 24 * 60 * 60 * 1000);
+
+  it("sends a chosen expiry, and shows it in the list", async () => {
+    let tokens: TokenListItem[] = [];
+    const fetchMock = mockApi({
+      onListTokens: () => Response.json({ tokens }),
+      onCreateToken: (body) => {
+        const expires = (body as { expires_at_ms?: number }).expires_at_ms ?? 0;
+        tokens = [token({ id: "tok_new", name: body.name, expires_at_ms: expires })];
+        return Response.json({ token: "tok_new.secret", id: "tok_new", name: body.name }, { status: 201 });
+      },
+    });
+    await openAccount();
+    const expiry = inDays(30);
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    fireEvent.change(expiryField(), { target: { value: expiry } });
+    await userEvent.click(createButton());
+
+    await within(section()).findByText("tok_new.secret");
+    const [created] = requestsOf(fetchMock, "POST", "/api/auth/tokens");
+    await expect(created!.json()).resolves.toMatchObject({ name: "CI", expires_at_ms: Date.parse(expiry) });
+    const shown = `expires ${new Date(Date.parse(expiry)).toLocaleString()}`;
+    expect(await within(section()).findByText((text) => text.includes(shown))).toBeVisible();
+    expect(expiryField()).toHaveValue("");
+  });
+
+  it.each([
+    ["in the past", () => inDays(-1), "Expiry must be in the future."],
+    ["more than 90 days away", () => inDays(91), "Expiry cannot be more than 90 days from now."],
+  ])("refuses an expiry %s before any request", async (_, value, message) => {
+    const fetchMock = mockApi();
+    await openAccount();
+
+    await userEvent.type(await within(section()).findByRole("textbox", { name: "Name" }), "CI");
+    fireEvent.change(expiryField(), { target: { value: value() } });
+    await userEvent.click(createButton());
+
+    expect(within(section()).getByText(message)).toBeVisible();
+    expect(expiryField()).toHaveFocus();
+    expect(expiryField()).toHaveAttribute("aria-invalid", "true");
     expect(requestsOf(fetchMock, "POST", "/api/auth/tokens")).toHaveLength(0);
   });
 

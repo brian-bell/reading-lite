@@ -53,10 +53,53 @@ export function tokensFromResponse(status: number, body: unknown): TokensResult 
 export const TOKEN_SCOPES = ["readings:read", "readings:write", "readings:import", "readings:delete"] as const;
 export type TokenScope = (typeof TOKEN_SCOPES)[number];
 
-/** POST /api/auth/tokens (PostAuthTokensBodySchema). */
+/**
+ * POST /api/auth/tokens (PostAuthTokensBodySchema). Without `expires_at_ms`
+ * the backend gives the token the longest life, TOKEN_MAX_TTL_MS.
+ */
 export interface TokenCreateBody {
   name: string;
   scopes: TokenScope[];
+  expires_at_ms?: number;
+}
+
+/** A token's longest life: 90 days (TOKEN_MAX_TTL_MS in the control plane). */
+export const TOKEN_MAX_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * The optional expiry field's value, checked as the SPA's onCreateToken does
+ * before any request: empty is the backend's default, and anything else must
+ * be a real time after now and no more than 90 days away. The value is a
+ * `datetime-local` string, read in the browser's own time zone.
+ */
+export type TokenExpiry =
+  | { kind: "default" }
+  | { kind: "at"; ms: number }
+  | { kind: "invalid" }
+  | { kind: "past" }
+  | { kind: "too-far" };
+
+export function tokenExpiryFrom(value: string, nowMs: number): TokenExpiry {
+  if (value.trim() === "") return { kind: "default" };
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return { kind: "invalid" };
+  if (ms <= nowMs) return { kind: "past" };
+  if (ms > nowMs + TOKEN_MAX_TTL_MS) return { kind: "too-far" };
+  return { kind: "at", ms };
+}
+
+/** The SPA's words for an expiry the form refuses. */
+export const TOKEN_EXPIRY_ERRORS = {
+  invalid: "Enter a valid expiry.",
+  past: "Expiry must be in the future.",
+  "too-far": "Expiry cannot be more than 90 days from now.",
+} as const satisfies Record<Exclude<TokenExpiry["kind"], "default" | "at">, string>;
+
+/** A time as a `datetime-local` value in the browser's time zone, for the field's min and max. */
+export function datetimeLocalValue(ms: number): string {
+  const date = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** Usable tokens an account may hold (MAX_ACTIVE_TOKENS in the control plane). */

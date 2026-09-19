@@ -13,6 +13,9 @@
 // API token create (#340.7.3): the form from the keyboard alone, the request
 // the browser sent, and the value gone after Dismiss and a reload.
 //
+// Expiry (#340.7.5): the browser's own datetime-local field, read in its time
+// zone, becomes the expires_at_ms sent; a past one is refused in the form.
+//
 // Step-up (#340.7.4): a create refused for a stale sign-in links to sign-in
 // with the email locked, in a real browser. The return to the account page is
 // test/sign-in-flow.test.tsx's.
@@ -122,8 +125,9 @@ test("creates an API token from the keyboard and shows its value once", async ({
   for (let i = 0; i < 4; i += 1) await page.keyboard.press("Tab");
   await expect(tokens.getByRole("checkbox", { name: "readings:delete" })).toBeFocused();
   await page.keyboard.press("Space");
-  await page.keyboard.press("Tab");
-  await expect(tokens.getByRole("button", { name: "Create token" })).toBeFocused();
+  // Back to the name and Enter: the expiry field has a tab stop per date part.
+  for (let i = 0; i < 4; i += 1) await page.keyboard.press("Shift+Tab");
+  await expect(name).toBeFocused();
   await page.keyboard.press("Enter");
 
   const reveal = tokens.locator(".token-reveal");
@@ -143,6 +147,36 @@ test("creates an API token from the keyboard and shows its value once", async ({
   await page.reload();
   await expect(tokens.getByText("Laptop (standard) · usable")).toBeVisible();
   await expect(page.getByText(E2E_TOKEN_SECRET)).toHaveCount(0);
+});
+
+test("sends the expiry a reader picks in the browser's own date field", async ({ page, baseURL }) => {
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  const { creates } = await serveTokensInBrowser(page);
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const tokens = page.getByRole("region", { name: "API tokens" });
+  const expiry = tokens.getByLabel("Expires (optional)");
+  const picked = await expiry.evaluate(() => {
+    const date = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T09:30`;
+  });
+
+  await tokens.getByRole("textbox", { name: "Name" }).fill("Weekly job");
+  await expiry.fill(picked);
+  await tokens.getByRole("button", { name: "Create token" }).click();
+
+  await expect(tokens.getByText(E2E_TOKEN_SECRET)).toBeVisible();
+  const sent = creates[0]!.postDataJSON() as { expires_at_ms: number };
+  expect(sent.expires_at_ms).toBe(await page.evaluate((value) => Date.parse(value), picked));
+
+  await expiry.fill("2000-01-01T00:00");
+  await tokens.getByRole("textbox", { name: "Name" }).fill("Old");
+  await tokens.getByRole("button", { name: "Create token" }).click();
+  await expect(tokens.getByText("Expiry must be in the future.")).toBeVisible();
+  await expect(expiry).toBeFocused();
+  expect(creates).toHaveLength(1);
 });
 
 test("follows a token create's step-up link to sign-in with the email locked", async ({ page, baseURL }) => {

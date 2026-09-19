@@ -6,9 +6,13 @@ import { createToken, revokeToken } from "../api/tokens";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
+  datetimeLocalValue,
+  TOKEN_EXPIRY_ERRORS,
   TOKEN_LIMIT_WARNING,
+  TOKEN_MAX_TTL_MS,
   TOKEN_NAME_MAX,
   TOKEN_SCOPES,
+  tokenExpiryFrom,
   tokenHeading,
   tokensQueryKey,
   tokenStatus,
@@ -250,7 +254,12 @@ function TokenReveal({ revealed, onDismiss }: { revealed: RevealedToken; onDismi
  */
 type CreateResult = Exclude<TokenCreateOutcome, { kind: "created" }> | { kind: "created" };
 
-type FieldError = "name" | "scopes";
+type ExpiryProblem = keyof typeof TOKEN_EXPIRY_ERRORS;
+type FieldError = "name" | "scopes" | ExpiryProblem;
+
+function isExpiryProblem(error: FieldError): error is ExpiryProblem {
+  return error in TOKEN_EXPIRY_ERRORS;
+}
 
 /**
  * Name and scopes, as the SPA's create form (`onCreateToken`): every scope
@@ -273,8 +282,14 @@ function CreateTokenForm({
   const id = useId();
   const [name, setName] = useState("");
   const [scopes, setScopes] = useState<ReadonlySet<TokenScope>>(() => new Set(TOKEN_SCOPES));
+  const [expiry, setExpiry] = useState("");
+  // Choose date needs the browser's showPicker; decided after mount so the
+  // server render and the first browser render agree.
+  const [canPick, setCanPick] = useState(false);
+  useEffect(() => setCanPick(typeof HTMLInputElement.prototype.showPicker === "function"), []);
   const [fieldError, setFieldError] = useState<FieldError | null>(null);
   const scopesRef = useRef<HTMLInputElement>(null);
+  const expiryRef = useRef<HTMLInputElement>(null);
 
   const create = useMutation({
     mutationFn: async (body: TokenCreateBody): Promise<CreateResult> => {
@@ -293,13 +308,17 @@ function CreateTokenForm({
       if (result.kind !== "created") return;
       setName("");
       setScopes(new Set(TOKEN_SCOPES));
+      setExpiry("");
       await queryClient.invalidateQueries({ queryKey: tokensKey });
     },
   });
 
+  const expiryError = fieldError !== null && isExpiryProblem(fieldError) ? fieldError : null;
+
   useEffect(() => {
     if (fieldError === "name") nameRef.current?.focus();
     if (fieldError === "scopes") scopesRef.current?.focus();
+    if (fieldError !== null && isExpiryProblem(fieldError)) expiryRef.current?.focus();
   }, [fieldError]);
 
   const failure = create.error == null || isUnauthorized(create.error) ? undefined : failureOf(create.error);
@@ -317,9 +336,18 @@ function CreateTokenForm({
       setFieldError("scopes");
       return;
     }
+    const expires = tokenExpiryFrom(expiry, Date.now());
+    if (expires.kind !== "default" && expires.kind !== "at") {
+      setFieldError(expires.kind);
+      return;
+    }
     setFieldError(null);
     create.reset();
-    create.mutate({ name: trimmed, scopes: chosen });
+    create.mutate({
+      name: trimmed,
+      scopes: chosen,
+      ...(expires.kind === "at" ? { expires_at_ms: expires.ms } : {}),
+    });
   }
 
   function toggleScope(scope: TokenScope) {
@@ -422,6 +450,42 @@ function CreateTokenForm({
             </p>
           ) : null}
         </fieldset>
+        <div className="field">
+          <label className="field-label" htmlFor={`${id}-expiry`}>
+            Expires (optional)
+          </label>
+          <div className="token-expiry">
+            <input
+              id={`${id}-expiry`}
+              ref={expiryRef}
+              className="text-input"
+              type="datetime-local"
+              min={datetimeLocalValue(Date.now())}
+              max={datetimeLocalValue(Date.now() + TOKEN_MAX_TTL_MS)}
+              value={expiry}
+              onChange={(event) => {
+                setExpiry(event.currentTarget.value);
+                if (expiryError) setFieldError(null);
+              }}
+              aria-invalid={expiryError ? true : undefined}
+              aria-describedby={expiryError ? `${id}-expiry-error` : `${id}-expiry-hint`}
+            />
+            {canPick ? (
+              <button type="button" className="button" onClick={() => expiryRef.current?.showPicker()}>
+                Choose date
+              </button>
+            ) : null}
+          </div>
+          {expiryError ? (
+            <p id={`${id}-expiry-error`} className="field-error">
+              {TOKEN_EXPIRY_ERRORS[expiryError]}
+            </p>
+          ) : (
+            <p id={`${id}-expiry-hint`} className="form-hint">
+              Up to 90 days from now. Leave it empty for 90 days.
+            </p>
+          )}
+        </div>
         <div className="form-actions">
           <button type="submit" className="button button-primary" disabled={create.isPending}>
             Create token
