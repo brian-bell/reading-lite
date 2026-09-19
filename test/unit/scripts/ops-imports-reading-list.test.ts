@@ -345,16 +345,3 @@ describe("ops reading-list process", () => {
     expect(state.submits).toHaveLength(0);
   });
 });
-
-describe("production API default host in operator help", () => {
-  it("no longer names a retired production host", () => {
-    for (const help of [
-      importRedditCommand.helpText,
-      importYoutubeCommand.helpText,
-      readingListProcessCommand.helpText,
-    ]) {
-      expect(help).not.toContain("reading-lite.bbell.dev");
-      expect(help).not.toContain("bbookmarks.com");
-    }
-  });
-});

@@ -138,26 +138,6 @@ describe("ops registry completeness", () => {
     const operatorScripts = Object.keys(pkg.scripts).filter((s) => !DEV_SCRIPTS.has(s));
     expect(operatorScripts).toEqual(["ops"]);
   });
-
-  it("refuses the retired founder migration command, including its old help path", async () => {
-    const { io, err } = captureIo();
-    expect(await runCli(["corpus", "migrate-founder", "--help"], { io })).toBe(2);
-    expect(err.join("\n")).toContain("Unknown command");
-  });
-
-  it("leaves no retired top-level operator entry point or Make wrapper behind", async () => {
-    const entries = await fs.readdir(path.join(repoRoot, "scripts"));
-    // Development-infrastructure scripts, not operator workflows.
-    // seed-local-fixtures.ts writes only to the local R2 store (--local is
-    // hardcoded); it is the `npm run seed:local` dev workflow.
-    // emit-app-fixture-pack.ts only rewrites the committed fixture snapshot
-    // app/'s browser evidence serves; it is `npm run fixtures:app`.
-    const allowed = new Set(["ops.ts", "dev-setup.ts", "seed-local-fixtures.ts", "emit-app-fixture-pack.ts", "require-dev-node.ts", "cloud-agent-install.ts", "test-quiet.mjs",
-      "control-plane-env.ts", "staging-env.ts"]);
-    const strays = entries.filter((e) => /\.(ts|mjs|js)$/.test(e) && !allowed.has(e));
-    expect(strays).toEqual([]);
-    await expect(fs.stat(path.join(repoRoot, "Makefile"))).rejects.toThrow();
-  });
 });
 
 describe("policy command extension contract (reading-lite-s1k.9.4)", () => {

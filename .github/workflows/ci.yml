@@ -6,10 +6,10 @@ on:
   push:
     branches: [main]
     # No CI run means no workflow_run production deployment for these pushes.
-    # Documentation pushes neither test nor deploy. README.md, AGENTS.md,
-    # docs/operations.md, and docs/openapi.yaml are pinned by Worker tests, so
-    # scripts/ci-lib/changed-jobs.ts runs the Worker job for them on PRs; a
-    # direct push of only those files is checked by the next code change.
+    # Documentation pushes neither test nor deploy. docs/openapi.yaml is
+    # checked by Worker tests, so scripts/ci-lib/changed-jobs.ts runs the
+    # Worker job for it on PRs; a direct push of only that file is checked by
+    # the next code change.
     # PRs must still emit the existing job checks so required checks do not
     # remain pending.
     paths-ignore:

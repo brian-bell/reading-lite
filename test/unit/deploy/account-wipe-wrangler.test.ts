@@ -47,8 +47,7 @@ describe("account wipe wrangler wiring", () => {
   // for. Dropping the pin from either deployed environment is therefore a
   // silent loss of the wipe, not a config tidy-up.
   //
-  // Rolling the gate back off IS a supported path (docs/operations.md,
-  // "Rehearsing account deletion on staging"). The corpus migration copies
+  // Rolling the gate back off IS a supported path. The corpus migration copies
   // rather than moves, so the pre-tenant objects are still there — but that is
   // a complete rollback only before post-pin writes resume. After writes,
   // rollback needs a freeze plus reverse reconciliation, or an explicit
@@ -61,24 +60,5 @@ describe("account wipe wrangler wiring", () => {
       expect(vars, `[env.${env}.vars] block`).not.toBeNull();
       expect(vars![1]).toMatch(/^TENANT_DATA_PLANE = "1"$/m);
     }
-  });
-
-  // The S6 rehearsal runbook is the operator-facing pin contract: fencing a
-  // signed-up tenant must revoke credentials, and teardown must stay on the
-  // automatic path rather than the retired manual D1 deletes.
-  it("keeps the staging rehearsal runbook on credential revocation and automatic teardown", () => {
-    const wrangler = read("wrangler.toml");
-    const stagingVars = /\[env\.staging\.vars\]([\s\S]*?)\n\[/.exec(wrangler);
-    expect(stagingVars, "[env.staging.vars] block").not.toBeNull();
-    expect(stagingVars![1]).toMatch(/reverse reconcili/i);
-
-    const ops = read("docs/operations.md");
-    const rehearsal = ops.split("### Rehearsing account deletion on staging")[1];
-    expect(rehearsal, "rehearsal section").toBeDefined();
-    const section = rehearsal!.split("\n## ")[0];
-
-    expect(section).toMatch(/revocation_reason='account_delete'/);
-    // Instructions must not restore the pre-S4 manual teardown commands.
-    expect(section).not.toMatch(/--command "DELETE FROM (?:users|sessions|api_tokens|auth_challenges)/);
   });
 });

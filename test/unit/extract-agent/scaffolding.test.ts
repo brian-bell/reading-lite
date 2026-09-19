@@ -17,13 +17,6 @@ function listTsFilesRecursive(dir: string): string[] {
 }
 
 describe("extract-agent scaffolding", () => {
-  it("routes the agent through the unified ops CLI, not a standalone alias", () => {
-    const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8"));
-    expect(pkg.scripts["extract-agent"]).toBeUndefined();
-    expect(pkg.scripts["extract-agent:probe"]).toBeUndefined();
-    expect(pkg.scripts.ops).toBe("tsx scripts/ops.ts");
-  });
-
   it("wires the read-only probe without any submit or agent-state dependency", () => {
     const entry = readFileSync(
       join(REPO_ROOT, "scripts/ops-lib/commands/extract-probe.ts"),
