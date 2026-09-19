@@ -7,7 +7,9 @@
 // numerator). --execute writes only `source_date` onto manifests that lack
 // one. Markdown imports are skipped — they have no HTML object to parse.
 //
-// Resumable and idempotent: a dated reading is left alone on every later run.
+// Execute re-reads the live manifest immediately before put and merges only
+// source_date onto that object. The classify-pass snapshot is never written
+// back. Resumable and idempotent: a dated reading is left alone.
 
 import {
   classifySourceDateCandidate,
@@ -34,6 +36,9 @@ export interface CorpusBackfillSourceDateR2 {
 export interface CorpusBackfillSourceDateDeps extends BaseDeps {
   r2: CorpusBackfillSourceDateR2;
   now: () => number;
+  // Injected so tests can throw from classify without a pathological HTML
+  // fixture. Production uses classifyStoredHtml.
+  classifyHtml?: typeof classifyStoredHtml;
 }
 
 interface Opts {
@@ -82,6 +87,7 @@ async function runCorpusBackfillSourceDate(
 ): Promise<number> {
   const opts = parseArgs(argv);
   const { io, r2 } = deps;
+  const inspectHtml = deps.classifyHtml ?? classifyStoredHtml;
   const tenant = requireOperatorTenant(opts.tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   const nowMs = deps.now();
@@ -96,7 +102,7 @@ async function runCorpusBackfillSourceDate(
 
   let alreadyDated = 0;
   let skipMarkdown = 0;
-  const candidates: { item: ListItem; manifest: Record<string, unknown> }[] = [];
+  const candidates: ListItem[] = [];
   let errored = 0;
   let invalid = 0;
 
@@ -124,7 +130,7 @@ async function runCorpusBackfillSourceDate(
       skipMarkdown++;
       continue;
     }
-    candidates.push({ item, manifest: rec });
+    candidates.push(item);
   }
 
   const targets = opts.limit === undefined ? candidates : candidates.slice(0, opts.limit);
@@ -148,48 +154,46 @@ async function runCorpusBackfillSourceDate(
   };
 
   try {
-    for (const { item, manifest } of targets) {
-      let rawHtml: string | null;
+    for (const item of targets) {
+      // One reading, one catch: a salvage/turndown throw or a live-manifest
+      // read failure must not abort the remaining walk. Written rows still
+      // flush in `finally`.
       try {
-        rawHtml = await r2.readRawHtml(item.key_prefix, r2Deps);
+        const rawHtml = await r2.readRawHtml(item.key_prefix, r2Deps);
+        const inspected = inspectHtml({ rawHtml, url: item.url, nowMs });
+        if (inspected.kind === "no-raw") {
+          noRaw++;
+          io.stdout(`  ${item.id}  no-raw  ${item.url}`);
+          continue;
+        }
+        if (inspected.kind === "unparseable") {
+          unparseable++;
+          io.stdout(`  ${item.id}  unparseable  ${item.url}`);
+          continue;
+        }
+
+        wouldGain++;
+        io.stdout(`  ${item.id}  would-gain  ${inspected.source_date}  ${item.url}`);
+        if (!opts.execute) continue;
+
+        // Re-read at write time. The classify pass's object is stale by then
+        // and must not be the put body — merge source_date onto the live
+        // manifest only (parse as gate, not transform).
+        const live = await r2.readManifest(item.key_prefix, r2Deps);
+        const check = validateSourceDateBackfillWrite(live, inspected.source_date);
+        if (!check.ok) {
+          invalid++;
+          io.stderr(`  ! manifest fails write gate for ${item.id}: ${check.error}`);
+          continue;
+        }
+        await r2.putManifest(item.key_prefix, check.manifest, r2Deps);
+        written.set(item.id, inspected.source_date);
       } catch (e) {
         errored++;
         io.stderr(
-          `  ! raw.${HTML_EXT} unreadable for ${item.id}: ${e instanceof Error ? e.message : String(e)}`,
+          `  ! inspect/write failed for ${item.id}: ${e instanceof Error ? e.message : String(e)}`,
         );
-        continue;
       }
-      const url = typeof manifest.url === "string" ? manifest.url : item.url;
-      const inspected = classifyStoredHtml({ rawHtml, url, nowMs });
-      if (inspected.kind === "no-raw") {
-        noRaw++;
-        io.stdout(`  ${item.id}  no-raw  ${item.url}`);
-        continue;
-      }
-      if (inspected.kind === "unparseable") {
-        unparseable++;
-        io.stdout(`  ${item.id}  unparseable  ${item.url}`);
-        continue;
-      }
-
-      wouldGain++;
-      io.stdout(`  ${item.id}  would-gain  ${inspected.source_date}  ${item.url}`);
-      if (!opts.execute) continue;
-
-      const check = validateSourceDateBackfillWrite(manifest, inspected.source_date);
-      if (!check.ok) {
-        invalid++;
-        io.stderr(`  ! manifest fails write gate for ${item.id}: ${check.error}`);
-        continue;
-      }
-      try {
-        await r2.putManifest(item.key_prefix, check.manifest, r2Deps);
-      } catch (e) {
-        errored++;
-        io.stderr(`  ! manifest write failed for ${item.id}: ${e instanceof Error ? e.message : String(e)}`);
-        continue;
-      }
-      written.set(item.id, inspected.source_date);
     }
   } finally {
     await flushIndex();

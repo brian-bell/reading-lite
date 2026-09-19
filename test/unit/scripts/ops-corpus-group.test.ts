@@ -17,6 +17,7 @@ import {
   corpusBackfillSourceDateCommand,
   type CorpusBackfillSourceDateDeps,
 } from "../../../scripts/ops-lib/commands/corpus-backfill-source-date";
+import { classifyStoredHtml } from "../../../scripts/corpus-lib/backfill-source-date";
 import {
   corpusNormalizeTagsCommand,
   type CorpusNormalizeTagsDeps,
@@ -934,6 +935,126 @@ describe("ops corpus backfill-source-date", () => {
     expect(lists.get(roots[0])?.[0]?.source_date).toBe("2024-03-15");
     expect(manifests.get(roots[1])!.get(ITEM.key_prefix)?.source_date).toBeUndefined();
     expect(lists.get(roots[1])?.[0]?.source_date).toBeUndefined();
+  });
+
+  it("re-reads the live manifest before put and merges only source_date", async () => {
+    const stale = {
+      ...BASE_MANIFEST,
+      title: "Stale title",
+      tags: ["old"],
+      updated_at: "2026-08-01T00:00:00.000Z",
+    };
+    const live = {
+      ...BASE_MANIFEST,
+      title: "Ready rewrite",
+      tags: ["new"],
+      summary_markdown: "fresh body",
+      updated_at: "2026-09-19T02:00:00.000Z",
+      status: "ready",
+    };
+    let manifestReads = 0;
+    const { io: cio, lines } = io();
+    const puts: Record<string, unknown>[] = [];
+    const deps: CorpusBackfillSourceDateDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async () => [ITEM],
+        readManifest: async () => {
+          manifestReads++;
+          return manifestReads === 1 ? { ...stale } : { ...live };
+        },
+        readRawHtml: async () => DATED_HTML,
+        putManifest: async (_kp, body) => {
+          puts.push(body as Record<string, unknown>);
+        },
+        writeListIndex: async () => {},
+      },
+      now: () => NOW,
+    };
+
+    expect(await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], deps)).toBe(0);
+    expect(manifestReads).toBe(2);
+    expect(puts).toHaveLength(1);
+    expect(puts[0]).toMatchObject({
+      title: "Ready rewrite",
+      tags: ["new"],
+      summary_markdown: "fresh body",
+      updated_at: "2026-09-19T02:00:00.000Z",
+      source_date: "2024-03-15",
+    });
+    expect(puts[0]?.title).not.toBe("Stale title");
+    expect(lines.join("\n")).toContain("Would gain a date: 1, written: 1");
+  });
+
+  it("refuses to write when the live re-read already has source_date", async () => {
+    let manifestReads = 0;
+    const { io: cio, lines } = io();
+    const puts: unknown[] = [];
+    const deps: CorpusBackfillSourceDateDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async () => [ITEM],
+        readManifest: async () => {
+          manifestReads++;
+          return manifestReads === 1
+            ? { ...BASE_MANIFEST }
+            : { ...BASE_MANIFEST, source_date: "2020-01-01", title: "Concurrent ready" };
+        },
+        readRawHtml: async () => DATED_HTML,
+        putManifest: async (_kp, body) => {
+          puts.push(body);
+        },
+        writeListIndex: async () => {},
+      },
+      now: () => NOW,
+    };
+
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(1);
+    expect(puts).toHaveLength(0);
+    expect(lines.join("\n")).toContain("source_date already present");
+    expect(lines.join("\n")).toContain("run incomplete");
+  });
+
+  it("a throwing classify costs one reading and still writes later rows", async () => {
+    const throwItem: ListItem = { ...ITEM, id: "rd_throw", url: "https://example.com/throw", key_prefix: "readings/rd_throw" };
+    const okItem: ListItem = { ...ITEM, id: "rd_ok", url: "https://example.com/ok", key_prefix: "readings/rd_ok" };
+    const { io: cio, lines } = io();
+    const puts: string[] = [];
+    let indexWrites = 0;
+    const deps: CorpusBackfillSourceDateDeps = {
+      io: cio,
+      r2: {
+        readListIndex: async () => [throwItem, okItem],
+        readManifest: async (prefix) => ({
+          ...BASE_MANIFEST,
+          id: prefix.endsWith("rd_throw") ? "rd_throw" : "rd_ok",
+          url: prefix.endsWith("rd_throw") ? throwItem.url : okItem.url,
+        }),
+        readRawHtml: async () => DATED_HTML,
+        putManifest: async (prefix) => {
+          puts.push(prefix);
+        },
+        writeListIndex: async () => {
+          indexWrites++;
+        },
+      },
+      now: () => NOW,
+      classifyHtml: (input) => {
+        if (input.url.includes("/throw")) throw new Error("turndown salvage failed");
+        return classifyStoredHtml(input);
+      },
+    };
+
+    const code = await corpusBackfillSourceDateCommand.run(["--tenant", "global", "--execute"], deps);
+    expect(code).toBe(1);
+    expect(puts).toEqual(["readings/rd_ok"]);
+    expect(indexWrites).toBe(1);
+    const text = lines.join("\n");
+    expect(text).toContain("inspect/write failed for rd_throw");
+    expect(text).toContain("turndown salvage failed");
+    expect(text).toContain("Would gain a date: 1, written: 1");
+    expect(text).toContain("run incomplete");
   });
 });
 
