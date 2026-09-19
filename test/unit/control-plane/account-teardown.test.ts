@@ -338,6 +338,74 @@ describe("tearDownAccount — the completion gate", () => {
   });
 });
 
+/**
+ * A reading row for the tenant, the way a wipe that missed one would leave it.
+ *
+ * Only the NOT NULL columns; nothing here reads the rest. `readings` names no
+ * `users` row, so PostgreSQL will not refuse the teardown over it — the guard
+ * under the lock is the only thing that will.
+ */
+async function seedReadingRow(raw: ControlPlaneDb, id: string): Promise<void> {
+  await raw.run(
+    `INSERT INTO readings (
+         tenant_id, id, key_prefix, url, url_hash, status, created_at, updated_at,
+         content_type, content_status, content_bytes, content_sha256
+       ) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, 'text/html', 'captured', 1, ?)`,
+    USER,
+    id,
+    `readings/2026/09/04T100000Z-${id}`,
+    `https://example.com/${id}`,
+    "a".repeat(64),
+    toTimestamp(NOW_MS),
+    toTimestamp(NOW_MS),
+    "b".repeat(64),
+  );
+}
+
+describe("tearDownAccount — reading rows outlive no account", () => {
+  // `readings` has no foreign key to `users` (ADR 0005): the data plane is
+  // keyed by tenant id, not joined to the control plane. So a completion
+  // record is not on its own proof the rows are gone, and dropping the users
+  // row while they stand orphans them past any tenant-keyed recovery — cron
+  // stops enumerating the tenant the moment it leaves `listDeletingUsers`.
+  it("refuses, and deletes nothing, while the tenant still owns reading rows", async () => {
+    const { raw, db } = await seeded();
+    await wipeRecord(raw, { completedAtMs: NOW_MS });
+    await seedReadingRow(raw, "rd_0123456780");
+    await seedReadingRow(raw, "rd_0123456781");
+    const { env } = guardEnv();
+
+    await expect(
+      tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix }),
+    ).resolves.toEqual({ kind: "rows_remain", remaining: 2 });
+
+    expect(await count(raw, "users", "id", USER)).toBe(1);
+    for (const child of CHILD_TABLES) {
+      expect(await count(raw, child.table, child.column, child.value)).toBeGreaterThan(0);
+    }
+    // The audit row still went in first: teardown was attempted, and that is
+    // what the audit row records.
+    expect(await auditRow(raw)).toBeDefined();
+  });
+
+  it("tears down once the rows are gone", async () => {
+    const { raw, db } = await seeded();
+    await wipeRecord(raw, { completedAtMs: NOW_MS });
+    await seedReadingRow(raw, "rd_0123456780");
+    const { env } = guardEnv();
+
+    expect(
+      (await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).kind,
+    ).toBe("rows_remain");
+    await raw.run("DELETE FROM readings WHERE tenant_id = ?", USER);
+
+    expect(
+      (await tearDownAccount(db, env, { tenantId: USER, nowMs: NOW_MS, prefixVerdict: emptyPrefix })).kind,
+    ).toBe("torn_down");
+    expect(await count(raw, "users", "id", USER)).toBe(0);
+  });
+});
+
 describe("tearDownAccount — the deletes", () => {
   it("removes every tenant-keyed row, the wipe record, and the users row", async () => {
     const { raw, db } = await seeded();

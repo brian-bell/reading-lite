@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient, VectorizeMatch } from "../../lib/cf-clients";
-import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
+import type { VectorLedger } from "../../account-lib/vector-ledger";
 import type {
   AnthropicBatchClient,
   OpenAIBatchClient,

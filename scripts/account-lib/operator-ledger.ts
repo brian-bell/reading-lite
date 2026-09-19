@@ -16,7 +16,7 @@
 //     it (see the CLAUDE.md gotcha and slice S7).
 //   - plan mode, which writes nothing anywhere.
 
-import { d1VectorLedger, NO_OP_VECTOR_LEDGER, type VectorLedger } from "../../src/control-plane/vector-ledger";
+import { d1VectorLedger, NO_OP_VECTOR_LEDGER, type VectorLedger } from "./vector-ledger";
 import { parseTenantId } from "../../src/control-plane/ids";
 import type { OperatorTenant } from "../corpus-lib/tenant";
 import { UsageError } from "../ops-lib/contract";

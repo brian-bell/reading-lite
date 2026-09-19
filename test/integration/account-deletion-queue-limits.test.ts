@@ -61,6 +61,10 @@ async function tearDownFixture(): Promise<void> {
   const objects = await env.READINGS_BUCKET.list({ prefix: PREFIX });
   expect(objects.truncated).toBe(false);
   for (const object of objects.objects) await env.READINGS_BUCKET.delete(object.key);
+  // Rows as well as objects: teardown counts the tenant's readings under its
+  // lock and refuses while any stand, so a fixture that only empties R2 is not
+  // a completed wipe.
+  await testControlPlane(env).run("DELETE FROM readings WHERE tenant_id = ?", OTHER_TENANT_ID);
   await testControlPlane(env).run(
     "UPDATE users SET status = 'deleting', deleting_at = ? WHERE id = ?",
     toTimestamp(NOW_MS - 8 * 24 * 60 * 60_000), OTHER_TENANT_ID,

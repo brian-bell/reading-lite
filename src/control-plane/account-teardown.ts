@@ -44,7 +44,8 @@
  *    `wipe_progress` row FOR UPDATE — challenges first because a login
  *    redemption takes them in that order, and the opposite order would make
  *    the two transactions a deadlock cycle. It re-asserts the
- *    gate on what it locked (still `deleting`, wipe still complete), and only
+ *    gate on what it locked (still `deleting`, wipe still complete, and no
+ *    `readings` row left for the tenant), and only
  *    then deletes, children before parents. D1 had no locks, so every
  *    statement of its batch carried the gate as an EXISTS guard; here the
  *    locks hold the gate still until commit, because a reopen writes the
@@ -56,6 +57,12 @@
  * PostgreSQL enforces the foreign keys, and none cascades (ADR 0005), so child
  * rows are deleted before the users row. The audit row has no foreign key
  * because it must outlive the account.
+ *
+ * `readings` is the exception that has to be checked by hand. It names no
+ * `users` row — the data plane is keyed by tenant id, not joined to the
+ * control plane — so PostgreSQL would happily delete a `users` row with the
+ * tenant's readings still standing, and after that nothing enumerates them.
+ * Hence the count under the lock, alongside the wipe-completion re-check.
  *
  * ## Email reuse
  *
@@ -118,7 +125,13 @@ export type AccountTeardownResult =
  * A concurrent tick reopened the wipe between the gate read and the final
  * transaction. Same story: nothing was deleted.
    */
-  | { kind: "wipe_reopened" };
+  | { kind: "wipe_reopened" }
+  /**
+   * Reading rows the tenant still owns, seen under the lock. Nothing was
+   * deleted: `readings` has no foreign key to `users`, so dropping the users
+   * row would orphan them beyond any tenant-keyed recovery.
+   */
+  | { kind: "rows_remain"; remaining: number };
 
 interface UserRow {
   email_canonical: string;
@@ -243,6 +256,17 @@ export async function tearDownAccount(
       tenantId,
     );
     if (!wipe || wipe.completed_at === null) return { kind: "wipe_reopened" };
+    // The wipe's own completion guard already asserted this, but that was
+    // before this transaction took its locks, and `readings` names no `users`
+    // row for PostgreSQL to refuse the delete over (ADR 0005). Asked here,
+    // under the lock, it is the last moment the answer can still be acted on:
+    // afterwards the tenant is gone from `listDeletingUsers` and nothing
+    // enumerates those rows again.
+    const left = await tx.first<{ remaining: number }>(
+      "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
+      tenantId,
+    );
+    if (left && left.remaining > 0) return { kind: "rows_remain", remaining: left.remaining };
     let rowsDeleted = 0;
     for (const statement of teardownStatements(tenantId, addresses)) {
       rowsDeleted += (await tx.run(statement.sql, ...statement.params)).changes;

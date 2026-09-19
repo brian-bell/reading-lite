@@ -186,10 +186,13 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
 The R2 `ReadingStore`, `ListIndexStore`, and Vectorize `SimilarityStore` remain
-for the operator scripts, which move in a later slice, and the account wipe
-still runs its Vectorize and vector-ledger phases for vectors written before
-the cutover. No runtime reading path writes manifests, `index/list.json`,
-pointers, or Vectorize.
+for the operator scripts, which move in a later slice. The account wipe no
+longer has Vectorize or vector-ledger phases at all: an embedding is a row that
+deletes with its reading, so the wipe is rows then objects, and the ledger
+module is operator-only (`scripts/account-lib/vector-ledger.ts`). Vectors
+written to Vectorize before the cutover are left to its retirement at cutover.
+No runtime reading path writes manifests, `index/list.json`, pointers, or
+Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover
 copied data and retained global R2 objects and unnamespaced vectors, which

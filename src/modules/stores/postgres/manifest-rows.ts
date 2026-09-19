@@ -306,3 +306,35 @@ export async function upsertEmbedding(
     [tenantId, readingId, vectorLiteral(embedding)],
   );
 }
+
+/**
+ * Every reading row a tenant owns, embeddings, revisions, URLs, relationships
+ * and attempts by cascade. Takes a `SqlQuery`, so the account wipe can run it
+ * inside the transaction that also clears the tenant's refresh checkpoints and
+ * advances the wipe phase.
+ *
+ * Single-homed here rather than written out at each caller: the predicate is
+ * the tenant fence, and `PgReadingWriter.deleteAllReadings` and the wipe must
+ * not drift apart on it.
+ */
+export async function deleteTenantReadings(tx: SqlQuery, tenantId: string): Promise<number> {
+  const [row] = await tx.query<{ deleted: number }>(
+    `WITH gone AS (DELETE FROM readings WHERE tenant_id = $1 RETURNING 1)
+     SELECT count(*)::int AS deleted FROM gone`,
+    [tenantId],
+  );
+  return row!.deleted;
+}
+
+/**
+ * Reading rows the tenant still owns. The account wipe asks this after its
+ * sweep and refuses to record a completion while it is non-zero: "complete"
+ * has to mean the tenant's rows are gone, not that a DELETE reported a count.
+ */
+export async function countTenantReadings(tx: SqlQuery, tenantId: string): Promise<number> {
+  const [row] = await tx.query<{ remaining: number }>(
+    "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = $1",
+    [tenantId],
+  );
+  return row!.remaining;
+}

@@ -81,14 +81,25 @@ has ended, even after a long delayed retry.
 
 The phases run in order:
 
-1. `rows` deletes every reading row the tenant owns in one statement. Revisions,
-   URLs, relationships, attempts and embeddings go with them by cascade, so a
-   reading leaves search as it leaves the list. A database error fails the
-   delivery before any object is deleted, and the queue retries it.
+1. `rows` deletes every reading row the tenant owns. Revisions, URLs,
+   relationships, attempts and embeddings go with them by cascade, so a reading
+   leaves search as it leaves the list. It also deletes the tenant's
+   `relationship_refresh_jobs` checkpoints, which name a reading but hold no
+   foreign key to one and so cascade from nothing; a leftover checkpoint would
+   have the nightly refresh dispatch a paid provider call for an account that
+   no longer exists. The deletes and the advance to `objects` are one
+   transaction, with the lease compare-and-set last, so no tenant is recorded
+   past `rows` while its rows stand and a lost lease rolls the deletes back. A
+   database error fails the delivery before any object is deleted, and the
+   queue retries it.
 2. `objects` pages the tenant's R2 root, 1000 keys at a time, and ends by
-   deleting rows once more, for a publisher that passed its tenant check before
+   sweeping rows once more, for a publisher that passed its tenant check before
    the account was fenced and committed after the rows phase.
-3. `done` writes the completion record.
+3. `done` writes the completion record — but only after counting the tenant's
+   remaining `readings` and finding none. A non-zero count throws
+   `AccountWipeRowsRemainingError` and the delivery retries: a completion is
+   what teardown hard-deletes the account on, so it has to mean the rows are
+   gone rather than that a DELETE reported a count.
 
 Heartbeats are throttled to one minute. Cursor, phase, lease, continuation, and
 completion updates persist whenever a later delivery needs them.
@@ -98,9 +109,12 @@ and eventually reaches the wipe DLQ, which logs and acks without touching the
 tenant. A finished wipe whose prefix gains objects again is reopened from
 `rows` with a fresh continuation count.
 
-Embeddings are rows, so there is no vector ledger, `deleteByIds` or namespace
-probe on this path. Vectors written to Vectorize before cutover are left to
-its retirement at cutover. A PostgreSQL wipe always completes with
+Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
+namespace probe or unbound-index gate on this path; the ledger module itself is
+operator-only now (`scripts/account-lib/vector-ledger.ts`, still on D1 for the
+Vectorize-era `corpus` and `account` commands). Vectors written to Vectorize
+before cutover are left to its retirement at cutover. A PostgreSQL wipe always
+completes with
 `residue=false`; the column keeps the history imported from D1.
 
 `completed_at` and `residue` describe current completion and clear on reopen.
@@ -126,12 +140,16 @@ residue flags to the audit record.
    the final transaction. Only confirmed-empty permits it. Leftover objects
    reopen the wipe on a later tick; unknown/error observations leave teardown
    for retry.
-4. In one transaction, lock the `users` and `wipe_progress` rows, re-check that
-   the account is still `deleting` and the wipe still complete, then delete
-   child rows before parents: token scopes/tokens, sessions, challenges, digest
-   deliveries, relationship refresh checkpoints, settings, limits, eligible
-   invites, wipe progress, then users. PostgreSQL enforces the foreign keys;
-   none cascade.
+4. In one transaction, lock this account's `auth_challenges` rows, then the
+   `users` and `wipe_progress` rows, re-check that the account is still
+   `deleting` and the wipe still complete, and count the tenant's `readings`.
+   Any remaining row answers `rows_remain` and deletes nothing: `readings`
+   names no `users` row, so PostgreSQL would not refuse the delete, and once
+   the users row is gone cron stops enumerating the tenant and those rows can
+   never be found again. Only then delete child rows before parents: token
+   scopes/tokens, sessions, challenges, digest deliveries, relationship refresh
+   checkpoints, settings, limits, eligible invites, wipe progress, then users.
+   PostgreSQL enforces the foreign keys; none cascade.
 
 An object arriving between the final prefix verdict and the commit can still be
 orphaned after cron loses the users row it enumerates. The recheck narrows this

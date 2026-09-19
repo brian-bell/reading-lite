@@ -46,7 +46,7 @@ import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } fro
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { operatorVectorLedger } from "../../account-lib/operator-ledger";
-import type { VectorLedger } from "../../../src/control-plane/vector-ledger";
+import type { VectorLedger } from "../../account-lib/vector-ledger";
 import {
   BILLING_TENANT_FLAG_HELP,
   resolveBillingTenant,

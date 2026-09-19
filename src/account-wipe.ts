@@ -19,22 +19,40 @@
  * ## Invariants
  *
  * **Rows and embeddings before objects.** The `rows` phase deletes every
- * reading the tenant owns in one statement; revisions, URLs, relationships and
+ * reading the tenant owns; revisions, URLs, relationships, attempts and
  * embeddings go by cascade, so a reading leaves search in the same transaction
- * it leaves the list. Only then does the `objects` phase page R2. A reading
- * whose objects outlive its row is invisible; the reverse would be a listed
- * reading whose content 404s. The objects phase ends by deleting rows once
- * more: a publisher that passed its tenant check before the account was
- * fenced may have committed in between, and the sweep is idempotent.
+ * it leaves the list. It also deletes the tenant's
+ * `relationship_refresh_jobs` checkpoints, which hang off no reading row and
+ * so cascade from nothing — a leftover one would have the nightly refresh
+ * dispatch a paid provider call for an account that no longer exists. Only
+ * then does the `objects` phase page R2. A reading whose objects outlive its
+ * row is invisible; the reverse would be a listed reading whose content 404s.
+ *
+ * **The rows phase is one transaction, phase advance included.** The deletes
+ * and the `wipe_progress` CAS commit together, so no tenant is ever recorded
+ * as past `rows` without its rows actually being gone, and a CAS lost to a
+ * sibling delivery takes the deletes back with it. The CAS goes last for that
+ * reason.
+ *
+ * **Completion means the rows are gone, not that a DELETE said so.** The
+ * objects phase ends by sweeping rows once more — a publisher that passed its
+ * tenant check before the account was fenced may have committed in between,
+ * and the sweep is idempotent — and the terminal write is then gated on a
+ * count of the tenant's remaining `readings`. A non-zero count throws
+ * `AccountWipeRowsRemainingError` instead of recording a completion, because
+ * a completion is what control-plane teardown hard-deletes the account on.
+ * Teardown asks the same question again under its own lock.
  *
  * **Fail closed on the database.** The rows are read through the job's
  * PostgreSQL session; if the database throws, the delivery retries before any
  * R2 object is deleted, and no wipe reports success around rows it never saw.
  *
  * D1's wipe also deleted Vectorize vectors, seeding its own id ledger first and
- * confirming the deletes by probe. Embeddings are rows now, so all of that is
- * gone. Vectors written to Vectorize before cutover are left to its retirement
- * at cutover (ADR 0005).
+ * confirming the deletes by probe. Embeddings are rows now, so the ledger, the
+ * seed, the namespace probes and the unbound-index gate are all gone, and the
+ * ledger module itself is operator-only (`scripts/account-lib/vector-ledger.ts`).
+ * Vectors written to Vectorize before cutover are left to its retirement at
+ * cutover (ADR 0005).
  *
  * **The gate is a kill switch, not a fallback.** With `TENANT_DATA_PLANE` off
  * (or an empty key root) both fan-out and job skip with `no_tenant_prefix`.
@@ -73,9 +91,10 @@
  *
  * R2 `list()`/`delete()` cap at 1000 objects, so the prefix is paged with a
  * cursor stored on the progress record. `persist` always writes and is used
- * wherever a later delivery must see the state: the lease claim, a phase
- * transition, a `continue`'s cursor and continuation count, the terminal
- * record. `heartbeat` writes at most once per
+ * wherever a later delivery must see the state: the lease claim, a
+ * `continue`'s cursor and continuation count, the terminal record. The phase
+ * transition does not go through it — it rides in the rows transaction
+ * instead. `heartbeat` writes at most once per
  * `ACCOUNT_WIPE_HEARTBEAT_INTERVAL_MS` and only tells cron the job is alive.
  * `objects_deleted` is counted before a page's delete and reaches the database
  * on the next write, so a crash between them undercounts; it is a reporting
@@ -97,6 +116,7 @@ import {
   reopenWipeProgress,
   WipeProgressWriter,
   type WipeProgress,
+  type WipePhase,
 } from "./control-plane/wipe-progress";
 import {
   accountWipeEnvelopeV1,
@@ -107,7 +127,10 @@ import {
 import { BY_ID_PREFIX, READINGS_PREFIX } from "./modules/stores/layout";
 import { tenantDataPlaneEnabled, tenantKeyRoot } from "./modules/stores/reading-store";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
-import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
+import {
+  countTenantReadings,
+  deleteTenantReadings,
+} from "./modules/stores/postgres/manifest-rows";
 import { RateLimitedError } from "./modules/http-retry";
 import { parseReadingId } from "./services";
 
@@ -202,6 +225,26 @@ export class AccountWipeContinuationBudgetError extends Error {
         `${continuations}/${ACCOUNT_WIPE_MAX_CONTINUATIONS} self-sends in one pass`,
     );
     this.name = "AccountWipeContinuationBudgetError";
+  }
+}
+
+/**
+ * The sweep committed and reading rows are still there.
+ *
+ * Thrown instead of recording a completion, because a completion is what
+ * teardown hard-deletes the `users` row on. Ordinary retry: the next delivery
+ * sweeps again, and a wipe that can never get to zero dead-letters where an
+ * operator can see it.
+ */
+export class AccountWipeRowsRemainingError extends Error {
+  constructor(
+    public readonly tenantId: string,
+    public readonly remaining: number,
+  ) {
+    super(
+      `account_wipe rows_remaining for ${tenantId}: ${remaining} reading row(s) survived the sweep`,
+    );
+    this.name = "AccountWipeRowsRemainingError";
   }
 }
 
@@ -527,10 +570,34 @@ async function runAccountWipeJob(
     await persist();
   };
   let rowsDeleted = 0;
-  // Every reading row the tenant owns, children by cascade, through the same
-  // tenant-validating writer the runtime uses. Idempotent.
-  const deleteRows = async () => {
-    rowsDeleted += await pgReadingWriterFor(sql, { tenantId }).deleteAllReadings();
+  /**
+   * The tenant's rows, in one transaction.
+   *
+   * Every reading the tenant owns — revisions, URLs, relationships, attempts
+   * and embeddings by cascade — and its `relationship_refresh_jobs`
+   * checkpoints, which hang off no reading row and so cascade from nothing.
+   * A leftover checkpoint is not cosmetic: the nightly refresh reads them by
+   * tenant and would dispatch a paid provider call for an account that no
+   * longer exists.
+   *
+   * `advance` puts the wipe's phase CAS in the same transaction, so a tenant
+   * can never be recorded as past the `rows` phase without its rows actually
+   * being gone. The CAS goes last: if a sibling delivery owns the wipe it
+   * throws, and the deletes roll back with it rather than committing under the
+   * owner. Idempotent, so the objects phase can sweep with it again.
+   */
+  const deleteRows = async (advance?: WipePhase) => {
+    const next = advance === undefined ? null : { ...progress, phase: advance, updatedAtMs: now() };
+    rowsDeleted += await sql.transaction(async (tx) => {
+      const deleted = await deleteTenantReadings(tx, tenantId);
+      await tx.execute("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
+      if (next) await writer.write(next, fromSql(tx));
+      return deleted;
+    });
+    if (next) {
+      progress = next;
+      lastPersistMs = next.updatedAtMs;
+    }
   };
   const continueResult = async (): Promise<AccountWipeResult> => {
     // Bound the self-send before making it (F7). Persisted, so the count is the
@@ -554,10 +621,9 @@ async function runAccountWipeJob(
   await persist();
 
   if (progress.phase === "rows") {
-    await deleteRows();
-    progress.phase = "objects";
-    // Always persisted: a phase transition is what a resuming delivery reads.
-    await persist();
+    // The phase advance rides in the delete's transaction: a resuming delivery
+    // that reads `objects` is reading a fact, not an intention.
+    await deleteRows("objects");
   }
 
   if (progress.phase === "objects") {
@@ -601,11 +667,20 @@ async function runAccountWipeJob(
     }
     // A publisher that passed its tenant check before the fence may have
     // committed after the rows phase. Its content is gone with the prefix;
-    // sweep its row too, before claiming completion.
+    // sweep its rows too, before claiming completion.
     await deleteRows();
   }
 
-  const done = await writer.complete(progress, now(), false);
+  // Completion has to mean the tenant's rows are gone, not that a DELETE
+  // reported a count. The sweep above committed; this asks the table. A row
+  // that appears between the two is a writer that got past the fence later
+  // than any sweep can cover, so the delivery fails and retries rather than
+  // recording a completion teardown would then hard-delete the account on.
+  const completedAtMs = now();
+  const remaining = await countTenantReadings(sql, tenantId);
+  if (remaining > 0) throw new AccountWipeRowsRemainingError(tenantId, remaining);
+
+  const done = await writer.complete(progress, completedAtMs, false);
   return { kind: "complete", rows_deleted: rowsDeleted, objects_deleted: done.objectsDeleted };
 }
 

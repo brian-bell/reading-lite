@@ -20,7 +20,7 @@ import {
   confirmBackoffSeconds,
   earliestConfirmableAtMs,
   type VectorLedgerEntry,
-} from "../../../src/control-plane/vector-ledger";
+} from "../../../scripts/account-lib/vector-ledger";
 
 const T0 = Date.parse("2026-09-04T12:00:00.000Z");
 /** Any instant at which a row deleted at T0 is old enough to confirm. */

@@ -27,7 +27,13 @@ import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
 import type { ListIndexItem } from "../../src/schemas/api";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
-import { OTHER_TENANT_ID, founderTenant, insertSecondTenant, otherTenant } from "../helpers/tenant-fixtures";
+import {
+  FOUNDER_TENANT_ID,
+  OTHER_TENANT_ID,
+  founderTenant,
+  insertSecondTenant,
+  otherTenant,
+} from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
 
 const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");
@@ -121,6 +127,26 @@ async function seedReadings(ids: string[], tenant = otherTenant()): Promise<void
 
 async function readingIds(tenant = otherTenant()): Promise<string[]> {
   return testReadingsFor(tenant).ids();
+}
+
+// A relationship refresh checkpoint. It carries a reading id but no foreign
+// key to `readings`, so deleting the readings leaves it standing.
+async function seedRefreshJob(tenantId: string, readingId: string): Promise<void> {
+  await db().run(
+    `INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag)
+       VALUES (?, ?, ?, 'owner', 'etag')`,
+    tenantId,
+    readingId,
+    toTimestamp(NOW_MS),
+  );
+}
+
+async function refreshJobIds(tenantId: string): Promise<string[]> {
+  const rows = await db().all<{ reading_id: string }>(
+    "SELECT reading_id FROM relationship_refresh_jobs WHERE tenant_id = ? ORDER BY reading_id",
+    tenantId,
+  );
+  return rows.map((row) => row.reading_id);
 }
 
 async function listPrefixKeys(prefix: string): Promise<string[]> {
@@ -314,6 +340,76 @@ describe("account wipe job", () => {
 
     expect(result).toMatchObject({ kind: "complete", rows_deleted: 2 });
     expect(await readingIds()).toEqual([]);
+  });
+
+  // `relationship_refresh_jobs` hangs off no reading row, so nothing cascades
+  // it away with the readings. A checkpoint left behind is not cosmetic: the
+  // nightly refresh reads them by tenant and would dispatch a paid provider
+  // call for an account that no longer exists.
+  it("clears the tenant's refresh checkpoints with its rows, and leaves another tenant's alone", async () => {
+    await seedReadings([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    await seedRefreshJob(OTHER_TENANT_ID, ID_A);
+    await seedRefreshJob(FOUNDER_TENANT_ID, ID_A);
+
+    expect((await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps())).kind).toBe("complete");
+
+    expect(await refreshJobIds(OTHER_TENANT_ID)).toEqual([]);
+    expect(await refreshJobIds(FOUNDER_TENANT_ID)).toEqual([ID_A]);
+  });
+
+  // The rows phase is one transaction: readings, refresh checkpoints, and the
+  // phase advance. A sibling that takes the lease over mid-phase makes the
+  // closing CAS change no rows, and the deletes must go back with it - the
+  // alternative is a tenant's rows deleted under an owner that still believes
+  // it is in the `rows` phase, with the CAS having silently done nothing.
+  it("rolls the row deletes back when the phase advance loses the lease", async () => {
+    await seedReadings([ID_A, ID_B]);
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    await seedRefreshJob(OTHER_TENANT_ID, ID_A);
+    // A sibling delivery bumps lease_seq while our transaction holds the
+    // deletes but has not yet reached its CAS.
+    interceptSql(/DELETE FROM relationship_refresh_jobs/, async () => {
+      await db().run("UPDATE wipe_progress SET lease_seq = lease_seq + 1 WHERE tenant_id = ?", TENANT);
+      return "pass" as const;
+    });
+
+    const result = await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps());
+
+    vi.restoreAllMocks();
+    expect(result).toEqual({ kind: "skipped", reason: "lease_held" });
+    expect((await readingIds()).sort()).toEqual([ID_A, ID_B]);
+    expect(await refreshJobIds(OTHER_TENANT_ID)).toEqual([ID_A]);
+    expect(await readProgress()).toMatchObject({ phase: "rows", completedAtMs: null });
+  });
+
+  // "Complete" is what teardown hard-deletes the account on, so it has to mean
+  // the rows are gone rather than that a DELETE reported a count.
+  it("refuses to record a completion while reading rows survive the sweep", async () => {
+    await seedReadings([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    let published = false;
+    const bucket = watchedBucket(env.READINGS_BUCKET, {
+      afterList: async () => {
+        if (published) return;
+        published = true;
+        await testReadingsFor(otherTenant()).seedListItems([listItem(ID_B)]);
+      },
+    });
+    // The rows phase deletes for real; the objects-phase sweep is neutered, so
+    // the late publisher's row is still there when completion asks.
+    interceptSql(/DELETE FROM readings WHERE tenant_id/, (call) =>
+      call === 1 ? "pass" : [{ deleted: 0 }],
+    );
+
+    await expect(
+      processAccountWipeJob(envelope(), wipeEnv({ READINGS_BUCKET: bucket }), wipeDeps()),
+    ).rejects.toThrow(/rows_remaining/);
+
+    vi.restoreAllMocks();
+    expect(await readingIds()).toEqual([ID_B]);
+    // No completion record for teardown to act on; the pass resumes instead.
+    expect(await readProgress()).toMatchObject({ phase: "objects", completedAtMs: null });
   });
 
   it("pages more than 1000 objects and resumes from the stored cursor", async () => {
