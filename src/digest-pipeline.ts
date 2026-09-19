@@ -58,7 +58,8 @@ import {
   type DigestScheduleSettings,
 } from "./modules/digest-schedule";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
-import { readingStoreFor } from "./modules/stores/reading-store";
+import { sqlPerOperationFor } from "./modules/db/sql";
+import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
@@ -84,8 +85,7 @@ export function isDigestDlq(name: string): boolean {
 export interface DigestEnv {
   CONTROL_PLANE: D1Database;
   DIGEST_JOBS?: Queue<DigestEnvelopeV1>;
-  READINGS_BUCKET?: R2Bucket;
-  TENANT_DATA_PLANE?: string;
+  HYPERDRIVE?: Hyperdrive;
   RESEND_API_KEY?: string;
   EMAIL_FROM: string;
   EMAIL_TO?: string;
@@ -297,13 +297,13 @@ export async function processDigestJob(
     await finalizeDigestDelivery(db, key, { status: "skipped", reason: "missing_user" }, deps.nowMs);
     return;
   }
-  if (!env.READINGS_BUCKET) {
-    throw new Error("READINGS_BUCKET is not configured");
+  if (!env.HYPERDRIVE) {
+    throw new Error("HYPERDRIVE is not configured");
   }
 
-  const reader = readingStoreFor(env.READINGS_BUCKET, { tenantId }, env);
-  const listIndex = await reader.readListIndex();
-  const items = selectDigestReadings(listIndex?.items ?? [], window);
+  // One statement, so the per-operation client is opened and closed around it.
+  const library = await pgReadingStoreFor(sqlPerOperationFor({ HYPERDRIVE: env.HYPERDRIVE }), { tenantId }).allListItems();
+  const items = selectDigestReadings(library, window);
   if (items.length === 0) {
     await finalizeDigestDelivery(
       db,
@@ -330,7 +330,7 @@ export async function processDigestJob(
         cadence: envelope.cadence,
         items,
         webBaseUrl: env.WEB_BASE_URL ?? "",
-        titleById: buildTitleById(listIndex),
+        titleById: buildTitleById({ version: 1, items: library }),
       },
       {
         fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),

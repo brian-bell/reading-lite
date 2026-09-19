@@ -1,21 +1,19 @@
 // PostgreSQL read store for readings (ADR 0005). Returns the same
 // ListIndexItem and Manifest shapes as ReadingStore, parsed with zod at the
-// seam, so switching the router over (slice 1b) needs no contract change.
-// Nothing at runtime constructs this yet.
+// seam, so the router's contract did not change when it switched over.
 //
 // Every query is `WHERE tenant_id = $1`, and the only constructor validates
 // the tenant id exactly as tenantKeyRoot does. Captured content stays in R2:
-// this store hands out relative keys and `readContentByKey` reads them.
+// this store hands out relative keys and ContentStore reads them.
 
 import type { TenantContext } from "../../../control-plane/ids";
 import { parseTenantId } from "../../../control-plane/ids";
 import { ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
-import type { Sql, SqlRow } from "../../db/sql";
+import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
 import { r2KeyLayout, rawExtFromContentType } from "../layout";
 import type { ListManifestsParams, ListManifestsResult } from "../list-index";
-import type { RawObject } from "../reading-store";
 
 export function pgTenantId(tenant: TenantContext): string {
   const tenantId = parseTenantId(String(tenant.tenantId));
@@ -61,7 +59,8 @@ function present(row: SqlRow): Record<string, unknown> {
 
 export class PgReadingStore {
   constructor(
-    private readonly sql: Sql,
+    // Reads only, so a transaction's query handle serves as well as a client.
+    private readonly sql: SqlQuery,
     private readonly tenantId: string,
   ) {}
 
@@ -82,6 +81,18 @@ export class PgReadingStore {
       readings: rows.map((row) => ListIndexItemSchema.parse(present(row))),
       total_filtered: count!.total,
     };
+  }
+
+  // Every list row the tenant has, newest first: what index/list.json held.
+  // For the scheduled jobs that scan a library (digests, relationship
+  // refresh); request paths page with listManifests or key with
+  // relationshipTargets instead.
+  async allListItems(): Promise<ListIndexItem[]> {
+    const rows = await this.sql.query(
+      `SELECT ${LIST_COLUMNS} FROM readings WHERE tenant_id = $1 ORDER BY created_at DESC, id DESC`,
+      [this.tenantId],
+    );
+    return rows.map((row) => ListIndexItemSchema.parse(present(row)));
   }
 
   // Keyed replacement for the whole-index read behind relationship_targets.
@@ -188,21 +199,4 @@ export class PgReadingStore {
       contentType: row.content_type,
     };
   }
-}
-
-// The R2 side of a content read: a stored relative key under the tenant root.
-export async function readContentByKey(
-  bucket: R2Bucket,
-  keyRoot: string,
-  relativeKey: string,
-): Promise<RawObject | null> {
-  const obj = await bucket.get(`${r2KeyLayout(keyRoot).keyRoot}${relativeKey}`);
-  if (!obj) return null;
-  return {
-    arrayBuffer: () => obj.arrayBuffer(),
-    text: () => obj.text(),
-    body: obj.body,
-    contentType: obj.httpMetadata?.contentType ?? "application/octet-stream",
-    size: obj.size,
-  };
 }

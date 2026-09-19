@@ -9,10 +9,11 @@ import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from ".
 import { principalHasRecentAuth } from "./control-plane/recent-auth";
 import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
+import type { SqlVariables } from "./modules/db/request-sql";
 
 export type AppBindings = {
   Bindings: Env;
-  Variables: { principal: AuthenticatedPrincipal };
+  Variables: { principal: AuthenticatedPrincipal } & SqlVariables;
 };
 
 export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBindings> => {

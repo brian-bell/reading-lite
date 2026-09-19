@@ -30,7 +30,7 @@ import {
   upsertEmbedding,
   type ReadingRow,
 } from "./manifest-rows";
-import { pgTenantId } from "./reading-store";
+import { PgReadingStore, pgTenantId } from "./reading-store";
 
 export function pgReadingWriterFor(sql: Sql, tenant: TenantContext): PgReadingWriter {
   return new PgReadingWriter(sql, pgTenantId(tenant));
@@ -52,7 +52,7 @@ export interface NewAttempt {
   content?: AttemptContentKeys;
 }
 
-export type ClaimOutcome = { kind: "claimed" } | { kind: "owned"; ownerId: string };
+export type ClaimOutcome = { kind: "claimed" } | { kind: "owned"; ownerId: string | null };
 
 export type StartAttemptOutcome =
   | { kind: "started" }
@@ -131,10 +131,9 @@ export class PgReadingWriter {
       "SELECT reading_id FROM reading_urls WHERE tenant_id = $1 AND url_hash = $2",
       [this.tenantId, pending.url_hash],
     );
-    // The owner was purged between the conflict and this read. The caller
-    // retries, and the next claim finds the URL free.
-    if (!owner) throw new Error("claimUrl: the URL owner disappeared; retry");
-    return { kind: "owned", ownerId: owner.reading_id };
+    // Null when the owner was purged between the conflict and this read. The
+    // caller re-resolves either way, and its next claim finds the URL free.
+    return { kind: "owned", ownerId: owner?.reading_id ?? null };
   }
 
   // A new attempt on an existing reading: reprocess, or a failed owner taken
@@ -245,6 +244,42 @@ export class PgReadingWriter {
       }
       if (failed.last_attempt) await this.finishAttempt(tx, ref.id, failed.last_attempt, opts.jobState ?? "done");
       return { committed: true, published: false };
+    });
+  }
+
+  // Compare-and-replace on a published reading, for the relationship judge:
+  // it rewrites relationship fields and the novelty verdict long after the
+  // attempt that published them, so attempt ownership does not apply. `matches`
+  // sees the reading as it stands under the row lock, which is what the etag
+  // CAS on manifest.json gave it. Content keys and the embedding are untouched.
+  async replacePublishedIf(
+    id: string,
+    matches: (current: Manifest) => boolean | Promise<boolean>,
+    next: Manifest,
+  ): Promise<boolean> {
+    if (next.status !== "ready") throw new Error("replacePublishedIf: manifest is not ready");
+    return this.sql.transaction(async (tx) => {
+      const row = await this.lock(tx, id);
+      if (!row || row.status !== "ready" || row.current_revision_id === null) return false;
+      const current = await new PgReadingStore(tx, this.tenantId).loadReadingById(id);
+      if (!current || !(await matches(current.manifest))) return false;
+
+      const rows = manifestToRows(next, { tenantId: this.tenantId, keyPrefix: row.key_prefix, ownsUrl: false });
+      const v = rows.revision!;
+      await this.updateReading(tx, next);
+      await tx.query(
+        `UPDATE reading_revisions SET summary_markdown = $4, usage = $5::jsonb, connections_present = $6,
+           tensions_present = $7, connections_computed_at = $8, connections_neighbourhood_ids = $9,
+           tensions_judged = $10::jsonb
+         WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
+        [
+          this.tenantId, id, row.current_revision_id, v.summary_markdown, json(v.usage), v.connections_present,
+          v.tensions_present, v.connections_computed_at, v.connections_neighbourhood_ids, json(v.tensions_judged),
+        ],
+      );
+      await tx.query("DELETE FROM reading_relationships WHERE tenant_id = $1 AND source_id = $2", [this.tenantId, id]);
+      await insertRelationships(tx, this.tenantId, id, rows.relationships);
+      return true;
     });
   }
 

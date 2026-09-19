@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ProcessReadingArgs } from "../attempt-ownership";
 import { buildKeyPrefix } from "../modules/stores/reading-store";
 import { parseReadingId, sha256Hex } from "../services";
-import { ManifestSchema, ProcessingAttemptTriggerSchema, SourceTypeSchema } from "../schemas/manifest";
+import { ProcessingAttemptTriggerSchema, SourceTypeSchema } from "../schemas/manifest";
 import type { ControlPlaneDb } from "./db";
 import { parseSessionId, parseTenantId, parseTokenId, type TenantContext, type TenantId } from "./ids";
 import type { AuthenticatedPrincipal } from "./principal";
@@ -43,7 +43,6 @@ const ProcessReadingArgsSchema = z
     attemptId: z.string().min(1).optional(),
     attemptStartedAt: z.string().min(1).optional(),
     trigger: ProcessingAttemptTriggerSchema.optional(),
-    preserveReadyManifest: ManifestSchema.optional(),
     sourceTypeOnFailure: SourceTypeSchema.optional(),
     email: z.boolean().optional(),
   })

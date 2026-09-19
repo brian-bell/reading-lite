@@ -83,6 +83,28 @@ export function sqlFor(env: { HYPERDRIVE: Hyperdrive }): Sql {
   return sqlFromConnectionString(env.HYPERDRIVE.connectionString);
 }
 
+// For work that outlives a request: the queue consumer runs for minutes with
+// provider calls between its statements, and one client held idle that long can
+// be dropped underneath it. Each query and each transaction gets its own
+// client, closed when it settles. Hyperdrive pools, so that is cheap, and
+// nothing here ever spans two operations. `end` is a no-op.
+export function sqlPerOperationFor(env: { HYPERDRIVE: Hyperdrive }): Sql {
+  const scoped = async <T>(run: (sql: Sql) => Promise<T>): Promise<T> => {
+    const sql = sqlFor(env);
+    try {
+      return await run(sql);
+    } finally {
+      await sql.end().catch(() => undefined);
+    }
+  };
+  return {
+    query: <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) =>
+      scoped((sql) => sql.query<Row>(text, values)),
+    transaction: (run, opts) => scoped((sql) => sql.transaction(run, opts)),
+    end: async () => undefined,
+  };
+}
+
 // pgvector's text input format.
 export function vectorLiteral(embedding: readonly number[]): string {
   return `[${embedding.join(",")}]`;

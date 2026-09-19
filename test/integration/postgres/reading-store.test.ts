@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sql } from "../../../src/modules/db/sql";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import { manifestToIndexItem } from "../../../src/modules/stores/list-index";
-import { pgReadingStoreFor, readContentByKey } from "../../../src/modules/stores/postgres/reading-store";
+import { contentStoreFor } from "../../../src/modules/stores/content-store";
+import { pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
 import { mintTenant, readyManifest, seedManifest, testSql } from "../../helpers/pg-fixtures";
 
 let sql: Sql;
@@ -195,9 +196,10 @@ describe("PgReadingStore content keys", () => {
     await env.READINGS_BUCKET.put(r2KeyLayout(keyRoot).extractedKey(keyPrefix), "# Extracted", {
       httpMetadata: { contentType: "text/markdown; charset=utf-8" },
     });
-    const object = await readContentByKey(env.READINGS_BUCKET, keyRoot, keys!.extractedKey!);
+    const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
+    const object = await content.get(keys!.extractedKey!);
     expect(await object!.text()).toBe("# Extracted");
-    expect(await readContentByKey(env.READINGS_BUCKET, keyRoot, keys!.rawKey)).toBeNull();
+    expect(await content.get(keys!.rawKey)).toBeNull();
   });
 
   it("derives keys from key_prefix for a reading that was never published", async () => {
