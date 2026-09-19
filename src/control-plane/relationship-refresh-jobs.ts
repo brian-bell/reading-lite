@@ -60,6 +60,3 @@ export async function markRefreshRateLimited(db: ControlPlaneDb, tenantId: strin
   await db.run(`UPDATE relationship_refresh_jobs SET retry_at = ?
     WHERE tenant_id = ? AND reading_id = ? AND owner = ? AND result_json IS NULL`, toTimestamp(retryAtMs), tenantId, readingId, owner);
 }
-export async function deleteRefreshJob(db: ControlPlaneDb, tenantId: string, readingId: string): Promise<void> {
-  await db.run("DELETE FROM relationship_refresh_jobs WHERE tenant_id = ? AND reading_id = ?", tenantId, readingId);
-}

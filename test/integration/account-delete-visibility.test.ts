@@ -5,9 +5,12 @@ import { dispatchQueueMessage, type Env } from "../../src/index";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { PgReadingWriter, PublishCommitError } from "../../src/modules/stores/postgres/reading-writer";
 import { sha256Hex, type Services } from "../../src/services";
-import { founderTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
+import { founderTenant, FOUNDER_TENANT_ID, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
-import { interceptSql, TENANT_STATUS_LOOKUP } from "../helpers/sql-faults";
+import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
+import { beginAccountDeletion } from "../../src/control-plane/account-delete";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { submitPending } from "../../src/modules/manifest-drafting";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -76,15 +79,6 @@ function makeServices(fetchFn: typeof fetch): Services {
     now: () => "2026-04-26T20:00:00.000Z",
     newId: () => "rd_VIS",
   };
-}
-
-// The first `succeed` tenant-status lookups answer from the database; every
-// later one throws, or answers with `after`.
-function statusLookupsAfter(succeed: number, after: "throw" | { status: string } = "throw"): void {
-  interceptSql(TENANT_STATUS_LOOKUP, (call) => {
-    if (call <= succeed) return "pass";
-    return after === "throw" ? new Error("database hiccup") : [after];
-  });
 }
 
 async function clearBucket() {
@@ -209,87 +203,99 @@ describe("processReading — the publish transaction", () => {
   });
 });
 
-// Tenant eligibility is control-plane state, so it cannot join the PostgreSQL
-// transaction: it is checked immediately before publication and again
-// immediately after. The lookups, in order: pre-spend, pre-publish,
-// post-publish, then (only when ineligible) "is it deleting?".
-describe("processReading — tenant status lookup at publish", () => {
-  it("fail-opens and publishes when the tenant-status lookups around publish throw", async () => {
+// Tenant eligibility joins the publish transaction (slice 1c.3). `users` is in
+// the same database, so publish locks the tenant row FOR SHARE and reads
+// `status` under that lock: there is no window between the check and the
+// commit, and nothing to compensate for afterwards.
+describe("processReading — tenant eligibility inside the publish transaction", () => {
+  // An ineligible tenant's reading is still stored — the attempt paid for it —
+  // but never becomes searchable. A `deleting` tenant's copy is left to the
+  // account wipe, which sweeps rows again after its objects phase for exactly
+  // this publisher; a `suspended` tenant runs no wipe, and a suspension can be
+  // lifted, so the reading has to survive.
+  it.each(["deleting", "suspended"])(
+    "stores a %s tenant's reading without making it searchable",
+    async (status) => {
+      const fetchFn = makeStubFetch();
+      const { readings, job } = await pendingJob("rd_INELIG", "https://example.com/ineligible-tenant");
+      // Active for the pre-spend gate, ineligible by the time publish locks it.
+      interceptSql(TENANT_STATUS_LOCK, () => [{ status }]);
+
+      await expect(
+        processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant()),
+      ).resolves.toBeUndefined();
+
+      const manifest = await readings.manifest(job.id);
+      expect(manifest?.status).toBe("ready");
+      expect(manifest?.error).toBeUndefined();
+      expect(await readings.extractedText(job.id)).not.toBeNull();
+      expect(await readings.hasEmbedding(job.id)).toBe(false);
+    },
+  );
+
+  // The race the fence used to compensate for, run for real on two
+  // connections: the deletion's status UPDATE waits on the tenant row this
+  // transaction holds FOR SHARE, so the publish it raced completes whole.
+  it("makes DELETE /api/account wait for an in-flight publish", async () => {
     const fetchFn = makeStubFetch();
-    const { readings, job } = await pendingJob("rd_PREPUB", "https://example.com/pre-publish-lookup");
-    const wrapped = env as unknown as Env;
-    statusLookupsAfter(1);
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { readings, job } = await pendingJob("rd_SERIAL", "https://example.com/publish-vs-delete");
+    let deletion: Promise<unknown> | null = null;
+    let deleted = false;
 
-    await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
+    // The reading lock is the publish transaction's second statement, so the
+    // tenant lock is already held when this runs.
+    interceptSql(/FROM readings WHERE tenant_id = \$1 AND id = \$2\s+FOR UPDATE/, async (): Promise<"pass"> => {
+      if (!deletion) {
+        deletion = beginAccountDeletion(testControlPlane(env), {
+          userId: FOUNDER_TENANT_ID,
+          nowMs: Date.parse("2026-04-26T20:01:00.000Z"),
+        }).then((out) => {
+          deleted = true;
+          return out;
+        });
+        // Long enough for an unblocked UPDATE to have committed.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(deleted).toBe(false);
+      }
+      return "pass";
+    });
 
-    consoleErr.mockRestore();
-    const manifest = await readings.manifest(job.id);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.error).toBeUndefined();
-    expect(await readings.ids()).toEqual([job.id]);
-    expect(await readings.hasEmbedding(job.id)).toBe(true);
-  });
+    await processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant());
 
-  // The publisher-side deletion fence (S1 of #195). A consumer that publishes
-  // against a tenant that turned `deleting` underneath it must leave nothing
-  // behind, without depending on the account wipe coming back for it: the wipe
-  // may already have passed this reading by.
-  it("removes everything it just published when the tenant is deleting", async () => {
-    const fetchFn = makeStubFetch();
-    const { readings, job, keyPrefix } = await pendingJob("rd_FENCE", "https://example.com/deleting-tenant");
-    // Active for the pre-spend and pre-publish checks, `deleting` for the
-    // post-publish recheck: the exact window this fence exists for.
-    const wrapped = env as unknown as Env;
-    statusLookupsAfter(2, { status: "deleting" });
-
-    await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
-
-    expect(await readings.manifest(job.id)).toBeNull();
-    expect(await readings.hasEmbedding(job.id)).toBe(false);
-    expect(await readings.urlOwnerId(job.url)).toBeNull();
-    expect(await readings.content.list(keyPrefix)).toEqual([]);
-  });
-
-  // The fence is for `deleting` only. Any other reason the tenant stopped
-  // being eligible — `suspended` here — keeps the reading and only takes it out
-  // of search. No account wipe runs for a suspended tenant, and a suspension
-  // can be lifted.
-  it("keeps a suspended tenant's reading but does not leave it searchable", async () => {
-    const fetchFn = makeStubFetch();
-    const { readings, job } = await pendingJob("rd_SUSPND", "https://example.com/suspended-not-deleting");
-    const wrapped = env as unknown as Env;
-    statusLookupsAfter(2, { status: "suspended" });
-
-    await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
-
+    expect(await deletion).toEqual({ kind: "started" });
+    // The publish held the lock first, so it published in full.
     expect((await readings.manifest(job.id))?.status).toBe("ready");
-    expect(await readings.extractedText(job.id)).not.toBeNull();
-    expect(await readings.hasEmbedding(job.id)).toBe(false);
+    expect(await readings.hasEmbedding(job.id)).toBe(true);
+    expect(
+      await testControlPlane(env).first<{ status: string }>("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID),
+    ).toEqual({ status: "deleting" });
   });
 
-  it("does not markFailed when the tenant-fence compensation throws after publication", async () => {
-    const fetchFn = makeStubFetch();
-    const { readings, job } = await pendingJob("rd_HIDE", "https://example.com/hide-failure");
-    const wrapped = env as unknown as Env;
-    statusLookupsAfter(2, { status: "deleting" });
-    vi.spyOn(PgReadingWriter.prototype, "purge").mockRejectedValue(new Error("compensation failure"));
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+  // The other side of that race, and the reason claim takes the same lock: a
+  // claim that lands after the status flipped must leave nothing at all.
+  it("writes no rows for a claim that lands after the account is marked deleting", async () => {
+    const readings = testReadingsFor(founderTenant());
+    const url = "https://example.com/claim-after-delete";
+    await beginAccountDeletion(testControlPlane(env), {
+      userId: FOUNDER_TENANT_ID,
+      nowMs: Date.parse("2026-04-26T20:01:00.000Z"),
+    });
+    const urlHash = await sha256Hex(url);
+    const draft = submitPending(
+      { id: "rd_LATECLM", url, urlHash, createdAt: CREATED_AT },
+      { attemptId: "at_LATECLM", startedAt: CREATED_AT },
+    );
 
-    await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
-    consoleErr.mockRestore();
+    const claimed = await readings.writer.claimUrl(draft.manifest, buildKeyPrefix("rd_LATECLM", CREATED_AT), {
+      summary: draft.attempt,
+      payload: {},
+    });
 
-    // Committed stays committed: the wipe takes it from here.
-    const manifest = await readings.manifest(job.id);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.error).toBeUndefined();
+    expect(claimed).toEqual({ kind: "tenant_inactive" });
+    expect(await readings.manifest("rd_LATECLM")).toBeNull();
+    expect(await readings.urlOwnerId(url)).toBeNull();
+    for (const table of ["reading_attempts", "reading_jobs"]) {
+      expect(await readings.sql.query(`SELECT 1 FROM ${table} WHERE reading_id = $1`, ["rd_LATECLM"])).toEqual([]);
+    }
   });
 });

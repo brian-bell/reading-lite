@@ -199,9 +199,10 @@ Slice 1b switched the router's reads and the whole write path together.
   list-index CAS helpers and `ReadingVisibility`. A failed transaction rolls
   back whole and throws `PublishCommitError`, which requeues rather than
   failing the reading, the contract the vector ledger's fail-closed write used
-  to carry. Only a URL's owner is searchable. Tenant eligibility is D1 state
-  until 1c, so it is checked just before and after the transaction; a tenant
-  found `deleting` afterwards has the reading removed in the same consumer.
+  to carry. Only a URL's owner is searchable, and only for an active
+  tenant: since 1c.3 the transaction locks the tenant's `users` row FOR SHARE
+  and reads `status` there, so account deletion serializes against publication
+  instead of being compensated for afterwards.
 - **Immutable revision keys.** Each attempt writes its content under
   `{key_prefix}/revisions/{attemptId}/`, named in `layout.ts`. A failed
   reprocess changes only the attempt summaries, so the published content,
@@ -356,6 +357,43 @@ claim and publish transactions, and 1c.4 keeps the deletion-race work.
   inject database faults at `pg.Client#query` (`test/helpers/sql-faults.ts`);
   Node-pool guard tests answer the guards' lookups in memory
   (`test/helpers/fake-control-plane.ts`).
+
+#### Tenant eligibility inside the write transactions (slice 1c.3)
+
+1c.2 put `users` in this database, so eligibility no longer has to be decided
+outside the transaction that acts on it.
+
+- **The tenant row is the lock.** `claimUrl`, `startAttempt` and `publish`
+  read `SELECT status FROM users WHERE id = $1 FOR SHARE` as the first
+  statement of their transaction, before any reading row is locked or written.
+  FOR SHARE, not FOR UPDATE, so a tenant's readings still claim and publish in
+  parallel while `DELETE /api/account`'s status UPDATE waits for all of them.
+  Where both are taken the order is tenant row, then reading row. The verbs
+  that only touch a reading that already exists — `fail`, `purge` and
+  `replacePublishedIf` — take no tenant lock: the wipe deletes the reading
+  rows before teardown deletes `users`, so there is nothing left for them to
+  act on. A new verb that CREATES a row needs the lock.
+- **What each verb does with it.** A claim for an inactive tenant commits
+  nothing — no reading, URL row, attempt or job — and reports
+  `tenant_inactive`, which the router answers 403, the same body the
+  authenticated seam gives. A publish for one still commits the reading, which
+  the attempt paid for, but stores no embedding, so it is never searchable.
+- **What that removes.** The consumer's before/after eligibility checks and
+  the compensation between them are gone: there is no window. A `deleting`
+  tenant's reading is left to the account wipe, whose second rows sweep exists
+  for exactly this publisher; a `suspended` tenant keeps its reading, out of
+  search, as before.
+- **A missing row is inactive too.** Teardown deletes `users` last, after the
+  wipe, and a request that authenticated before that can reach its claim after
+  it. `claimUrl` inserts rather than locking something that already exists, so
+  reading absence as active would let it write a reading, a URL row, an
+  attempt and a job for a tenant that no longer exists — rows nothing could
+  find again, since both the wipe and its cron reach tenants through `users`.
+  The reading tables carry no foreign key to `users`, so this check, not the
+  schema, is what prevents that.
+- **Purge.** `relationship_refresh_jobs` has no foreign key to hang off, so
+  the purge transaction deletes the reading's refresh checkpoint itself,
+  alongside the row.
 
 Still on D1 in this candidate, for 1c.5 and 1d: the `CONTROL_PLANE` binding
 itself, the D1 migrations in `npm run dev`, and the operator commands with their

@@ -77,7 +77,7 @@ function pending(over: Partial<Manifest> = {}): Manifest {
 // Intake always commits the pending reading before enqueueing, so that is the
 // state a consumer finds. Each test gets its own tenant, an active user.
 async function seeded(manifest: Manifest | null = pending()): Promise<TestReadings> {
-  const readings = testReadingsFor(mintTenant());
+  const readings = testReadingsFor(await mintTenant());
   await insertActiveUser(testEnv, String(readings.tenant.tenantId));
   if (manifest) await readings.seed(manifest, { keyPrefix: KEY_PREFIX });
   return readings;

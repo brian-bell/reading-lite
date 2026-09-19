@@ -4,6 +4,16 @@
 // index/list.json CAS loop, the by-url pointer CAS, the purge tombstone and the
 // ledger-before-manifest ordering.
 //
+// Tenant eligibility joins those transactions (slice 1c.3). `users` lives in
+// this database, so a verb that creates or publishes rows locks the tenant's
+// user row FOR SHARE and reads `status` under that lock. `DELETE /api/account`
+// updates the same row, so it waits behind an in-flight claim or publish and
+// every later one sees `deleting`: the before/after eligibility checks the
+// consumer used to make around publish, and the compensation for the window
+// between them, are gone. Where both locks are taken the order is tenant row,
+// then reading row. The verbs that only act on a reading that already exists
+// take no tenant lock; a verb that CREATES a row needs it.
+//
 // The deletion fence is the row itself. A purged reading has no row, the lock
 // finds nothing, and the verb reports that nothing was committed. Child rows
 // cannot be recreated either: their foreign keys need the reading.
@@ -52,11 +62,16 @@ export interface NewAttempt {
   content?: AttemptContentKeys;
 }
 
-export type ClaimOutcome = { kind: "claimed" } | { kind: "owned"; ownerId: string | null };
+export type ClaimOutcome =
+  | { kind: "claimed" }
+  | { kind: "owned"; ownerId: string | null }
+  // The tenant stopped being active between admission and this transaction.
+  | { kind: "tenant_inactive" };
 
 export type StartAttemptOutcome =
   | { kind: "started" }
   | { kind: "not_found" }
+  | { kind: "tenant_inactive" }
   // The reading's active attempt is not the one the caller decided on.
   | { kind: "conflict" }
   // Same active attempt, but another writer (the relationship judge) changed
@@ -104,6 +119,10 @@ export class PublishCommitError extends Error {
 // Thrown inside claimUrl's transaction to roll back the reading it inserted.
 class UrlAlreadyOwned extends Error {}
 
+// Thrown inside claimUrl's transaction when the tenant lock shows the account
+// is no longer active: nothing it inserted survives the rollback.
+class TenantInactive extends Error {}
+
 const FOREIGN_KEY_VIOLATION = "23503";
 
 // The columns a terminal or pending write replaces. key_prefix is fixed at
@@ -126,10 +145,15 @@ export class PgReadingWriter {
   // and the job commit together or not at all, so there is no "initializing"
   // owner. A concurrent claim of the same URL waits on the unique key and then
   // sees the winner, so duplicate submissions converge on one reading.
+  //
+  // Eligibility is decided under the tenant lock, before any insert: a claim
+  // that raced `DELETE /api/account` leaves no reading, no URL row, no attempt
+  // and no job behind.
   async claimUrl(pending: Manifest, keyPrefix: string, attempt: NewAttempt): Promise<ClaimOutcome> {
     const rows = manifestToRows(pending, { tenantId: this.tenantId, keyPrefix, ownsUrl: true });
     try {
       await this.sql.transaction(async (tx) => {
+        if (!(await this.tenantIsActive(tx))) throw new TenantInactive();
         await insertReading(tx, rows.reading);
         const claimed = await tx.query(
           `INSERT INTO reading_urls (tenant_id, url_hash, reading_id) VALUES ($1, $2, $3)
@@ -141,6 +165,7 @@ export class PgReadingWriter {
       });
       return { kind: "claimed" };
     } catch (error) {
+      if (error instanceof TenantInactive) return { kind: "tenant_inactive" };
       if (!(error instanceof UrlAlreadyOwned)) throw error;
     }
     const [owner] = await this.sql.query<{ reading_id: string }>(
@@ -159,6 +184,7 @@ export class PgReadingWriter {
   // and if anything else changed, the caller must rebuild `next`.
   async startAttempt(next: Manifest, attempt: NewAttempt, seen: Manifest): Promise<StartAttemptOutcome> {
     return this.sql.transaction(async (tx) => {
+      if (!(await this.tenantIsActive(tx))) return { kind: "tenant_inactive" };
       const row = await this.lock(tx, next.id);
       if (!row) return { kind: "not_found" };
       if (row.active_attempt?.id !== seen.active_attempt?.id) return { kind: "conflict" };
@@ -214,9 +240,14 @@ export class PgReadingWriter {
   // transaction: a reader never sees a summary without its content keys, or a
   // searchable vector for a reading that is not ready.
   //
-  // The order inside the transaction is the contract: lock, ownership, URL
-  // ownership, revision, reading, relationships, embedding, attempt. Nothing is
-  // written before ownership is settled.
+  // The order inside the transaction is the contract: tenant lock, reading
+  // lock, ownership, URL ownership, revision, reading, relationships,
+  // embedding, attempt. Nothing is written before ownership is settled.
+  //
+  // The tenant lock is what makes the reading searchable or not: an ineligible
+  // tenant's reading is still stored — the attempt paid for it — but keeps no
+  // embedding, and a deletion that arrives during this transaction waits for
+  // it and then sweeps the row with the rest of the account.
   async publish(
     ref: AttemptRef & { urlHash: string },
     ready: Manifest,
@@ -225,6 +256,7 @@ export class PgReadingWriter {
     if (ready.status !== "ready") throw new Error("publish: manifest is not ready");
     const attemptId = resolveAttemptId(ref);
     return this.sql.transaction(async (tx) => {
+      const tenantActive = await this.tenantIsActive(tx);
       const row = await this.lock(tx, ref.id);
       if (!row) return { committed: false, published: false };
       const owner = attemptOwnership(row, ref);
@@ -241,9 +273,10 @@ export class PgReadingWriter {
       await this.updateReading(tx, ready, attemptId);
       await tx.query("DELETE FROM reading_relationships WHERE tenant_id = $1 AND source_id = $2", [this.tenantId, ref.id]);
       await insertRelationships(tx, this.tenantId, ref.id, rows.relationships);
-      // Only the URL's owner is searchable. A duplicate that does not own its
-      // URL is stored but keeps no vector, as it kept none in Vectorize.
-      const searchable = ownsUrl && opts.embedding !== null;
+      // Only the URL's owner is searchable, and only for an active tenant. A
+      // duplicate that does not own its URL is stored but keeps no vector, as
+      // it kept none in Vectorize.
+      const searchable = tenantActive && ownsUrl && opts.embedding !== null;
       if (searchable) {
         await upsertEmbedding(tx, this.tenantId, ref.id, opts.embedding!);
       } else {
@@ -325,6 +358,12 @@ export class PgReadingWriter {
   // cascades to the URL, revisions, relationships, embedding, attempts and
   // jobs, and is the fence that stops a late consumer from republishing. The
   // caller deletes the R2 prefix afterwards.
+  //
+  // The hosted refresh checkpoint has no foreign key to the reading (it is a
+  // control-plane row keyed by tenant and reading), so it is deleted here, in
+  // the same transaction: the reading and the work queued about it disappear
+  // together, and no later refresh delivery finds a checkpoint for a reading
+  // that is gone.
   async purge(id: string, isRunning: (row: PurgeGuardRow) => boolean): Promise<PurgeOutcome> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, id);
@@ -335,14 +374,13 @@ export class PgReadingWriter {
         [this.tenantId, id],
       );
       const embeddingRemoved = await this.deleteEmbedding(tx, id);
+      await tx.query(
+        "DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1 AND reading_id = $2",
+        [this.tenantId, id],
+      );
       await tx.query("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [this.tenantId, id]);
       return { kind: "purged", keyPrefix: row.key_prefix, urlReleased: url.length > 0, embeddingRemoved };
     });
-  }
-
-  // Compensation for a tenant that stopped being eligible around a publish.
-  async removeEmbedding(id: string): Promise<void> {
-    await this.deleteEmbedding(this.sql, id);
   }
 
   // Account wipe: every reading row the tenant owns, children by cascade.
@@ -414,6 +452,27 @@ export class PgReadingWriter {
        WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
       [this.tenantId, ref.id, resolveAttemptId(ref), JSON.stringify(checkpoint)],
     );
+  }
+
+  // The tenant's own row, locked FOR SHARE: several of these transactions may
+  // hold it at once, and `DELETE /api/account`'s status UPDATE waits for all
+  // of them. FOR SHARE, not FOR UPDATE, so a tenant's readings still claim and
+  // publish in parallel.
+  //
+  // A missing row is inactive too. Teardown deletes `users` last, after the
+  // wipe, and a request that authenticated before that can reach its claim
+  // after it. `claimUrl` INSERTs rather than locking something that already
+  // exists, so treating absence as active would let it write a reading, a URL
+  // row, an attempt and a job for a tenant that no longer exists — rows no
+  // wipe and no cron could ever find again, because they are reached through
+  // `users`. The reading tables carry no foreign key to `users`, so this
+  // check, not the schema, is what keeps that from happening.
+  private async tenantIsActive(tx: SqlQuery): Promise<boolean> {
+    const [row] = await tx.query<{ status: string }>(
+      "SELECT status FROM users WHERE id = $1 FOR SHARE",
+      [this.tenantId],
+    );
+    return row?.status === "active";
   }
 
   private async lock(tx: SqlQuery, id: string): Promise<LockedRow | null> {
