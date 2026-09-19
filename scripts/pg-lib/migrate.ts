@@ -1,9 +1,10 @@
 // Forward-only PostgreSQL migration runner (ADR 0005). Numbered SQL files in
 // db/migrations/ (migrations/ stays D1's) are applied in order, one
 // transaction per file, under a session advisory lock so two runners cannot
-// interleave. Applied files are recorded in schema_migrations with a checksum;
-// an applied file that later changes or disappears is drift, and the runner
-// refuses rather than guessing. There is no down migration.
+// interleave. Applied files are recorded in schema_migrations with a checksum
+// and name; an applied file that later changes, is renamed, or disappears is
+// drift, and the runner refuses rather than guessing. There is no down
+// migration.
 //
 // Runs over a direct connection (operators, Actions, test setup), never
 // through Hyperdrive: the advisory lock is session state.
@@ -68,6 +69,11 @@ export async function planMigrations(client: MigrationClient, files: MigrationFi
     if (!file) throw new MigrationDriftError(`Applied migration ${row.version}_${row.name} has no file`);
     if (file.checksum !== row.checksum) {
       throw new MigrationDriftError(`Applied migration ${row.version}_${row.name} changed after it was applied`);
+    }
+    if (file.name !== row.name) {
+      throw new MigrationDriftError(
+        `Applied migration ${row.version}_${row.name} was renamed to ${file.version}_${file.name}`,
+      );
     }
   }
   const done = new Set(recorded.map((row) => row.version));
