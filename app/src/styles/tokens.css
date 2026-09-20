@@ -43,6 +43,10 @@
   --font-ui: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-reading: Charter, "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
 
+  /* The reading measure: one line length that the reading column and
+     everything hung on it share. 68ch of the 16 px UI font, about 685 px. */
+  --measure: 68ch;
+
   /* 4 px spacing scale. */
   --space-1: 4px;
   --space-2: 8px;

@@ -202,7 +202,7 @@ function ReadingSurface({
   }
 
   return (
-    <div className={context ? "page reading reading-layout" : "page reading"}>
+    <div className="page reading">
       <article className="reading-column">
         <BackToLibrary className="reading-back" />
         <ReturnTrail hops={trail} />
