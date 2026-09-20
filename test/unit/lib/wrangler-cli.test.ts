@@ -78,7 +78,8 @@ describe("wrangler CLI launcher", () => {
     const spawners = [
       "scripts/corpus-lib/wrangler-r2.ts",
       "scripts/corpus-lib/wrangler-put.ts",
-      "scripts/check-corpus-lib/fetch-index.ts",
+      // check-corpus-lib/fetch-index.ts was retired with index/list.json:
+      // reading-list check queries the readings table instead.
       "scripts/ops-lib/commands/deploy-worker.ts",
       "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",

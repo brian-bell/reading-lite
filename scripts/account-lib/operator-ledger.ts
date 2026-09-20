@@ -46,7 +46,7 @@ export function operatorVectorLedger(opts: OperatorLedgerOpts): VectorLedger {
   // rather than write them un-ledgered. Callers refuse this at argument-parse
   // time (`assertOperatorLedgerAvailable`) so an operator hears about it before
   // a plan they have already accepted, not part-way through an execute.
-  return d1VectorLedger(controlPlaneDbForBucket(opts.bucket, opts.run), tenantId);
+  return d1VectorLedger(controlPlaneDbForBucket(opts.bucket), tenantId);
 }
 
 /**

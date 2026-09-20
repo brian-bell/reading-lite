@@ -10,6 +10,10 @@ import {
 import { OperatorCorpus, operatorCorpusFor, requirePgTenant, toListItem } from "../../../scripts/pg-lib/operator-corpus";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import type { ListIndexItem } from "../../../src/schemas/api";
+import {
+  CONTROL_PLANE_BY_BUCKET,
+  openControlPlaneForBucket,
+} from "../../../scripts/account-lib/control-plane";
 
 interface Recorded {
   text: string;
@@ -190,5 +194,41 @@ describe("OperatorCorpus writes", () => {
     expect(await new OperatorCorpus(sql, "usr_abc").deleteInboundRelationships("rd_gone")).toBe(3);
     expect(sql.calls[0].text).toContain("target_id = $2");
     expect(sql.calls[0].values).toEqual(["usr_abc", "rd_gone"]);
+  });
+});
+
+describe("bucket to control-plane mapping", () => {
+  // system status and system policy resolve their handle through this. Left on
+  // wrangler D1 they would report a frozen policy and write spend caps to a
+  // database no Worker binding reads — a cap the operator believes is set
+  // would never apply.
+  it("names the connection-string variable for each environment", () => {
+    expect(CONTROL_PLANE_BY_BUCKET["reading-lite"]).toEqual({
+      databaseUrlEnv: "NEON_MAIN_DATABASE_URL",
+      env: "production",
+    });
+    // Staging runs on the rehearsal branch (ADR 0005, step 0).
+    expect(CONTROL_PLANE_BY_BUCKET["reading-lite-staging"]).toEqual({
+      databaseUrlEnv: "NEON_REHEARSAL_DATABASE_URL",
+      env: "staging",
+    });
+  });
+
+  it("refuses an unmapped bucket rather than guessing an environment", () => {
+    expect(() => openControlPlaneForBucket("some-scratch-bucket", {})).toThrow(/no control-plane database/);
+  });
+
+  it("refuses an unset connection string rather than treating it as empty", () => {
+    expect(() => openControlPlaneForBucket("reading-lite", {})).toThrow(/NEON_MAIN_DATABASE_URL is not set/);
+  });
+
+  it("honours an explicit variable override", async () => {
+    const opened = openControlPlaneForBucket(
+      "reading-lite",
+      { OTHER_URL: "postgres://u:p@127.0.0.1:54329/reading_lite" },
+      "OTHER_URL",
+    );
+    expect(opened.db).toBeDefined();
+    await opened.close();
   });
 });

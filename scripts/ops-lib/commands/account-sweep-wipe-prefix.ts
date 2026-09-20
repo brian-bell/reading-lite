@@ -90,8 +90,8 @@ function scopedProgressQuery(bucket: string, tenantIds: string[]): string | null
   if (target === undefined) return null;
   const list = tenantIds.map((id) => `'${id}'`).join(", ");
   return (
-    `npx wrangler d1 execute ${target.database} --env ${target.env} --remote \\\n` +
-    "  --command \"select tenant_id, phase, updated_at_ms, completed_at_ms " +
+    `set -a; . ~/.config/reading-lite/neon.env; set +a\n` +
+    `psql "$${target.databaseUrlEnv}" -c "select tenant_id, phase, updated_at, completed_at ` +
     `from wipe_progress where tenant_id in (${list})"`
   );
 }

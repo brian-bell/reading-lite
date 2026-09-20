@@ -260,12 +260,12 @@ describe("ops account sweep-wipe-prefix", () => {
 
 
 
-  it("points the D1 query at the control plane matching the bucket", async () => {
+  it("points the offered query at the control plane matching the bucket", async () => {
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
     const { out } = await run(["--bucket", "reading-lite-staging"], storage);
 
-    expect(out).toContain("reading-lite-control-staging --env staging");
-    expect(out).not.toContain("--env production");
+    expect(out).toContain("NEON_REHEARSAL_DATABASE_URL");
+    expect(out).not.toContain("NEON_MAIN_DATABASE_URL");
   });
 
   it("offers no query at all for a bucket with no mapped control plane", async () => {
@@ -273,7 +273,7 @@ describe("ops account sweep-wipe-prefix", () => {
     const { out } = await run(["--bucket", "some-scratch-bucket"], storage);
 
     expect(out).toContain("No control-plane database is mapped");
-    expect(out).not.toContain("wrangler d1 execute");
+    expect(out).not.toContain("psql");
   });
 
   it("says so when nothing listed is a tenant-named progress record", async () => {
