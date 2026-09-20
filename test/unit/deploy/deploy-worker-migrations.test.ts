@@ -16,7 +16,9 @@ const file = (version: string, name: string): MigrationFile => ({
   checksum: version.repeat(8),
 });
 
-function deps(options: { migrateFails?: boolean; pending?: MigrationFile[]; env?: Record<string, string> } = {}) {
+function deps(
+  options: { migrateFails?: boolean; connectFails?: boolean; pending?: MigrationFile[]; env?: Record<string, string> } = {},
+) {
   const order: string[] = [];
   const out: string[] = [];
   const err: string[] = [];
@@ -26,9 +28,14 @@ function deps(options: { migrateFails?: boolean; pending?: MigrationFile[]; env?
   });
   const connect = vi.fn(async () => {
     order.push("migrations");
+    if (options.connectFails) throw new Error("connect ECONNREFUSED 10.0.0.1:5432");
     return {
       async query(text: string) {
-        if (options.migrateFails) throw new Error("relation \"readings\" does not exist");
+        // Fail on the migration's own SQL only, so the apply path is what
+        // breaks — not the read-only plan that precedes it.
+        if (options.migrateFails && (options.pending ?? []).some((file) => file.sql === text)) {
+          throw new Error('relation "readings" does not exist');
+        }
         // planMigrations' probe; an absent table means nothing is applied yet.
         if (text.includes("to_regclass")) return { rows: [{ present: false }] };
         return { rows: [] };
@@ -59,13 +66,30 @@ describe("ops deploy worker migrations", () => {
     expect(out.join("\n")).toContain("[DEPLOY] applied 0006_reading_source_date");
   });
 
-  it("aborts the deploy when a migration fails, with nothing uploaded", async () => {
+  it("aborts the deploy when the migration's own SQL fails, with nothing uploaded", async () => {
     const { built, err, runWrangler } = deps({ migrateFails: true, pending: [file("0006", "reading_source_date")] });
     expect(
       await deployWorkerCommand.run(["--env", "production", "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], built),
     ).toBe(1);
     expect(runWrangler).not.toHaveBeenCalled();
+    expect(err.join("\n")).toContain("Migration 0006_reading_source_date failed");
     expect(err.join("\n")).toContain("[DEPLOY] migrations FAILED; nothing uploaded.");
+  });
+
+  it("aborts the deploy when the database is unreachable", async () => {
+    const { built, err, runWrangler } = deps({ connectFails: true, pending: [file("0006", "reading_source_date")] });
+    expect(
+      await deployWorkerCommand.run(["--env", "production", "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], built),
+    ).toBe(1);
+    expect(runWrangler).not.toHaveBeenCalled();
+    expect(err.join("\n")).toContain("[DEPLOY] migrations FAILED; nothing uploaded.");
+  });
+
+  it("still dry-runs the build when a plan cannot reach the database", async () => {
+    const { built, err, runWrangler } = deps({ connectFails: true });
+    expect(await deployWorkerCommand.run(["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"], built)).toBe(0);
+    expect(err.join("\n")).toContain("continuing with the build dry-run");
+    expect(runWrangler).toHaveBeenCalledWith(["deploy", "--env", "staging", "--dry-run"]);
   });
 
   it("refuses --execute when the named variable is unset, before uploading", async () => {

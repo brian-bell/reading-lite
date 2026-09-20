@@ -104,7 +104,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       deps.io.stderr("[DEPLOY] OVERRIDE: operator acknowledges target tenant migration and deletion eligibility were verified manually for this deployment.");
     }
   } else {
-    deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and R2/Vectorize resource creation metadata before upload; no remote readiness check has run.");
+    deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and R2/Vectorize resource creation metadata before upload; no remote readiness check has run. The database is read below, for the pending migrations only.");
   }
 
   // The last gate before the upload: the database must be at the head of
@@ -127,8 +127,13 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       connect: deps.connect,
     });
     if (migrations !== 0) {
-      deps.io.stderr(`[${mode}] migrations FAILED; nothing uploaded.`);
-      return 1;
+      if (execute) {
+        deps.io.stderr("[DEPLOY] migrations FAILED; nothing uploaded.");
+        return 1;
+      }
+      // A plan's job is the config and build dry-run. An unreachable database
+      // must not take that away: report it and carry on.
+      deps.io.stderr("[PLAN] could not read pending migrations; continuing with the build dry-run.");
     }
   }
 

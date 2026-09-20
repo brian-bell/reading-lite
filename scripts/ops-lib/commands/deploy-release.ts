@@ -23,9 +23,9 @@ Worker deployment (readiness, tenant activation, migrations, upload). No SPA or 
 changes. Does not grant an activation override. Plan performs reads only.`,
   defaultDeps: io => ({
     io, read: path => readFile(path, "utf8"), provenance: captureProvenance,
-    wipe: sha => deployWipeCheckCommand.run(["--release-sha", sha], deployWipeCheckCommand.defaultDeps(io)),
-    // Same production connection string the wipe check reads; the deploy
-    // applies pending migrations through it before the upload.
+    // Both steps name the same variable deliberately: the wipe gate must count
+    // wipes in the database the deploy is about to migrate, not another one.
+    wipe: sha => deployWipeCheckCommand.run(["--release-sha", sha, "--database-url-env", "PRODUCTION_DATABASE_URL"], deployWipeCheckCommand.defaultDeps(io)),
     deploy: sha => deployWorkerCommand.run(["--env", "production", "--release-sha", sha, "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], deployWorkerCommand.defaultDeps(io)),
   }),
   async run(argv, deps) {

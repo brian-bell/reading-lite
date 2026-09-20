@@ -537,8 +537,25 @@ npm run ops -- deploy worker --env production --execute \
   --database-url-env NEON_MAIN_DATABASE_URL
 ```
 
-In Actions the string comes from the `PRODUCTION_DATABASE_URL` secret instead
-(see "GitHub repository secrets" below).
+`PRODUCTION_DATABASE_URL` and `STAGING_DATABASE_URL` are the **Actions** names:
+the deploy workflow supplies the first from a repository secret. Nothing sets
+them on a laptop, so the examples below that use them are the CI spelling. When
+running the same commands by hand, pass the `NEON_*` name for that environment
+instead — except `ops deploy release`, which hardcodes
+`PRODUCTION_DATABASE_URL` for both its wipe check and its deploy, so an
+operator running it exports that one:
+
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+export PRODUCTION_DATABASE_URL="$NEON_MAIN_DATABASE_URL"
+```
+
+Migrations commit before the upload, and `db/migrations/` is forward-only with
+no down migration. A failure *after* the migrations — most realistically the
+route-publish failure documented under "Captain-only DNS / Pages / token" —
+therefore leaves the new schema live under the old Worker. Keep each migration
+compatible with the release it replaces (add columns and tables; do not drop,
+rename or tighten one the previous Worker still reads) so that window is safe.
 
 #### Tenant-mode activation guard
 
@@ -570,7 +587,7 @@ expected. Record the evidence with the operational work, then explicitly use:
 
 ```sh
 npm run ops -- deploy worker --env staging --execute \
-  --database-url-env STAGING_DATABASE_URL --acknowledge-tenant-migration
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --acknowledge-tenant-migration
 ```
 
 Use `--env production` for a reviewed production activation. The acknowledgement
@@ -601,11 +618,11 @@ Staging:
 ```sh
 cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
-# STAGING_DATABASE_URL is a direct connection string for the staging database.
-npm run ops -- db migrate --database-url-env STAGING_DATABASE_URL --execute
+# After `set -a; . ~/.config/reading-lite/neon.env; set +a` (step 0).
+npm run ops -- db migrate --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
 npm run ops -- deploy worker --env staging --execute \
-  --database-url-env STAGING_DATABASE_URL
+  --database-url-env NEON_REHEARSAL_DATABASE_URL
 npm run ops -- deploy web --branch staging --execute
 ```
 
@@ -622,7 +639,7 @@ Production is the same sequence with `reading-lite-control`, `--env production`,
 npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
 npm run ops -- deploy worker --env production --execute \
-  --database-url-env PRODUCTION_DATABASE_URL
+  --database-url-env NEON_MAIN_DATABASE_URL
 npm run ops -- deploy web --branch main --execute
 ```
 
@@ -998,7 +1015,7 @@ Deploying the frontend:
   Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute --database-url-env
-  STAGING_DATABASE_URL`), then run the
+  NEON_REHEARSAL_DATABASE_URL`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
 - **Build check.** Both workflows run `app/scripts/check-build.ts` between
   build and deploy. It refuses a build whose environment, name, routes, or
