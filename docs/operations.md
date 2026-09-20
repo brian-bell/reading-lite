@@ -220,13 +220,14 @@ operator work and its accepted limits. Fresh repairs require a reviewed plan.
 ```sh
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
 npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
 ```
 
 The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
-records, ledger rows (including `delete_submitted` rows from individual purges),
-a namespace query, a full vector ID inventory, per-reading vector observations,
-and every D1 table touched by teardown. `account_deletions` is expected retained
+records, a namespace query, a full vector ID inventory, per-reading vector
+observations for the tenant's ready readings, and every table touched by
+teardown. The two ledger sources are gone with the ledger, and
+`account audit-bare-vectors` is retired: `reading_embeddings` has a foreign
+key to `readings`, so a bare vector is unrepresentable. `account_deletions` is expected retained
 audit evidence. Its `first_completed_at_ms` / `first_residue` describe history;
 `residue = 1` in that record is not a measurement of today's namespace. An audit
 row is written *before* teardown and does not itself prove teardown completed.
@@ -279,8 +280,6 @@ For an approved staging repair, first pause and drain **all** realtime and
 offline writers and wipe/teardown jobs. Hold that pause across all passes:
 
 ```sh
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging --execute --confirm "$TENANT" --sole-writer
 ```
 
 `--sole-writer` asserts that pause; the CLI cannot acquire a distributed lock.
@@ -322,7 +321,6 @@ and record DO/visibility limitations separately. For production preparation,
 use the same commands with `--bucket reading-lite`, beginning with these reads:
 
 ```sh
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite
 npm run ops -- account residue-scan --all-deleted --bucket reading-lite
 ```
@@ -426,6 +424,49 @@ local and for the retained pre-tenant objects both deployed environments still
 carry.
 
 ### Secrets
+
+#### The operator's connection strings
+
+Operator commands reach PostgreSQL over a **direct** connection string, never
+Hyperdrive: Hyperdrive is the Worker's pooled path and pools in transaction
+mode, so session state — advisory locks, `SET`, a long-lived `READ ONLY`
+transaction — does not survive between statements, and operator work wants a
+session.
+
+The laptop copy lives outside the repository, at
+`~/.config/reading-lite/neon.env`, holding the three Neon branch strings (ADR
+0005, step 0):
+
+| Variable | Neon branch | Environment |
+|---|---|---|
+| `NEON_MAIN_DATABASE_URL` | `main` | production |
+| `NEON_REHEARSAL_DATABASE_URL` | `rehearsal` | staging, and the #349 cutover rehearsal |
+| `NEON_DEV_DATABASE_URL` | `dev` | scratch work off a laptop |
+
+Source it per command rather than exporting it from a shell profile, so a
+stale export cannot point a later command at the wrong database:
+
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- corpus audit --tenant "$TENANT" --database-url-env NEON_MAIN_DATABASE_URL --execute
+```
+
+Every command that needs one takes `--database-url-env NAME`, defaulting to
+`DATABASE_URL`. The **name** is the flag, never the string: a connection string
+on a command line reaches shell history and `ps`. **No connection string enters
+the repository.**
+
+Two guards depend on this naming. A command that deletes rows refuses a
+`--bucket` and a `--database-url-env` that name different environments, because
+the bucket no longer determines where the delete lands; and `ops deploy worker`
+refuses an `--env` that disagrees with the database whose migrations it is
+about to apply. Both only fire on mapped names — an unmapped variable, which
+the `DATABASE_URL` default is, is left alone, so local runs still work. That is
+why `corpus drop --allow-ready` insists on a mapped one.
+
+GitHub Actions holds the production string as the `PRODUCTION_DATABASE_URL`
+secret. One secret, two readers: the deploy wipe gate counts unfinished wipes,
+and the deploy applies pending migrations before the upload.
 
 Runtime Worker secrets (`wrangler secret put --env staging|production`):
 
@@ -1220,7 +1261,7 @@ nothing if you get them wrong:
   query below quietly miss.
 - **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
   (`src/services.ts` `ID_ALPHABET`, no `I`, `L`, `O`, `U`). An id outside it is
-  skipped by `ops corpus seed-vector-ledger`'s walk, so the objects phase still
+  skipped by the retired ledger seeder's walk, so the objects phase still
   deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
   exist for it. The vector is stranded, and surfaces at the end as residue, a
   synthetic reproduction of the issue #261 gap rather than a wipe bug.
@@ -1442,19 +1483,23 @@ first complete calibration run, its costs, and the retained thresholds.
 |---|---|
 | `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
 | `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
-| `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
-| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
-| `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
+| `npm run ops -- corpus drop` | remove readings by URL or id: the captured content in R2, then the row, which cascades URL ownership, revisions, relationships, attempts and the embedding |
+| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest; their embeddings go with them) |
 | `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
-| `npm run ops -- corpus backfill-source-date` | fill missing `manifest.source_date` by re-running `readabilityFromHtml` over stored `raw.html` (no refetch; writes only that field; `--via` / `CORPUS_R2_*` like refresh-neighbours — S3 keys alone are enough) |
-| `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
-| `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
-| `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
-| `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
+| `npm run ops -- corpus purge-connections` | remove the connections and tensions that name one already-deleted reading as their target (one statement; plan-first) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
+
+Nine commands retired with the storage they repaired — `corpus rebuild-list`,
+`seed-vector-ledger`, `backfill-vectors`, `backfill-similarity`,
+`backfill-source-date`, `normalize-tags`, `delete-orphans`, and `account
+audit-bare-vectors`, with `account sweep-wipe-prefix` surviving only until
+#351. [Operator tooling](operator-tooling.md) records which and why: the state
+each repaired cannot occur now. There is no list index to rebuild, no vector
+ledger, and a ready reading cannot lack an embedding, because publication
+writes the reading and its embedding in one transaction and the embedding
+cascades with it.
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
 examples below all select the founder tenant. Since the production cutover, new
@@ -1505,7 +1550,7 @@ Both paths write a byte-identical `refresh-report.json`, and each flushes
 `index/list.json` through its own client, so a direct run needs no wrangler auth
 at all.
 
-`corpus backfill-source-date` uses the same `--via` flag, credential auto-select,
+`corpus refresh-neighbours` uses a `--via` flag, credential auto-select,
 and `Storage:` header, but it is R2-only: `CORPUS_R2_*` S3 keys alone take the
 direct path. It does not query Vectorize, so a `CORPUS_CF_API_TOKEN` that 403s
 on the wrangler Workers R2 route is not required. `--via direct` forces that
@@ -1625,7 +1670,7 @@ moves. The scope and its reason are printed
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
 first run, a deleted one, or one written before this check existed, the marker
 is version 2 and a version-1 marker is rejected with a message that says so), a
-marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
+marker invalidated by a vector repair, a reading the marker recorded
 that has since left the list (a purge names nothing a timestamp can find), a
 failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
@@ -1688,7 +1733,7 @@ A purge and a Vectorize-only write used to be on that list and are not any more.
 The marker records the list ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
 (Every id, not just the ready ones: a non-ready row can still own an indexed
-vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
+vector, so its removal moves neighbourhoods too.) And a restored embedding
 stamps `invalidated_by` on the marker before its first upsert, and again, with
 a different value, after its last, so the next pass sweeps on its own. That
 marker is the only R2 object it writes, and it needs an R2 write credential for
@@ -1817,7 +1862,7 @@ has migrated R2 but not yet re-upserted the vectors leaves every ready reading
 vectorless, which is what this condition is built to notice. Every sweep will
 exit 1 for the length of such a window, while the nightly `--since-last-run`
 may well go quiet, since a cutover moves no list rows, so pause the schedule or
-finish the re-upsert (`corpus backfill-vectors`) before relying on either.
+finish the re-upsert before relying on either.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -1903,7 +1948,7 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 | 0 | Nothing outstanding. | nobody |
 | 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator, re-run, or fix the index/credentials first |
 | 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator, fix the invocation |
-| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone, repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+| 3 | The pass itself completed, but specific readings need a human: no embedding, or a manifest that fails `ManifestSchema`. | someone, repair those readings (`corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It
 can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
@@ -2161,19 +2206,11 @@ production `--execute`: the Worker parses every manifest it reads with
 `.strip()`, so an older Worker rewriting a manifest (a reprocess or a
 preserve-and-roll-forward) would silently drop the field.
 
-`ops corpus rebuild-list` re-projects every indexed manifest through
-`manifestToIndexItem` and writes `index/list.json`. Use it after deploying a
-Worker that added list-row fields (keywords, for `q` search) so existing
-readings become searchable without a paid reprocess. Dry-run by default;
-`--execute` requires `--sole-writer` because the rewrite is a plain put.
-
-```sh
-npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite
-npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite --execute --sole-writer
-```
-
-Deploy the new Worker **before** the production rewrite. An old Worker that
-later commits a terminal manifest would strip the new fields off that row.
+`ops corpus rebuild-list` is retired. It re-projected every manifest into
+`index/list.json` so a Worker that added a list-row field (keywords, for `q`
+search) could see existing readings without a paid reprocess. The library is a
+query over `readings` now, so a new column is a migration and every reading
+has it at once; there is no second copy of the row to fall behind.
 
 ### Purging connections to a deleted reading
 
