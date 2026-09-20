@@ -101,5 +101,7 @@ changes nothing. Confirm the target set, then re-run with `--execute`.
 ## Related
 - **`corpus-audit`** — find what's broken first (it surfaces the ids/URLs).
 - **`corpus-recover`** — try to *fix* recoverable readings instead of dropping.
-- **`corpus-delete-orphans`** — the original, audit-driven bulk variant
-  (`--ids`/orphan-dup mode). `corpus-drop` is the ad-hoc URL-or-id front-end.
+- **`corpus-audit`** — finds the orphan-duplicate copies worth dropping in
+  bulk. (`corpus delete-orphans`, the audit-driven bulk variant, is retired: a
+  unique `reading_urls` row per tenant makes an orphan-duplicate claim
+  unrepresentable.)

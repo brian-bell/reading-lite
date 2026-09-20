@@ -104,14 +104,20 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   // is a row delete against --database-url-env, which the bucket does not
   // determine. Refuse a pair that names two different environments.
   assertBucketAndDatabaseAgree(opts.bucket, opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET);
-  if (opts.allowReady) {
-    // The agreement check above is inert when the variable is unmapped, which
-    // the default DATABASE_URL is — so --bucket reading-lite-staging with a
-    // production string in DATABASE_URL would pass both guards and delete
-    // ready production rows.
+  if (opts.execute) {
+    // Every execute, not just --allow-ready. The agreement check above is
+    // inert when the variable is unmapped, which the default DATABASE_URL is,
+    // and a bucket/database mismatch is unrecoverable even for a non-ready
+    // drop: listItems returns the DATABASE's rows, contentKeysForDrop returns
+    // that reading's key prefixes, and deleteObject runs them against the
+    // OTHER environment's bucket. Every key comes back "absent", which reads
+    // as success, so failedHere is 0, the row is deleted, and the real bytes
+    // are stranded with nothing left to name them — the exact outcome the
+    // objects-before-row ordering exists to prevent, and one no re-run can
+    // retry once the row is gone.
     requireNamedDatabase(opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET, {
       local: !opts.remote,
-      because: "--allow-ready drops live library entries",
+      because: "corpus drop deletes content and then the row",
     });
   }
 

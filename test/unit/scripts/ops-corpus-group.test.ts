@@ -80,7 +80,7 @@ describe("ops corpus drop", () => {
 
   it("deletes the content, then the row", async () => {
     const { deps, deletedRows, deletedKeys, lines } = dropDeps([FAILED_ITEM]);
-    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--execute"], deps);
+    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--local", "--execute"], deps);
     expect(code).toBe(0);
     expect(deletedKeys).toEqual(["readings/rd_f/revisions/at_1/raw.html"]);
     expect(deletedRows).toEqual(["rd_f"]);
@@ -94,7 +94,7 @@ describe("ops corpus drop", () => {
       keys: { rd_f: ["k1", "k2"] },
       deleteResult: (key) => (key === "k2" ? "error" : "deleted"),
     });
-    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--execute"], deps);
+    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--local", "--execute"], deps);
     expect(code).toBe(1);
     expect(deletedRows).toEqual([]);
     expect(lines.join("\n")).toContain("keeping row rd_f");
@@ -106,14 +106,14 @@ describe("ops corpus drop", () => {
       keys: { rd_f: ["bad"], rd_g: ["good"] },
       deleteResult: (key) => (key === "bad" ? "error" : "deleted"),
     });
-    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "rd_g", "--execute"], deps);
+    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "rd_g", "--local", "--execute"], deps);
     expect(code).toBe(1);
     expect(deletedRows).toEqual(["rd_g"]);
   });
 
   it("treats an already-deleted row as a successful no-op", async () => {
     const { deps, lines } = dropDeps([FAILED_ITEM], { missingRows: ["rd_f"] });
-    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--execute"], deps);
+    const code = await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--local", "--execute"], deps);
     expect(code).toBe(0);
     expect(lines.join("\n")).toContain("already gone  row rd_f");
   });
@@ -156,10 +156,27 @@ describe("ops corpus drop", () => {
     const { deps } = dropDeps([READY_ITEM]);
     await expect(
       corpusDropCommand.run(
-        ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging"],
+        ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging", "--execute"],
         deps,
       ),
     ).rejects.toThrow(/must name the database it means/);
+  });
+
+  // Not just --allow-ready. A non-ready drop with a mismatched pair reads the
+  // database's rows, deletes their keys against the OTHER bucket (every one
+  // "absent", which looks like success), and then deletes the row — stranding
+  // the real bytes with nothing left to name them, unrecoverably.
+  it("refuses any execute on the unmapped default variable", async () => {
+    const { deps, deletedRows } = dropDeps([FAILED_ITEM]);
+    await expect(
+      corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--bucket", "reading-lite-staging", "--execute"], deps),
+    ).rejects.toThrow(/must name the database it means/);
+    expect(deletedRows).toEqual([]);
+  });
+
+  it("plans on the default variable, because a plan deletes nothing", async () => {
+    const { deps } = dropDeps([FAILED_ITEM]);
+    expect(await corpusDropCommand.run(["--tenant", TENANT, "rd_f"], deps)).toBe(0);
   });
 
   // --local pins the database to this machine separately, so requiring a

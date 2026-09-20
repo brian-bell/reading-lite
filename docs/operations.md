@@ -110,10 +110,10 @@ tenant. A finished wipe whose prefix gains objects again is reopened from
 `rows` with a fresh continuation count.
 
 Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
-namespace probe or unbound-index gate on this path; the ledger module itself is
-operator-only now (`scripts/account-lib/vector-ledger.ts`, still on wrangler
-D1 for the Vectorize-era `corpus` and `account` commands, which
-reading-lite-gh347.4 ports or retires). Vectors written to Vectorize
+namespace probe or unbound-index gate on this path, and none on the operator
+side either: migration 0003 deliberately does not recreate `vector_ledger`, so
+the ledger modules and the two commands that wrote to them are gone
+(docs/operator-tooling.md). Vectors written to Vectorize
 before cutover are left to its retirement at cutover. A PostgreSQL wipe always
 completes with
 `residue=false`; the column keeps the history imported from D1.
@@ -571,7 +571,8 @@ An intentionally empty new environment needs verification that no corpus is
 expected. Record the evidence with the operational work, then explicitly use:
 
 ```sh
-npm run ops -- deploy worker --env staging --execute --acknowledge-tenant-migration
+npm run ops -- deploy worker --env staging \
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --execute --acknowledge-tenant-migration
 ```
 
 Use `--env production` for a reviewed production activation. The acknowledgement
@@ -999,7 +1000,8 @@ Deploying the frontend:
   SPA, which keeps deploying to Pages so the rollback target stays current.
   Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
-  (`npm run ops -- deploy worker --env staging --execute`), then run the
+  (`npm run ops -- deploy worker --env staging --database-url-env
+  NEON_REHEARSAL_DATABASE_URL --execute`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
 - **Build check.** Both workflows run `app/scripts/check-build.ts` between
   build and deploy. It refuses a build whose environment, name, routes, or

@@ -274,9 +274,10 @@ seven days fail the recent-search path. See [source recovery](docs/operations.md
 
 Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
 (`readinglite.ai`, `readinglite.app`, and `next.readinglite.ai`) under a shared
-release lock with stale-commit checks. Worker deployment no longer deploys
-schema: apply PostgreSQL migrations with `ops db migrate` against the target
-database first (`ops deploy worker` folds that in at reading-lite-gh347.4). The
+release lock with stale-commit checks. Worker deployment applies the commit's
+pending PostgreSQL migrations before the upload and refuses the upload if it
+cannot, so `--execute` requires a `--database-url-env` that names the target
+environment. The
 workflow checks unfinished wipes and wipe queues, reading `wipe_progress` from
 PostgreSQL over the `PRODUCTION_DATABASE_URL` secret; a direct
 `ops deploy worker` invocation does not run that separate wipe check.

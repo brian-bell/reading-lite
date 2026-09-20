@@ -71,10 +71,26 @@ describe("ops deploy worker", () => {
 
     it("plans migrations without applying them, and still dry-runs the deploy", async () => {
       const { deps, err, migrated, runs } = makeDeps();
-      expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
-      expect(migrated).toEqual([{ env: "DATABASE_URL", execute: false }]);
+      expect(
+        await deployWorkerCommand.run(
+          ["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"],
+          deps,
+        ),
+      ).toBe(0);
+      expect(migrated).toEqual([{ env: "STAGING_DATABASE_URL", execute: false }]);
       expect(runs[0]).toContain("--dry-run");
       expect(err.join("\n")).toContain("migrations");
+    });
+
+    // A plan on an unmapped variable lists no migrations — they would describe
+    // a database --execute will not touch — but still dry-runs wrangler,
+    // because the config and build check has nothing to do with the database.
+    it("plans no migrations on an unmapped variable, but still dry-runs", async () => {
+      const { deps, err, migrated, runs } = makeDeps();
+      expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
+      expect(migrated).toEqual([]);
+      expect(runs[0]).toContain("--dry-run");
+      expect(err.join("\n")).toContain("execute would refuse here");
     });
 
     // A deploy that cannot prove the schema is current must not ship code

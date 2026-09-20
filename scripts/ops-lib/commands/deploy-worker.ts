@@ -148,23 +148,21 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   // An earlier version of this guard only compared mapped names and so was
   // inert on every real invocation: CI passes PRODUCTION_DATABASE_URL and the
   // default is DATABASE_URL, neither of which it knew.
-  if (named === null && execute) {
-    deps.io.stderr(
-      `[${mode}] migrations: REFUSED. ${databaseUrlEnv} does not name a deploy database. ` +
-        `Pass --database-url-env ${DEPLOY_DATABASE_URL_ENVS[env].join(" or ")}.`,
-    );
-    return 2;
-  }
-  if (named !== null && named !== env) {
-    deps.io.stderr(
-      `[${mode}] migrations: REFUSED. --env ${env} but ${databaseUrlEnv} is the ${named} database.`,
-    );
+  const refusal =
+    named === null
+      ? `${databaseUrlEnv} does not name a deploy database. Pass --database-url-env ${DEPLOY_DATABASE_URL_ENVS[env].join(" or ")}.`
+      : named !== env
+        ? `--env ${env} but ${databaseUrlEnv} is the ${named} database.`
+        : null;
+  if (refusal !== null) {
+    deps.io.stderr(`[${mode}] migrations: REFUSED. ${refusal}`);
     if (execute) return 2;
-    // Plan mode stops here too. Falling through would list the migrations of
-    // the database it just refused, so the plan would describe work --execute
-    // will not do.
-    deps.io.stderr("[PLAN] execute would refuse here; not listing migrations or dry-running the deploy.");
-    return 0;
+    // Plan mode skips the migration listing but still dry-runs wrangler.
+    // Listing would describe a database --execute will not touch, which is
+    // the trap; the dry-run validates config and build, which has nothing to
+    // do with the database and is worth keeping.
+    deps.io.stderr("[PLAN] execute would refuse here; not listing migrations.");
+    return deps.runWrangler(wranglerArgs);
   }
   try {
     const outcome = await deps.migrateDatabase(databaseUrlEnv, execute);
