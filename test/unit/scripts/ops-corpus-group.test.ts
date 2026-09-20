@@ -1,5 +1,5 @@
 import { BILLING_TENANT, spendHarness } from "../../helpers/operator-spend";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { corpusDropCommand, type CorpusDropDeps } from "../../../scripts/ops-lib/commands/corpus-drop";
 import { corpusSweepCommand, type CorpusSweepDeps } from "../../../scripts/ops-lib/commands/corpus-sweep";
 import { corpusIngestCommand, type CorpusIngestDeps } from "../../../scripts/ops-lib/commands/corpus-ingest";
@@ -285,6 +285,16 @@ describe("ops corpus sweep", () => {
 });
 
 describe("ops corpus ingest", () => {
+  // A real tenant needs somewhere to record vector-ledger rows, and that is
+  // now a connection string rather than a wrangler session. The parse-time
+  // assert refuses without it, so the harness supplies one.
+  beforeEach(() => {
+    vi.stubEnv("NEON_MAIN_DATABASE_URL", "postgres://u:p@127.0.0.1:54329/reading_lite");
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   function makeDeps() {
     const { io: cio, lines } = io();
     const calls = {
@@ -478,6 +488,18 @@ describe("ops corpus ingest", () => {
       expect(spend.openSpend).toHaveBeenCalledWith("production");
       expect(paid.map((p) => p.spend.tenantId)).toEqual([payer]);
       expect(spend.dispose).toHaveBeenCalledOnce();
+    });
+
+    // The batch's first ledger write is inside the write phase, after the paid
+    // submit and poll. Discovering an unset connection string there means
+    // paying for work that cannot be recorded.
+    it("refuses a real tenant with no connection string, before any spend session", async () => {
+      vi.stubEnv("NEON_MAIN_DATABASE_URL", "");
+      const { deps, spend, lines } = makeDeps();
+      deps.loadSidecar = async () => null;
+      expect(await corpusIngestCommand.run(["--tenant", TENANT, ...EXECUTE], deps)).toBe(2);
+      expect(lines.join("\n")).toMatch(/NEON_MAIN_DATABASE_URL is not set/);
+      expect(spend.openSpend).not.toHaveBeenCalled();
     });
 
     it.each([

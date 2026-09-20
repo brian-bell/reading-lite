@@ -1,35 +1,37 @@
 ---
 name: corpus-sweep
-description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which by-url ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest including their Vectorize vectors — so it works on ready readings, which corpus-drop refuses. Also drops an operator-asserted pair (--drop/--keep) for readings that share material but are genuinely different resources, which no URL rule can pair. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
+description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which per-URL ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest — so it works on ready readings, which corpus-drop refuses. Also drops an operator-asserted pair (--drop/--keep) for readings that share material but are genuinely different resources, which no URL rule can pair. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
 ---
 
 # corpus-sweep
 
 Reconciles **duplicate readings of the same resource** and drops the redundant
-copies completely — R2 objects, by-url pointer, list entry, and Vectorize
-vector.
+copies completely: the captured content in R2, then the row, which takes the
+URL ownership, revisions, relationships and embedding with it.
 
 **Dry-run by default. It only writes with `--execute`.**
 
 ## The gap it fills
 
-By-url ownership (`index/by-url/{sha256(url)}`) is keyed on the *exact*
-submitted URL. So `https://youtu.be/X` and `https://www.youtube.com/watch?v=X`
-claim two different slots, the eager claim never collides, and both readings
-reach `ready`. Nothing in the write path can tell they are one video.
+URL ownership is keyed on the *exact* submitted URL. So `https://youtu.be/X`
+and `https://www.youtube.com/watch?v=X` claim two different rows, the unique
+constraint never fires, and both readings reach `ready`. Nothing in the write
+path can tell they are one video.
 
-`corpus-drop` can't fix that: it matches selectors by exact URL equality, and it
-refuses `ready` readings on production because a ready reading owns a Vectorize
-embedding a blind drop would dangle.
+`corpus-drop` can't fix that: it matches selectors by exact URL equality, and
+it refuses `ready` readings because a ready reading is a live library entry.
 
 Sweep goes where drop won't, because it carries a stronger invariant than
 "never touch ready":
 
 1. A drop is only ever proposed **as part of a group that keeps a survivor** —
    the resource never leaves the corpus entirely.
-2. Every ready drop's **vector is deleted with it**, before its objects. If the
-   vector delete fails, the reading's objects are left alone and the sweep stays
-   re-runnable rather than stranding a vector.
+2. Every drop's **embedding and relationships go with it**, in the same
+   transaction as the row. The sweep used to probe Vectorize per drop and
+   delete the vector first, because a vector outliving its reading was the one
+   inconsistency it could create; the cascade makes that unrepresentable. What
+   remains is content in R2, deleted before the row, so a failed object delete
+   keeps that reading and the sweep stays re-runnable.
 
 ## What counts as the same resource
 
@@ -106,11 +108,14 @@ npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 --execute
 npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
-Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
-`READING_LITE_BUCKET` env, then `reading-lite`), `--vectorize <index>` (defaults
-to the bucket name — they match in every environment), `--local`, `--execute`,
-`--help`.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is **refused**: it addressed the pre-tenant R2 key root, which has no PostgreSQL representation.
+
+Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable),
+`--database-url-env` (default `DATABASE_URL`), `--bucket` (captured content;
+default `READING_LITE_BUCKET` env, then `reading-lite`), `--local` (local
+miniflare bucket, and a local database), `--execute`, `--help`.
+
+`--vectorize` is gone: there is no second store to keep in step.
 
 Errors, rather than guessing, when a selector names something that is not part
 of any duplicate group, or when `--keep` names two ids in the same group.
@@ -133,7 +138,7 @@ reading.
 To refresh the measured score (no LLM call, no re-summarization, no tag churn):
 
 ```bash
-npm run ops -- corpus backfill-similarity --tenant "$TENANT" rd_KEEPER --rescore --execute
+npm run ops -- corpus refresh-neighbours --tenant "$TENANT" rd_KEEPER --sole-writer --execute
 ```
 
 The `novelty_verdict` label itself only refreshes on a **reprocess**, which
@@ -143,22 +148,28 @@ which is the more granular signal anyway.
 
 ## Prerequisites
 
-A Cloudflare session that can read **and write** R2 *and* Vectorize:
-`wrangler login`, or `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`).
+A direct PostgreSQL connection string, and a Cloudflare session that can read
+**and write** R2 (`wrangler login`, or `CLOUDFLARE_API_TOKEN` +
+`CLOUDFLARE_ACCOUNT_ID`).
 
-Run it when nothing is being submitted: the `index/list.json` rewrite is a plain
-put, not a CAS write, so a concurrent queue write could be lost.
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+```
+
+Then pass `--database-url-env NEON_MAIN_DATABASE_URL` (the default is
+`DATABASE_URL`).
 
 ## Always dry-run first
 
 The default run prints every group, the keeper and why it won, and every object
-and vector it would delete — and changes nothing. Confirm the keeper choices,
+and row it would delete — and changes nothing. Confirm the keeper choices,
 then re-run with `--execute`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-sweep.ts` (via `scripts/ops.ts`)
 - Pure planner (tested): `scripts/corpus-lib/sweep.ts`
-- R2/Vectorize read/delete/put: `scripts/corpus-lib/wrangler-r2.ts`
+- Corpus reads and row deletes: `scripts/pg-lib/operator-corpus.ts`
+- R2 object delete: `scripts/corpus-lib/wrangler-r2.ts`
 - Tests: `test/unit/corpus/sweep.test.ts` (node project)
 
 ## Related

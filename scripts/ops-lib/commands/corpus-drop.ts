@@ -21,12 +21,14 @@
 import { resolveDropTargets, shouldDeleteRow } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import {
+  assertBucketAndDatabaseAgree,
   DATABASE_URL_ENV_DEFAULT,
   DATABASE_URL_ENV_HELP,
   operatorDatabaseUrl,
   requireLocalDatabase,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
+import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 import { operatorCorpusFor, type CorpusDropView } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -93,6 +95,10 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   if (opts.allowReady && opts.bucket === "reading-lite") {
     throw new UsageError("refusing --allow-ready against production bucket reading-lite");
   }
+  // The bucket guard above is not sufficient on its own: the destructive act
+  // is a row delete against --database-url-env, which the bucket does not
+  // determine. Refuse a pair that names two different environments.
+  assertBucketAndDatabaseAgree(opts.bucket, opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET);
 
   const tenant = requireOperatorTenant(opts.tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };

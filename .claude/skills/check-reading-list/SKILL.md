@@ -1,6 +1,6 @@
 ---
 name: check-reading-list
-description: Mark which entries of a reading-list JSON export are already in the reading-lite corpus. Reads index/list.json straight from the R2 bucket via wrangler and stamps each entry with "processed": true|false. Use when triaging a Chrome reading-list / bookmarks JSON export before importing, or to find what still needs submitting.
+description: Mark which entries of a reading-list JSON export are already in the reading-lite corpus. Queries the tenant's readings over a direct PostgreSQL connection and stamps each entry with "processed": true|false. Use when triaging a Chrome reading-list / bookmarks JSON export before importing, or to find what still needs submitting.
 ---
 
 # check-reading-list
@@ -23,15 +23,14 @@ as-is). This matches Chrome's reading-list export, e.g.:
 
 ## How membership is decided
 
-- The corpus is read directly from R2: `wrangler r2 object get
-  <bucket>/index/list.json --remote --pipe`. That file lists every reading with
-  its `url` and `status`.
-- An entry is `processed: true` only when its URL appears in `index/list.json`
-  with status **`ready`** (successfully summarized). `pending`/`failed` count as
+- The corpus is read with one query against the tenant's `readings`, which
+  carries every reading's `url` and `status`.
+- An entry is `processed: true` only when its URL appears in that tenant's
+  corpus with status **`ready`** (successfully summarized). `pending`/`failed` count as
   not processed — they are still re-submittable. Override with `--status` /
   `--any-status`.
-- Matching is **exact URL string** — the same key the worker hashes for its
-  by-url dedup pointer, so this agrees with what a re-submit would classify.
+- Matching is **exact URL string** — the same URL the worker hashes for its
+  per-tenant ownership row, so this agrees with what a re-submit would find.
   (A trailing `?utm_…` or `/` difference is a different URL.)
 
 ## Prerequisites
@@ -55,14 +54,21 @@ npm run ops -- reading-list check --file in.json --out annotated.json --execute
 # Count anything present in the corpus (pending/failed too).
 npm run ops -- reading-list check --file in.json --any-status --execute
 
-# An alternate R2 bucket.
-npm run ops -- reading-list check --file in.json --bucket some-other-bucket --execute
+# A different database (the laptop file holds the Neon strings).
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- reading-list check --file in.json --tenant "$TENANT" \
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 ```
 
-Flags: `--file` (required), `--out` (default: in place), `--bucket` (default
-`reading-lite`, or `READING_LITE_BUCKET` env), `--status <s>` (repeatable,
-default `ready`), `--any-status`, `--local` (read miniflare cache), `--execute`
-(write the annotated file; omit it to plan).
+Flags: `--file` (required), `--tenant` (**required** — a tenant id; `global`
+is refused), `--database-url-env` (default `DATABASE_URL`), `--out` (default:
+in place), `--status <s>` (repeatable, default `ready`), `--any-status`,
+`--execute` (write the annotated file; omit it to plan).
+
+`--tenant` is new: the old list index was one document per key root, but a
+query has to be told whose corpus it is asking about. Getting it wrong is not
+a quiet failure — an empty answer marks every entry unprocessed and
+`reading-list process` resubmits the library.
 
 The script prints a JSON summary to stdout:
 
@@ -84,9 +90,8 @@ The script prints a JSON summary to stdout:
 
 ## Notes / gotchas
 
-- Plan first (omit `--execute`) to sanity-check `corpus_urls` is non-zero — a zero there
-  usually means wrong bucket or an unauthenticated wrangler session, not an
+- Plan first (omit `--execute`) to sanity-check `corpus_urls` is non-zero — a
+  zero there usually means the wrong tenant or the wrong database, not an
   empty corpus.
-- `index/list.json` is the worker's maintained list index. If it were ever
-  stale, membership would lag; in practice every terminal write updates it
-  (see CLAUDE.md "Maintain `index/list.json` on every terminal write").
+- Membership cannot lag: the reading and its ownership row commit together, so
+  the query sees exactly what a re-submit would.

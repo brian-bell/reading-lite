@@ -76,16 +76,35 @@ export function openControlPlaneForBucket(
   return { db: fromSql(sql), close: () => sql.end() };
 }
 
+// Sessions opened through the closer-less helper below, so the CLI can close
+// them when the command finishes.
+//
+// This is not tidiness. `scripts/ops.ts` sets process.exitCode and returns; it
+// never calls process.exit. An open pg socket keeps the event loop alive, so a
+// leaked session does not leak memory — it hangs the command forever after it
+// has already printed its answer. `wrangler d1 execute` was a child process
+// that exited on its own, which is why nothing had to track this before.
+const OPEN_SESSIONS = new Set<() => Promise<void>>();
+
+/** Closes every session opened by `controlPlaneDbForBucket`. Idempotent. */
+export async function closeOperatorSessions(): Promise<void> {
+  const closers = [...OPEN_SESSIONS];
+  OPEN_SESSIONS.clear();
+  await Promise.allSettled(closers.map((close) => close()));
+}
+
 /**
  * The same handle without the closer, for callers whose shape predates the
  * move and cannot await a close. `pg` connects lazily on the first query, so
- * an unused handle costs nothing; a used one holds its session until the
- * process exits, which for a one-shot CLI is the same moment.
+ * an unused handle costs nothing; a used one is registered above and closed by
+ * the CLI when the command returns.
  */
 export function controlPlaneDbForBucket(
   bucket: string,
   env: Record<string, string | undefined> = process.env,
   databaseUrlEnvOverride?: string,
 ): ControlPlaneDb {
-  return openControlPlaneForBucket(bucket, env, databaseUrlEnvOverride).db;
+  const opened = openControlPlaneForBucket(bucket, env, databaseUrlEnvOverride);
+  OPEN_SESSIONS.add(opened.close);
+  return opened.db;
 }

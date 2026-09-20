@@ -178,8 +178,27 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
        SELECT raw_key, extracted_key FROM reading_attempts WHERE tenant_id = $1 AND reading_id = $2`,
       [this.tenantId, id],
     );
+    const [reading] = await this.sql.query<{ key_prefix: string; content_type: string }>(
+      "SELECT key_prefix, content_type FROM readings WHERE tenant_id = $1 AND id = $2",
+      [this.tenantId, id],
+    );
+    if (!reading) return [];
+
+    // Every key must sit under THIS reading's stored prefix. The keys come
+    // from rows rather than from a composed path, so a drifted or hand-edited
+    // raw_key would otherwise send a delete at another reading's content — the
+    // id-scoped prefix guard in corpus drop validates the prefix, not these
+    // keys, so this is where that guard has to bind.
     const keys = new Set<string>();
+    const under = (key: string | null): key is string =>
+      key !== null && key.startsWith(`${reading.key_prefix}/`);
     for (const row of rows) {
+      if (row.raw_key && !under(row.raw_key)) {
+        throw new Error(`refusing to delete ${row.raw_key}: outside ${id}'s prefix ${reading.key_prefix}`);
+      }
+      if (row.extracted_key && !under(row.extracted_key)) {
+        throw new Error(`refusing to delete ${row.extracted_key}: outside ${id}'s prefix ${reading.key_prefix}`);
+      }
       if (row.raw_key) keys.add(row.raw_key);
       if (row.extracted_key) keys.add(row.extracted_key);
     }
@@ -191,15 +210,10 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
     // drop would delete nothing, delete the row, and strand the bytes with
     // nothing left to name them — the exact outcome shouldDeleteRow exists to
     // prevent.
-    const [row] = await this.sql.query<{ key_prefix: string; content_type: string }>(
-      "SELECT key_prefix, content_type FROM readings WHERE tenant_id = $1 AND id = $2",
-      [this.tenantId, id],
-    );
-    if (!row) return [];
     const layout = r2KeyLayout("");
     return [
-      layout.rawKey(row.key_prefix, rawExtFromContentType(row.content_type)),
-      layout.extractedKey(row.key_prefix),
+      layout.rawKey(reading.key_prefix, rawExtFromContentType(reading.content_type)),
+      layout.extractedKey(reading.key_prefix),
     ];
   }
 

@@ -73,6 +73,37 @@ export function isLocalDatabaseUrl(databaseUrl: string): boolean {
 
 export class NonLocalDatabaseError extends UsageError {}
 
+/**
+ * Refuses a run whose bucket and database name different environments.
+ *
+ * `--bucket` used to scope everything destructive a corpus command did, so
+ * "refuse --allow-ready against the production bucket" was a complete guard.
+ * It is not any more: the delete is a row delete against whatever
+ * `--database-url-env` names, which is independent of the bucket. Without this,
+ * `--bucket reading-lite-staging` with DATABASE_URL still exported as the
+ * production string deletes production rows while deleting staging objects.
+ *
+ * Only two mapped names disagreeing is an error. An unmapped variable — the
+ * DATABASE_URL default, a local database, a scratch branch — is left alone,
+ * because this cannot know what the operator meant and guessing would refuse
+ * legitimate local runs.
+ */
+export function assertBucketAndDatabaseAgree(
+  bucket: string,
+  databaseUrlEnv: string,
+  mapping: Record<string, { databaseUrlEnv: string; env: string }>,
+): void {
+  const forBucket = mapping[bucket];
+  if (!forBucket) return;
+  const named = Object.values(mapping).find((target) => target.databaseUrlEnv === databaseUrlEnv);
+  if (!named || named.databaseUrlEnv === forBucket.databaseUrlEnv) return;
+  throw new UsageError(
+    `--bucket ${bucket} holds ${forBucket.env} content, but ${databaseUrlEnv} is the ${named.env} ` +
+      `database. Refusing: the row deletes would land on ${named.env} while the object deletes ` +
+      `landed on ${forBucket.env}.`,
+  );
+}
+
 /** Refuses a `--local` run pointed at a database that is not on this machine. */
 export function requireLocalDatabase(databaseUrl: string, envName: string): void {
   if (!isLocalDatabaseUrl(databaseUrl)) {

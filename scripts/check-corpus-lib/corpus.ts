@@ -1,5 +1,6 @@
-// Pure corpus-membership logic. Kept free of I/O so it is unit-testable:
-// the wrangler call lives in fetch-index.ts and the file read/write in the CLI.
+// Pure corpus-membership logic. Kept free of I/O so it is unit-testable: the
+// corpus query lives in the command's `corpus` dependency and the file
+// read/write in the CLI.
 
 // Mirror of the worker's terminal statuses (src/schemas/manifest.ts). A
 // reading owns its URL from the claim, but only reaches "ready" once it is

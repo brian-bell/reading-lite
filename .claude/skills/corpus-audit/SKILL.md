@@ -6,9 +6,10 @@ description: Read-only health audit of the reading-lite corpus. Inventories ever
 # corpus-audit
 
 Produces a complete inventory of every reading in the reading-lite corpus that
-is **not** `ready`, with a categorized reason for each. Read-only: it reads
-`index/list.json` (and, with flags, content/attempt files) from R2 via
-`wrangler`. It never mutates the corpus.
+is **not** `ready`, with a categorized reason for each. Read-only: it queries
+the tenant's readings over a direct PostgreSQL connection (and, with
+`--teasers`, reads their captured content from R2). It never mutates the
+corpus.
 
 ## Output
 
@@ -16,7 +17,7 @@ Writes two files to `--out` (default: cwd):
 - **`index.json`** — structured rows (the input `corpus-recover` consumes).
 - **`INDEX.md`** — human-readable tables, grouped:
   - **Failed** — deduped by URL, with a derived reason (HTTP 403/404/429/5xx, paywalls, dead links, oversized, summarize failures, etc.). Real failures only: a failed URL that *also* has a `ready` copy is moved to the next group instead.
-  - **Failed — orphan dup** — failed copies of a URL that *already* has a `ready` reading (earlier attempts left behind after a later success, or a re-submit that lost a fetch race). Not real failures — cosmetic cruft. The `ready` copy owns the by-url pointer + embedding, so these are safe to remove with `corpus-drop <url>` (which keeps the ready copy). `× N` is the failed-copy count per URL.
+  - **Failed — orphan dup** — failed copies of a URL that *already* has a `ready` reading (earlier attempts left behind after a later success, or a re-submit that lost a fetch race). Not real failures — cosmetic cruft. The `ready` copy owns the URL, so these are safe to remove with `corpus drop <url>` (which keeps the ready copy). `× N` is the failed-copy count per URL.
   - **Pending — stranded** — never completed and older than the pending TTL, no `ready` copy (reprocess candidates).
   - **Pending — orphan dup** — the URL already has a `ready` reading (cosmetic index cruft).
   - **Pending — in-flight** — within the pending TTL; likely still processing, no action.
@@ -35,7 +36,7 @@ A Cloudflare session that can read R2: `wrangler login`, or `CLOUDFLARE_API_TOKE
 # Plan first (reads + classifies, prints counts and paths, writes nothing).
 npm run ops -- corpus audit --tenant "$TENANT"
 
-# Fast inventory (one list.json read) into the current directory.
+# Fast inventory (one query) into the current directory.
 npm run ops -- corpus audit --tenant "$TENANT" --execute
 
 # Write somewhere specific.
@@ -46,19 +47,22 @@ npm run ops -- corpus audit --tenant "$TENANT" --out ~/Desktop/reading-lite-extr
 npm run ops -- corpus audit --tenant "$TENANT" --teasers --execute
 
 # Also list ready YouTube readings that recorded an enrichment miss
-# (list.json only — no extra R2 reads).
+# (no extra reads).
 npm run ops -- corpus audit --tenant "$TENANT" --degraded --execute
 
 # Resolve the true stuck stage of stranded pending from attempt files (slower).
 npm run ops -- corpus audit --tenant "$TENANT" --deep --execute
 
-# An alternate R2 bucket, or the local miniflare cache (gate-off: --tenant global).
-npm run ops -- corpus audit --tenant global --bucket some-other-bucket --execute
-npm run ops -- corpus audit --tenant global --local --execute
+# A different database (the laptop file holds the Neon strings).
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- corpus audit --tenant "$TENANT" --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
-Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`), `--out` (dir, default cwd), `--teasers`, `--degraded`, `--deep`, `--local`, `--execute` (write the report files; without it the command plans), `--help`.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is **refused**: it addressed the pre-tenant R2 key root, which has no PostgreSQL representation.
+
+The connection string comes from a named variable, never a flag, so it stays out of shell history: source `~/.config/reading-lite/neon.env` and pass `--database-url-env` (default `DATABASE_URL`).
+
+Flags: `--database-url-env` (default `DATABASE_URL`), `--out` (dir, default cwd), `--teasers`, `--degraded`, `--deep`, `--bucket` (captured content, read only by `--teasers`), `--local`, `--execute` (write the report files; without it the command plans), `--help`.
 
 ## How categories are decided
 - **Failed reason** comes from the manifest error code + the HTTP status embedded in `BadStatusError` messages, with a few hand-verified per-URL overrides (PDF, YouTube, confirmed dead links). Reddit URLs are flagged as needing the `.json` endpoint.

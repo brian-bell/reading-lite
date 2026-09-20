@@ -11,6 +11,7 @@
 
 import { UsageError, type AnyCommand, type CommandGroup, type CommandIo } from "./contract";
 import { defaultRegistry, type Registry } from "./registry";
+import { closeOperatorSessions } from "../account-lib/control-plane";
 
 export interface RunCliOptions {
   io?: CommandIo;
@@ -155,5 +156,12 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     }
     io.stderr(err instanceof Error ? (err.stack ?? err.message) : String(err));
     return 1;
+  } finally {
+    // A command that opened a control-plane session through
+    // controlPlaneDbForBucket has no closer of its own. ops.ts sets
+    // process.exitCode and returns rather than calling process.exit, so an
+    // open pg socket would keep the event loop alive and hang the command
+    // after it had already printed its answer.
+    await closeOperatorSessions();
   }
 }

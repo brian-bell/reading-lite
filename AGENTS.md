@@ -170,7 +170,7 @@ describes only the live control plane that reading-lite-gh348 imports from.
   into a fresh index. Provider selection and model/effort validation fail closed;
   preserve Anthropic's cached system/tool prefix and its snapshot tests.
 - Hosted provider fetches must retain lease checks and budget admission inside
-  the HTTP retry loop. Synchronous operator clients (backfill-vectors, refresh
+  the HTTP retry loop. Synchronous operator clients (refresh
   judgements, evals, comparisons) take the same wrapper through `OperatorSpend`
   and `scripts/ops-lib/operator-spend.ts`, billed to `--billing-tenant`. Operator
   batches (`corpus ingest`, `corpus recover --batch`) admit their summed maximum
@@ -262,8 +262,9 @@ rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cu
 
 Offline batch ingest/recover require `--sole-writer`, asserting that realtime
 writers are paused and drained. Preserve sidecars and their resume rules; never
-recreate an ambiguous batch. Restore missing vectors with `corpus backfill-vectors`,
-not a paid reprocess. See [batch operations](docs/operations.md#provider-batch-apis).
+recreate an ambiguous batch. A ready reading can no longer be missing its
+embedding — publication writes both in one transaction — so the repair command
+for that is retired. See [batch operations](docs/operations.md#provider-batch-apis).
 
 Use [compare-summary-effort](.agents/skills/compare-summary-effort/SKILL.md) for
 local comparisons on existing production readings. Plan first; only `--execute`

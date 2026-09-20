@@ -9,7 +9,7 @@
 // the matches with compare-and-set, and retry each CAS loss up to a bound —
 // while asserting --sole-writer, because a concurrent writer could reintroduce
 // an entry the sweep had already passed. All of that is now one statement
-// against reading_relationships, which is indexed by target.
+// against reading_relationships, which migration 0006 indexes by target.
 //
 // It still exists because the cascade does not cover this. The foreign key on
 // reading_relationships names the SOURCE reading, so deleting a reading

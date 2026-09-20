@@ -21,12 +21,14 @@ import {
 import { shouldDeleteRow } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import {
+  assertBucketAndDatabaseAgree,
   DATABASE_URL_ENV_DEFAULT,
   DATABASE_URL_ENV_HELP,
   operatorDatabaseUrl,
   requireLocalDatabase,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
+import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 import { operatorCorpusFor, type CorpusDropView, type CorpusLookup } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -101,6 +103,9 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   if (opts.drop !== undefined && (opts.keep.length !== 1 || opts.only.length > 0)) {
     throw new UsageError("--drop takes exactly one --keep <rd_ID> and no other selectors");
   }
+  // Sweep drops ready readings by design, so a bucket/database mismatch here
+  // deletes live library entries from the wrong environment.
+  assertBucketAndDatabaseAgree(opts.bucket, opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET);
 
   // --local names the miniflare bucket; the row deletes go wherever
   // --database-url-env points, so the two must agree before anything is

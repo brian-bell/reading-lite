@@ -40,7 +40,7 @@ criteria.
 
 | Command | What changes |
 |---|---|
-| `corpus audit` | Inventories non-ready readings from `readings` instead of walking `index/list.json` and every manifest. Orphan-duplicate detection becomes a join against `reading_urls`. |
+| `corpus audit` | Inventories non-ready readings from `readings` instead of walking `index/list.json` and every manifest. Orphan-duplicate detection still runs over the returned rows, as it did over the list index. |
 | `corpus drop` | Deletes the row; `reading_urls`, revisions, relationships and the embedding cascade. No separate Vectorize delete, no list-index rewrite. `--allow-ready` still gates dropping a ready reading and still refuses the production bucket, but it no longer needs `--vectorize <index>`: the embedding is a row that goes with its reading, so there is no second store to keep in step. |
 | `corpus sweep` | Groups canonicalized URLs over `readings.url`, keeps the best copy, deletes the rest. The embedding delete it used to issue against Vectorize is now the cascade. |
 | `corpus recover` | Reads the audit's `index.json` as before; the state it re-checks before acting comes from rows. Reprocess still goes through the reading API. |
@@ -52,8 +52,8 @@ criteria.
 | `reading-list check` | Resolves each exported URL against `reading_urls` instead of fetching `index/list.json` through wrangler. Left unported it would mark every already-saved URL unprocessed, and `reading-list process` would resubmit the corpus. |
 | `account wipe` | Reads `users.status` and `wipe_progress` over a direct PostgreSQL connection. It already read them from a database rather than the R2 progress object — the move is D1 to PostgreSQL. |
 | `account residue-scan` | Rewritten source set. `vector_ledger`, `ledger_vectors`, `listed_vectors` and the `d1.*` sources are gone; what remains is per-table row counts for the tenant plus the R2 prefix. |
-| `system status` | Reads policy from PostgreSQL. Unported it reports a frozen policy: `scripts/system-lib/policy.ts` resolves its handle through `controlPlaneDbForBucket`, which is still `makeWranglerD1`. |
-| `system policy` | Same handle, and worse unported — it would write spend caps to a database no Worker binding reads, so a cap the operator believes is set would never apply. |
+| `system status` | Reads policy from PostgreSQL. `scripts/system-lib/policy.ts` resolves its handle through `controlPlaneDbForBucket`, which now opens a direct connection; unported it reported a frozen policy. |
+| `system policy` | Same handle, and worse unported — it would have written spend caps to a database no Worker binding reads, so a cap the operator believed was set would never have applied. |
 | `extract agent` | Takes the content key from the reading's row rather than deriving it from the manifest layout. |
 | `staging prepare-context` | Copies rows plus the R2 content they reference, not manifests, pointers and `index/list.json`. |
 | `staging setup` / `staging teardown` | Provision and tear down the staging database alongside the bucket and queues, and run `ops db migrate` against it. Paired because they must stay mirror images. |

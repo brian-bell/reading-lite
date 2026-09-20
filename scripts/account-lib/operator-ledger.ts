@@ -65,13 +65,30 @@ export function operatorVectorLedger(opts: OperatorLedgerOpts): VectorLedger {
 export function assertOperatorLedgerAvailable(
   tenant: OperatorTenant,
   bucket: string,
+  env: Record<string, string | undefined> = process.env,
 ): void {
   if (tenant.kind !== "tenant") return;
-  if (controlPlaneForBucket(bucket) !== undefined) return;
-  throw new UsageError(
-    `--tenant ${tenant.tenantId} needs a control plane to record vector-ledger rows in, and ` +
-      `no control-plane database is mapped to bucket '${bucket}'. Known buckets: ` +
-      `${Object.keys(CONTROL_PLANE_BY_BUCKET).join(", ")}. Use --tenant global for the ` +
-      `pre-tenant corpus, which no account wipe addresses.`,
-  );
+  const target = controlPlaneForBucket(bucket);
+  if (target === undefined) {
+    throw new UsageError(
+      `--tenant ${tenant.tenantId} needs a control plane to record vector-ledger rows in, and ` +
+        `no control-plane database is mapped to bucket '${bucket}'. Known buckets: ` +
+        `${Object.keys(CONTROL_PLANE_BY_BUCKET).join(", ")}. Use --tenant global for the ` +
+        `pre-tenant corpus, which no account wipe addresses.`,
+    );
+  }
+  // A mapped bucket is no longer enough. Under wrangler the database was
+  // reachable whenever the operator had a Cloudflare session; now it needs a
+  // connection string, and an unset variable would not be discovered until the
+  // first ledger write — which is inside the batch write phase, after the paid
+  // submit and poll. That is exactly the half-way failure this function exists
+  // to prevent.
+  if (!env[target.databaseUrlEnv]?.trim()) {
+    throw new UsageError(
+      `--tenant ${tenant.tenantId} needs a control plane to record vector-ledger rows in, but ` +
+        `${target.databaseUrlEnv} is not set. Source ~/.config/reading-lite/neon.env before a ` +
+        `paid batch run: discovering this at the first ledger write means paying for work that ` +
+        `cannot be recorded.`,
+    );
+  }
 }

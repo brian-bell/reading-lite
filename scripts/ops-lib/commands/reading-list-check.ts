@@ -30,6 +30,7 @@ import {
 import { operatorCorpusFor, type CorpusInventory } from "../../pg-lib/operator-corpus";
 import type { OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ReadingListCheckDeps extends BaseDeps {
@@ -112,7 +113,7 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
       {
         file: args.file,
         out: args.execute ? args.out : null,
-        tenant: args.tenant,
+        tenant: operatorTenantSelector(tenant),
         match_statuses: args.statuses,
         corpus_urls: corpus.size,
         ...summary,
