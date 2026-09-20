@@ -11,6 +11,8 @@ import { OperatorCorpus, operatorCorpusFor, requirePgTenant, toListItem } from "
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import {
+  closeOperatorSessions,
+  controlPlaneDbForBucket,
   CONTROL_PLANE_BY_BUCKET,
   openControlPlaneForBucket,
 } from "../../../scripts/account-lib/control-plane";
@@ -245,6 +247,19 @@ describe("bucket to control-plane mapping", () => {
 
   it("refuses an unset connection string rather than treating it as empty", () => {
     expect(() => openControlPlaneForBucket("reading-lite", {})).toThrow(/NEON_MAIN_DATABASE_URL is not set/);
+  });
+
+  // ops.ts sets process.exitCode and returns rather than calling process.exit,
+  // so an open pg socket keeps the event loop alive: a leaked session does not
+  // leak memory, it hangs the command after it has printed its answer.
+  it("closes the sessions the closer-less helper opened, and is idempotent", async () => {
+    const env = { OTHER_URL: "postgres://u:p@127.0.0.1:54329/reading_lite" };
+    controlPlaneDbForBucket("reading-lite", env, "OTHER_URL");
+    controlPlaneDbForBucket("reading-lite-staging", env, "OTHER_URL");
+    await expect(closeOperatorSessions()).resolves.toBeUndefined();
+    // Nothing left registered, so a second close is a no-op rather than a
+    // double-end on an already-closed client.
+    await expect(closeOperatorSessions()).resolves.toBeUndefined();
   });
 
   it("honours an explicit variable override", async () => {
