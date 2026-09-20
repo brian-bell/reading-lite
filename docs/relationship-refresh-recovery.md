@@ -40,7 +40,8 @@ budgets, provider retry admission, judgement caps, or checkpoints.
 
 Do not merge a configuration release until Paid is active. A local Wrangler
 build cannot verify account entitlement or enforce the production CPU limit.
-After deploying staging through `ops deploy worker --env staging --execute`,
+After deploying staging through `ops deploy worker --env staging --execute
+--database-url-env STAGING_DATABASE_URL`,
 verify the serving version's CPU setting and observe an authorized staging judge
 through checkpoint and manifest/list publication. Then use the normal
 CI → Worker → SPA release chain for production. Match the release SHA to the

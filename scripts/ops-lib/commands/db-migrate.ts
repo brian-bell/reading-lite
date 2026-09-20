@@ -7,25 +7,20 @@
 // state. Operators source the Neon strings per command from
 // ~/.config/reading-lite/neon.env; the URL is read from an environment
 // variable so it never lands in shell history or the process list.
+//
+// The run itself lives in pg-lib/migrate-runner, which `ops deploy worker`
+// shares so a deploy applies exactly what this command would.
 
 import { parseArgs } from "node:util";
-import {
-  MigrationDriftError,
-  migrate,
-  planMigrations,
-  readMigrations,
-  type MigrationClient,
-  type MigrationFile,
-} from "../../pg-lib/migrate";
+import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
+import { runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 
 export interface DbMigrateDeps extends BaseDeps {
   env: Record<string, string | undefined>;
   readMigrations: () => MigrationFile[];
-  connect: (databaseUrl: string) => Promise<MigrationClient & { end(): Promise<void> }>;
+  connect: (databaseUrl: string) => Promise<MigrationConnection>;
 }
-
-const label = (file: MigrationFile) => `${file.version}_${file.name}`;
 
 export const dbMigrateCommand: CommandDefinition<DbMigrateDeps> = {
   group: "db",
@@ -75,25 +70,14 @@ Options:
     const envName = values["database-url-env"]!;
     const databaseUrl = deps.env[envName];
     if (!databaseUrl) throw new UsageError(`${envName} is not set; it must hold a direct PostgreSQL connection string`);
-    const mode = values.execute ? "MIGRATE" : "PLAN";
-    const files = deps.readMigrations();
-    const client = await deps.connect(databaseUrl);
-    try {
-      const plan = await planMigrations(client, files);
-      deps.io.stdout(`[${mode}] database from ${envName}: ${plan.applied.length} applied, ${plan.pending.length} pending`);
-      for (const file of plan.pending) deps.io.stdout(`[${mode}] pending ${label(file)}`);
-      if (!values.execute) {
-        if (plan.pending.length > 0) deps.io.stdout("[PLAN] re-run with --execute to apply.");
-        return 0;
-      }
-      for (const file of await migrate(client, files)) deps.io.stdout(`[MIGRATE] applied ${label(file)}`);
-      return 0;
-    } catch (error) {
-      if (error instanceof MigrationDriftError) deps.io.stderr(`Migration drift: ${error.message}`);
-      else deps.io.stderr(error instanceof Error ? error.message : String(error));
-      return 1;
-    } finally {
-      await client.end();
-    }
+    return runPendingMigrations({
+      io: deps.io,
+      mode: values.execute ? "MIGRATE" : "PLAN",
+      envName,
+      databaseUrl,
+      execute: values.execute === true,
+      readMigrations: deps.readMigrations,
+      connect: deps.connect,
+    });
   },
 };

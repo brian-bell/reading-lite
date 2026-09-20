@@ -24,7 +24,9 @@ changes. Does not grant an activation override. Plan performs reads only.`,
   defaultDeps: io => ({
     io, read: path => readFile(path, "utf8"), provenance: captureProvenance,
     wipe: sha => deployWipeCheckCommand.run(["--release-sha", sha], deployWipeCheckCommand.defaultDeps(io)),
-    deploy: sha => deployWorkerCommand.run(["--env", "production", "--release-sha", sha, "--execute"], deployWorkerCommand.defaultDeps(io)),
+    // Same production connection string the wipe check reads; the deploy
+    // applies pending migrations through it before the upload.
+    deploy: sha => deployWorkerCommand.run(["--env", "production", "--release-sha", sha, "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], deployWorkerCommand.defaultDeps(io)),
   }),
   async run(argv, deps) {
     let values;

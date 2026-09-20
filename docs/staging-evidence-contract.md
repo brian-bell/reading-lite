@@ -79,7 +79,8 @@ existing deploy command with its commit tag:
 
 ```sh
 CANDIDATE_SHA=$(git rev-parse HEAD)
-npm run ops -- deploy worker --env staging --release-sha "$CANDIDATE_SHA"
+npm run ops -- deploy worker --env staging --release-sha "$CANDIDATE_SHA" \
+  --database-url-env STAGING_DATABASE_URL
 # After reviewing the plan, add --execute to deploy the staging candidate.
 ```
 

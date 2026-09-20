@@ -22,13 +22,17 @@ function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
   const err: string[] = [];
   const runWrangler = vi.fn(async () => 0);
   const validateTenantActivation = vi.fn(async () => ({ ok: true, message: "already enabled" }));
+  const connect = vi.fn(async () => ({ query: async () => ({ rows: [{ present: false }] }), end: async () => {} }));
   const built: DeployWorkerDeps = {
     io: { stdout: () => undefined, stderr: (text) => err.push(text) },
     runWrangler,
     validateTenantActivation,
     checkPostgresCutover: check,
+    env: { STAGING_DATABASE_URL: "postgres://staging" },
+    readMigrations: () => [],
+    connect,
   };
-  return { built, err, runWrangler, validateTenantActivation };
+  return { built, err, runWrangler, validateTenantActivation, connect };
 }
 
 describe("PostgreSQL cutover guard", () => {
@@ -69,17 +73,18 @@ describe("PostgreSQL cutover guard", () => {
 describe("ops deploy worker behind the cutover guard", () => {
   const refuse: DeployWorkerDeps["checkPostgresCutover"] = () => ({ ok: false, error: "not cut over" });
 
-  it("--execute exits 2 before the activation check or upload", async () => {
-    const { built, err, runWrangler, validateTenantActivation } = deps(refuse);
-    expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], built)).toBe(2);
+  it("--execute exits 2 before the activation check, the migrations or the upload", async () => {
+    const { built, err, runWrangler, validateTenantActivation, connect } = deps(refuse);
+    expect(await deployWorkerCommand.run(["--env", "staging", "--execute", "--database-url-env", "STAGING_DATABASE_URL"], built)).toBe(2);
     expect(runWrangler).not.toHaveBeenCalled();
     expect(validateTenantActivation).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
     expect(err.join("\n")).toContain("PostgreSQL cutover guard: REFUSED. not cut over");
   });
 
   it("a plan reports the refusal and still dry-runs", async () => {
     const { built, err, runWrangler } = deps(refuse);
-    expect(await deployWorkerCommand.run(["--env", "staging"], built)).toBe(0);
+    expect(await deployWorkerCommand.run(["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"], built)).toBe(0);
     expect(err.join("\n")).toContain("PostgreSQL cutover guard: REFUSED");
     expect(runWrangler).toHaveBeenCalledWith(["deploy", "--env", "staging", "--dry-run"]);
   });

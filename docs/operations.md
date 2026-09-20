@@ -492,11 +492,53 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against it. `ops deploy worker` does not create the database, import the
-founder token, or deploy schema: apply pending PostgreSQL migrations with
-`npm run ops -- db migrate --execute` against the target database first
-(reading-lite-gh347.4 folds that into the deploy command). `--execute`
-uploads.
+against it. `ops deploy worker` does not create the database or import the
+founder token, but it does deploy schema: `--execute` applies the pending
+PostgreSQL migrations in `db/migrations/` and then uploads.
+
+Migrations are the last gate before the upload, after the cutover guard and
+the tenant-activation preflight, and they are fail-closed. Drift or a failing
+file exits 1 with nothing uploaded, so a release whose code expects a new
+column cannot reach a database that lacks it. A plan lists the pending files
+and applies none.
+
+#### Step 0: the connection strings
+
+`--database-url-env` is **required**. It names the environment variable holding
+the target database's DIRECT connection string — never a Hyperdrive string,
+because the migration runner's advisory lock is session state. The name is
+checked against `--env` before anything remote happens, so a production deploy
+cannot migrate staging:
+
+| `--env` | Accepted `--database-url-env` |
+|---|---|
+| `production` | `PRODUCTION_DATABASE_URL`, `NEON_MAIN_DATABASE_URL` |
+| `staging` | `STAGING_DATABASE_URL`, `NEON_REHEARSAL_DATABASE_URL` |
+
+Anything else is refused, including bare `DATABASE_URL` and
+`NEON_DEV_DATABASE_URL`: neither names a deploy target.
+
+Operators keep the Neon strings in `~/.config/reading-lite/neon.env`, mode
+`600`, outside the repository and never committed. It holds exactly three
+variables:
+
+| Variable | Neon branch |
+|---|---|
+| `NEON_MAIN_DATABASE_URL` | `main` — production. |
+| `NEON_REHEARSAL_DATABASE_URL` | `rehearsal` — staging's target for the #349 cutover rehearsal. |
+| `NEON_DEV_DATABASE_URL` | `dev` — never a deploy target; `ops db migrate` takes it. |
+
+Source it per command rather than exporting it from a shell profile, so the
+string is never in ordinary shell history or the process list:
+
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- deploy worker --env production --execute \
+  --database-url-env NEON_MAIN_DATABASE_URL
+```
+
+In Actions the string comes from the `PRODUCTION_DATABASE_URL` secret instead
+(see "GitHub repository secrets" below).
 
 #### Tenant-mode activation guard
 
@@ -527,7 +569,8 @@ An intentionally empty new environment needs verification that no corpus is
 expected. Record the evidence with the operational work, then explicitly use:
 
 ```sh
-npm run ops -- deploy worker --env staging --execute --acknowledge-tenant-migration
+npm run ops -- deploy worker --env staging --execute \
+  --database-url-env STAGING_DATABASE_URL --acknowledge-tenant-migration
 ```
 
 Use `--env production` for a reviewed production activation. The acknowledgement
@@ -558,10 +601,11 @@ Staging:
 ```sh
 cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
-# DATABASE_URL is a direct connection string for the staging database.
-npm run ops -- db migrate --execute
+# STAGING_DATABASE_URL is a direct connection string for the staging database.
+npm run ops -- db migrate --database-url-env STAGING_DATABASE_URL --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
-npm run ops -- deploy worker --env staging --execute
+npm run ops -- deploy worker --env staging --execute \
+  --database-url-env STAGING_DATABASE_URL
 npm run ops -- deploy web --branch staging --execute
 ```
 
@@ -577,7 +621,8 @@ Production is the same sequence with `reading-lite-control`, `--env production`,
 ```sh
 npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
-npm run ops -- deploy worker --env production --execute
+npm run ops -- deploy worker --env production --execute \
+  --database-url-env PRODUCTION_DATABASE_URL
 npm run ops -- deploy web --branch main --execute
 ```
 
@@ -585,9 +630,9 @@ Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
-and runs `ops deploy worker --env production --execute` (upload only; apply
-PostgreSQL migrations with `ops db migrate` beforehand). It does not pass
-`--var`. `TENANT_DATA_PLANE` is
+and runs `ops deploy worker --env production --execute --database-url-env
+PRODUCTION_DATABASE_URL`, which applies the pending PostgreSQL migrations and
+then uploads. It does not pass `--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
@@ -655,7 +700,7 @@ GitHub repository secrets (or the `production` environment):
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
-| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production control plane. The wipe gate reads `wipe_progress` through it; the workflow fails fast when it is missing. |
+| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production database. The wipe gate reads `wipe_progress` through it and `ops deploy worker` applies the pending migrations through it, so the role behind it needs DDL as well as that read. The workflow fails fast with a named error when it is missing. |
 
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
@@ -792,7 +837,7 @@ removes routes.
 2. **Token scope.** `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops
    token) must include zone Workers Routes on **both** `readinglite.ai` and
    `readinglite.app`, keeping `bbell.dev`. **Until it does, `ops deploy worker
-   --env production` applies the remote D1 migrations, uploads the script, and
+   --env production` applies the pending PostgreSQL migrations, uploads the script, and
    then fails on the route publish**, the same route-publication failure described under "MCP
    connector" below, now on two additional zones. It surfaces two ways
    depending on what the token holds: with Zone Read but no Workers Routes
@@ -952,7 +997,8 @@ Deploying the frontend:
   SPA, which keeps deploying to Pages so the rollback target stays current.
   Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
-  (`npm run ops -- deploy worker --env staging --execute`), then run the
+  (`npm run ops -- deploy worker --env staging --execute --database-url-env
+  STAGING_DATABASE_URL`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
 - **Build check.** Both workflows run `app/scripts/check-build.ts` between
   build and deploy. It refuses a build whose environment, name, routes, or

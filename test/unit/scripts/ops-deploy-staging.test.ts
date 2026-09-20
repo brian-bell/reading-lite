@@ -32,6 +32,10 @@ describe("ops deploy worker", () => {
         runs.push(args);
         return 0;
       },
+      // The migration step has its own owner: test/unit/deploy/deploy-worker-migrations.test.ts.
+      env: { STAGING_DATABASE_URL: "postgres://staging", PRODUCTION_DATABASE_URL: "postgres://production" },
+      readMigrations: () => [],
+      connect: async () => ({ query: async () => ({ rows: [{ present: false }] }), end: async () => {} }),
     };
     return { deps, err, runs };
   }
@@ -40,38 +44,37 @@ describe("ops deploy worker", () => {
     const sha = "a".repeat(40);
     const { deps, runs } = makeDeps();
     deps.validateCandidate = async candidate => { expect(candidate).toBe(sha); };
-    expect(await deployWorkerCommand.run(["--env", "staging", "--release-sha", sha, "--execute"], deps)).toBe(0);
+    expect(await deployWorkerCommand.run(["--env", "staging", "--release-sha", sha, "--execute", "--database-url-env", "STAGING_DATABASE_URL"], deps)).toBe(0);
     expect(runs[0]).toEqual(["deploy", "--env", "staging", "--tag", sha]);
     runs.length = 0;
     deps.validateCandidate = async () => { throw new Error("dirty or mismatched checkout"); };
-    await expect(deployWorkerCommand.run(["--release-sha", sha, "--execute"], deps)).rejects.toThrow("checkout");
+    await expect(deployWorkerCommand.run(["--release-sha", sha, "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], deps)).rejects.toThrow("checkout");
     expect(runs).toEqual([]);
   });
 
   it("plan mode passes wrangler --dry-run and names the secrets the environment must hold", async () => {
     const { deps, err, runs } = makeDeps();
-    expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
+    expect(await deployWorkerCommand.run(["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"], deps)).toBe(0);
     expect(runs).toEqual([["deploy", "--env", "staging", "--dry-run"]]);
     expect(err.join("\n")).toContain("required runtime secret: AUTH_ROOT_SECRET");
     expect(err.join("\n")).toContain("bootstrap-only secret: READER_API_TOKEN");
   });
 
-  it("--execute uploads without --dry-run, and deploys no schema", async () => {
+  it("--execute uploads without --dry-run", async () => {
     const { deps, runs } = makeDeps();
-    expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(0);
-    // PostgreSQL migrations are `ops db migrate`'s job (reading-lite-gh347.4).
+    expect(await deployWorkerCommand.run(["--env", "staging", "--execute", "--database-url-env", "STAGING_DATABASE_URL"], deps)).toBe(0);
     expect(runs).toEqual([["deploy", "--env", "staging"]]);
   });
 
   it("rejects an invalid env", async () => {
     const { deps } = makeDeps();
-    await expect(deployWorkerCommand.run(["--env", "dev"], deps)).rejects.toThrow(UsageError);
+    await expect(deployWorkerCommand.run(["--env", "dev", "--database-url-env", "STAGING_DATABASE_URL"], deps)).rejects.toThrow(UsageError);
   });
 
   it("refuses unverified activation before the upload", async () => {
     const { deps, runs, err } = makeDeps();
     deps.validateTenantActivation = async () => ({ ok: false, message: "off to on; 1 deletion-eligible tenant: usr_due" });
-    expect(await deployWorkerCommand.run(["--execute"], deps)).toBe(2);
+    expect(await deployWorkerCommand.run(["--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], deps)).toBe(2);
     expect(runs).toHaveLength(0);
     expect(err.join("\n")).toContain("usr_due");
     expect(err.join("\n")).toContain("--acknowledge-tenant-migration");
@@ -80,7 +83,7 @@ describe("ops deploy worker", () => {
   it("allows the explicit manual acknowledgement and logs it", async () => {
     const { deps, runs, err } = makeDeps();
     deps.validateTenantActivation = async () => ({ ok: false, message: "unknown activation state" });
-    expect(await deployWorkerCommand.run(["--execute", "--acknowledge-tenant-migration"], deps)).toBe(0);
+    expect(await deployWorkerCommand.run(["--execute", "--acknowledge-tenant-migration", "--database-url-env", "PRODUCTION_DATABASE_URL"], deps)).toBe(0);
     expect(runs.map(args => args[0])).toEqual(["deploy"]);
     expect(err.join("\n")).toContain("OVERRIDE");
   });
@@ -88,7 +91,7 @@ describe("ops deploy worker", () => {
   it("does not inspect remote activation state in plan mode, even with acknowledgement", async () => {
     const { deps } = makeDeps();
     deps.validateTenantActivation = async () => { throw new Error("unexpected remote inspection"); };
-    expect(await deployWorkerCommand.run(["--acknowledge-tenant-migration"], deps)).toBe(0);
+    expect(await deployWorkerCommand.run(["--acknowledge-tenant-migration", "--database-url-env", "PRODUCTION_DATABASE_URL"], deps)).toBe(0);
   });
 });
 
