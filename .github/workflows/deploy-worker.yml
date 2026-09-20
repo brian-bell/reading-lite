@@ -1,6 +1,7 @@
 # Deploy the production Worker after CI succeeds for a main commit. The exact CI
 # SHA is checked out and recorded for the downstream SPA release. This workflow
-# does not deploy the SPA, create D1, import the founder token, or pass --var.
+# does not deploy the SPA, import the founder token, or pass --var. It does
+# apply pending PostgreSQL migrations, immediately before the upload.
 
 name: Deploy production worker
 
@@ -43,8 +44,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # The wipe gate reads wipe_progress from the production control plane,
-          # which is PostgreSQL now (ADR 0005), over a direct connection string.
+          # One secret, two readers: the wipe gate counts unfinished wipes, and
+          # the deploy applies pending migrations before the upload. Both reach
+          # the production control plane, which is PostgreSQL now (ADR 0005),
+          # over a direct connection string.
           PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
         run: |
           test -n "$CLOUDFLARE_API_TOKEN" || { echo "missing secret CLOUDFLARE_API_TOKEN"; exit 1; }
@@ -64,7 +67,7 @@ jobs:
             exit 1
           }
           npm run ops -- deploy wipe-check --release-sha "$RELEASE_SHA" --database-url-env PRODUCTION_DATABASE_URL
-          npm run ops -- deploy worker --env production --execute
+          npm run ops -- deploy worker --env production --database-url-env PRODUCTION_DATABASE_URL --execute
       - name: Record the released SHA
         run: |
           mkdir -p .release

@@ -27,6 +27,8 @@ function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
     runWrangler,
     validateTenantActivation,
     checkPostgresCutover: check,
+    // Migrations have their own owner: test/unit/scripts/ops-deploy-staging.test.ts.
+    migrateDatabase: async () => ({ applied: [], pending: [] }),
   };
   return { built, err, runWrangler, validateTenantActivation };
 }

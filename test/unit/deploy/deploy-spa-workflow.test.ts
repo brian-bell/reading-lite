@@ -73,7 +73,7 @@ describe("coordinated production deployment workflows", () => {
     const checkout = steps(workflow).find((step) => step.uses === "actions/checkout@v7");
     const upload = steps(workflow).find((step) => step.uses === "actions/upload-artifact@v6");
     const deploy = steps(workflow).find((step) =>
-      step.run?.includes("npm run ops -- deploy worker --env production --execute"),
+      step.run?.includes("npm run ops -- deploy worker --env production --database-url-env PRODUCTION_DATABASE_URL --execute"),
     );
 
     expect(workflow.on?.workflow_run).toEqual({
@@ -86,11 +86,11 @@ describe("coordinated production deployment workflows", () => {
     expect(checkout?.with?.ref).toBe("${{ github.event.workflow_run.head_sha }}");
     expectBoundaryCheck(
       deploy?.run,
-      "npm run ops -- deploy worker --env production --execute",
+      "npm run ops -- deploy worker --env production --database-url-env PRODUCTION_DATABASE_URL --execute",
     );
     const gateAt = deploy!.run!.indexOf('npm run ops -- deploy wipe-check --release-sha "$RELEASE_SHA"');
     expect(gateAt).toBeGreaterThan(deploy!.run!.indexOf("git rev-parse origin/main"));
-    expect(gateAt).toBeLessThan(deploy!.run!.indexOf("npm run ops -- deploy worker --env production --execute"));
+    expect(gateAt).toBeLessThan(deploy!.run!.indexOf("npm run ops -- deploy worker --env production --database-url-env PRODUCTION_DATABASE_URL --execute"));
     expect(deploy?.env?.DEPLOY_WIPE_OVERRIDE_SHA).toBe("${{ vars.DEPLOY_WIPE_OVERRIDE_SHA }}");
     expect(deploy?.env?.RELEASE_SHA).toBe("${{ github.event.workflow_run.head_sha }}");
     expect(deploy?.["continue-on-error"]).not.toBe(true);

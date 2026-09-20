@@ -20,9 +20,12 @@ function io(): { io: CommandIo; out: string[]; err: string[] } {
 }
 
 describe("ops deploy worker", () => {
-  function makeDeps() {
+  function makeDeps(
+    migrate?: DeployWorkerDeps["migrateDatabase"],
+  ) {
     const { io: cio, err } = io();
     const runs: string[][] = [];
+    const migrated: { env: string; execute: boolean }[] = [];
     const deps: DeployWorkerDeps = {
       io: cio,
       validateTenantActivation: async () => ({ ok: true, message: "already enabled" }),
@@ -32,9 +35,67 @@ describe("ops deploy worker", () => {
         runs.push(args);
         return 0;
       },
+      migrateDatabase:
+        migrate ??
+        (async (databaseUrlEnv, execute) => {
+          migrated.push({ env: databaseUrlEnv, execute });
+          return { applied: [], pending: [] };
+        }),
     };
-    return { deps, err, runs };
+    return { deps, err, runs, migrated };
   }
+
+  describe("PostgreSQL migrations", () => {
+    it("applies the target database's pending migrations before the upload", async () => {
+      const order: string[] = [];
+      const { deps, runs, err } = makeDeps(async (databaseUrlEnv, execute) => {
+        order.push(`migrate:${databaseUrlEnv}:${execute}`);
+        return { applied: ["0006_thing"], pending: [] };
+      });
+      const wrapped = deps.runWrangler;
+      deps.runWrangler = async (args) => {
+        order.push("upload");
+        return wrapped(args);
+      };
+      expect(
+        await deployWorkerCommand.run(
+          ["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL", "--execute"],
+          deps,
+        ),
+      ).toBe(0);
+      // Schema before code: a Worker must never run against an older schema.
+      expect(order).toEqual(["migrate:STAGING_DATABASE_URL:true", "upload"]);
+      expect(runs).toHaveLength(1);
+      expect(err.join("\n")).toContain("migrations applied");
+    });
+
+    it("plans migrations without applying them, and still dry-runs the deploy", async () => {
+      const { deps, err, migrated, runs } = makeDeps();
+      expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
+      expect(migrated).toEqual([{ env: "DATABASE_URL", execute: false }]);
+      expect(runs[0]).toContain("--dry-run");
+      expect(err.join("\n")).toContain("migrations");
+    });
+
+    // A deploy that cannot prove the schema is current must not ship code
+    // that assumes it is — the same fail-closed rule as the wipe gate.
+    it("refuses the upload when a migration fails", async () => {
+      const { deps, runs, err } = makeDeps(async () => {
+        throw new Error("REFUSED, drift: 0003_control_plane changed after it was applied");
+      });
+      expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(2);
+      expect(runs).toEqual([]);
+      expect(err.join("\n")).toContain("drift");
+    });
+
+    it("says in plan mode that execute would refuse", async () => {
+      const { deps, err } = makeDeps(async () => {
+        throw new Error("connection refused");
+      });
+      expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
+      expect(err.join("\n")).toContain("execute would refuse");
+    });
+  });
 
   it("tags an explicitly verified candidate and refuses an unverified checkout before writes", async () => {
     const sha = "a".repeat(40);

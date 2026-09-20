@@ -4,24 +4,47 @@
 // already hold; --execute uploads. Before the write, require established
 // tenant activation or an explicit manual acknowledgement.
 //
-// Schema is no longer deployed from here. The control plane and readings are
-// on PostgreSQL (ADR 0005), whose migrations `ops db migrate` applies; folding
-// that into this command is reading-lite-gh347.4.
+// Schema IS deployed from here, replacing the `d1 migrations apply` this
+// command used to run. The control plane and readings are on PostgreSQL (ADR
+// 0005), and its pending migrations are applied over a direct connection
+// string immediately before the upload.
+//
+// Ordering: cutover guard, then activation preflight, then migrations, then
+// upload. Migrations go last among the checks so a deploy that is going to be
+// refused changes nothing, and before the upload because a Worker must never
+// run against a schema older than the code expects. They are forward-only, so
+// the window between a successful migration and a failed upload leaves the
+// database ahead of the Worker, which the previous Worker tolerates; the
+// reverse would not be true.
 
 import { parseArgs } from "node:util";
 import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { CONTROL_PLANE_REQUIRED_SECRETS } from "../../control-plane-env";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { checkPostgresCutover } from "../postgres-cutover";
+import { migrate, planMigrations, readMigrations, MigrationDriftError } from "../../pg-lib/migrate";
+import { operatorDatabaseUrl } from "../../pg-lib/operator-db";
+import { sqlFromConnectionString } from "../../../src/modules/db/sql";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export type DeployEnv = "production" | "staging";
+
+export interface MigrationOutcome {
+  applied: string[];
+  pending: string[];
+}
 
 export interface DeployWorkerDeps extends BaseDeps {
   runWrangler: (args: string[]) => Promise<number>;
   validateCandidate?: (sha: string) => Promise<void>;
   validateTenantActivation: typeof validateTenantActivation;
   checkPostgresCutover: typeof checkPostgresCutover;
+  /**
+   * Lists pending migrations (plan) or applies them (execute), against the
+   * connection string in `databaseUrlEnv`. Injected so the deploy tests never
+   * need a database.
+   */
+  migrateDatabase: (databaseUrlEnv: string, execute: boolean) => Promise<MigrationOutcome>;
 }
 
 export function parseDeployEnv(value: unknown): DeployEnv | null {
@@ -43,6 +66,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
         "release-sha": { type: "string" },
         execute: { type: "boolean", default: false },
         env: { type: "string", default: "production" },
+        "database-url-env": { type: "string", default: "DATABASE_URL" },
         "acknowledge-tenant-migration": { type: "boolean", default: false },
       },
     }));
@@ -86,6 +110,38 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   } else {
     deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and R2/Vectorize resource creation metadata before upload; no remote readiness check has run.");
   }
+
+  // Schema before code. A Worker must never run against a schema older than
+  // the code expects, and the migrations are forward-only, so the only window
+  // this leaves is a migrated database with the previous Worker still serving
+  // — which that Worker tolerates.
+  const databaseUrlEnv = values["database-url-env"]!;
+  try {
+    const outcome = await deps.migrateDatabase(databaseUrlEnv, execute);
+    if (execute) {
+      deps.io.stderr(
+        outcome.applied.length > 0
+          ? `[DEPLOY] migrations applied from ${databaseUrlEnv}: ${outcome.applied.join(", ")}`
+          : `[DEPLOY] migrations: none pending in ${databaseUrlEnv}`,
+      );
+    } else {
+      deps.io.stderr(
+        outcome.pending.length > 0
+          ? `[PLAN] would apply ${outcome.pending.length} migration(s) from ${databaseUrlEnv}: ${outcome.pending.join(", ")}`
+          : `[PLAN] migrations: none pending in ${databaseUrlEnv}`,
+      );
+    }
+  } catch (error) {
+    // A deploy that cannot prove the schema is current must not upload. This
+    // is the same fail-closed reasoning as the wipe gate: not being able to
+    // see the migrations is not the same as there being none.
+    deps.io.stderr(
+      `[${mode}] migrations: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    if (execute) return 2;
+    deps.io.stderr("[PLAN] execute would refuse here.");
+  }
+
   return deps.runWrangler(wranglerArgs);
 }
 
@@ -100,9 +156,13 @@ Plans by default: runs \`wrangler deploy --dry-run\` (validates config and
 build without uploading) and prints the secrets the environment must already
 hold. --execute uploads. Idempotent: re-running with the same source produces
 the same Worker version. Does not create the database or import the founder
-token, and does not apply PostgreSQL migrations — run
-\`npm run ops -- db migrate\` against the target database first
-(reading-lite-gh347.4 folds that in here).
+token.
+
+Applies this repository's pending PostgreSQL migrations immediately before the
+upload, over the direct connection string in --database-url-env. Plan mode
+lists what it would apply and changes nothing. A migration that fails, or
+drift the runner refuses, stops the deploy before the upload: a deploy that
+cannot prove the schema is current must not ship code that assumes it is.
 
 Before the upload, tenant mode must already be active with matching
 R2/Vectorize bindings and resource creation metadata, or the operator must
@@ -112,6 +172,10 @@ inspect remote readiness. See docs/operations.md: Tenant-mode activation guard.
 
 Options:
   --env <name>   Worker environment to deploy (default: production).
+  --database-url-env <NAME>
+                 Environment variable holding the DIRECT PostgreSQL connection
+                 string whose migrations to apply (default: DATABASE_URL). The
+                 production workflow passes PRODUCTION_DATABASE_URL.
   --acknowledge-tenant-migration
                  Override unverified activation only after manually verifying
                  target tenant R2 data, namespaced vectors, and deletion eligibility.
@@ -147,6 +211,25 @@ placeholder Hyperdrive id.`,
     },
     validateTenantActivation,
     checkPostgresCutover,
+    migrateDatabase: async (databaseUrlEnv, execute) => {
+      const sql = sqlFromConnectionString(operatorDatabaseUrl(databaseUrlEnv));
+      // The runner wants a pg.Client shape; Sql.query returns rows directly.
+      const client = { query: async (text: string, values?: unknown[]) => ({ rows: await sql.query(text, values) }) };
+      try {
+        const files = readMigrations();
+        if (!execute) {
+          const plan = await planMigrations(client, files);
+          return { applied: [], pending: plan.pending.map((f) => `${f.version}_${f.name}`) };
+        }
+        const applied = await migrate(client, files);
+        return { applied: applied.map((f) => `${f.version}_${f.name}`), pending: [] };
+      } catch (error) {
+        if (error instanceof MigrationDriftError) throw new Error(`REFUSED, drift: ${error.message}`);
+        throw error;
+      } finally {
+        await sql.end();
+      }
+    },
   }),
   run: runDeployWorker,
 };
