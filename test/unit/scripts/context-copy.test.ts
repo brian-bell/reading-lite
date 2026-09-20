@@ -10,7 +10,7 @@ function fixture() {
     const m = { id, url, url_hash: hash(url), status: 'ready', title: 'Title', tldr: 'Summary', content_type: 'text/markdown', content_status: 'captured', content_bytes: 4, extracted_bytes: 4, content_sha256: hash('text'), created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z' };
     const files: Record<string, string> = { ['index/by-id/' + id]: JSON.stringify({ key_prefix: prefix }), ['index/by-url/' + hash(url)]: JSON.stringify({ id, key_prefix: prefix }), [prefix + '/manifest.json']: JSON.stringify(m), [prefix + '/raw.md']: 'text', [prefix + '/extracted.md']: 'text' };
     const dest: Record<string, string> = { 'index/list.json': JSON.stringify({ version: 1, items: [] }) };
-    const readers = { ledgerIds: [] as string[], source: { read: async (k: string) => files[k] === undefined ? null : { body: Buffer.from(files[k]), etag: 'source-etag', contentType: 'text/plain' }, list: async (p: string) => Object.keys(files).filter(k => k.startsWith(p)) }, destination: { read: async (k: string) => dest[k] === undefined ? null : { body: Buffer.from(dest[k]), etag: 'list-etag', contentType: 'application/json' }, list: async (p: string) => Object.keys(dest).filter(k => k.startsWith(p)) }, vectors: async (ids: string[], staging: boolean) => staging ? [] : ids.map(id => ({ id, namespace: source, values: Array(1536).fill(0.1), metadata: { url, title: 'Title', tldr: 'Summary', tenant_id: source } })) };
+    const readers = { source: { read: async (k: string) => files[k] === undefined ? null : { body: Buffer.from(files[k]), etag: 'source-etag', contentType: 'text/plain' }, list: async (p: string) => Object.keys(files).filter(k => k.startsWith(p)) }, destination: { read: async (k: string) => dest[k] === undefined ? null : { body: Buffer.from(dest[k]), etag: 'list-etag', contentType: 'application/json' }, list: async (p: string) => Object.keys(dest).filter(k => k.startsWith(p)) }, vectors: async (ids: string[], staging: boolean) => staging ? [] : ids.map(id => ({ id, namespace: source, values: Array(1536).fill(0.1), metadata: { url, title: 'Title', tldr: 'Summary', tenant_id: source } })) };
     return { files, dest, readers };
 }
 describe('context copy artifact', () => {
@@ -24,7 +24,7 @@ describe('context copy artifact', () => {
         expect(p.vectors[0]).toMatchObject({ id: destination + ':' + id, namespace: destination, metadata: { tenant_id: destination } });
         expect(p.list.expectedEtag).toBe('list-etag');
         expect(p.targets[0].action).toBe('reprocess');
-        expect(p.ledgerIds).toEqual([id]);
+        expect(p.readingIds).toEqual([id]);
     });
     it('projects stale historical ready attempts like the API but refuses fresh active work',async()=>{
       const f=fixture();const key=prefix+'/manifest.json';const m=JSON.parse(f.files[key]!);

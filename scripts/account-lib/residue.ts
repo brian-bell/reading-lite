@@ -62,16 +62,6 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   await observe("legacy_wipe_record", async () =>
     counted(await remote.storage.listObjects(`wipe/${tenant}/`)),
   );
-  let ledger: { reading_id: string; state: string }[] = [];
-  let ledgerLoaded = false;
-  await observe("vector_ledger", async () => {
-    ledger = await remote.db.all(
-      "SELECT * FROM vector_ledger WHERE tenant_id = ? ORDER BY reading_id",
-      tenant,
-    );
-    ledgerLoaded = true;
-    return counted(ledger);
-  });
   await observe("namespace_probe", async () =>
     counted(await remote.probe(tenant)),
   );
@@ -119,19 +109,6 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     }
     return result;
   }
-  await observe("ledger_vectors", async () => {
-    if (!ledgerLoaded)
-      throw new Error("ledger source unavailable; per-id coverage unknown");
-    const detail = await presence(ledger.map((v) => v.reading_id));
-    return {
-      state: detail.some(
-        (v) => v.composed !== "candidate_absent" || v.bare === "tenant_present",
-      )
-        ? "residue"
-        : "clear",
-      detail,
-    };
-  });
   await observe("listed_vectors", async () => {
     const raw = await remote.storage.get(`u/${tenant}/index/list.json`);
     const list =

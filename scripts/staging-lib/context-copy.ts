@@ -19,7 +19,6 @@ export interface CopyReader {
     list(prefix: string): Promise<string[]>;
 }
 export interface CopyReaders {
-    ledgerIds: string[];
     source: CopyReader;
     destination: CopyReader;
     vectors(ids: string[], staging: boolean): Promise<unknown[]>;
@@ -46,8 +45,6 @@ export async function prepareContextCopy(input: CopyInput, readers: CopyReaders)
     const ids = z.array(ReadingId).min(1).max(200).parse(input.ids).sort();
     if (new Set(ids).size !== ids.length)
         throw Error('Duplicate seed IDs');
-    if (readers.ledgerIds.some(id => ids.includes(id)))
-        throw Error('Occupied destination ledger ID');
     const targets = z.array(z.object({ id: ReadingId, contentSha256: z.string().regex(/^[a-f0-9]{64}$/), markdownSha256: z.string().regex(/^[a-f0-9]{64}$/).optional() })).max(200).parse(input.targets);
     if (new Set(targets.map(t => t.id)).size !== targets.length)
         throw Error('Duplicate target IDs');
@@ -56,6 +53,11 @@ export async function prepareContextCopy(input: CopyInput, readers: CopyReaders)
     if (!list?.etag)
         throw Error('Existing destination list with ETag required');
     const existing = ListIndexSchema.parse(JSON.parse(Buffer.from(list.body).toString()));
+    // Occupancy is read from the destination's own list index. It used to come
+    // from the operator vector ledger, retired in reading-lite-gh347.4.6;
+    // reading-lite-gh347.4.3 ports this read to `readings`.
+    if (existing.items.some(item => ids.includes(item.id)))
+        throw Error('Occupied destination reading ID');
     const blobs = new Map<string, Uint8Array>();
     const blob = (body: Uint8Array | string) => { const bytes = typeof body === 'string' ? Buffer.from(body) : body; const hash = copyHash(bytes); blobs.set(hash, bytes); return hash; };
     const objects: {
@@ -169,7 +171,7 @@ export async function prepareContextCopy(input: CopyInput, readers: CopyReaders)
     targetRecords.sort((a,b)=>targets.findIndex(t=>t.id===a.sourceId)-targets.findIndex(t=>t.id===b.sourceId));
     const additions = ids.map(id => { const { m, prefix } = manifests.get(id)!; const { last_attempt: _last, ...clean } = m; return manifestToIndexItem(clean, prefix); });
     const merged = ListIndexSchema.parse({ version: 1, items: [...existing.items, ...additions].sort((a, b) => b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id)) });
-    return { sourceProjection: 'applyStaleness/900s; omit historical attempts/checkpoints', format: 'reading-lite-staging-context-v1' as const, createdAt: input.now, source: { bucket: 'reading-lite', tenant: sourceTenant, index: 'reading-lite' }, destination: { bucket: 'reading-lite-staging', tenant: destinationTenant, index: 'reading-lite-staging' }, objects, vectors, metadataDrift, ledgerIds: ids,
+    return { sourceProjection: 'applyStaleness/900s; omit historical attempts/checkpoints', format: 'reading-lite-staging-context-v1' as const, createdAt: input.now, source: { bucket: 'reading-lite', tenant: sourceTenant, index: 'reading-lite' }, destination: { bucket: 'reading-lite-staging', tenant: destinationTenant, index: 'reading-lite-staging' }, objects, vectors, metadataDrift, readingIds: ids,
         sourceChecks: [...new Map(sourceChecks.map(c => [c.key, c])).values()].map(c => ({ ...c, key: `u/${sourceTenant}/${c.key}` })),
         list: { key: `u/${destinationTenant}/${layout.listIndexKey()}`, expectedEtag: list.etag, expectedSha256: copyHash(list.body), blob: blob(JSON.stringify(merged)), preservedRows: existing.items.length, addedRows: ids.length }, targets: targetRecords,
         applyOrder: ['revalidate source hashes, destination absence, active tenant, disabled paid work, and sole-writer window', 'insert missing staging vector-ledger rows (refuse deleting/submitted rows)', 'create content/manifests with If-None-Match:*', 'upsert and verify staging vectors; never delete production or legacy vectors', 'create ownership pointers with If-None-Match:*', 'CAS list against expected ETag; never overwrite a changed list'],

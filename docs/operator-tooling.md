@@ -47,6 +47,34 @@ The identity is over **inventory rows, not files on disk**:
 are deleted in this slice as well. They are libraries, not commands, and are not
 counted among the eight.
 
+### What else the ledger's retirement took with it
+
+The ledger reached past its own commands, so retiring it touched four surviving
+files. Each change is the minimum needed to compile and stay honest; the ports
+themselves belong to the slices named in the table.
+
+- `scripts/corpus-lib/batch/run.ts` and `batch/write-phase.ts`: the `ledger`
+  dependency and the ledger-before-upsert write. Nothing replaces it — under
+  the new schema an embedding commits and deletes inside its reading's
+  transaction. reading-lite-gh347.4.2 ports the rest of this write phase.
+- `scripts/account-lib/vectors.ts`: `bareRepairAction` and `repairBareVector`,
+  which were `account audit-bare-vectors`'s repair machinery and had no other
+  caller. `enumerateNamespace` stays — the residue scan uses it.
+- `scripts/account-lib/residue.ts`: the `vector_ledger` and `ledger_vectors`
+  sources. The `listed_vectors` and `d1.*` sources are deliberately left as
+  they are; reading-lite-gh347.4.3 owns rewriting those.
+- `scripts/ops-lib/commands/staging-prepare-context.ts` and
+  `scripts/staging-lib/context-copy.ts`: the destination-occupancy guard read a
+  `vector_ledger` query. It now reads the destination list index that
+  `prepareContextCopy` already loads, and the plan artifact's `ledgerIds` field
+  is renamed `readingIds`. reading-lite-gh347.4.3 moves that read to `readings`.
+
+The D1 migrations that created the ledger (`0010`, `0012`) and their tests are
+left in place: they are that database's schema history, and gh351 removes the
+D1 implementation. `test/unit/pg/control-plane-schema.test.ts` still names the
+ledger tables, because what it asserts is that the PostgreSQL schema does
+**not** contain them.
+
 ## Commands
 
 ### account

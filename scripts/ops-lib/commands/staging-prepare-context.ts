@@ -63,10 +63,7 @@ approval before applying its remote mutations. --help shows this message.`,
                         return { body: new Uint8Array(await r.arrayBuffer()), etag: (r.headers.get('etag') ?? '').replace(/^W\//, '').replace(/^"|"$/g, ''), contentType: r.headers.get('content-type') };
                     }, list: async (prefix: string) => (await client.listObjects(root + prefix)).map(o => o.key.slice(root.length)) };
             };
-            const ledger = await db.all<{
-                reading_id: string;
-            }>("SELECT reading_id FROM vector_ledger WHERE tenant_id = ?", destination);
-            return { ledgerIds: ledger.map(row => row.reading_id), source: reader('reading-lite', source), destination: reader('reading-lite-staging', destination), vectors: async (ids, staging) => {
+            return { source: reader('reading-lite', source), destination: reader('reading-lite-staging', destination), vectors: async (ids, staging) => {
                     // This POST is Vectorize's read-only get-by-id API; no provider dispatch.
                     const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/vectorize/v2/indexes/${staging ? 'reading-lite-staging' : 'reading-lite'}/get_by_ids`, { method: 'POST', headers: { ...auth, 'content-type': 'application/json' }, body: JSON.stringify({ ids }) });
                     if (!r.ok)
@@ -106,7 +103,7 @@ approval before applying its remote mutations. --help shows this message.`,
         const parsed = z.object({ ids: z.array(z.string()).min(1).max(200), targets: z.array(z.object({ id: z.string(), contentSha256: z.string(), markdownSha256: z.string().optional() })).max(200) }).parse(raw);
         const args: CopyInput = { ...parsed, sourceTenant: source, destinationTenant: destination, now: deps.now() };
         const plan = await prepareContextCopy(args, await deps.readers(source, destination, values["corpus-vars"]));
-        deps.io.stdout(JSON.stringify({ mode: values.execute ? 'local-artifact' : 'plan', source: plan.source, destination: plan.destination, readings: plan.ledgerIds.length, objects: plan.objects.length, vectors: plan.vectors.length, metadataDrift: plan.metadataDrift.length, list: plan.list, targets: plan.targets.length, reprocesses: plan.targets.filter(t => t.action === 'reprocess').length, privatePayloadBytes: [...plan.blobs.values()].reduce((n, b) => n + b.byteLength, 0), providerCalls: 0, remoteWrites: 0 }, null, 2));
+        deps.io.stdout(JSON.stringify({ mode: values.execute ? 'local-artifact' : 'plan', source: plan.source, destination: plan.destination, readings: plan.readingIds.length, objects: plan.objects.length, vectors: plan.vectors.length, metadataDrift: plan.metadataDrift.length, list: plan.list, targets: plan.targets.length, reprocesses: plan.targets.filter(t => t.action === 'reprocess').length, privatePayloadBytes: [...plan.blobs.values()].reduce((n, b) => n + b.byteLength, 0), providerCalls: 0, remoteWrites: 0 }, null, 2));
         if (values.execute)
             await deps.save(values['output-dir']!, plan);
         return 0;

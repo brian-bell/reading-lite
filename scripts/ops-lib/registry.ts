@@ -6,7 +6,6 @@ import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
 import { accountResidueScanCommand } from "./commands/account-residue-scan";
-import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-vectors";
 // The single typed registry behind `npm run ops`. Root, group, and command
 // help all render from these definitions, so a command that is not registered
 // here does not exist as far as the operator interface is concerned. New
@@ -27,19 +26,12 @@ import { founderBootstrapCommand } from "./commands/founder-bootstrap";
 import { stagingSetupCommand } from "./commands/staging-setup";
 import { stagingSmokeCommand } from "./commands/staging-smoke";
 import { stagingTeardownCommand } from "./commands/staging-teardown";
-import { corpusBackfillSimilarityCommand } from "./commands/corpus-backfill-similarity";
 import { corpusRefreshNeighboursCommand } from "./commands/corpus-refresh-neighbours";
 import { corpusRefreshConnectionsCommand } from "./commands/corpus-refresh-connections";
 import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions";
-import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
-import { corpusBackfillSourceDateCommand } from "./commands/corpus-backfill-source-date";
-import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
 import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
-import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
-import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
-import { corpusSeedVectorLedgerCommand } from "./commands/corpus-seed-vector-ledger";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -82,17 +74,10 @@ export const defaultRegistry: Registry = {
     corpusIngestCommand,
     corpusDropCommand,
     corpusSweepCommand,
-    corpusDeleteOrphansCommand,
-    corpusBackfillSimilarityCommand,
     corpusRefreshNeighboursCommand,
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
-    corpusBackfillVectorsCommand,
-    corpusBackfillSourceDateCommand,
-    corpusNormalizeTagsCommand,
     corpusPurgeConnectionsCommand,
-    corpusRebuildListCommand,
-    corpusSeedVectorLedgerCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,
@@ -117,6 +102,5 @@ export const defaultRegistry: Registry = {
     accountSweepWipePrefixCommand,
     accountWipeCommand,
     accountResidueScanCommand,
-    accountAuditBareVectorsCommand,
   ],
 };
