@@ -2,9 +2,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { corpusAuditCommand, type CorpusAuditDeps } from "../../../scripts/ops-lib/commands/corpus-audit";
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
+import { UsageError } from "../../../scripts/ops-lib/contract";
 import type { ListItem } from "../../../scripts/corpus-lib/types";
+import type { CorpusInventory } from "../../../scripts/pg-lib/operator-corpus";
+import type { ContentKeys } from "../../../src/modules/stores/postgres/reading-store";
 
 const NOW = Date.parse("2026-08-22T12:00:00Z");
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 
 const ITEMS: ListItem[] = [
   {
@@ -24,28 +28,52 @@ const ITEMS: ListItem[] = [
   },
 ];
 
-function makeDeps(items: ListItem[] = ITEMS): {
+interface Harness {
   deps: CorpusAuditDeps;
   out: string[];
   writes: { path: string; body: string }[];
   mkdirs: string[];
-  listReads: { bucket: string; keyRoot?: string; remote?: boolean }[];
-} {
+  opened: { databaseUrlEnv: string; tenant: string }[];
+  objectReads: string[];
+  stuckAsked: string[][];
+}
+
+function makeDeps(
+  items: ListItem[] = ITEMS,
+  overrides: Partial<CorpusInventory> = {},
+): Harness {
   const out: string[] = [];
   const writes: { path: string; body: string }[] = [];
   const mkdirs: string[] = [];
-  const listReads: { bucket: string; keyRoot?: string; remote?: boolean }[] = [];
+  const opened: { databaseUrlEnv: string; tenant: string }[] = [];
+  const objectReads: string[] = [];
+  const stuckAsked: string[][] = [];
   const io: CommandIo = { stdout: (t) => out.push(t), stderr: (t) => out.push(t) };
+
+  const corpus: CorpusInventory = {
+    listItems: async () => items,
+    contentKeys: async (): Promise<ContentKeys | null> => null,
+    stuckStages: async (ids) => {
+      stuckAsked.push([...ids]);
+      return new Map();
+    },
+    ...overrides,
+  };
+
   const deps: CorpusAuditDeps = {
     io,
+    corpus: async (databaseUrlEnv, tenant, run) => {
+      // The command must resolve its tenant before it opens anything: a
+      // 'global' selector has no PostgreSQL corpus and must never connect.
+      if (tenant.kind === "global") throw new UsageError("--tenant global has no PostgreSQL corpus");
+      opened.push({ databaseUrlEnv, tenant: tenant.tenantId });
+      return run(corpus as never);
+    },
     r2: {
-      readListIndex: async (d) => {
-        listReads.push({ bucket: d.bucket, keyRoot: d.keyRoot, remote: d.remote });
-        return items;
+      readObject: async (key) => {
+        objectReads.push(key);
+        return null;
       },
-      readExtracted: async () => null,
-      readManifest: async () => null,
-      readAttempt: async () => null,
     },
     mkdir: async (dir) => {
       mkdirs.push(dir);
@@ -55,14 +83,13 @@ function makeDeps(items: ListItem[] = ITEMS): {
     },
     now: () => NOW,
   };
-  return { deps, out, writes, mkdirs, listReads };
+  return { deps, out, writes, mkdirs, opened, objectReads, stuckAsked };
 }
 
 describe("ops corpus audit", () => {
-
   it("plan mode reads and classifies but writes no report files", async () => {
     const { deps, out, writes, mkdirs } = makeDeps();
-    const code = await corpusAuditCommand.run(["--tenant", "global", "--out", "reports"], deps);
+    const code = await corpusAuditCommand.run(["--tenant", TENANT, "--out", "reports"], deps);
     expect(code).toBe(0);
     expect(writes).toHaveLength(0);
     expect(mkdirs).toHaveLength(0);
@@ -78,7 +105,7 @@ describe("ops corpus audit", () => {
 
   it("--execute writes index.json and INDEX.md through the audit library", async () => {
     const { deps, writes, mkdirs } = makeDeps();
-    const code = await corpusAuditCommand.run(["--tenant", "global", "--out", "reports", "--execute"], deps);
+    const code = await corpusAuditCommand.run(["--tenant", TENANT, "--out", "reports", "--execute"], deps);
     expect(code).toBe(0);
     expect(mkdirs).toEqual([path.resolve("reports")]);
     expect(writes.map((w) => w.path)).toEqual([
@@ -93,49 +120,103 @@ describe("ops corpus audit", () => {
     expect(writes[1].body).toContain("rd_failed");
     // The report's remediation guidance must name the unified command — the
     // standalone corpus-drop interface no longer exists.
-    expect(writes[1].body).toContain("npm run ops -- corpus drop --tenant global <url> --execute");
+    expect(writes[1].body).toContain(`npm run ops -- corpus drop --tenant ${TENANT} <url> --execute`);
     // Provenance stamp: corpus recover refuses an audit from another tenant.
-    expect(JSON.parse(writes[0].body)).toMatchObject({ tenant: "global" });
+    expect(json).toMatchObject({ tenant: TENANT });
     expect(writes[1].body).not.toMatch(/`corpus-drop/);
   });
 
-  it("targets the requested bucket and honors --local", async () => {
-    const { deps, listReads } = makeDeps();
-    await corpusAuditCommand.run(["--tenant", "global", "--bucket", "reading-lite-staging", "--local"], deps);
-    expect(listReads).toEqual([{ bucket: "reading-lite-staging", keyRoot: "", remote: false }]);
-  });
-
-  it("reads and stamps only the selected tenant's root, never a foreign corpus", async () => {
-    const tenantA = "usr_11111111-1111-4111-8111-111111111111";
-    const tenantB = "usr_22222222-2222-4222-8222-222222222222";
-    const tenantAItems = [{ ...ITEMS[1], id: "rd_a_only" }];
-    const tenantBItems = [{ ...ITEMS[1], id: "rd_b_foreign" }];
-    const { deps, listReads, writes } = makeDeps();
-    deps.r2.readListIndex = async (r2Deps) => {
-      listReads.push({
-        bucket: r2Deps.bucket,
-        keyRoot: r2Deps.keyRoot,
-        remote: r2Deps.remote,
-      });
-      if (r2Deps.keyRoot === `u/${tenantA}/`) return tenantAItems;
-      if (r2Deps.keyRoot === `u/${tenantB}/`) return tenantBItems;
-      throw new Error(`unexpected root ${r2Deps.keyRoot}`);
-    };
-
-    const code = await corpusAuditCommand.run(
-      ["--tenant", tenantA, "--out", "reports", "--execute"],
+  it("opens the corpus for the selected tenant, from the named database variable", async () => {
+    const { deps, opened } = makeDeps();
+    await corpusAuditCommand.run(
+      ["--tenant", TENANT, "--database-url-env", "NEON_REHEARSAL_DATABASE_URL"],
       deps,
     );
+    expect(opened).toEqual([{ databaseUrlEnv: "NEON_REHEARSAL_DATABASE_URL", tenant: TENANT }]);
+  });
+
+  it("defaults the database variable to DATABASE_URL", async () => {
+    const { deps, opened } = makeDeps();
+    await corpusAuditCommand.run(["--tenant", TENANT], deps);
+    expect(opened).toEqual([{ databaseUrlEnv: "DATABASE_URL", tenant: TENANT }]);
+  });
+
+  it("refuses --tenant global, which addresses no PostgreSQL corpus", async () => {
+    const { deps, writes } = makeDeps();
+    await expect(corpusAuditCommand.run(["--tenant", "global"], deps)).rejects.toThrow(UsageError);
+    expect(writes).toHaveLength(0);
+  });
+
+  it("reads only the selected tenant's corpus, never a foreign one", async () => {
+    const other = "usr_22222222-2222-4222-8222-222222222222";
+    const byTenant: Record<string, ListItem[]> = {
+      [TENANT]: [{ ...ITEMS[1], id: "rd_a_only" }],
+      [other]: [{ ...ITEMS[1], id: "rd_b_foreign" }],
+    };
+    const { deps, writes, opened } = makeDeps();
+    deps.corpus = async (databaseUrlEnv, tenant, run) => {
+      if (tenant.kind === "global") throw new UsageError("global");
+      opened.push({ databaseUrlEnv, tenant: tenant.tenantId });
+      return run({
+        listItems: async () => byTenant[tenant.tenantId] ?? [],
+        contentKeys: async () => null,
+        stuckStages: async () => new Map(),
+      } as never);
+    };
+
+    const code = await corpusAuditCommand.run(["--tenant", TENANT, "--out", "reports", "--execute"], deps);
 
     expect(code).toBe(0);
-    expect(listReads).toEqual([{ bucket: "reading-lite", keyRoot: `u/${tenantA}/`, remote: true }]);
     const report = JSON.parse(writes[0]!.body);
-    expect(report).toMatchObject({ tenant: tenantA });
+    expect(report).toMatchObject({ tenant: TENANT });
     expect(report.rows.map((row: { reading_id: string }) => row.reading_id)).toEqual(["rd_a_only"]);
     expect(report.rows.map((row: { reading_id: string }) => row.reading_id)).not.toContain("rd_b_foreign");
   });
 
-  it("--degraded includes ready YouTube enrichment misses without extra R2 reads", async () => {
+  it("--deep asks for the stranded readings' stuck stages in one query", async () => {
+    const asked: string[][] = [];
+    const { deps, writes } = makeDeps(ITEMS, {
+      stuckStages: async (ids) => {
+        asked.push([...ids]);
+        return new Map([["rd_pending", "summarize/running"]]);
+      },
+    });
+    await corpusAuditCommand.run(["--tenant", TENANT, "--out", "reports", "--deep", "--execute"], deps);
+    expect(asked).toEqual([["rd_pending"]]);
+    const row = JSON.parse(writes[0]!.body).rows.find((r: { reading_id: string }) => r.reading_id === "rd_pending");
+    expect(row.stuck_stage).toBe("summarize/running");
+  });
+
+  it("--deep costs no query when nothing is stranded", async () => {
+    const ready: ListItem[] = [ITEMS[0]];
+    const { deps, stuckAsked } = makeDeps(ready);
+    await corpusAuditCommand.run(["--tenant", TENANT, "--deep"], deps);
+    expect(stuckAsked).toEqual([[]]);
+  });
+
+  it("--teasers reads the extracted bytes at the key the reading points at now", async () => {
+    const items: ListItem[] = [
+      {
+        id: "rd_teaser",
+        url: "https://blog.pragmaticengineer.com/a",
+        status: "ready",
+        created_at: "2026-08-01T00:00:00Z",
+        key_prefix: "readings/rd_teaser",
+      },
+    ];
+    const { deps, objectReads } = makeDeps(items, {
+      contentKeys: async () => ({
+        rawKey: "readings/rd_teaser/revisions/at_1/raw.html",
+        extractedKey: "readings/rd_teaser/revisions/at_1/extracted.md",
+        contentType: "text/html",
+      }),
+    });
+    await corpusAuditCommand.run(["--tenant", TENANT, "--teasers"], deps);
+    // The revision key, not the legacy key_prefix spelling.
+    expect(objectReads).toEqual(["readings/rd_teaser/revisions/at_1/extracted.md"]);
+  });
+
+  it("--degraded includes ready YouTube enrichment misses without extra reads", async () => {
     const items: ListItem[] = [
       ...ITEMS,
       {
@@ -152,9 +233,9 @@ describe("ops corpus audit", () => {
         },
       },
     ];
-    const { deps, writes } = makeDeps(items);
+    const { deps, writes, objectReads } = makeDeps(items);
     const code = await corpusAuditCommand.run(
-      ["--tenant", "global", "--out", "reports", "--degraded", "--execute"],
+      ["--tenant", TENANT, "--out", "reports", "--degraded", "--execute"],
       deps,
     );
     expect(code).toBe(0);
@@ -162,14 +243,15 @@ describe("ops corpus audit", () => {
     expect(json.rows.some((r: { category: string }) => r.category === "degraded")).toBe(true);
     expect(writes[1]!.body).toContain("Ready — enrichment degraded");
     expect(writes[1]!.body).toContain("rd_yt");
+    expect(objectReads).toHaveLength(0);
   });
 
-  it("rejects an unknown option before reading anything", async () => {
-    const { deps, listReads } = makeDeps();
-    await expect(corpusAuditCommand.run(["--tenant", "global", "--nope"], deps)).rejects.toThrowError(
+  it("rejects an unknown option before opening a connection", async () => {
+    const { deps, opened } = makeDeps();
+    await expect(corpusAuditCommand.run(["--tenant", TENANT, "--nope"], deps)).rejects.toThrowError(
       expect.objectContaining({ name: "Error", message: expect.stringContaining("--nope") }),
     );
-    expect(listReads).toHaveLength(0);
+    expect(opened).toHaveLength(0);
   });
 
   it("is registered as plan-first", () => {

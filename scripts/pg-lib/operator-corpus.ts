@@ -56,7 +56,34 @@ export function requirePgTenant(tenant: OperatorTenant): string {
   return tenant.tenantId;
 }
 
-export class OperatorCorpus {
+/**
+ * What a command may ask of the corpus, split by capability so a read-only
+ * command cannot be handed deletion and so tests fake the two lines they use
+ * rather than a whole store.
+ */
+export interface CorpusInventory {
+  listItems(): Promise<ListItem[]>;
+  contentKeys(id: string): Promise<ContentKeys | null>;
+  stuckStages(ids: readonly string[]): Promise<Map<string, string>>;
+}
+
+export interface CorpusDropView extends CorpusMutations {
+  listItems(): Promise<ListItem[]>;
+  contentKeysForDrop(id: string): Promise<string[]>;
+}
+
+export interface CorpusLookup {
+  manifest(id: string): Promise<Manifest | null>;
+  keyPrefix(id: string): Promise<string | null>;
+  ownerByUrl(url: string): Promise<UrlOwner | null>;
+}
+
+export interface CorpusMutations {
+  deleteReading(id: string): Promise<boolean>;
+  deleteInboundRelationships(targetId: string): Promise<number>;
+}
+
+export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMutations, CorpusDropView {
   private readonly store: PgReadingStore;
 
   constructor(
@@ -117,6 +144,58 @@ export class OperatorCorpus {
       this.tenantId,
       targetId,
     ]);
+  }
+
+  /**
+   * Every relative R2 key this reading's rows still reference: the current
+   * revision's, each other revision's, and each attempt's.
+   *
+   * This is what a drop has to delete, and it is enumerated from rows rather
+   * than composed from the key prefix because each attempt captured under its
+   * own immutable revision prefix — the legacy spelling is one possible key
+   * among many, and only a reading no attempt ever touched still uses it.
+   */
+  async contentKeysForDrop(id: string): Promise<string[]> {
+    const rows = await this.sql.query<{ raw_key: string | null; extracted_key: string | null }>(
+      `SELECT raw_key, extracted_key FROM reading_revisions WHERE tenant_id = $1 AND reading_id = $2
+       UNION
+       SELECT raw_key, extracted_key FROM reading_attempts WHERE tenant_id = $1 AND reading_id = $2`,
+      [this.tenantId, id],
+    );
+    const keys = new Set<string>();
+    for (const row of rows) {
+      if (row.raw_key) keys.add(row.raw_key);
+      if (row.extracted_key) keys.add(row.extracted_key);
+    }
+    return [...keys];
+  }
+
+  /**
+   * The stage each reading's ACTIVE attempt last reported, for the readings
+   * asked about — `corpus audit --deep`'s "where is it really stuck".
+   *
+   * One query replaces two R2 GETs per stranded reading (the manifest for the
+   * attempt id, then the attempt log), because the events the attempt appended
+   * are a column on the attempt row.
+   */
+  async stuckStages(ids: readonly string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.sql.query<{ id: string; stage: string | null; status: string | null }>(
+      `SELECT r.id,
+              a.events -> -1 ->> 'stage' AS stage,
+              a.events -> -1 ->> 'status' AS status
+       FROM readings r
+       JOIN reading_attempts a
+         ON (a.tenant_id, a.reading_id, a.id) = (r.tenant_id, r.id, r.active_attempt ->> 'id')
+       WHERE r.tenant_id = $1 AND r.id = ANY ($2::text[])
+         AND jsonb_array_length(a.events) > 0`,
+      [this.tenantId, [...ids]],
+    );
+    const out = new Map<string, string>();
+    for (const row of rows) {
+      if (row.stage) out.set(row.id, `${row.stage}/${row.status}`);
+    }
+    return out;
   }
 
   /** Escape hatch for a command with a query of its own; still tenant-scoped by the caller. */

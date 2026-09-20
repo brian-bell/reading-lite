@@ -54,7 +54,7 @@ import {
   type RefreshState,
   type ReverseMatches,
 } from "../../corpus-lib/refresh-scope";
-import { snapshotFor, validateBackfillWrite } from "../../corpus-lib/backfill-similarity";
+import { snapshotFor, validateSnapshotWrite } from "../../corpus-lib/similarity-snapshot";
 import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
@@ -606,7 +606,7 @@ async function refreshNeighbours(
       // malformed entry. Validate the candidate (stored manifest + fresh
       // snapshot) rather than the raw read, so a manifest whose only defect is
       // a malformed similarity is still repaired by this very write.
-      const check = validateBackfillWrite(manifest, snap);
+      const check = validateSnapshotWrite(manifest, snap);
       if (!check.ok) {
         invalid++;
         unmeasurableIds.push(t.id);

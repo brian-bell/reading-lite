@@ -1,21 +1,18 @@
 // Pure resolver for `corpus-drop`: turns a mixed list of selectors (reading ids
 // like `rd_ABC`, or URLs) into the concrete reading targets to delete, using
-// `index/list.json` as the source of truth for each id's key_prefix.
+// the tenant's readings as the source of truth for each id's key_prefix.
 //
-// Drop is non-ready only by default — a `ready` reading owns a Vectorize
-// embedding (and, as the live owner of its URL, the by-url pointer), so dropping
-// it through this path would dangle the embedding. (Under eager URL ownership a
-// failed/pending reading may also own its by-url pointer; the deletion plan in
-// `delete-plan.ts` deletes that pointer only when it is genuinely owned by the
-// dropped reading, so dropping an orphan-duplicate never disturbs the survivor's
-// pointer.) Hence:
+// Drop is non-ready only by default. Nothing dangles any more — URL ownership,
+// the embedding and the relationships are rows that cascade with the reading —
+// but a ready reading is a live library entry with a published summary, and
+// deleting one is not corpus repair. So:
 //   - an explicitly-named ready id is a hard error (you asked for it by id),
 //   - a url selector silently keeps any ready copy and drops only the non-ready
 //     copies (the orphan-dup cleanup case), erroring only if the url has *no*
 //     non-ready copy to drop.
 //
-// Staging cleanup can opt into ready deletion with `allowReady`; callers must
-// also clean vectors (the by-url pointer is handled by the deletion plan).
+// Staging cleanup can opt into ready deletion with `allowReady`. It no longer
+// has to clean vectors by hand: reading_embeddings cascades.
 
 export interface DropListItem {
   id: string;
@@ -35,12 +32,13 @@ export type ResolveResult =
   | { ok: true; targets: DropTarget[]; keptReady: DropListItem[] }
   | { ok: false; errors: string[] };
 
-// Only rewrite index/list.json once every object delete succeeded. If any
-// delete errored (e.g. a transient R2 failure on manifest.json or a pointer),
-// dropping the reading from the list would hide it from audits while its
-// objects/pointers linger — an inconsistent corpus that's harder to retry.
-// Leaving the list intact keeps the reading visible and the drop re-runnable.
-export function shouldRewriteIndex(erroredDeletes: number): boolean {
+// Only delete the reading's row once every one of its content objects is
+// gone. The row is what makes the reading findable, so deleting it first would
+// strand the bytes with nothing left to name them: a re-run could not retry,
+// and only an account wipe would ever collect them. Leaving the row in place
+// keeps the drop visible and re-runnable, which is the same reason this used
+// to hold back the index/list.json rewrite.
+export function shouldDeleteRow(erroredDeletes: number): boolean {
   return erroredDeletes === 0;
 }
 
@@ -65,11 +63,11 @@ export function resolveDropTargets(
     if (isId(sel)) {
       const it = byId.get(sel);
       if (!it) {
-        errors.push(`id not found in index/list.json: ${sel}`);
+        errors.push(`id not found in this tenant's corpus: ${sel}`);
         continue;
       }
       if (it.status === "ready" && !allowReady) {
-        errors.push(`refusing ${sel}: it is ready — deleting it would dangle its by-url pointer + embedding`);
+        errors.push(`refusing ${sel}: it is ready — dropping a live library entry is not corpus repair`);
         continue;
       }
       take(it);
@@ -79,12 +77,12 @@ export function resolveDropTargets(
     // URL selector: match every copy of this url.
     const matches = items.filter((i) => i.url === sel);
     if (matches.length === 0) {
-      errors.push(`url not found in index/list.json: ${sel}`);
+      errors.push(`url not found in this tenant's corpus: ${sel}`);
       continue;
     }
     const droppable = allowReady ? matches : matches.filter((i) => i.status !== "ready");
     if (droppable.length === 0) {
-      errors.push(`refusing ${sel}: url only has ready copies — would dangle by-url pointer + embedding`);
+      errors.push(`refusing ${sel}: url only has ready copies — dropping a live library entry is not corpus repair`);
       continue;
     }
     for (const it of droppable) take(it);

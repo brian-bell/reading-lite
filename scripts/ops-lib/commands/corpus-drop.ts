@@ -1,32 +1,46 @@
 // `ops corpus drop` — remove one or more readings from the corpus, by URL or
-// by id. A thin front-end over the corpus R2 helpers: resolve each selector
-// against index/list.json, delete every object under each target's id-scoped
-// prefix, then rewrite index/list.json once.
+// by id. Resolve each selector against the tenant's readings, delete the
+// content each target captured in R2, then delete the row.
 //
-// Non-ready only by default. A ready reading also owns a Vectorize embedding,
-// so ready deletion is an explicit staging-cleanup path:
-//   --allow-ready --bucket reading-lite-staging --vectorize reading-lite-staging
+// Deleting the row is one statement where this used to be four: URL
+// ownership, revisions, relationships, attempts and the embedding cascade, so
+// there is no pointer to unlink, no Vectorize index to keep in step, and no
+// index/list.json to rewrite.
 //
-// Plan-first: a mode-less run resolves targets and prints every object it
-// would delete plus the list.json diff; --execute performs the deletes.
+// Objects first, row last, deliberately. The row is what makes a reading
+// findable: deleting it first would strand its bytes with nothing left to name
+// them, and a re-run could not retry. See shouldDeleteRow.
+//
+// Non-ready only by default. Nothing dangles now, but a ready reading is a
+// live library entry, so dropping one stays an explicit staging path:
+//   --allow-ready --bucket reading-lite-staging
+//
+// Plan-first: a mode-less run resolves targets and prints every object and row
+// it would delete; --execute performs the deletes.
 
-import { resolveDropTargets, shouldRewriteIndex } from "../../corpus-lib/drop";
+import { resolveDropTargets, shouldDeleteRow } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
-import type { ListItem } from "../../corpus-lib/types";
+import {
+  DATABASE_URL_ENV_HELP,
+  operatorDatabaseUrl,
+  withOperatorSql,
+} from "../../pg-lib/operator-db";
+import { operatorCorpusFor, type CorpusDropView } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
-import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 export interface CorpusDropR2 {
-  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
-  keysForReading: (id: string, prefix: string, url: string, deps: R2Deps) => Promise<string[]>;
   deleteObject: (key: string, deps: R2Deps) => Promise<"deleted" | "absent" | "error">;
-  deleteVector: (index: string, id: string) => Promise<"deleted" | "error">;
-  writeListIndex: (items: ListItem[], deps: R2Deps) => Promise<void>;
 }
 
 export interface CorpusDropDeps extends BaseDeps {
+  corpus: <T>(
+    databaseUrlEnv: string,
+    tenant: OperatorTenant,
+    run: (corpus: CorpusDropView) => Promise<T>,
+  ) => Promise<T>;
   r2: CorpusDropR2;
 }
 
@@ -34,16 +48,17 @@ interface Opts {
   selectors: string[];
   bucket: string;
   tenant?: string;
+  databaseUrlEnv: string;
   remote: boolean;
   execute: boolean;
   allowReady: boolean;
-  vectorizeIndex?: string;
 }
 
 function parseDropArgs(argv: string[]): Opts {
   const opts: Opts = {
     selectors: [],
     bucket: process.env.READING_LITE_BUCKET ?? "reading-lite",
+    databaseUrlEnv: "DATABASE_URL",
     remote: true,
     execute: false,
     allowReady: false,
@@ -55,7 +70,7 @@ function parseDropArgs(argv: string[]): Opts {
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
-    else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
+    else if (a === "--database-url-env") opts.databaseUrlEnv = requireValue(argv[++i], a);
     else if (a.startsWith("--")) throw new UsageError(`unknown flag: ${a}`);
     else opts.selectors.push(a);
   }
@@ -69,20 +84,26 @@ function requireValue(v: string | undefined, flag: string): string {
 
 async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<number> {
   const opts = parseDropArgs(argv);
-  const { io, r2 } = deps;
   if (opts.selectors.length === 0) {
     throw new UsageError("no selectors given. Pass one or more reading ids or URLs.");
   }
   if (opts.allowReady && opts.bucket === "reading-lite") {
     throw new UsageError("refusing --allow-ready against production bucket reading-lite");
   }
-  if (opts.allowReady && !opts.vectorizeIndex) {
-    throw new UsageError("--allow-ready requires --vectorize <index> so ready embeddings are removed");
-  }
 
   const tenant = requireOperatorTenant(opts.tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
-  const items = await r2.readListIndex(r2Deps);
+  return deps.corpus(opts.databaseUrlEnv, tenant, (corpus) => dropResolved(opts, r2Deps, corpus, deps));
+}
+
+async function dropResolved(
+  opts: Opts,
+  r2Deps: R2Deps,
+  corpus: CorpusDropView,
+  deps: CorpusDropDeps,
+): Promise<number> {
+  const { io, r2 } = deps;
+  const items = await corpus.listItems();
 
   const resolved = resolveDropTargets(items, opts.selectors, { allowReady: opts.allowReady });
   if (!resolved.ok) {
@@ -104,33 +125,21 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   }
 
   io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
-  if (opts.vectorizeIndex) io.stdout(`Vectorize: ${opts.vectorizeIndex}`);
   io.stdout(`Readings to drop: ${targets.length}`);
   io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}\n`);
   for (const k of keptReady) io.stdout(`· keeping ready copy ${k.id}  ${k.url}`);
   if (keptReady.length) io.stdout("");
 
-  const targetIds = new Set(targets.map((t) => t.id));
-  const before = items.length;
-  const kept = items.filter((i) => !targetIds.has(i.id));
-
   let deleted = 0;
   let absent = 0;
   let errored = 0;
+  let rowsDropped = 0;
+  let rowsHeld = 0;
 
   for (const t of targets) {
-    const keys = await r2.keysForReading(t.id, t.prefix, t.url, r2Deps);
+    const keys = await corpus.contentKeysForDrop(t.id);
     io.stdout(`• ${t.id}  ${t.url}`);
-    if (t.status === "ready" && opts.vectorizeIndex) {
-      const vectorId = tenantVectorId(tenant.namespace, t.id);
-      if (!opts.execute) {
-        io.stdout(`    would delete vector  ${opts.vectorizeIndex}/${vectorId}`);
-      } else {
-        const res = await r2.deleteVector(opts.vectorizeIndex, vectorId);
-        if (res === "deleted") { deleted++; io.stdout(`    deleted   vector:${opts.vectorizeIndex}/${vectorId}`); }
-        else { errored++; io.stderr(`    ! delete error  vector:${opts.vectorizeIndex}/${vectorId}`); continue; }
-      }
-    }
+    let failedHere = 0;
     for (const key of keys) {
       if (!opts.execute) {
         io.stdout(`    would delete  ${key}`);
@@ -139,36 +148,44 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
       const res = await r2.deleteObject(key, r2Deps);
       if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
       else if (res === "absent") absent++;
-      else { errored++; io.stderr(`    ! delete error  ${key}`); }
+      else { errored++; failedHere++; io.stderr(`    ! delete error  ${key}`); }
+    }
+
+    if (!opts.execute) {
+      io.stdout(`    would delete  row ${t.id} (cascades url, revisions, relationships, attempts, embedding)`);
+      continue;
+    }
+    // Per reading, not per run: one reading's failed object delete must not
+    // hold back another reading's row, but it must hold back its own.
+    if (!shouldDeleteRow(failedHere)) {
+      rowsHeld++;
+      io.stderr(`    ! keeping row ${t.id}: ${failedHere} object delete(s) failed, so the drop stays re-runnable`);
+      continue;
+    }
+    if (await corpus.deleteReading(t.id)) {
+      rowsDropped++;
+      io.stdout(`    deleted   row ${t.id}`);
+    } else {
+      // Someone else dropped it between the read and here. The objects are
+      // gone either way, so this is a successful no-op, not a failure.
+      io.stdout(`    already gone  row ${t.id}`);
     }
   }
 
-  io.stdout(
-    `\nindex/list.json: ${before} items → ${kept.length} ` +
-    `(removing ${before - kept.length} entr${before - kept.length === 1 ? "y" : "ies"})`,
-  );
-
   if (!opts.execute) {
+    io.stdout(`\n${targets.length} row(s) would be removed from the library.`);
     io.stdout("\nPLAN — nothing changed. Re-run with --execute to apply.");
     return 0;
   }
 
-  // Don't rewrite the index if any object delete failed: removing the reading
-  // from index/list.json while its objects/pointers linger would hide a
-  // half-deleted reading from future audits. Leave the list intact so the drop
-  // stays visible and re-runnable.
-  if (!shouldRewriteIndex(errored)) {
+  io.stdout(`\nrows dropped: ${rowsDropped}, objects deleted: ${deleted}, absent (skipped): ${absent}`);
+  if (errored > 0) {
     io.stderr(
-      `\n${errored} object delete(s) failed — leaving index/list.json unchanged ` +
-      `so the partially-deleted reading stays visible. Re-run to retry.`,
+      `${errored} object delete(s) failed and ${rowsHeld} reading(s) kept their row so the drop stays ` +
+      `visible and re-runnable. Re-run to retry.`,
     );
-    io.stderr(`objects deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
     return 1;
   }
-
-  await r2.writeListIndex(kept, r2Deps);
-  io.stdout("\nindex/list.json rewritten.");
-  io.stdout(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
   return 0;
 }
 
@@ -180,36 +197,37 @@ export const corpusDropCommand: CommandDefinition<CorpusDropDeps> = {
   helpText: `Usage: npm run ops -- corpus drop <selector...> [options]
 
 A selector is either a reading id (rd_…) or a URL. URLs resolve to every
-non-ready copy of that URL in index/list.json; ids resolve to that one reading.
+non-ready copy of that URL in the tenant's corpus; ids resolve to that one
+reading.
 
-Non-ready only by default: a ready reading owns an embedding, so a named ready
-id is refused and a URL keeps its ready copy (dropping only duplicates).
-Staging cleanup can opt into ready deletion with --allow-ready, which requires
---vectorize and refuses the production bucket name.
+Non-ready only by default: a ready reading is a live library entry, so a named
+ready id is refused and a URL keeps its ready copy (dropping only duplicates).
+Staging cleanup can opt into ready deletion with --allow-ready, which refuses
+the production bucket name. It no longer needs a Vectorize index: the
+embedding is a row and goes with its reading.
 
-Plan by default — prints every object it would delete and the list.json diff.
-Add --execute to perform the deletes and rewrite index/list.json.
+Plan by default — prints every object and row it would delete. Add --execute
+to perform the deletes.
 
-Run when nothing is being submitted: the list.json rewrite is a plain put, not
-a CAS write, so a concurrent queue write could be lost.
+Each reading's captured content is deleted before its row, so a failed object
+delete keeps that reading's row and the drop stays re-runnable. One reading's
+failure does not hold back another's.
 
 Options:
-  --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
-  --vectorize <idx>   Vectorize index for ready-vector deletes (--allow-ready).
+  --tenant <selector>  REQUIRED: tenant id (usr_…). 'global' has no PostgreSQL corpus.
+  ${DATABASE_URL_ENV_HELP}
+  --bucket <name>     R2 bucket holding captured content.
+                      Default: READING_LITE_BUCKET / reading-lite.
   --allow-ready       Permit dropping ready readings (staging cleanup only).
   --local             Use the local miniflare bucket.
-  --execute           Perform the deletes and rewrite index/list.json.
+  --execute           Perform the deletes.
   --help              Show this message.`,
   defaultDeps: (io: CommandIo): CorpusDropDeps => ({
     io,
+    corpus: (databaseUrlEnv, tenant, run) =>
+      withOperatorSql(operatorDatabaseUrl(databaseUrlEnv), (sql) => run(operatorCorpusFor(sql, tenant))),
     r2: {
-      readListIndex: async (d) => (await import("../../corpus-lib/wrangler-r2")).readListIndex(d),
-      keysForReading: async (id, prefix, url, d) =>
-        (await import("../../corpus-lib/wrangler-r2")).keysForReading(id, prefix, url, d),
       deleteObject: async (key, d) => (await import("../../corpus-lib/wrangler-r2")).deleteObject(key, d),
-      deleteVector: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).deleteVector(index, id),
-      writeListIndex: async (items, d) => (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items, d),
     },
   }),
   run: runCorpusDrop,

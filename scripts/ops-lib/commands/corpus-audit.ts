@@ -1,11 +1,16 @@
 // `ops corpus audit` — inventory every non-ready reading in the corpus,
 // classified by failure reason, as index.json + INDEX.md.
 //
-// Reading and classifying the corpus is safe in plan mode (wrangler R2 reads
-// only). The command is plan-first because its output is two durable local
-// report files: plan mode prints the paths and row counts it would write and
-// touches nothing; --execute writes both reports through the existing audit
-// library behavior.
+// The inventory is a query against `readings` (ADR 0005): one statement where
+// this used to read index/list.json and then a manifest per stranded reading.
+// Captured content still lives in R2, so --teasers reads the extracted bytes
+// at the key the reading currently points at.
+//
+// Reading and classifying the corpus is safe in plan mode (SELECTs and R2
+// reads only). The command is plan-first because its output is two durable
+// local report files: plan mode prints the paths and row counts it would write
+// and touches nothing; --execute writes both reports through the existing
+// audit library behavior.
 
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -22,16 +27,22 @@ import { renderIndexMarkdown } from "../../corpus-lib/render";
 import type { AuditRow, ListItem } from "../../corpus-lib/types";
 import * as wranglerR2 from "../../corpus-lib/wrangler-r2";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
+import {
+  DATABASE_URL_ENV_HELP,
+  DATABASE_URL_ENV_OPTION,
+  operatorDatabaseUrl,
+  withOperatorSql,
+} from "../../pg-lib/operator-db";
+import { operatorCorpusFor, type OperatorCorpus } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 
 export interface CorpusAuditDeps extends BaseDeps {
+  // The corpus view, opened for the duration of the run.
+  corpus: <T>(databaseUrlEnv: string, tenant: ReturnType<typeof requireOperatorTenant>, run: (corpus: OperatorCorpus) => Promise<T>) => Promise<T>;
   r2: {
-    readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
-    readExtracted: (keyPrefix: string, deps: R2Deps) => Promise<string | null>;
-    readManifest: (keyPrefix: string, deps: R2Deps) => Promise<any | null>;
-    readAttempt: (keyPrefix: string, attemptId: string, deps: R2Deps) => Promise<any | null>;
+    readObject: (key: string, deps: R2Deps) => Promise<string | null>;
   };
   // Durable local writes — only reached on --execute.
   mkdir: (dir: string) => Promise<void>;
@@ -42,6 +53,7 @@ export interface CorpusAuditDeps extends BaseDeps {
 interface AuditArgs {
   bucket: string;
   tenant?: string;
+  databaseUrlEnv: string;
   out: string;
   remote: boolean;
   teasers: boolean;
@@ -58,6 +70,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
       options: {
         bucket: { type: "string" },
         tenant: { type: "string" },
+        "database-url-env": DATABASE_URL_ENV_OPTION,
         out: { type: "string" },
         local: { type: "boolean", default: false },
         teasers: { type: "boolean", default: false },
@@ -72,6 +85,7 @@ function parseAuditArgs(argv: string[]): AuditArgs {
   return {
     bucket: resolveBucket(values.bucket),
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
+    databaseUrlEnv: values["database-url-env"]!,
     out: values.out ?? ".",
     remote: values.local !== true,
     teasers: values.teasers === true,
@@ -81,11 +95,20 @@ function parseAuditArgs(argv: string[]): AuditArgs {
   };
 }
 
-async function detectTeasers(items: ListItem[], r2: CorpusAuditDeps["r2"], r2Deps: R2Deps): Promise<AuditRow[]> {
+async function detectTeasers(
+  items: ListItem[],
+  corpus: OperatorCorpus,
+  r2: CorpusAuditDeps["r2"],
+  r2Deps: R2Deps,
+): Promise<AuditRow[]> {
   const ready = items.filter((i) => i.status === "ready" && isNewsletterHost(i.url));
   const rows: AuditRow[] = [];
   for (const it of ready) {
-    const md = await r2.readExtracted(it.key_prefix, r2Deps);
+    // The extracted key comes from the reading's current revision, not from
+    // its key prefix: each attempt captures under its own immutable prefix, so
+    // the legacy spelling can be a superseded attempt's bytes or absent.
+    const keys = await corpus.contentKeys(it.id);
+    const md = keys?.extractedKey ? await r2.readObject(keys.extractedKey, r2Deps) : null;
     if (md && isTeaser(md)) {
       rows.push({
         category: "teaser", url: it.url, short: shortUrl(it.url), reading_id: it.id,
@@ -97,16 +120,12 @@ async function detectTeasers(items: ListItem[], r2: CorpusAuditDeps["r2"], r2Dep
   return rows;
 }
 
-async function deepenStrandedStages(rows: AuditRow[], r2: CorpusAuditDeps["r2"], r2Deps: R2Deps): Promise<void> {
-  for (const r of rows) {
-    if (r.class !== "stranded") continue;
-    const m = await r2.readManifest(r.key_prefix, r2Deps);
-    const attemptId = m?.active_attempt?.id;
-    if (!attemptId) continue;
-    const a = await r2.readAttempt(r.key_prefix, attemptId, r2Deps);
-    const events = a?.events ?? [];
-    const last = events[events.length - 1];
-    if (last?.stage) r.stuck_stage = `${last.stage}/${last.status}`;
+async function deepenStrandedStages(rows: AuditRow[], corpus: OperatorCorpus): Promise<void> {
+  const stranded = rows.filter((r) => r.class === "stranded");
+  const stages = await corpus.stuckStages(stranded.map((r) => r.reading_id));
+  for (const r of stranded) {
+    const stage = stages.get(r.reading_id);
+    if (stage) r.stuck_stage = stage;
   }
 }
 
@@ -114,13 +133,20 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
   const args = parseAuditArgs(argv);
   const tenant = requireOperatorTenant(args.tenant);
   const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: tenant.keyRoot, remote: args.remote };
-  const items = await deps.r2.readListIndex(r2Deps);
 
-  const failed = buildFailedRows(items);
-  const failedOrphanDups = buildFailedOrphanDupRows(items);
-  const pending = buildPendingRows(items, deps.now());
-  if (args.deep) await deepenStrandedStages(pending, deps.r2, r2Deps);
-  const teasers = args.teasers ? await detectTeasers(items, deps.r2, r2Deps) : [];
+  const inventory = await deps.corpus(args.databaseUrlEnv, tenant, async (corpus) => {
+    const items = await corpus.listItems();
+    const pending = buildPendingRows(items, deps.now());
+    if (args.deep) await deepenStrandedStages(pending, corpus);
+    return {
+      items,
+      pending,
+      failed: buildFailedRows(items),
+      failedOrphanDups: buildFailedOrphanDupRows(items),
+      teasers: args.teasers ? await detectTeasers(items, corpus, deps.r2, r2Deps) : [],
+    };
+  });
+  const { items, failed, failedOrphanDups, pending, teasers } = inventory;
   const degraded = args.degraded ? buildDegradedRows(items) : [];
   const tally = tallyStatuses(items);
 
@@ -142,7 +168,7 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
   };
 
   if (!args.execute) {
-    deps.io.stdout(`Plan: audit corpus in ${args.remote ? "remote" : "local"} R2 bucket ${args.bucket}`);
+    deps.io.stdout(`Plan: audit corpus of ${operatorTenantSelector(tenant)} from ${args.databaseUrlEnv}`);
     deps.io.stdout(`  would write ${jsonPath} (${rows.length} rows)`);
     deps.io.stdout(`  would write ${mdPath}`);
     deps.io.stdout(JSON.stringify(summary, null, 2));
@@ -180,32 +206,34 @@ export const corpusAuditCommand: CommandDefinition<CorpusAuditDeps> = {
   name: "audit",
   summary: "Inventory non-ready readings into index.json + INDEX.md",
   safety: "plan-first",
-  helpText: `Reads index/list.json from R2 (via wrangler) and classifies every reading
-that is not ready. Plan mode reads and classifies but writes nothing; --execute
-writes index.json + INDEX.md. Never writes to the corpus.
+  helpText: `Queries the tenant's readings and classifies every one that is not ready.
+Plan mode reads and classifies but writes nothing; --execute writes
+index.json + INDEX.md. Never writes to the corpus.
 
 Options:
-  --bucket <name>   R2 bucket. Default: READING_LITE_BUCKET env, then reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
+  --tenant <selector>  REQUIRED: tenant id (usr_…). 'global' has no PostgreSQL corpus.
+  ${DATABASE_URL_ENV_HELP}
   --out <dir>       Output directory for index.json + INDEX.md. Default: cwd.
   --teasers         Also scan ready pragmaticengineer/substack readings for
-                    paywall teasers (reads their content; slower).
+                    paywall teasers (reads their content from R2; slower).
   --degraded        Also list ready YouTube readings that recorded an
-                    enrichment miss (list.json only; no extra R2 reads).
+                    enrichment miss (no extra reads).
   --deep            Resolve the true stuck stage of stranded pending readings
-                    from their attempt files (slower).
+                    from their attempt events (one extra query).
+  --bucket <name>   R2 bucket holding captured content, read only by --teasers.
+                    Default: READING_LITE_BUCKET env, then reading-lite.
   --local           Read the local miniflare cache instead of remote R2.
   --execute         Write the report files.
   --help            Show this message.
 
-Requires a Cloudflare session (wrangler login / CLOUDFLARE_API_TOKEN).`,
+--teasers additionally requires a Cloudflare session (wrangler login /
+CLOUDFLARE_API_TOKEN); the inventory itself needs only the database.`,
   defaultDeps: (io: CommandIo): CorpusAuditDeps => ({
     io,
+    corpus: (databaseUrlEnv, tenant, run) =>
+      withOperatorSql(operatorDatabaseUrl(databaseUrlEnv), (sql) => run(operatorCorpusFor(sql, tenant))),
     r2: {
-      readListIndex: wranglerR2.readListIndex,
-      readExtracted: wranglerR2.readExtracted,
-      readManifest: wranglerR2.readManifest,
-      readAttempt: wranglerR2.readAttempt,
+      readObject: wranglerR2.readObject,
     },
     mkdir: async (dir) => {
       const { promises: fs } = await import("node:fs");

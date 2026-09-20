@@ -21,23 +21,18 @@ import { UsageError } from "../../../scripts/ops-lib/contract";
 // group -> commands. The complete supported operator surface.
 const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   system: ["policy", "status", "lease-clear"],
+  // Nine corpus and account commands retired with the storage they repaired;
+  // docs/operator-tooling.md records which and why.
   corpus: [
     "audit",
     "recover",
     "ingest",
     "drop",
     "sweep",
-    "delete-orphans",
-    "backfill-similarity",
     "refresh-neighbours",
     "refresh-connections",
     "refresh-tensions",
-    "backfill-vectors",
-    "backfill-source-date",
-    "normalize-tags",
     "purge-connections",
-    "rebuild-list",
-    "seed-vector-ledger",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],
@@ -48,7 +43,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   founder: ["bootstrap"],
   extract: ["agent", "probe"],
   eval: ["summarizer"],
-  account: ["sweep-wipe-prefix", "wipe", "residue-scan", "audit-bare-vectors"],
+  account: ["sweep-wipe-prefix", "wipe", "residue-scan"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");
