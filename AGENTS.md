@@ -246,7 +246,10 @@ loopback. Never enable `LOCAL_MAIL_SINK` in deployed environments.
 ## Operations constraints
 
 All supported operator workflows use `npm run ops -- <group> <command>`.
-Durable changes plan by default and require `--execute`. Every `corpus` command
+[Operator tooling](docs/operator-tooling.md) carries one decision — port,
+Worker endpoint, or retire — for every command and skill under PostgreSQL, and
+is the source list for #351. Durable changes plan by default and require
+`--execute`. Every `corpus` command
 requires `--tenant`; production uses `/api/whoami`'s `tenant_id`.
 `--tenant global` addresses retained pre-tenant data, not the live corpus.
 
