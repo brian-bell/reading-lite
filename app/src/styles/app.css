@@ -1416,11 +1416,20 @@ textarea {
  * above it. Sizing by tag alone left those articles with section headings the
  * size of their body text — one undifferentiated slab. So the shallowest
  * level a reading actually uses is its section heading, whatever it is, and
- * the levels under it stay the italic step above. */
+ * the levels under it stay the italic step above.
+ *
+ * The chain runs to h6 because the level a reading starts at can be any of
+ * them: the Source view demotes every heading one step (reading-source.ts,
+ * demotedHeading), so an article whose own shallowest heading is h4 arrives
+ * here as h5, and one starting at h5 arrives as h6. Stopping short would
+ * leave those articles at the secondary step, which is the slab this rule
+ * exists to break up. */
 .reading-prose h1,
 .reading-prose h2,
 .reading-prose:not(:has(h1, h2)) h3,
-.reading-prose:not(:has(h1, h2, h3)) h4 {
+.reading-prose:not(:has(h1, h2, h3)) h4,
+.reading-prose:not(:has(h1, h2, h3, h4)) h5,
+.reading-prose:not(:has(h1, h2, h3, h4, h5)) h6 {
   margin-top: var(--space-9);
   font-size: 26px;
   font-style: normal;
