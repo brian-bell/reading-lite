@@ -59,12 +59,17 @@ What it does, end to end (`scripts/corpus-lib/batch/`):
 4. **submit** — one request per reading (`custom_id` = reading id, `params` =
    the *same* `emit_reading` body as realtime, so the prompt cache is shared),
    write fresh content objects to R2, persist a resume sidecar.
-5. **poll → write** — poll to completion, then write manifests / pointers /
-   vectors / `index/list.json` via the **same terminal-write contract** as the
-   worker. A success writes the `index/by-url/{hash}` pointer; a failure writes a
-   retryable failed manifest with **no** by-url pointer, so a failed batch URL
-   stays re-submittable as an unclaimed URL (the batch path does not eagerly
-   claim the by-url slot the way the realtime `POST /api/readings` path does).
+5. **poll → write** — poll to completion, then write through the **same
+   terminal-write contract** as the worker. A success takes the URL's
+   ownership; a failure leaves it unowned, so a failed batch URL stays
+   re-submittable (the batch path does not claim the URL up front the way the
+   realtime `POST /api/readings` path does).
+
+   NOT YET PORTED. The batch write phase still writes R2 manifests, pointers
+   and `index/list.json`, which nothing reads since the storage migration's
+   slice 1b. `corpus ingest` and `corpus recover --batch` are listed as Port in
+   [operator tooling](../../../docs/operator-tooling.md) and are not finished:
+   do not rely on a batch run against a cut-over environment.
 
 ```bash
 # Dry-run the batch plan (no writes, no spend).
@@ -91,7 +96,8 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch 
 ## Prerequisites
 
 - A reading-API bearer token (for writes): `--token`, `READER_API_TOKEN`, or `.prd.vars`/`.dev.vars`.
-- For `--monitor`: a Cloudflare session to read `index/list.json` (wrangler login).
+- For `--monitor`: a direct PostgreSQL connection string. Source
+  `~/.config/reading-lite/neon.env` and pass `--database-url-env`.
 
 ## Usage
 
@@ -106,11 +112,11 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --execut
 npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --only reprocess --execute
 npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --only local-extract --limit 5 --execute
 
-# Point at a local worker (TENANT_DATA_PLANE unset: --tenant global).
-npm run ops -- corpus recover --tenant global --index .../index.json --url http://127.0.0.1:8787 --execute
+# Point at a local worker.
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --url http://127.0.0.1:8787 --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so live staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
+`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is **refused**: it addressed the pre-tenant R2 key root, which has no PostgreSQL representation.
 Flags: `--index` (default `./index.json`), `--execute`, `--only reprocess|local-extract`, `--limit <n>`, `--url`, `--token`, `--bucket` (for `--monitor`), `--monitor`, `--batch` (bulk Message Batch path), `--help`.
 
 Outcomes are written back into the `index.json` rows (`result` field). Prints a JSON summary; exits non-zero if any action errored.

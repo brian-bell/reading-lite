@@ -58,11 +58,17 @@ Prints a JSON summary to stdout (`selected`, `confirmed`, `queued`, `errors`,
 
 ## Typical loop
 
+`reading-list check` queries the corpus, so it needs a tenant and a connection
+string; `reading-list process` submits through the API and needs neither.
+
 ```bash
-npm run ops -- reading-list check --file list.json --execute   # mark processed true/false
-npm run ops -- reading-list process --file list.json --execute # submit the false ones
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- reading-list check --file list.json --tenant "$TENANT" \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute      # mark processed true/false
+npm run ops -- reading-list process --file list.json --execute  # submit the false ones
 # …wait for the queue to drain…
-npm run ops -- reading-list check --file list.json --execute   # promote freshly-ready ones
+npm run ops -- reading-list check --file list.json --tenant "$TENANT" \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute      # promote freshly-ready ones
 ```
 
 ## Implementation

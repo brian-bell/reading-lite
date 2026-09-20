@@ -10,7 +10,7 @@ production Markdown and raw captures with authenticated `GET` requests, verifies
 each raw capture's hash, freezes one comparison input per reading, calls the
 repository's real `summarizeReading()` path (same OpenAI and Anthropic request
 builders as the Worker), and writes local JSON and Markdown reports. It never
-updates a manifest, vector, list row, or other production state. Production OpenAI
+updates a reading row, its embedding, or other production state. Production OpenAI
 stays `gpt-5.6-terra`; this workflow does not change Worker config.
 
 This is the repeatable entry point for a Luna vs Sonnet (or OpenAI-effort)
@@ -97,12 +97,13 @@ that job — that command is the fixture-based quality matrix, not live readings
   context identical across local candidates for that reading. The fresh OpenAI
   run is the fair within-matrix control; the production output is contextual
   baseline evidence.
-- The original full Vectorize top-K is not persisted. The runner reconstructs a
-  stable context from the connections selected in the production manifest and
+- The original full top-K is not persisted. The runner reconstructs a
+  stable context from the connections the production reading stores and
   resolves their current URL/title/TLDR. State this limitation in the handoff.
 - Stop if a reading is not `ready` with captured content, its hash differs from
-  the manifest, a related reading cannot be resolved, or credentials are absent.
-- Never use reprocess, import, queue, R2-write, or Vectorize-write operations for
+  the one the row records, a related reading cannot be resolved, or credentials
+  are absent.
+- Never use reprocess, import, queue, R2-write, or any database write for
   this workflow. Never deploy a model or effort change as part of a comparison.
 - Do not copy the full article into result artifacts. The runner stores source
   identity, hash, frozen context, structured summaries, usage, latency, and
