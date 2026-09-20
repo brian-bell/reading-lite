@@ -48,10 +48,10 @@ criteria.
 | `corpus refresh-neighbours` | Similarity snapshots come from the exact pgvector cosine scan over the tenant's rows. |
 | `corpus refresh-connections` | Judged connections are written with the writer's locked compare-and-replace instead of a manifest compare-and-set. |
 | `corpus refresh-tensions` | Same, for tensions. |
-| `corpus ingest` | The batch pipeline's two ownership predicates (`scripts/corpus-lib/batch/r2-ownership.ts`) become reads of `reading_urls`. Sidecars, resume rules and `--sole-writer` are unchanged. |
+| `corpus ingest` | The vector ledger it wrote before every upsert is gone with the store that made it necessary, so the parse-time ledger guard goes too. Still to port: the batch pipeline's two ownership predicates (`scripts/corpus-lib/batch/r2-ownership.ts`) become reads of `reading_urls`. Sidecars, resume rules and `--sole-writer` are unchanged. |
 | `reading-list check` | Resolves each exported URL against `reading_urls` instead of fetching `index/list.json` through wrangler. Left unported it would mark every already-saved URL unprocessed, and `reading-list process` would resubmit the corpus. |
 | `account wipe` | Reads `users.status` and `wipe_progress` over a direct PostgreSQL connection. It already read them from a database rather than the R2 progress object — the move is D1 to PostgreSQL. |
-| `account residue-scan` | Rewritten source set. `vector_ledger`, `ledger_vectors`, `listed_vectors` and the `d1.*` sources are gone; what remains is per-table row counts for the tenant plus the R2 prefix. |
+| `account residue-scan` | Rewritten source set. `vector_ledger` and `ledger_vectors` are gone with the ledger; `listed_vectors` became `ready_reading_vectors`, asking the rows rather than `index/list.json` (which would have read empty and reported a false clear); the `d1.*` sources are `pg.*` and now count `readings` and `reading_embeddings` too. |
 | `system status` | Reads policy from PostgreSQL. `scripts/system-lib/policy.ts` resolves its handle through `controlPlaneDbForBucket`, which now opens a direct connection; unported it reported a frozen policy. |
 | `system policy` | Same handle, and worse unported — it would have written spend caps to a database no Worker binding reads, so a cap the operator believed was set would never have applied. |
 | `extract agent` | Takes the content key from the reading's row rather than deriving it from the manifest layout. |

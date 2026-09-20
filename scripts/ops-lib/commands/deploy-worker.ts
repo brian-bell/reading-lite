@@ -22,6 +22,7 @@ import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { CONTROL_PLANE_REQUIRED_SECRETS } from "../../control-plane-env";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { checkPostgresCutover } from "../postgres-cutover";
+import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 import { migrate, planMigrations, readMigrations, MigrationDriftError } from "../../pg-lib/migrate";
 import { operatorDatabaseUrl } from "../../pg-lib/operator-db";
 import { sqlFromConnectionString } from "../../../src/modules/db/sql";
@@ -116,6 +117,21 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   // this leaves is a migrated database with the previous Worker still serving
   // — which that Worker tolerates.
   const databaseUrlEnv = values["database-url-env"]!;
+  // --env and --database-url-env are independent flags, and the staging Worker
+  // is deployed by hand (deploy-app-staging.yml). With a production string
+  // exported as DATABASE_URL — the shell state operator-db.ts warns about —
+  // `ops deploy worker --env staging` would apply this repo's pending
+  // migrations to production. Refuse a pair that names two environments; an
+  // unmapped variable is left alone, as elsewhere.
+  const namedEnv = Object.values(CONTROL_PLANE_BY_BUCKET).find(
+    (target) => target.databaseUrlEnv === databaseUrlEnv,
+  );
+  if (namedEnv && namedEnv.env !== env) {
+    deps.io.stderr(
+      `[${mode}] migrations: REFUSED. --env ${env} but ${databaseUrlEnv} is the ${namedEnv.env} database.`,
+    );
+    if (execute) return 2;
+  }
   try {
     const outcome = await deps.migrateDatabase(databaseUrlEnv, execute);
     if (execute) {

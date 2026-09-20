@@ -16,10 +16,6 @@ import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
 import type { ListIndexItem } from "../../../src/schemas/api";
 import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
-import {
-  NO_OP_VECTOR_LEDGER,
-  type VectorLedger,
-} from "../../account-lib/vector-ledger";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 import { mergeListIndex } from "./list-index-write";
@@ -35,17 +31,12 @@ const layout = r2KeyLayout();
 export interface WriteDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
-  // The durable vector-id ledger (issue #195 S3). Defaults to the no-op, which
-  // is what `--tenant global` and every fixture-backed test want: the
-  // pre-tenant corpus has no tenant id to key ledger rows by, and no account
-  // wipe addresses it.
-  //
-  // This writer had no `users.status` check and never will — it is an offline
-  // batch tool, and by the time it runs the tenant it is writing for may be
-  // mid-wipe. That was one of the four strandings `src/account-wipe.ts`'s
-  // header listed: an upsert landing after the wipe's vectors phase left a
-  // vector with no derivable id. The ledger closes it by holding the id.
-  ledger?: VectorLedger;
+  // The durable vector-id ledger (issue #195 S3) is gone, with the store that
+  // made it necessary. It existed because an upsert landing after a wipe's
+  // vectors phase left a vector with no derivable id, and this offline writer
+  // has no `users.status` check. An embedding is a row of reading_embeddings
+  // now: it commits inside its reading's transaction and cascades with it, so
+  // there is no id to record and nothing to strand (ADR 0005, migration 0003).
   /**
    * The tenant's Vectorize namespace, or undefined for the pre-tenant layout.
    *
@@ -439,17 +430,7 @@ async function writeNormalizedResults(
     });
   }
   if (vectors.length > 0) {
-    const readingIds = resolvedSuccess.map(({ target }) => target.id);
-    // Ledger BEFORE the upsert. A row for an upsert that then fails costs one
-    // redundant `deleteByIds`; an upsert with no row is a vector nothing can
-    // address once the reading's R2 objects are gone.
-    //
-    // BARE reading ids, not the composed vector ids above: the ledger stores
-    // the reading id and the wipe re-composes through `tenantVectorId`, so
-    // there is exactly one spelling of that rule and no stored copy of its
-    // output to drift.
-    await (deps.ledger ?? NO_OP_VECTOR_LEDGER).markLive(readingIds, Date.now());
-    // DELIBERATELY NOT deleting the bare id here. See the note below.
+    // No ledger write before the upsert any more: see the note on `deps`.
     await deps.vectorize.upsert(vectors);
   }
 

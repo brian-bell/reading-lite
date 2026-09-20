@@ -170,31 +170,38 @@ describe("residue sources and wipe gates", () => {
       detail: expect.objectContaining({ first_completed_at_ms: 42 }),
     });
   });
-  it("reports a listed reading missing its vector even without a ledger row", async () => {
+  // The ready readings come from rows now, not index/list.json. Reading the
+  // retired object would have found nothing and reported a false "clear" —
+  // and this scan gates account teardown.
+  it("reports a ready reading missing its vector", async () => {
     const r = remoteFixture();
     r.vectors.get.mockResolvedValue([]);
-    r.storage.get.mockResolvedValue(
-      JSON.stringify({
-        version: 1,
-        items: [
-          {
-            id,
-            key_prefix: `readings/2026/04/26T200000Z-${id}`,
-            url: "https://example.com",
-            status: "ready",
-            created_at: "2026-04-26T20:00:00.000Z",
-          },
-        ],
-      }),
+    r.db.all.mockImplementation(async (sql: string) =>
+      sql.includes("FROM readings") ? [{ id }] : [],
     );
     const result = await scanResidue(r, tenant);
     expect(
-      result.findings.find((f) => f.source === "listed_vectors")?.detail,
+      result.findings.find((f) => f.source === "ready_reading_vectors")?.detail,
     ).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id, composed: "candidate_absent" }),
       ]),
     );
+  });
+
+  // The ledger is retired (migration 0003 deliberately does not recreate it),
+  // so a scan must not observe a source that would throw and report every
+  // tenant as incomplete — which is the gate on teardown.
+  it("observes no vector_ledger source at all", async () => {
+    const r = remoteFixture();
+    r.vectors.list.mockResolvedValue({ vectors: [], isTruncated: false });
+    const result = await scanResidue(r, tenant);
+    const sources = result.findings.map((f) => f.source);
+    expect(sources).not.toContain("vector_ledger");
+    expect(sources).not.toContain("ledger_vectors");
+    for (const call of r.db.all.mock.calls) {
+      expect(String(call[0])).not.toContain("vector_ledger");
+    }
   });
   it("plans without enqueue, requires matching confirmation, and rechecks deleting before execute", async () => {
     const r = remoteFixture();

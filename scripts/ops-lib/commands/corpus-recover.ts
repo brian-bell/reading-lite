@@ -16,10 +16,6 @@ import { DEFAULT_API_BASE, resolveApiTarget, resolveBatchConfig, resolveBucket, 
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
-  assertOperatorLedgerAvailable,
-  operatorVectorLedger,
-} from "../../account-lib/operator-ledger";
-import {
   classifyOutcome,
   readingApiFor,
   type ReadingApi,
@@ -436,7 +432,6 @@ async function runBatchMode(
     });
     // Refuse a tenant/bucket pair the vector ledger cannot serve, before the
     // batch is submitted rather than at the first upsert (issue #195 S3).
-    assertOperatorLedgerAvailable(cfg.tenant, cfg.r2.bucket);
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
     return 2;
@@ -537,7 +532,6 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         // Ledger every vector this batch writes (issue #195 S3). Resolved from
         // the run's own tenant and bucket; the no-op for --tenant global, which
         // no account wipe addresses.
-        ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
         // So write-phase composes the ADR 0002 tenant-scoped vector id, like
         // every other writer. Undefined for --tenant global.
         ...(cfg.vectorize.namespace === undefined

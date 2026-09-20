@@ -27,7 +27,7 @@ import {
   operatorDatabaseUrl,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
-import { operatorCorpusFor, type CorpusInventory } from "../../pg-lib/operator-corpus";
+import { assertPgTenant, operatorCorpusFor, type CorpusInventory } from "../../pg-lib/operator-corpus";
 import type { OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
@@ -99,6 +99,9 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
   const entries = parsed as ReadingListEntry[];
 
   const tenant = requireOperatorTenant(args.tenant);
+  // Before any connection: a 'global' selector must say so, not report a
+  // missing connection string.
+  assertPgTenant(tenant);
   const corpus = await deps.corpus(args.databaseUrlEnv, tenant, async (view) =>
     buildCorpusUrlSet(await view.listItems(), { statuses: args.statuses }),
   );

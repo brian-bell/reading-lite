@@ -1,5 +1,5 @@
 import { BILLING_TENANT, spendHarness } from "../../helpers/operator-spend";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { corpusDropCommand, type CorpusDropDeps } from "../../../scripts/ops-lib/commands/corpus-drop";
 import { corpusSweepCommand, type CorpusSweepDeps } from "../../../scripts/ops-lib/commands/corpus-sweep";
 import { corpusIngestCommand, type CorpusIngestDeps } from "../../../scripts/ops-lib/commands/corpus-ingest";
@@ -136,11 +136,44 @@ describe("ops corpus drop", () => {
   it("no longer requires a Vectorize index for --allow-ready: the embedding cascades", async () => {
     const { deps, deletedRows } = dropDeps([READY_ITEM]);
     const code = await corpusDropCommand.run(
-      ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging", "--execute"],
+      [
+        "--tenant", TENANT, "rd_r", "--allow-ready",
+        "--bucket", "reading-lite-staging",
+        "--database-url-env", "NEON_REHEARSAL_DATABASE_URL",
+        "--execute",
+      ],
       deps,
     );
     expect(code).toBe(0);
     expect(deletedRows).toEqual(["rd_r"]);
+  });
+
+  // The bucket/database agreement check is inert when the variable is
+  // unmapped, which the default DATABASE_URL is — so --allow-ready against
+  // the staging bucket with a production string in DATABASE_URL would have
+  // passed every guard and deleted ready production rows.
+  it("refuses --allow-ready on the unmapped default variable", async () => {
+    const { deps } = dropDeps([READY_ITEM]);
+    await expect(
+      corpusDropCommand.run(
+        ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging"],
+        deps,
+      ),
+    ).rejects.toThrow(/must say which database/);
+  });
+
+  it("refuses a bucket and a database that name different environments", async () => {
+    const { deps } = dropDeps([READY_ITEM]);
+    await expect(
+      corpusDropCommand.run(
+        [
+          "--tenant", TENANT, "rd_r",
+          "--bucket", "reading-lite-staging",
+          "--database-url-env", "NEON_MAIN_DATABASE_URL",
+        ],
+        deps,
+      ),
+    ).rejects.toThrow(/staging content, but NEON_MAIN_DATABASE_URL is the production database/);
   });
 
   it("rejects --vectorize, which no longer means anything", async () => {
@@ -285,15 +318,6 @@ describe("ops corpus sweep", () => {
 });
 
 describe("ops corpus ingest", () => {
-  // A real tenant needs somewhere to record vector-ledger rows, and that is
-  // now a connection string rather than a wrangler session. The parse-time
-  // assert refuses without it, so the harness supplies one.
-  beforeEach(() => {
-    vi.stubEnv("NEON_MAIN_DATABASE_URL", "postgres://u:p@127.0.0.1:54329/reading_lite");
-  });
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
 
   function makeDeps() {
     const { io: cio, lines } = io();
@@ -364,43 +388,6 @@ describe("ops corpus ingest", () => {
     expect(calls.ownershipPlans).toBe(1);
     expect(calls.executes).toBe(0);
     expect(lines.join("\n")).toContain("would submit 1 reading(s)");
-  });
-
-  it("refuses a real tenant on a bucket with no control plane, before submitting", async () => {
-    // A vector written without a ledger row is unaddressable once the reading's
-    // R2 objects are gone (issue #195 S3), so a tenant whose ids have nowhere
-    // to be recorded must stop the run — and stop it before the batch, not at
-    // the first upsert half way through a paid, resumable pass.
-    const { deps, calls } = makeDeps();
-    deps.resolveConfig = (flags) => {
-      calls.configResolves++;
-      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
-    };
-    const code = await corpusIngestCommand.run(
-      ["--tenant", "usr_11111111-1111-4111-8111-111111111111", "--dir", "/md", "--execute", "--sole-writer"],
-      deps,
-    );
-    expect(code).toBe(2);
-    expect(calls.executes).toBe(0);
-  });
-
-  it("lets --tenant global past the ledger guard on any bucket", async () => {
-    // The pre-tenant corpus has no tenant id to key ledger rows by, and no
-    // account wipe addresses it, so the ledger guard has nothing to refuse.
-    // Run in execute mode: plan mode swallows a ledger refusal and still exits
-    // 0. The run gets past that guard and stops only at the next one: a bucket
-    // with no spend authority cannot admit the batch (reading-lite-gh319.2).
-    const { deps, calls, spend } = makeDeps();
-    deps.resolveConfig = (flags) => {
-      calls.configResolves++;
-      return { tenant: flags.tenant, r2: { bucket: "some-scratch-bucket" } } as never;
-    };
-    await expect(corpusIngestCommand.run(
-      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--dir", "/md", "--execute", "--sole-writer"],
-      deps,
-    )).rejects.toThrow(/no spend authority is mapped to bucket 'some-scratch-bucket'/);
-    expect(spend.openSpend).not.toHaveBeenCalled();
-    expect(calls.executes).toBe(0);
   });
 
   it("plan mode degrades gracefully without credentials", async () => {
@@ -488,18 +475,6 @@ describe("ops corpus ingest", () => {
       expect(spend.openSpend).toHaveBeenCalledWith("production");
       expect(paid.map((p) => p.spend.tenantId)).toEqual([payer]);
       expect(spend.dispose).toHaveBeenCalledOnce();
-    });
-
-    // The batch's first ledger write is inside the write phase, after the paid
-    // submit and poll. Discovering an unset connection string there means
-    // paying for work that cannot be recorded.
-    it("refuses a real tenant with no connection string, before any spend session", async () => {
-      vi.stubEnv("NEON_MAIN_DATABASE_URL", "");
-      const { deps, spend, lines } = makeDeps();
-      deps.loadSidecar = async () => null;
-      expect(await corpusIngestCommand.run(["--tenant", TENANT, ...EXECUTE], deps)).toBe(2);
-      expect(lines.join("\n")).toMatch(/NEON_MAIN_DATABASE_URL is not set/);
-      expect(spend.openSpend).not.toHaveBeenCalled();
     });
 
     it.each([

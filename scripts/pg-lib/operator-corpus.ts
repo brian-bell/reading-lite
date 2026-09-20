@@ -180,6 +180,16 @@ export class OperatorCorpus
    * than composed from the key prefix because each attempt captured under its
    * own immutable revision prefix — the legacy spelling is one possible key
    * among many, and only a reading no attempt ever touched still uses it.
+   *
+   * KNOWN GAP, narrower than the runtime's. `src/reading-purge.ts` deletes the
+   * whole `key_prefix`; this deletes the keys rows name. Anything else under
+   * that prefix survives the row delete with nothing left to name it — a
+   * manifest.json or attempts/*.json on a reading imported from the pre-PG R2
+   * layout (#348), or a revision object whose row was never written. The
+   * operator path reaches R2 through the wrangler CLI, which has no prefix
+   * listing, so closing this properly means giving drop and sweep the S3
+   * inventory client. Until then the account wipe, which does list the prefix,
+   * is what collects the remainder.
    */
   async contentKeysForDrop(id: string): Promise<string[]> {
     const rows = await this.sql.query<{ raw_key: string | null; extracted_key: string | null }>(
@@ -297,4 +307,17 @@ export class OperatorCorpus
 
 export function operatorCorpusFor(sql: Sql, tenant: OperatorTenant): OperatorCorpus {
   return new OperatorCorpus(sql, requirePgTenant(tenant));
+}
+
+/**
+ * Resolves the tenant BEFORE anything opens a connection.
+ *
+ * Every ported command passes `operatorDatabaseUrl(...)` as an argument to
+ * `withOperatorSql`, so it is evaluated before `operatorCorpusFor` runs. That
+ * made `--tenant global` report "DATABASE_URL is not set" when no string was
+ * set, and open a session only to throw when one was. Commands call this
+ * first so the refusal says what is actually wrong.
+ */
+export function assertPgTenant(tenant: OperatorTenant): void {
+  requirePgTenant(tenant);
 }

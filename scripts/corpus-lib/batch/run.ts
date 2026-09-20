@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
 import type { R2Client, VectorizeClient, VectorizeMatch } from "../../lib/cf-clients";
-import type { VectorLedger } from "../../account-lib/vector-ledger";
 import type {
   AnthropicBatchClient,
   OpenAIBatchClient,
@@ -64,12 +63,6 @@ const layout = r2KeyLayout();
 export interface BatchRunDeps {
   r2: R2Client;
   vectorize: VectorizeClient;
-  // The durable vector-id ledger (issue #195 S3). Every id is recorded before
-  // its vector is upserted, so a batch pass running against a tenant whose
-  // account wipe is already past its vectors phase cannot leave a vector the
-  // wipe can never address. Omitted for `--tenant global` and in tests, where
-  // write-phase falls back to the no-op.
-  ledger?: VectorLedger;
   /**
    * The tenant's Vectorize namespace, so write-phase can compose the ADR 0002
    * tenant-scoped vector id. Undefined for `--tenant global`. See
@@ -647,7 +640,6 @@ async function pollAndWrite(
     vectorize: deps.vectorize,
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     now: deps.now,
-    ...(deps.ledger ? { ledger: deps.ledger } : {}),
     ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
     ...(deps.log ? { log: deps.log } : {}),
   });
@@ -719,8 +711,7 @@ async function pollAndWriteOpenAI(
       vectorize: deps.vectorize,
       embedMany: (inputs) => deps.embed.embedMany(inputs),
       now: deps.now,
-      ...(deps.ledger ? { ledger: deps.ledger } : {}),
-      ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
+        ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
       ...(deps.log ? { log: deps.log } : {}),
     },
   );

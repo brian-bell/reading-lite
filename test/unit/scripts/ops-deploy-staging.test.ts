@@ -88,6 +88,33 @@ describe("ops deploy worker", () => {
       expect(err.join("\n")).toContain("drift");
     });
 
+    // The staging Worker is deployed by hand, so --env staging with a
+    // production string exported as DATABASE_URL would have applied this
+    // repo's pending migrations to production.
+    it("refuses when --env and --database-url-env name different environments", async () => {
+      const { deps, runs, err, migrated } = makeDeps();
+      expect(
+        await deployWorkerCommand.run(
+          ["--env", "staging", "--database-url-env", "NEON_MAIN_DATABASE_URL", "--execute"],
+          deps,
+        ),
+      ).toBe(2);
+      expect(runs).toEqual([]);
+      expect(migrated).toEqual([]);
+      expect(err.join("\n")).toContain("--env staging but NEON_MAIN_DATABASE_URL is the production database");
+    });
+
+    it("accepts a matching pair", async () => {
+      const { deps, migrated } = makeDeps();
+      expect(
+        await deployWorkerCommand.run(
+          ["--env", "staging", "--database-url-env", "NEON_REHEARSAL_DATABASE_URL", "--execute"],
+          deps,
+        ),
+      ).toBe(0);
+      expect(migrated).toEqual([{ env: "NEON_REHEARSAL_DATABASE_URL", execute: true }]);
+    });
+
     it("says in plan mode that execute would refuse", async () => {
       const { deps, err } = makeDeps(async () => {
         throw new Error("connection refused");

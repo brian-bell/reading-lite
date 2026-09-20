@@ -33,7 +33,7 @@ import {
   operatorDatabaseUrl,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
-import { operatorCorpusFor, type OperatorCorpus } from "../../pg-lib/operator-corpus";
+import { assertPgTenant, operatorCorpusFor, type OperatorCorpus } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
@@ -132,6 +132,9 @@ async function deepenStrandedStages(rows: AuditRow[], corpus: OperatorCorpus): P
 async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<number> {
   const args = parseAuditArgs(argv);
   const tenant = requireOperatorTenant(args.tenant);
+  // Before any connection: a 'global' selector must say so, not report a
+  // missing connection string.
+  assertPgTenant(tenant);
   const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: tenant.keyRoot, remote: args.remote };
 
   const inventory = await deps.corpus(args.databaseUrlEnv, tenant, async (corpus) => {

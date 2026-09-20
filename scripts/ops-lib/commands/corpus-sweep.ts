@@ -29,7 +29,7 @@ import {
   withOperatorSql,
 } from "../../pg-lib/operator-db";
 import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
-import { operatorCorpusFor, type CorpusDropView, type CorpusLookup } from "../../pg-lib/operator-corpus";
+import { assertPgTenant, operatorCorpusFor, type CorpusDropView, type CorpusLookup } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
@@ -94,6 +94,9 @@ function requireValue(v: string | undefined, flag: string): string {
 async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<number> {
   const opts = parseSweepArgs(argv);
   const tenant = requireOperatorTenant(opts.tenant);
+  // Before any connection: a 'global' selector must say so, not report a
+  // missing connection string.
+  assertPgTenant(tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same

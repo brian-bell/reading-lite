@@ -4,7 +4,6 @@
  * survive teardown intentionally; they are history, not a fresh clean bill.
  */
 import type { ControlPlaneDb } from "../../src/control-plane/db";
-import { ListIndexSchema } from "../../src/schemas/api";
 import type { AuditVectors } from "./vectors";
 import { enumerateNamespace } from "./vectors";
 export interface ScanRemote {
@@ -62,16 +61,6 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   await observe("legacy_wipe_record", async () =>
     counted(await remote.storage.listObjects(`wipe/${tenant}/`)),
   );
-  let ledger: { reading_id: string; state: string }[] = [];
-  let ledgerLoaded = false;
-  await observe("vector_ledger", async () => {
-    ledger = await remote.db.all(
-      "SELECT * FROM vector_ledger WHERE tenant_id = ? ORDER BY reading_id",
-      tenant,
-    );
-    ledgerLoaded = true;
-    return counted(ledger);
-  });
   await observe("namespace_probe", async () =>
     counted(await remote.probe(tenant)),
   );
@@ -119,32 +108,21 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     }
     return result;
   }
-  await observe("ledger_vectors", async () => {
-    if (!ledgerLoaded)
-      throw new Error("ledger source unavailable; per-id coverage unknown");
-    const detail = await presence(ledger.map((v) => v.reading_id));
-    return {
-      state: detail.some(
-        (v) => v.composed !== "candidate_absent" || v.bare === "tenant_present",
-      )
-        ? "residue"
-        : "clear",
-      detail,
-    };
-  });
-  await observe("listed_vectors", async () => {
-    const raw = await remote.storage.get(`u/${tenant}/index/list.json`);
-    const list =
-      raw === null ? [] : ListIndexSchema.parse(JSON.parse(raw)).items;
-    const detail = await presence(
-      list.filter((v) => v.status === "ready").map((v) => v.id),
+  await observe("ready_reading_vectors", async () => {
+    const ready = await remote.db.all<{ id: string }>(
+      "SELECT id FROM readings WHERE tenant_id = ? AND status = ? ORDER BY id",
+      tenant,
+      "ready",
     );
+    const detail = await presence(ready.map((row) => row.id));
     return {
       state: detail.some((v) => v.composed !== "present") ? "residue" : "clear",
       detail,
     };
   });
   for (const [table, predicate, params] of [
+    ["readings", "tenant_id = ?", [tenant]],
+    ["reading_embeddings", "tenant_id = ?", [tenant]],
     ["users", "id = ?", [tenant]],
     ["sessions", "user_id = ?", [tenant]],
     ["api_tokens", "user_id = ?", [tenant]],
@@ -168,7 +146,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
       [tenant, tenant, tenant],
     ],
   ] as const) {
-    await observe(`d1.${table}`, async () => {
+    await observe(`pg.${table}`, async () => {
       const rows = await remote.db.all<{ n: number }>(
         `SELECT COUNT(*) AS n FROM ${table} WHERE ${predicate}`,
         ...params,
@@ -191,7 +169,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     source: "visibility_limits",
     state: "unknown",
     detail:
-      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. A ready listed reading with a missing composed vector is a possible purge markDeleteSubmitted failure or propagation/other drift; scan cannot infer intent or safely repair it.",
+      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. A ready reading with a missing composed vector is possible propagation or other drift; scan cannot infer intent or safely repair it. The vector ledger is retired (ADR 0005): an embedding is a row that cascades with its reading, so there is no separate id ledger to reconcile.",
   });
   return {
     tenant,

@@ -107,15 +107,6 @@ function harness(seedManifests: Record<string, Manifest>) {
     upsert: vi.fn(async () => {}),
     query: vi.fn(async () => []),
   };
-  // The vector ledger (issue #195 S3), recording the upsert count at the moment
-  // each row was written so the "before the upsert" ordering is assertable.
-  const ledgered: string[] = [];
-  const ledger = {
-    markLive: async (ids: readonly string[]) => {
-      for (const id of ids) ledgered.push(`live:${id}:${vectorize.upsert.mock.calls.length}`);
-    },
-    markDeleteSubmitted: async () => {},
-  };
   let sidecar: PersistedSidecar | null = null;
   let inputJsonl: string | null = null;
   const batch = {
@@ -154,7 +145,6 @@ function harness(seedManifests: Record<string, Manifest>) {
   const deps: BatchRunDeps = {
     r2: r2 as any,
     vectorize: vectorize as any,
-    ledger,
     spend: authority.spend,
     batch: batch as any,
     embed: {
@@ -186,7 +176,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, ledgered, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
+  return { store, r2, vectorize, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
 }
 
 // A minimal OpenAI batch client with sensible defaults so tests don't have to
@@ -348,12 +338,6 @@ describe("runBatch — fresh run", () => {
       key_prefix: "readings/kp-rd_a",
     });
     expect(h.vectorize.upsert).toHaveBeenCalledOnce();
-    // The ledger reaches write-phase through BatchRunDeps, and the row lands
-    // BEFORE the upsert. `ops corpus ingest` and `corpus recover --batch` are
-    // vector writers with no `users.status` check, so an un-ledgered upsert
-    // here is a vector the account wipe will never even ask Vectorize to
-    // delete — and will then report a clean completion around.
-    expect(h.ledgered).toEqual(["live:rd_a:0"]);
   });
 
   it("returns neighbours under bare reading ids when writing into a tenant namespace", async () => {

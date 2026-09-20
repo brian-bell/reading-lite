@@ -32,7 +32,7 @@ import {
   operatorDatabaseUrl,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
-import { operatorCorpusFor, type CorpusLookup, type CorpusMutations } from "../../pg-lib/operator-corpus";
+import { assertPgTenant, operatorCorpusFor, type CorpusLookup, type CorpusMutations } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 
@@ -106,12 +106,11 @@ async function purge(
     return 1;
   }
 
-  if (!args.execute) {
-    // Plan mode counts rather than estimating, so the number it prints is the
-    // number --execute will remove unless the corpus changes in between.
-    audit.rows_to_remove = await corpus.countInboundRelationships(args.id);
-    return 0;
-  }
+  // Counted in both modes, so "how many were targeted" reads the same whether
+  // the run planned or applied. The old shape set manifests_would_write in
+  // both modes for the same reason.
+  audit.rows_to_remove = await corpus.countInboundRelationships(args.id);
+  if (!args.execute) return 0;
 
   audit.rows_removed = await corpus.deleteInboundRelationships(args.id);
   return 0;
@@ -120,6 +119,9 @@ async function purge(
 async function runCorpusPurgeConnections(argv: string[], deps: CorpusPurgeConnectionsDeps): Promise<number> {
   const args = parsePurgeArgs(argv);
   const tenant = requireOperatorTenant(args.tenant);
+  // Before any connection: a 'global' selector must say so, not report a
+  // missing connection string.
+  assertPgTenant(tenant);
   const audit: Audit = {
     mode: args.execute ? "execute" : "plan",
     tenant: operatorTenantSelector(tenant),

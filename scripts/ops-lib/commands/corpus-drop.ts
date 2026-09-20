@@ -29,7 +29,7 @@ import {
   withOperatorSql,
 } from "../../pg-lib/operator-db";
 import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
-import { operatorCorpusFor, type CorpusDropView } from "../../pg-lib/operator-corpus";
+import { assertPgTenant, operatorCorpusFor, type CorpusDropView } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 import type { OperatorTenant } from "../../corpus-lib/tenant";
@@ -99,8 +99,31 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   // is a row delete against --database-url-env, which the bucket does not
   // determine. Refuse a pair that names two different environments.
   assertBucketAndDatabaseAgree(opts.bucket, opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET);
+  if (opts.allowReady) {
+    // The agreement check above is inert when the variable is unmapped, which
+    // the default DATABASE_URL is — so --bucket reading-lite-staging with a
+    // production string in DATABASE_URL would pass both guards and delete
+    // ready production rows. Dropping a live library entry has to name the
+    // database it means.
+    const named = Object.values(CONTROL_PLANE_BY_BUCKET).some(
+      (target) => target.databaseUrlEnv === opts.databaseUrlEnv,
+    );
+    if (!named) {
+      throw new UsageError(
+        `--allow-ready requires --database-url-env to name an environment's variable (${Object.values(
+          CONTROL_PLANE_BY_BUCKET,
+        )
+          .map((target) => target.databaseUrlEnv)
+          .join(", ")}), not the unmapped ${opts.databaseUrlEnv}. ` +
+          "It drops live library entries, so it must say which database it means.",
+      );
+    }
+  }
 
   const tenant = requireOperatorTenant(opts.tenant);
+  // Before any connection: a 'global' selector must say so, not report a
+  // missing connection string.
+  assertPgTenant(tenant);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
   // --local names the miniflare bucket; the row deletes go wherever
   // --database-url-env points, so the two must agree before anything is
