@@ -93,7 +93,7 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | `corpus audit` | `corpus-audit.ts` | Walks `index/list.json` and every per-reading manifest over `wrangler r2` | **port** | The read is real work — the non-ready inventory — but its source is frozen. reading-lite-gh347.4.7 inventories non-ready readings from `readings` and runs orphan-duplicate detection over the returned rows as it did over the list index. |
 | `corpus backfill-similarity` | `corpus-backfill-similarity.ts` | `index/list.json` plus manifests, writing a neighbour snapshot back | **retire now** | A one-time backfill of a field the reading-lite-gh348 importer carries over. There is nothing left to fill in. |
 | `corpus backfill-source-date` | `corpus-backfill-source-date.ts` | `index/list.json` plus manifests, writing `source_date` back | **retire now** | The same: a one-time backfill of a field the gh348 importer carries over. |
-| `corpus backfill-vectors` | `corpus-backfill-vectors.ts` | `index/list.json` and manifests to find ready readings with no vector, then re-embeds and records a ledger row | **retire now** | A ready reading cannot lack an embedding: `reading_embeddings` has a foreign key to `readings` and commits inside the reading's transaction. Its ledger write also targets the table migration 0003 never creates. |
+| `corpus backfill-vectors` | `corpus-backfill-vectors.ts` | `index/list.json` and manifests to find ready readings with no vector, then re-embeds and records a ledger row | **retire now** | The drift it repaired was between two systems — a manifest in R2 and a vector in a separate Vectorize index, which could diverge silently. The embedding now commits and cascades inside the reading's own transaction, so there is no second system to drift from. See [below](#why-backfill-vectors-is-safe-to-retire) for the states that remain and why none of them is damage. Its ledger write also targets the table migration 0003 never creates. |
 | `corpus delete-orphans` | `corpus-delete-orphans.ts` | `index/list.json` and the `readings/` prefix, looking for by-url pointers with no reading behind them | **retire now** | `reading_urls` is unique per tenant and the claim commits with the reading, so an orphaned claim cannot be left behind. |
 | `corpus drop` | `corpus-drop.ts` | Resolves selectors against `index/list.json`, deletes the id-scoped R2 prefix and the by-url pointer, rewrites the list index, deletes the Vectorize vector | **port** | Dropping a reading is still real work. reading-lite-gh347.4.7 deletes the row and lets `reading_urls`, revisions, relationships and the embedding cascade; `--vectorize` goes with the index. Its R2 delete has to cover all three `contentKeys` tiers. |
 | `corpus ingest` | `corpus-ingest.ts` | The offline batch write phase: manifests, by-url pointers and `index/list.json`, plus a parse-time vector-ledger guard | **port** | This is the one operator path that spends provider money before it writes, and today a completed batch publishes nothing the library can see. reading-lite-gh347.4.2 commits rows instead. The ledger guard is deleted here and nothing replaces it, because an embedding now commits and deletes inside its reading's transaction. |
@@ -197,6 +197,45 @@ performs is a wrong instruction, not stale prose.
 | `chrome-reading-list` | Chrome's local Sync Data LevelDB | **unchanged** | It never touched the corpus. |
 | `reading-lite-local` | Local `wrangler dev` and the seeded fixture pack | **unchanged** | Local development only; the fixture pack moves with the seed script, not with this inventory. |
 | `beads` | The beads database | **unchanged** | Work tracking, not storage. |
+
+## Why `backfill-vectors` is safe to retire
+
+This verdict was challenged in review, and the challenge was half right, so the
+reasoning is recorded here rather than left in a table cell.
+
+**The foreign key is not the reason.** `reading_embeddings` has
+`FOREIGN KEY (tenant_id, reading_id) REFERENCES readings`, which prevents an
+embedding without a reading — not a reading without an embedding. Anyone
+reaching for the FK to argue that a ready reading must have an embedding has
+the arrow backwards. (It *is* the right reason for `account audit-bare-vectors`,
+whose quarry is a vector with no reading behind it.)
+
+A ready reading genuinely can have no embedding row.
+`PgReadingWriter.publish` computes
+`searchable = tenantActive && ownsUrl && embedding !== null`, and when that is
+false it commits the reading and deletes the embedding. So the question is not
+whether the state exists; it is whether the state is *damage a repair command
+should fix*. It is not:
+
+- **A duplicate that does not own its URL** keeps no vector, exactly as it kept
+  none in Vectorize. Backfilling it would be wrong, not a repair.
+- **An inactive tenant's rows** are deliberately not searchable.
+- **`embedding === null`** is unreachable from the realtime path:
+  `publishReady` takes `number[]`, not a nullable.
+- **The failure terminal** only deletes the embedding when the reading was
+  never published. A published reading keeps its revision and its embedding.
+- **Import-time misses** belong to reading-lite-gh348, whose importer re-embeds
+  IDs that Vectorize `getByIds` does not return, from the stored
+  `extracted.md`, and lists each one in its reconciliation report.
+
+What the command actually repaired was divergence between two systems that
+could not see each other: a manifest in R2 and a vector in a separate Vectorize
+index. One transaction now holds both, so the divergence has no way to occur.
+
+If a genuine embedding-less-but-searchable reading is ever observed, the repair
+belongs on the ported corpus surface (reading-lite-gh347.4.7), not on a command
+that scans `index/list.json` and writes a retired ledger. No such repair is
+carried forward speculatively.
 
 ## `account sweep-wipe-prefix`
 

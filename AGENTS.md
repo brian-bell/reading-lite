@@ -259,8 +259,10 @@ rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cu
 
 Offline batch ingest/recover require `--sole-writer`, asserting that realtime
 writers are paused and drained. Preserve sidecars and their resume rules; never
-recreate an ambiguous batch. Restore missing vectors with `corpus backfill-vectors`,
-not a paid reprocess. See [batch operations](docs/operations.md#provider-batch-apis).
+recreate an ambiguous batch. See [batch operations](docs/operations.md#provider-batch-apis).
+An embedding now commits and cascades inside its reading's transaction, so there
+is no vector to restore and `corpus backfill-vectors` is retired; see the
+[operator tooling inventory](docs/operator-tooling.md#why-backfill-vectors-is-safe-to-retire).
 
 Use [compare-summary-effort](.agents/skills/compare-summary-effort/SKILL.md) for
 local comparisons on existing production readings. Plan first; only `--execute`
