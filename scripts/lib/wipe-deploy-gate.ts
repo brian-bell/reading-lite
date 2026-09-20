@@ -36,7 +36,10 @@ export async function countUnfinishedWipes(databaseUrl: string): Promise<number>
     const rows = await sql.transaction((tx) => tx.query(UNFINISHED_WIPES_SQL), { readOnly: true });
     return count.parse(z.tuple([z.object({ unfinished: z.unknown() })]).parse(rows)[0].unfinished);
   } finally {
-    await sql.end();
+    // A socket the server or Hyperdrive already tore down makes end() reject.
+    // The count is what the gate needs; losing it to a teardown error would
+    // block a release over nothing. Matches sqlSession.close.
+    await sql.end().catch(() => undefined);
   }
 }
 
