@@ -185,14 +185,15 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `key_prefix` values and content keys stay relative, such as
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
-The R2 `ReadingStore`, `ListIndexStore`, and Vectorize `SimilarityStore` remain
-for the operator scripts, which move in a later slice. The account wipe no
-longer has Vectorize or vector-ledger phases at all: an embedding is a row that
-deletes with its reading, so the wipe is rows then objects, and the ledger
-module is operator-only (`scripts/account-lib/vector-ledger.ts`). Vectors
-written to Vectorize before the cutover are left to its retirement at cutover.
-No runtime reading path writes manifests, `index/list.json`, pointers, or
-Vectorize.
+The R2 `ReadingStore`, `ListIndexStore` and Vectorize `SimilarityStore` remain
+only for the operator commands that have not moved yet — the three refresh
+passes and the batch pipeline; [operator tooling](operator-tooling.md) tracks
+which. The account wipe has no Vectorize or vector-ledger phases at all: an
+embedding is a row that deletes with its reading, so the wipe is rows then
+objects. The vector ledger is gone from the operator side too, because
+migration 0003 deliberately does not recreate `vector_ledger`. Vectors written
+to Vectorize before the cutover are left to its retirement. No runtime reading
+path writes manifests, `index/list.json`, pointers, or Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover
 copied data and retained global R2 objects and unnamespaced vectors, which
@@ -284,6 +285,11 @@ the caller. Invalid provider, credentials, or effort fail closed.
 
 `scripts/ops.ts` and `ops-lib/` provide the typed command registry, dispatcher,
 and native `run(argv, deps)` commands. Shared libraries live in `scripts/*-lib/`.
+A ported command reaches PostgreSQL through `scripts/pg-lib/`:
+`operator-db.ts` resolves a direct connection string from a named environment
+variable and closes the session, and `operator-corpus.ts` is the corpus view,
+delegating reads to the same `PgReadingStore` the router uses so the operator
+and the Worker cannot disagree about what a reading is.
 Registry coverage tests require supported workflows to have a native command,
 safety classification, and help path. Normal CLI exits are 0 for success, 2 for
 usage, and 1 for operational failure; neighbour refresh also uses 3 for readings
