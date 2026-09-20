@@ -188,8 +188,13 @@ export class OperatorCorpus
    * layout (#348), or a revision object whose row was never written. The
    * operator path reaches R2 through the wrangler CLI, which has no prefix
    * listing, so closing this properly means giving drop and sweep the S3
-   * inventory client. Until then the account wipe, which does list the prefix,
-   * is what collects the remainder.
+   * inventory client.
+   *
+   * A pre-PG reading's `index/by-id/{id}` and `index/by-url/{hash}` objects sit
+   * OUTSIDE its key prefix, so neither this list nor a prefix listing would
+   * reach them. They are inert — ownership is a row now — and what collects
+   * them is the account wipe, which walks the whole tenant root rather than
+   * one reading's prefix.
    */
   async contentKeysForDrop(id: string): Promise<string[]> {
     const rows = await this.sql.query<{ raw_key: string | null; extracted_key: string | null }>(

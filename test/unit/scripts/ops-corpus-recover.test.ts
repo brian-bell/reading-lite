@@ -98,7 +98,8 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
       content_status: "captured", content_type: "text/html",
       markdown: "# extracted body", title: "T",
     }) as never,
-    readListIndex: async () => [],
+    corpus: (async (_env: string, _tenant: unknown, run: (c: unknown) => unknown) =>
+      run({ listItems: async () => [] })) as never,
     sleep: async () => {},
     now: () => Date.parse("2026-08-22T12:00:00Z"),
     batch: {
@@ -130,6 +131,39 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
 }
 
 describe("ops corpus recover — realtime routing", () => {
+  // --monitor polled index/list.json, which has had no writer since gh347.2:
+  // the read threw on a missing object, after the reprocess writes and with no
+  // try/catch, or tallied a frozen snapshot for fifteen minutes.
+  it("--monitor polls the tenant's readings, not the list index", async () => {
+    const r = makeDeps();
+    // The audit's provenance stamp must match --tenant, or recover refuses
+    // before it touches anything and the monitor never runs.
+    r.deps.readFile = async () => JSON.stringify({ tenant: TENANT, rows: ROWS });
+    // Realtime writes for a real tenant need the data-plane gate on.
+    r.whoami.result = identity(TENANT, true);
+    const opened: { env: string; tenant: string }[] = [];
+    r.deps.corpus = (async (env: string, tenant: { kind: string; tenantId?: string }, run: (c: unknown) => unknown) => {
+      opened.push({ env, tenant: tenant.tenantId ?? tenant.kind });
+      // Everything already terminal, so the loop breaks on the first poll.
+      return run({ listItems: async () => ROWS.map((row) => ({ id: row.reading_id, status: "ready" })) });
+    }) as never;
+    const code = await corpusRecoverCommand.run(
+      ["--tenant", TENANT, "--execute", "--monitor", "--token", "tok",
+       "--database-url-env", "NEON_MAIN_DATABASE_URL"],
+      r.deps,
+    );
+    // The exit code follows the reprocess outcomes, which this harness fakes;
+    // what matters here is where the poll looked.
+    expect(typeof code).toBe("number");
+    expect(opened).toEqual([{ env: "NEON_MAIN_DATABASE_URL", tenant: TENANT }]);
+  });
+
+  it("refuses --monitor under --tenant global, which has no PostgreSQL corpus", async () => {
+    const r = makeDeps();
+    await expect(
+      corpusRecoverCommand.run(["--tenant", "global", "--execute", "--monitor"], r.deps),
+    ).rejects.toThrow(/global/);
+  });
 
   it("refuses a foreign audit before any realtime or batch side effect", async () => {
     const r = makeDeps();

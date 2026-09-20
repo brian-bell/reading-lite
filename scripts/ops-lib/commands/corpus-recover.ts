@@ -16,6 +16,13 @@ import { DEFAULT_API_BASE, resolveApiTarget, resolveBatchConfig, resolveBucket, 
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
 import {
+  DATABASE_URL_ENV_HELP,
+  DATABASE_URL_ENV_OPTION,
+  operatorDatabaseUrl,
+  withOperatorSql,
+} from "../../pg-lib/operator-db";
+import { assertPgTenant, operatorCorpusFor, type CorpusInventory } from "../../pg-lib/operator-corpus";
+import {
   classifyOutcome,
   readingApiFor,
   type ReadingApi,
@@ -25,13 +32,11 @@ import { planByAction, recoveryAction } from "../../corpus-lib/policy";
 import { verifyRealtimeTenant } from "../../corpus-lib/realtime-tenant";
 import { shouldPauseAfter } from "../../corpus-lib/throttle";
 import { tallyByIds } from "../../corpus-lib/audit";
-import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { BatchRunResult } from "../../corpus-lib/batch/run";
 import type { PersistedSidecar } from "../../corpus-lib/batch/types";
 import { sidecarPath } from "../../corpus-lib/batch/sidecar";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import type { AuditRow, RecoveryAction } from "../../corpus-lib/types";
-import type { ListItem } from "../../corpus-lib/types";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import {
   BILLING_TENANT_FLAG_HELP,
@@ -53,7 +58,16 @@ export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
   ) => Pick<ReadingApi, "reprocess" | "importMarkdown" | "whoami">;
   // Realtime local-extract (browser-header fetch wired in by defaultDeps).
   extract: (url: string) => Promise<ExtractedContent>;
-  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
+  /**
+   * --monitor's status poll. It read index/list.json until this slice; nothing
+   * has maintained that object since gh347.2, so the read either threw on a
+   * missing key or tallied a frozen snapshot for fifteen minutes.
+   */
+  corpus: <T>(
+    databaseUrlEnv: string,
+    tenant: OperatorTenant,
+    run: (corpus: Pick<CorpusInventory, "listItems">) => Promise<T>,
+  ) => Promise<T>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   batch: {
@@ -78,6 +92,7 @@ interface Args {
   only?: RecoveryAction;
   limit: number;
   bucket: string;
+  databaseUrlEnv: string;
   url?: string;
   token?: string;
   monitor: boolean;
@@ -107,6 +122,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
         only: { type: "string" },
         limit: { type: "string" },
         bucket: { type: "string" },
+        "database-url-env": DATABASE_URL_ENV_OPTION,
         url: { type: "string" },
         token: { type: "string" },
         monitor: { type: "boolean", default: false },
@@ -135,6 +151,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
     only: values.only as RecoveryAction | undefined,
     limit: values.limit ? Number(values.limit) : Infinity,
     bucket: resolveBucket(values.bucket),
+    databaseUrlEnv: values["database-url-env"]!,
     ...(values.bucket === undefined ? {} : { bucketFlag: values.bucket }),
     url: values.url,
     token: values.token,
@@ -191,6 +208,10 @@ function describeError(out: ReadingApiOutcome): string {
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
   const tenant = requireOperatorTenant(args.tenant);
+  // --monitor's poll is a query, so it needs a PostgreSQL tenant. Refuse here,
+  // before any reprocess or import, rather than after the writes: the run
+  // would otherwise do its paid work and then fail on the status check.
+  if (args.monitor) assertPgTenant(tenant);
   const doc = JSON.parse(await deps.readFile(args.index)) as {
     rows: AuditRow[];
     tenant?: string;
@@ -345,7 +366,7 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
   if (args.monitor && touched.length > 0) {
     deps.io.stderr(`\nMonitoring ${touched.length} readings...`);
     for (let i = 0; i < 60; i++) {
-      const items = await deps.readListIndex({ bucket: args.bucket, keyRoot: tenant.keyRoot, remote: true });
+      const items = await deps.corpus(args.databaseUrlEnv, tenant, (corpus) => corpus.listItems());
       const t = tallyByIds(items, touched);
       const ts = new Date(deps.now()).toISOString().slice(11, 19);
       deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
@@ -493,10 +514,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         maxBytes: 30_000_000,
       });
     },
-    readListIndex: async (r2Deps) => {
-      const { readListIndex } = await import("../../corpus-lib/wrangler-r2");
-      return readListIndex(r2Deps);
-    },
+    corpus: (databaseUrlEnv, tenant, run) =>
+      withOperatorSql(operatorDatabaseUrl(databaseUrlEnv), (sql) => run(operatorCorpusFor(sql, tenant))),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
     openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
@@ -586,7 +605,8 @@ Options:
   --execute         Actually perform the actions (otherwise prints the plan).
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
-  --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
+  ${DATABASE_URL_ENV_HELP}
+                    --monitor polls the tenant's readings through it.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
                        layout. Scopes this command's direct R2 reads and the batch
                        path. Realtime API writes act as the bearer token's tenant,

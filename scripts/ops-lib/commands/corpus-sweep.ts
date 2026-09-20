@@ -204,12 +204,17 @@ async function sweepResolved(
   // not. It took a Vectorize probe to know this before, because the two stores
   // could disagree. created_at rides along so a snapshot computed before a
   // copy existed can rule that copy out.
+  //
+  // Only drops that actually went. A target whose object deletes failed keeps
+  // its row, so warning that a keeper's snapshot is stale because of it would
+  // point the operator at a drop the same run just told them was held back.
   const vectoredDrops: { id: string; created_at?: string }[] = [];
+  // Likewise: the ids the invalidation diff should treat as gone.
+  const droppedIds = new Set<string>();
 
   for (const t of targets) {
     const keys = await corpus.contentKeysForDrop(t.id);
     io.stdout(`• dropping ${t.id}  ${t.url}`);
-    if (t.status === "ready") vectoredDrops.push({ id: t.id, created_at: t.created_at });
 
     let failedHere = 0;
     for (const key of keys) {
@@ -243,6 +248,8 @@ async function sweepResolved(
     } else {
       io.stdout(`    already gone  row ${t.id}`);
     }
+    droppedIds.add(t.id);
+    if (t.status === "ready") vectoredDrops.push({ id: t.id, created_at: t.created_at });
   }
 
   if (!opts.execute) {
@@ -263,7 +270,7 @@ async function sweepResolved(
   // The sweep has already deleted objects and rewritten the index by now, so
   // the report is strictly informational: never let it fail the command.
   try {
-    await reportInvalidatedKeepers(io, corpus, plan.groups, dropIds, vectoredDrops);
+    await reportInvalidatedKeepers(io, corpus, plan.groups, droppedIds, vectoredDrops);
   } catch (e) {
     io.stderr(
       `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +

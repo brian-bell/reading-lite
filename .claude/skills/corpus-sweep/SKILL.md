@@ -147,7 +147,10 @@ reading.
 To refresh the measured score (no LLM call, no re-summarization, no tag churn):
 
 ```bash
-npm run ops -- corpus refresh-neighbours --tenant "$TENANT" rd_KEEPER --sole-writer --execute
+# NOT YET PORTED (reading-lite-gh347.4.1). corpus refresh-neighbours still
+# rewrites R2 manifests and index/list.json, which nothing reads, and leaves
+# readings.similarity untouched while reporting success. Treat the flagged
+# ids as known-stale until it lands.
 ```
 
 The `novelty_verdict` label itself only refreshes on a **reprocess**, which

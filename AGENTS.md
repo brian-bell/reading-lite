@@ -251,7 +251,9 @@ Worker endpoint, or retire — for every command and skill under PostgreSQL, and
 is the source list for #351. Durable changes plan by default and require
 `--execute`. Every `corpus` command
 requires `--tenant`; production uses `/api/whoami`'s `tenant_id`.
-`--tenant global` addresses retained pre-tenant data, not the live corpus.
+`--tenant global` is refused by every ported corpus command: it addressed
+the pre-tenant R2 key root, which has no PostgreSQL representation. The
+retained objects are #348's and #351's.
 
 Production and staging pin `TENANT_DATA_PLANE=1`. Removing the pin after tenant
 writes resume requires a freeze and reverse reconciliation, or explicit

@@ -97,7 +97,8 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch 
 
 - A reading-API bearer token (for writes): `--token`, `READER_API_TOKEN`, or `.prd.vars`/`.dev.vars`.
 - For `--monitor`: a direct PostgreSQL connection string. Source
-  `~/.config/reading-lite/neon.env` and pass `--database-url-env`.
+  `~/.config/reading-lite/neon.env` and pass `--database-url-env`
+  (default `DATABASE_URL`). The poll queries the tenant's readings.
 
 ## Usage
 

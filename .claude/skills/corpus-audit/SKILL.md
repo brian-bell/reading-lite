@@ -28,7 +28,12 @@ It also prints a JSON summary (totals + counts) to stdout.
 
 ## Prerequisites
 
-A Cloudflare session that can read R2: `wrangler login`, or `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`). No reading-API token needed.
+A direct PostgreSQL connection string: source `~/.config/reading-lite/neon.env`
+and pass `--database-url-env`. No reading-API token needed.
+
+A Cloudflare session (`wrangler login`, or `CLOUDFLARE_API_TOKEN` +
+`CLOUDFLARE_ACCOUNT_ID`) is needed only for `--teasers`, which reads captured
+content from R2. The inventory itself is database-only.
 
 ## Usage
 
