@@ -170,23 +170,33 @@ describe("residue sources and wipe gates", () => {
       detail: expect.objectContaining({ first_completed_at_ms: 42 }),
     });
   });
-  // The ready readings come from rows now, not index/list.json. Reading the
-  // retired object would have found nothing and reported a false "clear" —
-  // and this scan gates account teardown.
-  it("reports a ready reading missing its vector", async () => {
+  // A ready reading must own an embedding, and that is a ROW now. Probing
+  // Vectorize would report residue for an intact corpus: nothing has upserted
+  // a vector since ADR 0005, so after cutover no ready reading has one.
+  it("reports a ready reading missing its embedding, from rows", async () => {
     const r = remoteFixture();
-    r.vectors.get.mockResolvedValue([]);
     r.db.all.mockImplementation(async (sql: string) =>
-      sql.includes("FROM readings") ? [{ id }] : [],
+      sql.includes("reading_embeddings") && sql.includes("IS NULL") ? [{ id }] : [],
     );
     const result = await scanResidue(r, tenant);
     expect(
-      result.findings.find((f) => f.source === "ready_reading_vectors")?.detail,
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id, composed: "candidate_absent" }),
-      ]),
-    );
+      result.findings.find((f) => f.source === "ready_reading_embeddings"),
+    ).toMatchObject({ state: "unknown", detail: { ready_without_embedding: [id] } });
+    // The verdict comes from the join, not from a vector probe. The namespace
+    // sources still read Vectorize, legitimately, until #351 retires the index.
+    for (const call of r.db.all.mock.calls) {
+      if (String(call[0]).includes("reading_embeddings")) return;
+    }
+    throw new Error("expected the embedding source to query reading_embeddings");
+  });
+
+  it("reports clear when every ready reading owns its embedding", async () => {
+    const r = remoteFixture();
+    r.vectors.list.mockResolvedValue({ vectors: [], isTruncated: false });
+    const result = await scanResidue(r, tenant);
+    expect(
+      result.findings.find((f) => f.source === "ready_reading_embeddings")?.state,
+    ).toBe("clear");
   });
 
   // The ledger is retired (migration 0003 deliberately does not recreate it),

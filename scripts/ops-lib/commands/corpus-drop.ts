@@ -93,7 +93,11 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   if (opts.selectors.length === 0) {
     throw new UsageError("no selectors given. Pass one or more reading ids or URLs.");
   }
-  if (opts.allowReady && opts.bucket === "reading-lite") {
+  // `reading-lite` is the production bucket AND the local miniflare bucket's
+  // name AND this flag's default, so the refusal has to exclude --local or the
+  // --local escape hatch below is unreachable and a ready reading cannot be
+  // dropped from a local corpus at all.
+  if (opts.allowReady && opts.remote && opts.bucket === "reading-lite") {
     throw new UsageError("refusing --allow-ready against production bucket reading-lite");
   }
   // The bucket guard above is not sufficient on its own: the destructive act

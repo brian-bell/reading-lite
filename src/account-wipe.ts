@@ -51,10 +51,10 @@
  *
  * D1's wipe also deleted Vectorize vectors, seeding its own id ledger first and
  * confirming the deletes by probe. Embeddings are rows now, so the ledger, the
- * seed, the namespace probes and the unbound-index gate are all gone, and the
- * ledger module itself is operator-only (`scripts/account-lib/vector-ledger.ts`).
- * Vectors written to Vectorize before cutover are left to its retirement at
- * cutover (ADR 0005).
+ * seed, the namespace probes and the unbound-index gate are all gone — on the
+ * operator side too, since migration 0003 deliberately does not recreate
+ * `vector_ledger`. Vectors written to Vectorize before cutover are left to its
+ * retirement at cutover (ADR 0005).
  *
  * **The gate is a kill switch, not a fallback.** With `TENANT_DATA_PLANE` off
  * (or an empty key root) both fan-out and job skip with `no_tenant_prefix`.
@@ -299,8 +299,9 @@ export function wipeLeaseHeld(updatedAtMs: number, nowMs: number): boolean {
  * The reading id a tenant-relative R2 key belongs to, or null.
  *
  * The corpus-walking rule, single-homed here for the operator commands that
- * derive reading ids from R2 keys (`ops corpus seed-vector-ledger`, the
- * bare-vector audit). `parseReadingId` enforces the Crockford alphabet.
+ * derive reading ids from R2 keys. The two that did — the ledger seeder and
+ * the bare-vector audit — retired with the ledger; the wipe's own prefix walk
+ * still uses it. `parseReadingId` enforces the Crockford alphabet.
  */
 export function readingIdFromRelativeKey(relativeKey: string): string | null {
   if (relativeKey.startsWith(BY_ID_PREFIX)) {

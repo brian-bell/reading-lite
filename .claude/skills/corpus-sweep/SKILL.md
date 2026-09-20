@@ -77,11 +77,12 @@ conference talk. No canonicalization rule can pair those, and none should —
 mis-group unrelated readings. The assertion has to come from you:
 
 ```bash
-npm run ops -- corpus sweep --tenant "$TENANT" --drop rd_TWEET --keep rd_VIDEO --execute
+npm run ops -- corpus sweep --tenant "$TENANT" --drop rd_TWEET --keep rd_VIDEO \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute
 ```
 
 This builds a normal one-group plan, so it keeps every safety property the
-canonical path has — exactly one survivor, and the drop's vector deleted with
+canonical path has — exactly one survivor, and the drop's embedding deleted with
 it. The keeper must be `ready`: dropping a summarized reading in favour of a
 failed or pending one would destroy the surviving content. `--drop` takes
 exactly one `--keep` and no positional selectors, so the assertion stays
@@ -101,19 +102,27 @@ npm run ops -- corpus sweep --tenant "$TENANT"
 npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5
 npm run ops -- corpus sweep --tenant "$TENANT" https://youtu.be/0oXOOlqVu5M
 
-# Apply.
-npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 --execute
+# Apply. An execute must name the database it means (see below).
+npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute
 
 # Keep the copy the ranking would not have picked.
-npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B --execute
+npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute
 ```
 
 `--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is **refused**: it addressed the pre-tenant R2 key root, which has no PostgreSQL representation.
 
 Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable),
-`--database-url-env` (default `DATABASE_URL`), `--bucket` (captured content;
-default `READING_LITE_BUCKET` env, then `reading-lite`), `--local` (local
-miniflare bucket, and a local database), `--execute`, `--help`.
+`--database-url-env`, `--bucket` (captured content; default
+`READING_LITE_BUCKET` env, then `reading-lite`), `--local` (local miniflare
+bucket, and a local database), `--execute`, `--help`.
+
+**`--execute` must name the database.** The default `DATABASE_URL` is
+unmapped, so nothing can check it against `--bucket` — and sweep deletes ready
+readings, on production, by design. Pass `--database-url-env
+NEON_MAIN_DATABASE_URL` or `NEON_REHEARSAL_DATABASE_URL`, or `--local` for a
+corpus on this machine. A plan needs neither.
 
 `--vectorize` is gone: there is no second store to keep in step.
 

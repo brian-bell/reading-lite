@@ -33,7 +33,7 @@ import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 import { assertPgTenant, operatorCorpusFor, type CorpusDropView, type CorpusLookup } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export type CorpusSweepView = CorpusDropView & Pick<CorpusLookup, "manifest">;
@@ -126,14 +126,13 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   return deps.corpus(
     opts.databaseUrlEnv,
     tenant,
-    (corpus) => sweepResolved(opts, tenant, r2Deps, corpus, deps),
+    (corpus) => sweepResolved(opts, r2Deps, corpus, deps),
     { requireLocal: !opts.remote },
   );
 }
 
 async function sweepResolved(
   opts: Opts,
-  tenant: OperatorTenant,
   r2Deps: R2Deps,
   corpus: CorpusSweepView,
   deps: CorpusSweepDeps,
@@ -264,7 +263,7 @@ async function sweepResolved(
   // The sweep has already deleted objects and rewritten the index by now, so
   // the report is strictly informational: never let it fail the command.
   try {
-    await reportInvalidatedKeepers(io, corpus, plan.groups, dropIds, vectoredDrops, tenant);
+    await reportInvalidatedKeepers(io, corpus, plan.groups, dropIds, vectoredDrops);
   } catch (e) {
     io.stderr(
       `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
@@ -283,7 +282,6 @@ async function reportInvalidatedKeepers(
   groups: { keeper: { id: string; key_prefix: string; url: string } }[],
   droppedIds: Set<string>,
   vectoredDrops: { id: string; created_at?: string }[],
-  tenant: OperatorTenant,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
@@ -302,9 +300,16 @@ async function reportInvalidatedKeepers(
     io.stdout(`  ${f.id}  ${bits.join("; ")}`);
     io.stdout(`      ${f.url}`);
   }
+  // Deliberately not naming a command. `corpus refresh-neighbours` was the
+  // answer and is not ported yet: it still reads index/list.json and writes
+  // manifests, which nothing has read since slice 1b, so running it would
+  // leave readings.similarity untouched while reporting success. Saying
+  // nothing is better than sending the operator at a no-op they would believe.
   io.stdout(
-    `\nRefresh the measured score without an LLM call (no re-summarization, no tag churn):\n` +
-    `  npm run ops -- corpus refresh-neighbours --tenant ${operatorTenantSelector(tenant)} ${flagged.map((f) => f.id).join(" ")} --sole-writer --execute\n` +
+    `\nThese snapshots are stale, and re-measuring them needs no LLM call.\n` +
+    `corpus refresh-neighbours is NOT yet ported to PostgreSQL (reading-lite-gh347.4.1):\n` +
+    `running it now would rewrite objects nothing reads and leave the stored\n` +
+    `snapshots unchanged. Until it lands, treat the ids above as known-stale.\n` +
     `The novelty_verdict itself only refreshes on a reprocess, which DOES re-roll\n` +
     `title and tags -- so weigh that before reprocessing purely to fix a label.`,
   );

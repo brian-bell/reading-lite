@@ -22,13 +22,34 @@ import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { CONTROL_PLANE_REQUIRED_SECRETS } from "../../control-plane-env";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { checkPostgresCutover } from "../postgres-cutover";
-import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
 import { migrate, planMigrations, readMigrations, MigrationDriftError } from "../../pg-lib/migrate";
 import { operatorDatabaseUrl } from "../../pg-lib/operator-db";
 import { sqlFromConnectionString } from "../../../src/modules/db/sql";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export type DeployEnv = "production" | "staging";
+
+/**
+ * The variables a deploy may name, per environment.
+ *
+ * Two spellings each, because two callers reach this command: GitHub Actions
+ * holds the connection string as `PRODUCTION_DATABASE_URL`, and an operator
+ * deploying by hand sources `~/.config/reading-lite/neon.env`, whose names are
+ * the Neon branches. Anything else is unmapped, and an execute refuses it
+ * rather than migrating a database nobody named.
+ */
+export const DEPLOY_DATABASE_URL_ENVS: Readonly<Record<DeployEnv, readonly string[]>> = {
+  production: ["PRODUCTION_DATABASE_URL", "NEON_MAIN_DATABASE_URL"],
+  staging: ["STAGING_DATABASE_URL", "NEON_REHEARSAL_DATABASE_URL"],
+};
+
+/** Which environment a variable names, or null when it names none. */
+export function deployDatabaseEnv(databaseUrlEnv: string): DeployEnv | null {
+  for (const [env, names] of Object.entries(DEPLOY_DATABASE_URL_ENVS) as [DeployEnv, readonly string[]][]) {
+    if (names.includes(databaseUrlEnv)) return env;
+  }
+  return null;
+}
 
 export interface MigrationOutcome {
   applied: string[];
@@ -117,18 +138,26 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   // this leaves is a migrated database with the previous Worker still serving
   // — which that Worker tolerates.
   const databaseUrlEnv = values["database-url-env"]!;
-  // --env and --database-url-env are independent flags, and the staging Worker
-  // is deployed by hand (deploy-app-staging.yml). With a production string
-  // exported as DATABASE_URL — the shell state operator-db.ts warns about —
-  // `ops deploy worker --env staging` would apply this repo's pending
-  // migrations to production. Refuse a pair that names two environments; an
-  // unmapped variable is left alone, as elsewhere.
-  const namedEnv = Object.values(CONTROL_PLANE_BY_BUCKET).find(
-    (target) => target.databaseUrlEnv === databaseUrlEnv,
-  );
-  if (namedEnv && namedEnv.env !== env) {
+  const named = deployDatabaseEnv(databaseUrlEnv);
+  // An execute must name the database it is about to migrate. The default is
+  // the unmapped DATABASE_URL, and the staging Worker is deployed by hand, so
+  // without this `ops deploy worker --env staging --execute` with a production
+  // string exported as DATABASE_URL applies this repo's pending migrations to
+  // production and then uploads the staging Worker.
+  //
+  // An earlier version of this guard only compared mapped names and so was
+  // inert on every real invocation: CI passes PRODUCTION_DATABASE_URL and the
+  // default is DATABASE_URL, neither of which it knew.
+  if (named === null && execute) {
     deps.io.stderr(
-      `[${mode}] migrations: REFUSED. --env ${env} but ${databaseUrlEnv} is the ${namedEnv.env} database.`,
+      `[${mode}] migrations: REFUSED. ${databaseUrlEnv} does not name a deploy database. ` +
+        `Pass --database-url-env ${DEPLOY_DATABASE_URL_ENVS[env].join(" or ")}.`,
+    );
+    return 2;
+  }
+  if (named !== null && named !== env) {
+    deps.io.stderr(
+      `[${mode}] migrations: REFUSED. --env ${env} but ${databaseUrlEnv} is the ${named} database.`,
     );
     if (execute) return 2;
     // Plan mode stops here too. Falling through would list the migrations of
@@ -195,8 +224,11 @@ Options:
   --env <name>   Worker environment to deploy (default: production).
   --database-url-env <NAME>
                  Environment variable holding the DIRECT PostgreSQL connection
-                 string whose migrations to apply (default: DATABASE_URL). The
-                 production workflow passes PRODUCTION_DATABASE_URL.
+                 string whose migrations to apply (default: DATABASE_URL).
+                 --execute requires one that names the target environment:
+                 PRODUCTION_DATABASE_URL or NEON_MAIN_DATABASE_URL for
+                 production, STAGING_DATABASE_URL or
+                 NEON_REHEARSAL_DATABASE_URL for staging.
   --acknowledge-tenant-migration
                  Override unverified activation only after manually verifying
                  target tenant R2 data, namespaced vectors, and deletion eligibility.

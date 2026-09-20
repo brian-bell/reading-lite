@@ -80,44 +80,28 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
       },
     };
   });
-  async function presence(ids: string[]) {
-    const result = [];
-    for (let i = 0; i < ids.length; i += 10) {
-      const group = ids.slice(i, i + 10);
-      const requested = group.flatMap((id) => [id, `${tenant}:${id}`]);
-      const got = await remote.vectors.get(requested);
-      if (got.some((v) => !requested.includes(v.id)))
-        throw new Error("unexpected vector id");
-      for (const id of group) {
-        const composed = got.find((v) => v.id === `${tenant}:${id}`);
-        const bare = got.find((v) => v.id === id);
-        result.push({
-          id,
-          composed: composed
-            ? composed.namespace === tenant
-              ? "present"
-              : "wrong_namespace"
-            : "candidate_absent",
-          bare: bare
-            ? bare.namespace === tenant
-              ? "tenant_present"
-              : "outside_tenant"
-            : "candidate_absent",
-        });
-      }
-    }
-    return result;
-  }
-  await observe("ready_reading_vectors", async () => {
-    const ready = await remote.db.all<{ id: string }>(
-      "SELECT id FROM readings WHERE tenant_id = ? AND status = ? ORDER BY id",
+  // Every ready reading must own an embedding, and it is a ROW now, not a
+  // Vectorize vector. Probing Vectorize here would report `residue` for an
+  // intact corpus: the request path stopped upserting vectors at ADR 0005, so
+  // after cutover no ready reading has one.
+  await observe("ready_reading_embeddings", async () => {
+    const missing = await remote.db.all<{ id: string }>(
+      `SELECT r.id FROM readings r
+        LEFT JOIN reading_embeddings e
+          ON e.tenant_id = r.tenant_id AND e.reading_id = r.id
+        WHERE r.tenant_id = ? AND r.status = ? AND e.reading_id IS NULL
+        ORDER BY r.id`,
       tenant,
       "ready",
     );
-    const detail = await presence(ready.map((row) => row.id));
+    // A ready reading without its embedding is drift worth a human, but it is
+    // not deletion residue: a wipe leaves neither. Absence of the reading is
+    // what `pg.readings` above answers.
     return {
-      state: detail.some((v) => v.composed !== "present") ? "residue" : "clear",
-      detail,
+      state: missing.length ? "unknown" : "clear",
+      detail: missing.length
+        ? { ready_without_embedding: missing.map((row) => row.id) }
+        : "every ready reading owns an embedding",
     };
   });
   for (const [table, predicate, params] of [

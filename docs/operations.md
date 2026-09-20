@@ -462,7 +462,10 @@ the bucket no longer determines where the delete lands; and `ops deploy worker`
 refuses an `--env` that disagrees with the database whose migrations it is
 about to apply. Both only fire on mapped names — an unmapped variable, which
 the `DATABASE_URL` default is, is left alone, so local runs still work. That is
-why `corpus drop --allow-ready` insists on a mapped one.
+why an execute that deletes a live library entry — `corpus drop --allow-ready`,
+and every `corpus sweep --execute` — insists on a mapped one, or on `--local`.
+`ops deploy worker --execute` likewise refuses a variable that does not name
+its `--env`.
 
 GitHub Actions holds the production string as the `PRODUCTION_DATABASE_URL`
 secret. One secret, two readers: the deploy wipe gate counts unfinished wipes,
