@@ -40,18 +40,19 @@ export async function assertCleanCandidate(sha: string): Promise<void> {
 }
 
 // Explicit allowlist: neither secret bindings nor arbitrary metadata enter the
-// retained report. Hash effective auth configuration and D1 binding in memory.
+// retained report. Hash effective auth configuration and the storage binding
+// (Hyperdrive, the PostgreSQL control plane and readings) in memory.
 export function deployedProvenance(deployments: unknown, version: unknown, commit: string, configHash: string): Provenance {
   const active = z.object({ deployments: z.array(z.object({ versions: z.array(z.object({ version_id: z.string().min(1), percentage: z.number() })) })) }).parse(deployments).deployments[0];
   if (!active || active.versions.length !== 1 || active.versions[0]!.percentage !== 100) throw new Error("staging requires one fully active version");
   const v = z.object({ id: z.string(), annotations: z.record(z.string(), z.string()), resources: z.object({ bindings: z.array(z.object({ name: z.string(), type: z.string() }).passthrough()) }) }).parse(version);
   if (v.id !== active.versions[0]!.version_id || v.annotations["workers/tag"] !== commit) throw new Error("staging version does not carry the candidate commit tag");
-  const names = ["APP_ENV", "WEB_BASE_URL", "TENANT_DATA_PLANE", "CONTROL_PLANE"];
+  const names = ["APP_ENV", "WEB_BASE_URL", "TENANT_DATA_PLANE", "HYPERDRIVE"];
   const selected = names.map(name => {
     const bindings = v.resources.bindings.filter(b => b.name === name);
     if (bindings.length !== 1) throw new Error("staging auth configuration is incomplete");
     const b = bindings[0]!;
-    if (name === "CONTROL_PLANE") return { name, type: z.literal("d1").parse(b.type), value: z.string().min(1).parse(b.id) };
+    if (name === "HYPERDRIVE") return { name, type: z.literal("hyperdrive").parse(b.type), value: z.string().min(1).parse(b.id) };
     return { name, type: z.literal("plain_text").parse(b.type), value: z.string().parse(b.text) };
   });
   if (selected[0]!.value !== "staging" || selected[1]!.value.replace(/\/$/, "") !== STAGING_ORIGIN || selected[2]!.value !== "1") throw new Error("unexpected staging auth configuration");

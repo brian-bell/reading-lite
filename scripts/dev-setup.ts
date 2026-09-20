@@ -3,10 +3,7 @@ import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { openPostgresControlPlane, runFounderBootstrap } from "./lib/founder-bootstrap";
 import { loadDotVars } from "./lib/dotvars";
-import { wranglerSpawnArgs } from "./lib/wrangler-cli";
 import { COMPOSE_UP_POSTGRES, localDatabase, migrateLocalPostgres } from "./pg-lib/local-postgres";
-
-const LOCAL_D1 = "reading-lite-control-dev";
 
 export interface DevSetupDeps {
   run?: (command: string, args: string[]) => Promise<number>;
@@ -50,10 +47,6 @@ export async function runDevSetup(deps: DevSetupDeps = {}): Promise<number> {
     );
     return 1;
   }
-
-  const launched = wranglerSpawnArgs(["d1", "migrations", "apply", LOCAL_D1, "--local"]);
-  const migrationCode = await run(launched.command, launched.args);
-  if (migrationCode !== 0) return migrationCode;
 
   // The founder goes to PostgreSQL, the control plane's store (ADR 0005).
   const result = await bootstrap(

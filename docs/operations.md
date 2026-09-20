@@ -111,8 +111,9 @@ tenant. A finished wipe whose prefix gains objects again is reopened from
 
 Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
 namespace probe or unbound-index gate on this path; the ledger module itself is
-operator-only now (`scripts/account-lib/vector-ledger.ts`, still on D1 for the
-Vectorize-era `corpus` and `account` commands). Vectors written to Vectorize
+operator-only now (`scripts/account-lib/vector-ledger.ts`, still on wrangler
+D1 for the Vectorize-era `corpus` and `account` commands, which
+reading-lite-gh347.4 ports or retires). Vectors written to Vectorize
 before cutover are left to its retirement at cutover. A PostgreSQL wipe always
 completes with
 `residue=false`; the column keeps the history imported from D1.
@@ -491,33 +492,34 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against D1. `ops deploy worker` does not create the database or import the
-founder token. `--execute` applies pending remote D1 migrations, then
-uploads, and refuses placeholder `CONTROL_PLANE` `database_id` values in
-`wrangler.toml`.
+against it. `ops deploy worker` does not create the database, import the
+founder token, or deploy schema: apply pending PostgreSQL migrations with
+`npm run ops -- db migrate --execute` against the target database first
+(reading-lite-gh347.4 folds that into the deploy command). `--execute`
+uploads.
 
 #### Tenant-mode activation guard
 
-Before remote migrations or upload, `ops deploy worker --execute` inspects
-the target environment's tenant-mode activation state. A single active version
-serving 100% of traffic with `TENANT_DATA_PLANE=1`, matching `READINGS_BUCKET`,
-`READINGS_INDEX`, and `CONTROL_PLANE` bindings, establishes the baseline for an
-ordinary redeployment. The R2 bucket and Vectorize index must also have creation
+Before the upload, `ops deploy worker --execute` inspects the target
+environment's tenant-mode activation state. A single active version serving
+100% of traffic with `TENANT_DATA_PLANE=1` and matching `READINGS_BUCKET` and
+`READINGS_INDEX` bindings establishes the baseline for an ordinary
+redeployment. The R2 bucket and Vectorize index must also have creation
 timestamps no later than that version, so recreating either resource under its
 old name requires fresh verification. Existing production and staging cutovers
 use this baseline; no new migration or certification record is needed.
 
 Off→on activation, changed resources, split deployments, missing deployment
 state, and failed/incomplete API reads refuse execution with exit 2. When
-activation is unverified, the preflight queries the target D1 database and
-reports tenant IDs in `status='deleting'` at or past the seven-day grace window.
-If that query fails (including a new database without the schema), it reports
-eligibility as unavailable, not zero. This is an activation warning; ongoing
-active-wipe deployment policy belongs to #269.
+activation is unverified, the preflight says so and sends you to the target
+PostgreSQL control plane for deletion eligibility: it holds only Cloudflare API
+credentials, so it no longer reads tenant rows itself. This is an activation
+warning; ongoing active-wipe deployment policy belongs to #269.
 
 To proceed after a refusal, verify the intended corpus in the target tenant R2
-root and Vectorize namespace, and review deletion eligibility in the target D1
-database. For a rebuilt environment, verify its restored tenant corpus before
+root and Vectorize namespace, and review deletion eligibility in the target
+PostgreSQL control plane (tenants in `status='deleting'` whose `deleting_at` is
+at or past the seven-day grace window). For a rebuilt environment, verify its restored tenant corpus before
 activation. The completed founder cutover is historical evidence, not a step to
 repeat: its one-time migration command is retired. Any future conversion from a
 legacy layout requires a separately scoped migration and rehearsal.
@@ -536,8 +538,7 @@ After successful activation the active version becomes the redeployment baseline
 The preflight uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI, or
 Wrangler's current authentication locally. If account selection is ambiguous,
 set `CLOUDFLARE_ACCOUNT_ID`. Credentials need Workers deployment/version read
-access, R2 bucket metadata read access, Vectorize index read access, and D1 query
-access for activation warnings. A permission failure requires correcting access
+access, R2 bucket metadata read access, and Vectorize index read access. A permission failure requires correcting access
 or manually verifying readiness before using the explicit acknowledgement.
 Plan mode prints the check it would perform and runs the existing build dry-run;
 it does not inspect remote readiness or require these read permissions.
@@ -556,10 +557,9 @@ Staging:
 
 ```sh
 cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
-wrangler d1 create reading-lite-control-staging
-# replace [env.staging] CONTROL_PLANE database_id in wrangler.toml
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
-wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
+# DATABASE_URL is a direct connection string for the staging database.
+npm run ops -- db migrate --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
 npm run ops -- deploy worker --env staging --execute
 npm run ops -- deploy web --branch staging --execute
@@ -585,8 +585,9 @@ Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
-and runs `ops deploy worker --env production --execute` (pending remote D1
-migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
+and runs `ops deploy worker --env production --execute` (upload only; apply
+PostgreSQL migrations with `ops db migrate` beforehand). It does not pass
+`--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
@@ -600,17 +601,21 @@ serializes Worker and SPA production commands. An older run therefore cannot
 overwrite a newer production release. Neither release workflow has a manual
 trigger that can bypass the chain.
 
-Before migrations or upload, the Worker workflow runs `ops deploy wipe-check`
-after its stale-release check, while holding the production release lock. It
-requires zero unfinished D1 records (`wipe_progress.completed_at_ms IS NULL`)
-and zero backlog in both `reading-lite-wipe` and `reading-lite-wipe-dlq`.
-Stale unfinished records also block: cron can resume them. Completed records
-and `users.status = 'deleting'` alone do not block. Failed API calls, missing
+Before the upload, the Worker workflow runs `ops deploy wipe-check` after its
+stale-release check, while holding the production release lock. It requires
+zero unfinished records in the PostgreSQL control plane
+(`wipe_progress.completed_at IS NULL`) and zero backlog in both
+`reading-lite-wipe` and `reading-lite-wipe-dlq`. The record count is read over
+a direct connection string — the workflow passes
+`--database-url-env PRODUCTION_DATABASE_URL` — inside a read-only transaction;
+the backlogs still come from the Cloudflare API. Stale unfinished records also
+block: cron can resume them. Completed records and `users.status = 'deleting'`
+alone do not block. A missing connection string, failed API calls, missing
 queues, missing schema, or invalid responses fail closed and prevent the Worker
 release artifact from being published, so the SPA cannot follow that release.
 The command can also be run locally with the two Cloudflare environment
-variables below; direct `ops deploy worker` invocations do not automatically
-run this workflow gate.
+variables below plus `DATABASE_URL` (or `--database-url-env`); direct
+`ops deploy worker` invocations do not automatically run this workflow gate.
 
 For an explicitly selected token-revocation release check, use `ops staging
 token-revocation` and `ops deploy release`; see the [operator evidence
@@ -623,7 +628,7 @@ The queue check uses the [Queues REST metrics endpoint](https://developers.cloud
 (`backlog_count`, unacknowledged messages), not aggregated analytics. Cloudflare
 calls these metrics best-effort. The check is a snapshot: the release lock
 serializes deploys but does not stop cron, new wipes, or teardown. A wipe can
-start after the check, including during migrations. This is a rollout speed
+start after the check. This is a rollout speed
 bump, not an atomic drain/maintenance lock.
 
 If blocked, let the wipe and queues drain, then rerun the failed Worker workflow.
@@ -637,35 +642,37 @@ release; even if left set, it cannot bypass the gate for a different commit.
 Do not use a generic `true` value. No manual workflow trigger is needed, so the
 successful Worker rerun still triggers the existing SPA release chain.
 
-The gate requires D1 Read or Write and Queues Read/Write or Workers Scripts
-Read/Write on the production account. The documented deploy token's D1 Edit
-and Workers Scripts Edit should cover these APIs, but its actual scopes must
-be verified by a successful check; HTTP 401/403 is a blocked release, never
-an empty-state result. See [D1 query permissions](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
-and [queue permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/).
+The gate requires Queues Read/Write or Workers Scripts Read/Write on the
+production account, plus a PostgreSQL role that can read `wipe_progress`. The
+documented deploy token's Workers Scripts Edit should cover the queue APIs, but
+its actual scopes must be verified by a successful check; HTTP 401/403 is a
+blocked release, never an empty-state result. See
+[queue permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/).
 
 GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so migrations apply and the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
+| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production control plane. The wipe gate reads `wipe_progress` through it; the workflow fails fast when it is missing. |
 
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 
 When a release adds an API scope (e.g. `readings:delete`, migration
 `0002_readings_delete_scope.sql`), existing tokens do not pick it up on their
-own: `ops deploy worker --execute` applies the migration, then re-run the
-same founder bootstrap command, its scope grants are idempotent and top up
-the existing token.
+own: apply the migration with `ops db migrate --execute`, then re-run the same
+founder bootstrap command — its scope grants are idempotent and top up the
+existing token.
 
 `ops deploy worker` targets only staging and production (`--env`), so a dev
 Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
 an existing SPA build.
 
-Local `npm run dev` runs `dev:setup` first (local Postgres and D1 migrations,
-then the founder bootstrap of `dev-local-token` into Postgres).
+Local `npm run dev` runs `dev:setup` first (local Postgres migrations, then
+the founder bootstrap of `dev-local-token` into Postgres). There is no local D1
+step: the control plane is PostgreSQL (ADR 0005).
 
 The legacy SPA is served from Cloudflare Pages on the same hostname as the
 Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
@@ -2242,7 +2249,7 @@ and its tests remain available in Git history for historical recovery analysis.
 New environments start with tenant storage. Rebuilt environments need their
 restored tenant data verified before activation; the [activation guard](#tenant-mode-activation-guard)
 remains. Retiring this command does not delete retained legacy data, remove the
-`TENANT_DATA_PLANE` gate, change D1 schema migrations, or remove general corpus
+`TENANT_DATA_PLANE` gate, change schema migrations, or remove general corpus
 repair/vector-backfill tools. A future migration needs its own scoped design,
 tests and rehearsal, not a recurring founder-cutover release check.
 
@@ -2588,7 +2595,7 @@ docker compose down -v                 # also deletes it
 
 | Who | Database | How it connects |
 |---|---|---|
-| `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then the D1 steps. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
+| `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
 | `npm run seed:local` | `reading_lite` | After seeding R2 it migrates, then writes the fixture pack as rows for the local founder's tenant id, with deterministic vectors. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
 | CI Worker job | `reading_lite_test` | A service container; `TEST_DATABASE_URL` points both pools at it. The ops job has no Postgres, so no test it runs may need a database. |
@@ -2602,8 +2609,9 @@ seeds whatever this names. The Worker does not read it: also export
 or `wrangler dev` keeps using port 54329. Two checkouts cannot both publish
 port 54329; run the service from one of them, since they can share it.
 
-Migrations live in `db/migrations/` (`migrations/` stays D1's) and are
-forward-only. Plan first, against a **direct** connection string, never a
+Migrations live in `db/migrations/` and are forward-only. (`migrations/` is
+the retired D1 schema: nothing runs it any more, and it is kept only to
+describe the live control plane reading-lite-gh348 imports from.) Plan first, against a **direct** connection string, never a
 Hyperdrive one:
 
 ```sh
@@ -2700,7 +2708,7 @@ no embedding calls are made. Missing, non-ready, and purged readings are skipped
 A ready target whose `active_attempt` is still running inside `PENDING_TTL_SECONDS`
 is skipped at scan time; the same in-TTL running state on a judge delivery throws
 `DeferPaidWorkError` and re-enqueues that `(runAt, readingId, keyPrefix)` without
-a D1 checkpoint. A TTL-expired (zombie) running attempt is not a terminal skip:
+a checkpoint row. A TTL-expired (zombie) running attempt is not a terminal skip:
 scan still flags the target, and the judge treats it as not running. The nightly
 cap still counts a reserved judge identity, including identities later deferred
 for in-TTL running. The existing offline neighbourhood-drift rules select judge
@@ -2730,8 +2738,7 @@ it does not extract, embed, re-summarize, change status, or refresh tensions.
 Each HTTP attempt presents the shared processing leases and passes tenant/global
 spend admission. Refresh does not consume a new-reading quota slot.
 
-Migration `0014_relationship_refresh_jobs.sql` adds one latest checkpoint per
-reading to D1. After admission and immediately before fetch, the delivery marks
+`relationship_refresh_jobs` holds one latest checkpoint per reading. After admission and immediately before fetch, the delivery marks
 that job dispatched. HTTP retries within that delivery each receive fresh spend
 admission. Confirmed 429 responses record a retry time and remain eligible for
 delayed re-enqueue with fresh admission; early duplicates honor Retry-After.
@@ -2755,7 +2762,7 @@ row's novelty verdict and rechecks ownership after contention. A saved result
 can repair a failed list write without another paid call. Lost manifest CAS,
 reprocessing, purged inputs, and tenant suppression stop publication; errors
 never create a failed reading. The checkpoint contains no article summary and
-is removed by reading purge and the guarded account-teardown D1 batch.
+is removed by reading purge and the guarded account-teardown transaction.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
 keeps a two-judgement nightly cap; production uses five. Apply the migration through the

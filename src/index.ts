@@ -36,9 +36,6 @@ import { defaultServices } from "./services";
 export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
-  // Operator scripts only until 1c.5 removes it: the runtime's control plane
-  // is on PostgreSQL.
-  CONTROL_PLANE: D1Database;
   // PostgreSQL through Hyperdrive (ADR 0005): readings and the control plane.
   HYPERDRIVE: Hyperdrive;
   // Optional so the router can return a clear 503 when the binding is missing
@@ -53,7 +50,7 @@ export interface Env {
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;
-  // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
+  // Imported once as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
   AUTH_ROOT_KEY_VERSION?: string;

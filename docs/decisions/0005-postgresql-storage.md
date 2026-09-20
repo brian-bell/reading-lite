@@ -402,12 +402,41 @@ outside the transaction that acts on it.
   the purge transaction deletes the reading's refresh checkpoint itself,
   alongside the row.
 
-Still on D1 in this candidate, for 1c.5 and 1d: the `CONTROL_PLANE` binding
-itself, the D1 migrations in `npm run dev`, and the operator commands with their
-own control-plane SQL (system policy and status, the account wipe CLI and
-residue scan, the deploy wipe gate, staging token revocation, and the vector
-ledger commands). `ops founder bootstrap`, `npm run dev` and `seed:local` use
-PostgreSQL.
+#### D1 out of the runtime (slice 1c.5)
+
+The `CONTROL_PLANE` binding is gone from `wrangler.toml`, `wrangler.test.toml`
+and `Env`, with `fromD1` and the dead `vectorLedgerFor` it fed. The Workers
+pool no longer reads `migrations/` (`readD1Migrations`/`TEST_MIGRATIONS` are
+out of `vitest.workspace.ts`; per-file databases already replaced the per-file
+D1 migrate in 1c.2), and `npm run dev` no longer applies local D1 migrations —
+it migrates local PostgreSQL and bootstraps the founder there.
+
+- **The deploy wipe gate reads PostgreSQL.** `wipe_progress.completed_at IS
+  NULL` is counted over a direct connection string, in a read-only
+  transaction, named by `--database-url-env` (the workflow passes
+  `PRODUCTION_DATABASE_URL`). A missing connection string fails the gate
+  closed: not seeing the wipes it exists to see is not the same as seeing
+  none. The queue backlogs still come from the Cloudflare API, unchanged.
+- **`ops deploy worker` deploys no schema.** There is no D1 database to
+  migrate and no placeholder database id to refuse; PostgreSQL migrations are
+  `ops db migrate`'s, and folding them into the deploy command is 1d. The
+  cutover guard, the tenant-activation guard and the release lock are
+  untouched. The activation preflight no longer reads deletion eligibility: it
+  holds only Cloudflare credentials, so it names the check the operator must
+  make against PostgreSQL instead. Release provenance hashes the `HYPERDRIVE`
+  binding where it hashed `CONTROL_PLANE`.
+- **`migrations/` stays, unrun.** Nothing applies it; it describes the live D1
+  control plane that #348 imports from. With it stay better-sqlite3 and
+  `test/helpers/control-plane-sqlite.ts`, which the operator commands below
+  still use.
+
+Still on wrangler D1 in this candidate, for 1d: the operator commands with
+their own control-plane SQL (system policy and status, the account wipe CLI
+and residue scan, staging token revocation, and the vector ledger commands).
+Without the binding they cannot reach a database until 1d ports or retires
+them; their unit tests, which stub the wrangler call, are unaffected.
+`ops founder bootstrap`, `npm run dev`, `seed:local` and the deploy wipe gate
+use PostgreSQL.
 
 #### D1 to PostgreSQL column mapping (for the #348 importer)
 

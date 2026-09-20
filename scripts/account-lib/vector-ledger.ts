@@ -85,8 +85,8 @@
  * which is inside the propagation window by construction, so every healthy wipe
  * burned one attempt on a hit that carried no information (defect D2).
  */
-import { fromD1, type ControlPlaneDb } from "../../src/control-plane/db";
-import { parseTenantId, type TenantContext, type TenantId } from "../../src/control-plane/ids";
+import type { ControlPlaneDb } from "../../src/control-plane/db";
+import type { TenantId } from "../../src/control-plane/ids";
 import { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../../src/modules/stores/similarity-store";
 
 export type VectorLedgerState = "live" | "delete_submitted";
@@ -309,25 +309,6 @@ export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLe
       }
     }),
   };
-}
-
-/**
- * The ledger for a tenant in hosted code, or null when there is nothing to
- * ledger into.
- *
- * Null on an unbound `CONTROL_PLANE` (local `wrangler dev` and the Node-pool
- * tests) and on a malformed tenant id. Both are configurations with no account
- * wipe to feed, so a null ledger costs nothing — and a throwing one would take
- * down the publish path over bookkeeping.
- */
-export function vectorLedgerFor(
-  env: { CONTROL_PLANE?: D1Database },
-  tenant: TenantContext,
-): VectorLedger | null {
-  if (!env.CONTROL_PLANE) return null;
-  const tenantId = parseTenantId(String(tenant.tenantId));
-  if (!tenantId) return null;
-  return d1VectorLedger(fromD1(env.CONTROL_PLANE), tenantId);
 }
 
 function dedupe(ids: readonly string[]): string[] {
