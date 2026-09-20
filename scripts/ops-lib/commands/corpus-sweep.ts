@@ -26,6 +26,7 @@ import {
   DATABASE_URL_ENV_HELP,
   operatorDatabaseUrl,
   requireLocalDatabase,
+  requireNamedDatabase,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
 import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
@@ -106,9 +107,18 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   if (opts.drop !== undefined && (opts.keep.length !== 1 || opts.only.length > 0)) {
     throw new UsageError("--drop takes exactly one --keep <rd_ID> and no other selectors");
   }
-  // Sweep drops ready readings by design, so a bucket/database mismatch here
-  // deletes live library entries from the wrong environment.
+  // Sweep drops ready readings by design, and on production by design, which
+  // makes it strictly more destructive than `corpus drop --allow-ready`. It
+  // gets at least the same guards: the bucket and the database must agree, and
+  // because that check is inert on an unmapped variable — the DATABASE_URL
+  // default is unmapped — an execute has to name the database it means.
   assertBucketAndDatabaseAgree(opts.bucket, opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET);
+  if (opts.execute) {
+    requireNamedDatabase(opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET, {
+      local: !opts.remote,
+      because: "corpus sweep deletes ready readings",
+    });
+  }
 
   // --local names the miniflare bucket; the row deletes go wherever
   // --database-url-env points, so the two must agree before anything is

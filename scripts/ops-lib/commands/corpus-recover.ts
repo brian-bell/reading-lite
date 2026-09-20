@@ -430,8 +430,6 @@ async function runBatchMode(
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
     });
-    // Refuse a tenant/bucket pair the vector ledger cannot serve, before the
-    // batch is submitted rather than at the first upsert (issue #195 S3).
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
     return 2;

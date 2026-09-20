@@ -131,6 +131,11 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       `[${mode}] migrations: REFUSED. --env ${env} but ${databaseUrlEnv} is the ${namedEnv.env} database.`,
     );
     if (execute) return 2;
+    // Plan mode stops here too. Falling through would list the migrations of
+    // the database it just refused, so the plan would describe work --execute
+    // will not do.
+    deps.io.stderr("[PLAN] execute would refuse here; not listing migrations or dry-running the deploy.");
+    return 0;
   }
   try {
     const outcome = await deps.migrateDatabase(databaseUrlEnv, execute);

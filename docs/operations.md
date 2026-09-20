@@ -533,11 +533,11 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against it. `ops deploy worker` does not create the database, import the
-founder token, or deploy schema: apply pending PostgreSQL migrations with
-`npm run ops -- db migrate --execute` against the target database first
-(reading-lite-gh347.4 folds that into the deploy command). `--execute`
-uploads.
+against it. `ops deploy worker` does not create the database or import the
+founder token, but it **does** apply pending PostgreSQL migrations, over the
+connection string in `--database-url-env`, immediately before the upload — and
+refuses the upload if it cannot. Pass the variable that matches `--env`; the
+two are checked against each other. `--execute` uploads.
 
 #### Tenant-mode activation guard
 
@@ -602,7 +602,8 @@ wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
 # DATABASE_URL is a direct connection string for the staging database.
 npm run ops -- db migrate --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
-npm run ops -- deploy worker --env staging --execute
+npm run ops -- deploy worker --env staging \
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 npm run ops -- deploy web --branch staging --execute
 ```
 
@@ -618,7 +619,8 @@ Production is the same sequence with `reading-lite-control`, `--env production`,
 ```sh
 npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
-npm run ops -- deploy worker --env production --execute
+npm run ops -- deploy worker --env production \
+  --database-url-env NEON_MAIN_DATABASE_URL --execute
 npm run ops -- deploy web --branch main --execute
 ```
 
@@ -626,9 +628,10 @@ Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
-and runs `ops deploy worker --env production --execute` (upload only; apply
-PostgreSQL migrations with `ops db migrate` beforehand). It does not pass
-`--var`. `TENANT_DATA_PLANE` is
+and runs `ops deploy worker --env production --database-url-env
+PRODUCTION_DATABASE_URL --execute`, which applies this commit's pending
+PostgreSQL migrations before the upload and refuses the upload if it cannot.
+It does not pass `--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
@@ -1090,7 +1093,7 @@ staging founder tenant, not `global`. Resolve `$STG_TENANT` from staging's
 npm run ops -- corpus audit --tenant "$STG_TENANT" --bucket reading-lite-staging --execute
 npm run ops -- corpus drop --tenant "$STG_TENANT" "https://example.com/reading-lite-staging-123" \
   --bucket reading-lite-staging --allow-ready \
-  --vectorize reading-lite-staging --execute
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 ```
 
 `--tenant global` still addresses staging's retained pre-tenant copy, which the

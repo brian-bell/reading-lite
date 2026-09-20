@@ -182,10 +182,6 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
     });
-    // Refuse a tenant/bucket pair the vector ledger cannot serve, here rather
-    // than at the first upsert (issue #195 S3). This is a long, paid, resumable
-    // run; half way through one is the worst moment to learn that its vectors
-    // cannot be recorded.
   } catch (e) {
     if (args.execute) {
       io.stderr(e instanceof Error ? e.message : String(e));

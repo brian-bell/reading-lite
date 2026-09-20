@@ -26,6 +26,7 @@ import {
   DATABASE_URL_ENV_HELP,
   operatorDatabaseUrl,
   requireLocalDatabase,
+  requireNamedDatabase,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
 import { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
@@ -103,21 +104,11 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
     // The agreement check above is inert when the variable is unmapped, which
     // the default DATABASE_URL is — so --bucket reading-lite-staging with a
     // production string in DATABASE_URL would pass both guards and delete
-    // ready production rows. Dropping a live library entry has to name the
-    // database it means.
-    const named = Object.values(CONTROL_PLANE_BY_BUCKET).some(
-      (target) => target.databaseUrlEnv === opts.databaseUrlEnv,
-    );
-    if (!named) {
-      throw new UsageError(
-        `--allow-ready requires --database-url-env to name an environment's variable (${Object.values(
-          CONTROL_PLANE_BY_BUCKET,
-        )
-          .map((target) => target.databaseUrlEnv)
-          .join(", ")}), not the unmapped ${opts.databaseUrlEnv}. ` +
-          "It drops live library entries, so it must say which database it means.",
-      );
-    }
+    // ready production rows.
+    requireNamedDatabase(opts.databaseUrlEnv, CONTROL_PLANE_BY_BUCKET, {
+      local: !opts.remote,
+      because: "--allow-ready drops live library entries",
+    });
   }
 
   const tenant = requireOperatorTenant(opts.tenant);

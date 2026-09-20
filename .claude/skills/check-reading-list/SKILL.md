@@ -35,24 +35,34 @@ as-is). This matches Chrome's reading-list export, e.g.:
 
 ## Prerequisites
 
-A Cloudflare session that can read R2: run `wrangler login`, or set
-`CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`) in the environment. No
-reading-lite API token is needed — this path does not hit the HTTP API.
+A direct PostgreSQL connection string. Source the laptop file and pass the
+variable's name:
+
+```bash
+set -a; . ~/.config/reading-lite/neon.env; set +a
+```
+
+No Cloudflare session and no reading-lite API token: this path reaches neither
+R2 nor the HTTP API.
 
 ## Usage
 
 ```bash
-# Default: production bucket, ready-only, rewrites the file in place.
-npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json --execute
+# Ready-only, rewrites the file in place. --tenant is required.
+npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json \
+  --tenant "$TENANT" --database-url-env NEON_MAIN_DATABASE_URL --execute
 
 # Preview the counts without writing.
-npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json
+npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json \
+  --tenant "$TENANT" --database-url-env NEON_MAIN_DATABASE_URL
 
 # Write to a new file instead of in place.
-npm run ops -- reading-list check --file in.json --out annotated.json --execute
+npm run ops -- reading-list check --file in.json --out annotated.json \
+  --tenant "$TENANT" --database-url-env NEON_MAIN_DATABASE_URL --execute
 
 # Count anything present in the corpus (pending/failed too).
-npm run ops -- reading-list check --file in.json --any-status --execute
+npm run ops -- reading-list check --file in.json --any-status \
+  --tenant "$TENANT" --database-url-env NEON_MAIN_DATABASE_URL --execute
 
 # A different database (the laptop file holds the Neon strings).
 set -a; . ~/.config/reading-lite/neon.env; set +a

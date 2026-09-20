@@ -74,6 +74,34 @@ export function isLocalDatabaseUrl(databaseUrl: string): boolean {
 export class NonLocalDatabaseError extends UsageError {}
 
 /**
+ * Requires a destructive run to say which database it means.
+ *
+ * `assertBucketAndDatabaseAgree` is inert on an unmapped variable, and the
+ * default `DATABASE_URL` is unmapped — so a production string exported in the
+ * shell satisfies it. That is tolerable for a command that only drops
+ * non-ready readings; it is not for one that deletes live library entries.
+ *
+ * Two ways to satisfy it: name an environment's variable, or pass `--local`,
+ * which `requireLocalDatabase` separately pins to this machine. Without the
+ * second, `--local --allow-ready` would be unsatisfiable and a ready reading
+ * could not be dropped from a local corpus at all.
+ */
+export function requireNamedDatabase(
+  databaseUrlEnv: string,
+  mapping: Record<string, { databaseUrlEnv: string }>,
+  opts: { local: boolean; because: string },
+): void {
+  if (opts.local) return;
+  const names = Object.values(mapping).map((target) => target.databaseUrlEnv);
+  if (names.includes(databaseUrlEnv)) return;
+  throw new UsageError(
+    `${opts.because}, so it must name the database it means: pass --database-url-env ` +
+      `(${names.join(" or ")}), or --local for a corpus on this machine. ` +
+      `${databaseUrlEnv} is unmapped, so nothing can check it against --bucket.`,
+  );
+}
+
+/**
  * Refuses a run whose bucket and database name different environments.
  *
  * `--bucket` used to scope everything destructive a corpus command did, so

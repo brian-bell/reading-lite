@@ -159,7 +159,20 @@ describe("ops corpus drop", () => {
         ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging"],
         deps,
       ),
-    ).rejects.toThrow(/must say which database/);
+    ).rejects.toThrow(/must name the database it means/);
+  });
+
+  // --local pins the database to this machine separately, so requiring a
+  // mapped name too would make --local --allow-ready unsatisfiable and leave
+  // no way to drop a ready reading from a local corpus.
+  it("accepts --local instead of a mapped variable for --allow-ready", async () => {
+    const { deps, deletedRows } = dropDeps([READY_ITEM]);
+    const code = await corpusDropCommand.run(
+      ["--tenant", TENANT, "rd_r", "--allow-ready", "--bucket", "reading-lite-staging", "--local", "--execute"],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(deletedRows).toEqual(["rd_r"]);
   });
 
   it("refuses a bucket and a database that name different environments", async () => {
@@ -250,14 +263,14 @@ describe("ops corpus sweep", () => {
 
   it("drops the duplicate's content and row on --execute", async () => {
     const { deps, deletedRows } = sweepDeps([A, B]);
-    const code = await corpusSweepCommand.run(["--tenant", TENANT, "--execute"], deps);
+    const code = await corpusSweepCommand.run(["--tenant", TENANT, "--local", "--execute"], deps);
     expect(code).toBe(0);
     expect(deletedRows).toEqual(["rd_b"]);
   });
 
   it("keeps the row when an object delete fails", async () => {
     const { deps, deletedRows, lines } = sweepDeps([A, B], { deleteResult: () => "error" });
-    const code = await corpusSweepCommand.run(["--tenant", TENANT, "--execute"], deps);
+    const code = await corpusSweepCommand.run(["--tenant", TENANT, "--local", "--execute"], deps);
     expect(code).toBe(1);
     expect(deletedRows).toEqual([]);
     expect(lines.join("\n")).toContain("keeping row rd_b");
@@ -280,6 +293,46 @@ describe("ops corpus sweep", () => {
   it("refuses --drop without exactly one --keep", async () => {
     const { deps } = sweepDeps([A, B]);
     await expect(corpusSweepCommand.run(["--tenant", TENANT, "--drop", "rd_b"], deps)).rejects.toThrow(UsageError);
+  });
+
+  // Sweep drops ready readings, on production, by design — so it is strictly
+  // more destructive than `drop --allow-ready` and gets at least the same
+  // guards. The agreement check alone is inert on the unmapped DATABASE_URL
+  // default, which a production string in the shell satisfies.
+  it("refuses an execute on the unmapped default variable", async () => {
+    const { deps, deletedRows } = sweepDeps([A, B]);
+    await expect(
+      corpusSweepCommand.run(["--tenant", TENANT, "--execute"], deps),
+    ).rejects.toThrow(/must name the database it means/);
+    expect(deletedRows).toEqual([]);
+  });
+
+  it("plans on the default variable, because a plan deletes nothing", async () => {
+    const { deps } = sweepDeps([A, B]);
+    expect(await corpusSweepCommand.run(["--tenant", TENANT], deps)).toBe(0);
+  });
+
+  it("accepts a mapped variable that agrees with the bucket", async () => {
+    const { deps, deletedRows } = sweepDeps([A, B]);
+    const code = await corpusSweepCommand.run(
+      [
+        "--tenant", TENANT,
+        "--bucket", "reading-lite-staging",
+        "--database-url-env", "NEON_REHEARSAL_DATABASE_URL",
+        "--execute",
+      ],
+      deps,
+    );
+    expect(code).toBe(0);
+    expect(deletedRows).toEqual(["rd_b"]);
+  });
+
+  // Otherwise --local --execute would be unsatisfiable, and a ready reading
+  // could not be swept from a local corpus at all.
+  it("accepts --local instead of a mapped variable", async () => {
+    const { deps, deletedRows } = sweepDeps([A, B]);
+    expect(await corpusSweepCommand.run(["--tenant", TENANT, "--local", "--execute"], deps)).toBe(0);
+    expect(deletedRows).toEqual(["rd_b"]);
   });
 
   it("asks for a local database when --local is passed", async () => {
