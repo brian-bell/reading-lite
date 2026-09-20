@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Sql, SqlRow } from "../../../src/modules/db/sql";
 import {
   DATABASE_URL_ENV_DEFAULT,
+  isLocalDatabaseUrl,
   operatorDatabaseUrl,
+  requireLocalDatabase,
   withOperatorSql,
 } from "../../../scripts/pg-lib/operator-db";
 import { OperatorCorpus, operatorCorpusFor, requirePgTenant, toListItem } from "../../../scripts/pg-lib/operator-corpus";
@@ -93,7 +95,52 @@ describe("requirePgTenant", () => {
   });
 });
 
+describe("isLocalDatabaseUrl", () => {
+  it.each([
+    ["postgres://u:p@127.0.0.1:54329/reading_lite", true],
+    ["postgres://u:p@localhost:5432/reading_lite", true],
+    ["postgres://u:p@[::1]:5432/reading_lite", true],
+    ["postgres://u:p@ep-cool-name.eu-central-1.aws.neon.tech/main", false],
+    ["postgres://u:p@10.0.0.4:5432/main", false],
+    ["not a url", false],
+  ])("%s -> %s", (url, expected) => {
+    expect(isLocalDatabaseUrl(url)).toBe(expected);
+  });
+
+  // --local reads the miniflare bucket, but the row deletes go wherever the
+  // named variable points: the pair would delete production rows while
+  // deleting local objects.
+  it("refuses a --local run against a non-local database", () => {
+    expect(() => requireLocalDatabase("postgres://u:p@prod.neon.tech/main", "DATABASE_URL")).toThrow(
+      UsageError,
+    );
+    expect(() =>
+      requireLocalDatabase("postgres://u:p@127.0.0.1:54329/reading_lite", "DATABASE_URL"),
+    ).not.toThrow();
+  });
+});
+
 describe("toListItem", () => {
+  // corpus sweep ranks duplicates by tldr/tags/keywords; dropping them made
+  // every copy score zero and silently reduced the ranking to "newest wins".
+  it("carries the summary fields corpus sweep ranks on", () => {
+    const item: ListIndexItem = {
+      id: "rd_1",
+      key_prefix: "u/usr_abc/readings/rd_1",
+      url: "https://example.com/a",
+      status: "ready",
+      created_at: "2026-01-01T00:00:00.000Z",
+      tldr: "a real summary",
+      tags: ["x", "y"],
+      keywords: ["k1", "k2", "k3"],
+    };
+    expect(toListItem(item)).toMatchObject({
+      tldr: "a real summary",
+      tags: ["x", "y"],
+      keywords: ["k1", "k2", "k3"],
+    });
+  });
+
   it("keeps the fields the corpus tools read and drops the rest", () => {
     const item: ListIndexItem = {
       id: "rd_1",
@@ -115,6 +162,9 @@ describe("toListItem", () => {
       updated_at: "2026-01-02T00:00:00.000Z",
       key_prefix: "u/usr_abc/readings/rd_1",
       title: "A",
+      tldr: "summary",
+      tags: ["x"],
+      keywords: ["k"],
       source_date: undefined,
       error: undefined,
       active_attempt: undefined,

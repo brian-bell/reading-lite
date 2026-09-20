@@ -51,6 +51,40 @@ export function operatorDatabaseUrl(
 }
 
 /**
+ * True when the connection string points at this machine.
+ *
+ * `--local` used to scope a whole command, because the only stores it touched
+ * were the local miniflare bucket and (deliberately) never Vectorize. Now the
+ * destructive half of `corpus drop` and `corpus sweep` is a DELETE against
+ * whatever the named variable holds, so `--local` and a production
+ * DATABASE_URL exported in the shell would delete production rows while
+ * deleting objects from the local bucket. Commands that offer `--local` check
+ * this before any write.
+ */
+export function isLocalDatabaseUrl(databaseUrl: string): boolean {
+  let host: string;
+  try {
+    host = new URL(databaseUrl).hostname;
+  } catch {
+    return false;
+  }
+  return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "[::1]";
+}
+
+export class NonLocalDatabaseError extends UsageError {}
+
+/** Refuses a `--local` run pointed at a database that is not on this machine. */
+export function requireLocalDatabase(databaseUrl: string, envName: string): void {
+  if (!isLocalDatabaseUrl(databaseUrl)) {
+    throw new NonLocalDatabaseError(
+      `--local reads the local miniflare bucket, but ${envName} names a non-local database. ` +
+        "Refusing: the deletes would land on that database while the objects came from the local bucket. " +
+        "Drop --local, or point --database-url-env at your local Postgres.",
+    );
+  }
+}
+
+/**
  * Opens one session for the duration of `run` and always closes it, including
  * when `run` throws. A command that leaves a Neon session open holds a
  * connection slot until the idle timeout.

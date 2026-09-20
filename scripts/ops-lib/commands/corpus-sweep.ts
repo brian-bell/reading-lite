@@ -21,8 +21,10 @@ import {
 import { shouldDeleteRow } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import {
+  DATABASE_URL_ENV_DEFAULT,
   DATABASE_URL_ENV_HELP,
   operatorDatabaseUrl,
+  requireLocalDatabase,
   withOperatorSql,
 } from "../../pg-lib/operator-db";
 import { operatorCorpusFor, type CorpusDropView, type CorpusLookup } from "../../pg-lib/operator-corpus";
@@ -42,6 +44,7 @@ export interface CorpusSweepDeps extends BaseDeps {
     databaseUrlEnv: string,
     tenant: OperatorTenant,
     run: (corpus: CorpusSweepView) => Promise<T>,
+    opts?: { requireLocal?: boolean },
   ) => Promise<T>;
   r2: CorpusSweepR2;
 }
@@ -62,7 +65,7 @@ function parseSweepArgs(argv: string[]): Opts {
     only: [],
     keep: [],
     bucket: process.env.READING_LITE_BUCKET ?? "reading-lite",
-    databaseUrlEnv: "DATABASE_URL",
+    databaseUrlEnv: DATABASE_URL_ENV_DEFAULT,
     remote: true,
     execute: false,
   };
@@ -99,7 +102,15 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     throw new UsageError("--drop takes exactly one --keep <rd_ID> and no other selectors");
   }
 
-  return deps.corpus(opts.databaseUrlEnv, tenant, (corpus) => sweepResolved(opts, tenant, r2Deps, corpus, deps));
+  // --local names the miniflare bucket; the row deletes go wherever
+  // --database-url-env points, so the two must agree before anything is
+  // deleted. See requireLocalDatabase.
+  return deps.corpus(
+    opts.databaseUrlEnv,
+    tenant,
+    (corpus) => sweepResolved(opts, tenant, r2Deps, corpus, deps),
+    { requireLocal: !opts.remote },
+  );
 }
 
 async function sweepResolved(
@@ -110,7 +121,10 @@ async function sweepResolved(
   deps: CorpusSweepDeps,
 ): Promise<number> {
   const { io, r2 } = deps;
-  const items = (await corpus.listItems()) as unknown as SweepItem[];
+  // No cast: ListItem must structurally satisfy SweepItem, so dropping a
+  // field the ranking reads is a type error rather than a silent behaviour
+  // change (it was one, and cost the "richest summary" tiebreaker).
+  const items: SweepItem[] = await corpus.listItems();
 
   const plan = opts.drop !== undefined
     ? planExplicitPair(items, { drop: opts.drop, keep: opts.keep[0]! })
@@ -318,8 +332,11 @@ Options:
   --help              Show this message.`,
   defaultDeps: (io: CommandIo): CorpusSweepDeps => ({
     io,
-    corpus: (databaseUrlEnv, tenant, run) =>
-      withOperatorSql(operatorDatabaseUrl(databaseUrlEnv), (sql) => run(operatorCorpusFor(sql, tenant))),
+    corpus: (databaseUrlEnv, tenant, run, opts) => {
+      const url = operatorDatabaseUrl(databaseUrlEnv);
+      if (opts?.requireLocal) requireLocalDatabase(url, databaseUrlEnv);
+      return withOperatorSql(url, (sql) => run(operatorCorpusFor(sql, tenant)));
+    },
     r2: {
       deleteObject: async (key, d) => (await import("../../corpus-lib/wrangler-r2")).deleteObject(key, d),
     },

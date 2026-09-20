@@ -2,39 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   annotateEntries,
   buildCorpusUrlSet,
-  parseListIndex,
+  type CorpusItem,
 } from "../../../scripts/check-corpus-lib/corpus";
 
-const LIST_JSON = JSON.stringify({
-  version: 1,
-  items: [
-    { id: "rd_1", url: "https://a.example/post", status: "ready" },
-    { id: "rd_2", url: "https://b.example/post", status: "pending" },
-    { id: "rd_3", url: "https://c.example/post", status: "failed" },
-    { id: "rd_4", url: "https://d.example/post", status: "ready" },
-  ],
-});
-
-describe("parseListIndex", () => {
-  it("extracts url + status pairs from a list.json payload", () => {
-    const items = parseListIndex(LIST_JSON);
-    expect(items).toHaveLength(4);
-    expect(items[0]).toEqual({ url: "https://a.example/post", status: "ready" });
-  });
-
-  it("rejects payloads without an items array", () => {
-    expect(() => parseListIndex("{}")).toThrow(/items/);
-    expect(() => parseListIndex("[]")).toThrow(/items/);
-  });
-
-  it("rejects malformed JSON", () => {
-    expect(() => parseListIndex("not json")).toThrow();
-  });
-});
+// What the readings query returns, in the order the library lists them.
+const ITEMS: CorpusItem[] = [
+  { url: "https://a.example/post", status: "ready" },
+  { url: "https://b.example/post", status: "pending" },
+  { url: "https://c.example/post", status: "failed" },
+  { url: "https://d.example/post", status: "ready" },
+];
 
 describe("buildCorpusUrlSet", () => {
   it("includes only ready URLs by default", () => {
-    const set = buildCorpusUrlSet(parseListIndex(LIST_JSON));
+    const set = buildCorpusUrlSet(ITEMS);
     expect(set.has("https://a.example/post")).toBe(true);
     expect(set.has("https://d.example/post")).toBe(true);
     expect(set.has("https://b.example/post")).toBe(false);
@@ -43,7 +24,7 @@ describe("buildCorpusUrlSet", () => {
   });
 
   it("honors an explicit status allow-list", () => {
-    const set = buildCorpusUrlSet(parseListIndex(LIST_JSON), {
+    const set = buildCorpusUrlSet(ITEMS, {
       statuses: ["ready", "pending", "failed"],
     });
     expect(set.size).toBe(4);

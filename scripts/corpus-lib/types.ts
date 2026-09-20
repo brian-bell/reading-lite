@@ -9,6 +9,15 @@ export interface ListItem {
   updated_at?: string;
   key_prefix: string;
   title?: string;
+  // The summary fields corpus sweep ranks duplicate copies by (richness in
+  // sweep.ts). Carried here so the operator view cannot quietly drop them:
+  // without a tldr and its keywords every copy scores zero, the "richest
+  // summary" tiebreaker dies, and the sweep keeps whichever copy is newer —
+  // which for a thin YouTube reading beside its full re-import is the wrong
+  // one.
+  tldr?: string;
+  tags?: string[];
+  keywords?: string[];
   source_date?: string;
   error?: { code?: string; stage?: string; message?: string };
   active_attempt?: { stage?: string; trigger?: string; status?: string };

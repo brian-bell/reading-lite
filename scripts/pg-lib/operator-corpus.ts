@@ -14,6 +14,7 @@ import type { ListIndexItem } from "../../src/schemas/api";
 import type { Manifest } from "../../src/schemas/manifest";
 import type { Sql, SqlQuery } from "../../src/modules/db/sql";
 import { PgReadingStore, type ContentKeys, type UrlOwner } from "../../src/modules/stores/postgres/reading-store";
+import { r2KeyLayout, rawExtFromContentType } from "../../src/modules/stores/layout";
 import type { OperatorTenant } from "../corpus-lib/tenant";
 import type { ListItem } from "../corpus-lib/types";
 import { UsageError } from "../ops-lib/contract";
@@ -32,6 +33,11 @@ export function toListItem(item: ListIndexItem): ListItem {
     updated_at: item.updated_at,
     key_prefix: item.key_prefix,
     title: item.title,
+    // corpus sweep ranks duplicates by these; dropping them would make every
+    // copy score zero and silently reduce the ranking to "newest wins".
+    tldr: item.tldr,
+    tags: item.tags,
+    keywords: item.keywords,
     source_date: item.source_date,
     error: item.error,
     active_attempt: item.active_attempt,
@@ -80,6 +86,7 @@ export interface CorpusLookup {
 
 export interface CorpusMutations {
   deleteReading(id: string): Promise<boolean>;
+  countInboundRelationships(targetId: string): Promise<number>;
   deleteInboundRelationships(targetId: string): Promise<number>;
 }
 
@@ -131,6 +138,15 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
     return deleted > 0;
   }
 
+  /** How many relationships name this reading as their target — plan mode's answer. */
+  async countInboundRelationships(targetId: string): Promise<number> {
+    const [row] = await this.sql.query<{ n: number }>(
+      "SELECT count(*)::int AS n FROM reading_relationships WHERE tenant_id = $1 AND target_id = $2",
+      [this.tenantId, targetId],
+    );
+    return row?.n ?? 0;
+  }
+
   /**
    * Removes relationships that NAME this reading as their target.
    *
@@ -167,7 +183,24 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
       if (row.raw_key) keys.add(row.raw_key);
       if (row.extracted_key) keys.add(row.extracted_key);
     }
-    return [...keys];
+    if (keys.size > 0) return [...keys];
+
+    // No revision and no capturing attempt: an imported reading no attempt has
+    // ever touched still serves the legacy spelling under its stored prefix,
+    // which PgReadingStore.contentKeys falls back to as well. Without this the
+    // drop would delete nothing, delete the row, and strand the bytes with
+    // nothing left to name them — the exact outcome shouldDeleteRow exists to
+    // prevent.
+    const [row] = await this.sql.query<{ key_prefix: string; content_type: string }>(
+      "SELECT key_prefix, content_type FROM readings WHERE tenant_id = $1 AND id = $2",
+      [this.tenantId, id],
+    );
+    if (!row) return [];
+    const layout = r2KeyLayout("");
+    return [
+      layout.rawKey(row.key_prefix, rawExtFromContentType(row.content_type)),
+      layout.extractedKey(row.key_prefix),
+    ];
   }
 
   /**
@@ -193,7 +226,9 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
     );
     const out = new Map<string, string>();
     for (const row of rows) {
-      if (row.stage) out.set(row.id, `${row.stage}/${row.status}`);
+      // An event can carry a stage without a status. Report the stage alone
+      // rather than the literal "summarize/null" in the audit report.
+      if (row.stage) out.set(row.id, row.status ? `${row.stage}/${row.status}` : row.stage);
     }
     return out;
   }

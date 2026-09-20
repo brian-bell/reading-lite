@@ -222,29 +222,38 @@ describe("ops import youtube", () => {
 
 describe("ops reading-list check", () => {
   const ENTRIES = JSON.stringify([{ url: "https://a.example/one" }, { url: "https://a.example/two" }]);
-  const LIST_INDEX = JSON.stringify({
-    items: [{ id: "rd_1", url: "https://a.example/one", status: "ready", key_prefix: "readings/rd_1", created_at: "2026-08-01T00:00:00Z" }],
-  });
+  const TENANT = "usr_11111111-1111-4111-8111-111111111111";
+  const ITEMS = [
+    {
+      id: "rd_1", url: "https://a.example/one", status: "ready",
+      key_prefix: "readings/rd_1", created_at: "2026-08-01T00:00:00Z",
+    },
+  ];
 
   function makeDeps() {
     const { io: cio, out, err } = io();
-    const state = { writes: [] as string[] };
+    const state = { writes: [] as string[], opened: [] as string[] };
     const deps: ReadingListCheckDeps = {
       io: cio,
       readFile: async () => ENTRIES,
       writeFileAtomic: async (p) => {
         state.writes.push(p);
       },
-      fetchListIndex: async () => LIST_INDEX,
+      corpus: async (databaseUrlEnv, tenant, run) => {
+        if (tenant.kind === "global") throw new UsageError("--tenant global has no PostgreSQL corpus");
+        state.opened.push(`${databaseUrlEnv}:${tenant.tenantId}`);
+        return run({ listItems: async () => ITEMS as never });
+      },
     };
     return { deps, out, err, state };
   }
 
   it("plan mode reads the corpus but writes nothing", async () => {
     const { deps, out, state } = makeDeps();
-    const code = await readingListCheckCommand.run(["--file", "list.json"], deps);
+    const code = await readingListCheckCommand.run(["--file", "list.json", "--tenant", TENANT], deps);
     expect(code).toBe(0);
     expect(state.writes).toHaveLength(0);
+    expect(state.opened).toEqual([`DATABASE_URL:${TENANT}`]);
     const summary = JSON.parse(out.join("\n"));
     expect(summary.executed).toBe(false);
     expect(summary.corpus_urls).toBe(1);
@@ -252,9 +261,27 @@ describe("ops reading-list check", () => {
 
   it("--execute writes the annotated list", async () => {
     const { deps, state } = makeDeps();
-    const code = await readingListCheckCommand.run(["--file", "list.json", "--execute"], deps);
+    const code = await readingListCheckCommand.run(
+      ["--file", "list.json", "--tenant", TENANT, "--execute"],
+      deps,
+    );
     expect(code).toBe(0);
     expect(state.writes).toHaveLength(1);
+  });
+
+  // Without a tenant this would find an empty corpus, mark every entry
+  // unprocessed, and reading-list process would resubmit the whole library.
+  it("requires a tenant rather than defaulting to some corpus", async () => {
+    const { deps, state } = makeDeps();
+    await expect(readingListCheckCommand.run(["--file", "list.json"], deps)).rejects.toThrow(UsageError);
+    expect(state.opened).toHaveLength(0);
+  });
+
+  it("refuses --tenant global", async () => {
+    const { deps } = makeDeps();
+    await expect(
+      readingListCheckCommand.run(["--file", "list.json", "--tenant", "global"], deps),
+    ).rejects.toThrow(UsageError);
   });
 });
 

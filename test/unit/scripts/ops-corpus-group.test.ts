@@ -160,6 +160,21 @@ describe("ops corpus drop", () => {
     const { deps } = dropDeps([FAILED_ITEM]);
     await expect(corpusDropCommand.run(["--tenant", TENANT], deps)).rejects.toThrow(UsageError);
   });
+
+  // --local scopes the bucket, but the row deletes follow --database-url-env.
+  // Before the guard, --local with a production DATABASE_URL deleted
+  // production rows while deleting objects from the miniflare bucket.
+  it("asks for a local database when --local is passed, and not otherwise", async () => {
+    const asked: (boolean | undefined)[] = [];
+    const { deps } = dropDeps([FAILED_ITEM]);
+    deps.corpus = async (_env, _tenant, run, opts) => {
+      asked.push(opts?.requireLocal);
+      return run(corpusFake([FAILED_ITEM]).view as never);
+    };
+    await corpusDropCommand.run(["--tenant", TENANT, "rd_f", "--local"], deps);
+    await corpusDropCommand.run(["--tenant", TENANT, "rd_f"], deps);
+    expect(asked).toEqual([true, false]);
+  });
 });
 
 describe("ops corpus sweep", () => {
@@ -232,6 +247,40 @@ describe("ops corpus sweep", () => {
   it("refuses --drop without exactly one --keep", async () => {
     const { deps } = sweepDeps([A, B]);
     await expect(corpusSweepCommand.run(["--tenant", TENANT, "--drop", "rd_b"], deps)).rejects.toThrow(UsageError);
+  });
+
+  it("asks for a local database when --local is passed", async () => {
+    const asked: (boolean | undefined)[] = [];
+    const { deps } = sweepDeps([A, B]);
+    deps.corpus = async (_env, _tenant, run, opts) => {
+      asked.push(opts?.requireLocal);
+      return run(corpusFake([A, B]).view as never);
+    };
+    await corpusSweepCommand.run(["--tenant", TENANT, "--local"], deps);
+    await corpusSweepCommand.run(["--tenant", TENANT], deps);
+    expect(asked).toEqual([true, false]);
+  });
+
+  // The headline case: a thin worker-made reading beside its full re-import.
+  // The richer copy must win even though it is older.
+  it("keeps the richer copy over the newer one", async () => {
+    const thin: ListItem = {
+      id: "rd_thin", url: "https://youtu.be/Y", status: "ready",
+      created_at: "2026-08-09T00:00:00Z", key_prefix: "readings/rd_thin",
+      tldr: "short",
+    };
+    const rich: ListItem = {
+      id: "rd_rich", url: "https://www.youtube.com/watch?v=Y", status: "ready",
+      created_at: "2026-08-01T00:00:00Z", key_prefix: "readings/rd_rich",
+      tldr: "a much longer summary drawn from the transcript",
+      tags: ["a", "b"], keywords: ["k1", "k2", "k3"],
+    };
+    const { deps, lines } = sweepDeps([thin, rich]);
+    await corpusSweepCommand.run(["--tenant", TENANT], deps);
+    const text = lines.join("\n");
+    expect(text).toContain("keep  rd_rich");
+    expect(text).toContain("(richest summary)");
+    expect(text).toContain("drop  rd_thin");
   });
 });
 

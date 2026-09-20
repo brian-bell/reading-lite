@@ -1,6 +1,14 @@
 // `ops reading-list check` — mark which entries of a reading-list JSON export
-// are already in the corpus. Reads index/list.json straight out of the R2
-// bucket (via wrangler) and stamps each entry with "processed": true|false.
+// are already in the corpus, stamping each with "processed": true|false.
+//
+// Membership is now a query of the tenant's readings (ADR 0005). This used to
+// read index/list.json through wrangler, which is why the command gained a
+// required --tenant: the old list index was one document per key root, and a
+// query has to be told whose corpus it is asking about.
+//
+// Getting this wrong is not a quiet failure. An unported check would find no
+// corpus at all, mark every entry unprocessed, and `reading-list process`
+// would resubmit the whole library.
 //
 // Plan-first: reading the corpus is fine in plan mode, but the annotated list
 // is a durable local write — a mode-less run prints the summary only;
@@ -11,26 +19,36 @@ import { parseArgs } from "node:util";
 import {
   annotateEntries,
   buildCorpusUrlSet,
-  parseListIndex,
   type ReadingListEntry,
 } from "../../check-corpus-lib/corpus";
+import {
+  DATABASE_URL_ENV_HELP,
+  DATABASE_URL_ENV_OPTION,
+  operatorDatabaseUrl,
+  withOperatorSql,
+} from "../../pg-lib/operator-db";
+import { operatorCorpusFor, type CorpusInventory } from "../../pg-lib/operator-corpus";
+import type { OperatorTenant } from "../../corpus-lib/tenant";
+import { requireOperatorTenant } from "../tenant-flag";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface ReadingListCheckDeps extends BaseDeps {
   readFile: (path: string) => Promise<string>;
   // Atomic write (tmp + rename), including mkdir of the parent.
   writeFileAtomic: (path: string, body: string) => Promise<void>;
-  fetchListIndex: (opts: { bucket: string; remote: boolean }) => Promise<string>;
+  corpus: <T>(
+    databaseUrlEnv: string,
+    tenant: OperatorTenant,
+    run: (corpus: Pick<CorpusInventory, "listItems">) => Promise<T>,
+  ) => Promise<T>;
 }
-
-const DEFAULT_BUCKET = "reading-lite";
 
 interface Args {
   file: string;
   out: string;
-  bucket: string;
+  tenant?: string;
+  databaseUrlEnv: string;
   statuses: string[];
-  remote: boolean;
   execute: boolean;
 }
 
@@ -42,10 +60,10 @@ function parseCheckArgs(argv: string[]): Args {
       options: {
         file: { type: "string" },
         out: { type: "string" },
-        bucket: { type: "string" },
+        tenant: { type: "string" },
+        "database-url-env": DATABASE_URL_ENV_OPTION,
         status: { type: "string", multiple: true },
         "any-status": { type: "boolean", default: false },
-        local: { type: "boolean", default: false },
         execute: { type: "boolean", default: false },
       },
     }));
@@ -61,9 +79,9 @@ function parseCheckArgs(argv: string[]): Args {
   return {
     file: values.file,
     out: values.out ?? values.file,
-    bucket: values.bucket ?? process.env.READING_LITE_BUCKET ?? DEFAULT_BUCKET,
+    ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
+    databaseUrlEnv: values["database-url-env"]!,
     statuses,
-    remote: values.local !== true,
     execute: values.execute === true,
   };
 }
@@ -79,8 +97,10 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
   }
   const entries = parsed as ReadingListEntry[];
 
-  const indexRaw = await deps.fetchListIndex({ bucket: args.bucket, remote: args.remote });
-  const corpus = buildCorpusUrlSet(parseListIndex(indexRaw), { statuses: args.statuses });
+  const tenant = requireOperatorTenant(args.tenant);
+  const corpus = await deps.corpus(args.databaseUrlEnv, tenant, async (view) =>
+    buildCorpusUrlSet(await view.listItems(), { statuses: args.statuses }),
+  );
   const { entries: annotated, summary } = annotateEntries(entries, corpus);
 
   if (args.execute) {
@@ -92,7 +112,7 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
       {
         file: args.file,
         out: args.execute ? args.out : null,
-        bucket: args.bucket,
+        tenant: args.tenant,
         match_statuses: args.statuses,
         corpus_urls: corpus.size,
         ...summary,
@@ -113,28 +133,25 @@ export const readingListCheckCommand: CommandDefinition<ReadingListCheckDeps> = 
   safety: "plan-first",
   helpText: `Usage: npm run ops -- reading-list check --file <path> [options]
 
-Reads index/list.json straight out of the reading-lite R2 bucket (via
-wrangler), then stamps each entry of a reading-list JSON file with
-"processed": true|false depending on whether its URL is already in the corpus.
+Queries the tenant's readings, then stamps each entry of a reading-list JSON
+file with "processed": true|false depending on whether its URL is already in
+the corpus.
 
 Membership is exact-URL match against entries whose status is "ready" — the
-same key the worker hashes for its by-url dedup pointer.
+same URL the worker hashes for its per-tenant ownership row.
 
 Plan by default (summary only); --execute writes the annotated JSON.
 
 Options:
   --file <path>     Reading-list JSON: an array of { url, ... } entries (required).
   --out <path>      Where to write the annotated JSON. Default: in place (--file).
-  --bucket <name>   R2 bucket. Default: READING_LITE_BUCKET env, then
-                    "${DEFAULT_BUCKET}" (production).
+  --tenant <selector>  REQUIRED: tenant id (usr_…). 'global' has no PostgreSQL corpus.
+  ${DATABASE_URL_ENV_HELP}
   --status <s>      Status(es) that count as in-corpus. Repeatable.
                     Default: ready.
   --any-status      Shorthand for --status ready --status pending --status failed.
-  --local           Read the local miniflare cache instead of remote R2.
   --execute         Write the annotated file.
-  --help            Show this message.
-
-Requires a Cloudflare session: run \`wrangler login\` (or set CLOUDFLARE_API_TOKEN).`,
+  --help            Show this message.`,
   defaultDeps: (io: CommandIo): ReadingListCheckDeps => ({
     io,
     readFile: async (p) => {
@@ -148,7 +165,8 @@ Requires a Cloudflare session: run \`wrangler login\` (or set CLOUDFLARE_API_TOK
       await fs.writeFile(tmp, body, "utf8");
       await fs.rename(tmp, p);
     },
-    fetchListIndex: async (opts) => (await import("../../check-corpus-lib/fetch-index")).fetchListIndex(opts),
+    corpus: (databaseUrlEnv, tenant, run) =>
+      withOperatorSql(operatorDatabaseUrl(databaseUrlEnv), (sql) => run(operatorCorpusFor(sql, tenant))),
   }),
   run: runReadingListCheck,
 };

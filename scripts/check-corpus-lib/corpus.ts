@@ -1,9 +1,9 @@
 // Pure corpus-membership logic. Kept free of I/O so it is unit-testable:
 // the wrangler call lives in fetch-index.ts and the file read/write in the CLI.
 
-// Mirror of the worker's terminal statuses (src/schemas/manifest.ts). A reading
-// only earns a success-only by-url pointer when it reaches "ready", so that is
-// what "already in the corpus" means by default.
+// Mirror of the worker's terminal statuses (src/schemas/manifest.ts). A
+// reading owns its URL from the claim, but only reaches "ready" once it is
+// published, so that is what "already in the corpus" means by default.
 export type CorpusStatus = "pending" | "ready" | "failed";
 
 export interface CorpusItem {
@@ -11,30 +11,9 @@ export interface CorpusItem {
   status: string;
 }
 
-// Hand-parse rather than importing the worker's zod schema: scripts must not
-// drag in Workers-only module resolution, and we only need url + status.
-export function parseListIndex(raw: string): CorpusItem[] {
-  const parsed: unknown = JSON.parse(raw);
-  if (
-    parsed === null ||
-    typeof parsed !== "object" ||
-    Array.isArray(parsed) ||
-    !Array.isArray((parsed as { items?: unknown }).items)
-  ) {
-    throw new Error('expected an object with an "items" array (index/list.json shape)');
-  }
-  const items = (parsed as { items: unknown[] }).items;
-  const out: CorpusItem[] = [];
-  for (const item of items) {
-    if (item === null || typeof item !== "object") continue;
-    const url = (item as { url?: unknown }).url;
-    const status = (item as { status?: unknown }).status;
-    if (typeof url === "string" && url.length > 0 && typeof status === "string") {
-      out.push({ url, status });
-    }
-  }
-  return out;
-}
+// parseListIndex lived here until the corpus moved to PostgreSQL: there is no
+// index/list.json document to hand-parse any more, and the rows the query
+// returns are already url + status.
 
 export interface BuildSetOptions {
   statuses?: string[];
@@ -69,8 +48,8 @@ export interface AnnotateResult {
   summary: AnnotateSummary;
 }
 
-// Membership is exact-URL match — the same key the worker hashes for its by-url
-// dedup pointer, so this agrees with what a re-submit would classify.
+// Membership is exact-URL match — the same URL the worker hashes for its
+// per-tenant ownership row, so this agrees with what a re-submit would find.
 export function annotateEntries(
   entries: ReadingListEntry[],
   corpusUrls: Set<string>,
