@@ -14,6 +14,8 @@ import type { ListIndexItem } from "../../src/schemas/api";
 import type { Manifest } from "../../src/schemas/manifest";
 import type { Sql, SqlQuery } from "../../src/modules/db/sql";
 import { PgReadingStore, type ContentKeys, type UrlOwner } from "../../src/modules/stores/postgres/reading-store";
+import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity-store";
 import { r2KeyLayout, rawExtFromContentType } from "../../src/modules/stores/layout";
 import type { OperatorTenant } from "../corpus-lib/tenant";
 import type { ListItem } from "../corpus-lib/types";
@@ -90,7 +92,15 @@ export interface CorpusMutations {
   deleteInboundRelationships(targetId: string): Promise<number>;
 }
 
-export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMutations, CorpusDropView {
+/** What the refresh passes need: measure neighbours, then record the snapshot. */
+export interface CorpusSimilarity {
+  neighboursOf(id: string, topK: number): Promise<SimilarityMatch[] | null>;
+  setSimilarity(id: string, similarity: unknown): Promise<boolean>;
+}
+
+export class OperatorCorpus
+  implements CorpusInventory, CorpusLookup, CorpusMutations, CorpusDropView, CorpusSimilarity
+{
   private readonly store: PgReadingStore;
 
   constructor(
@@ -245,6 +255,38 @@ export class OperatorCorpus implements CorpusInventory, CorpusLookup, CorpusMuta
       if (row.stage) out.set(row.id, row.status ? `${row.stage}/${row.status}` : row.stage);
     }
     return out;
+  }
+
+  /**
+   * The reading's neighbours, measured from the embedding it already owns.
+   *
+   * No provider spend and no re-embedding: the vector is the one stored, so a
+   * fresh embedding cannot drift from the indexed one. Null means the reading
+   * has no embedding at all, which is a different answer from "no
+   * neighbours" and the refresh reports it as a failed measurement.
+   */
+  async neighboursOf(id: string, topK: number): Promise<SimilarityMatch[] | null> {
+    return new PgSimilarityStore(this.sql, this.tenantId).queryByVectorId(id, topK);
+  }
+
+  /**
+   * Records a similarity snapshot and nothing else.
+   *
+   * This used to be two writes that had to be kept in step — the manifest, and
+   * then the row in index/list.json — with the list row doubling as the
+   * resumability marker for a retry that found a written manifest and a stale
+   * index. They are one column now, so the pair cannot diverge and there is
+   * nothing to resume.
+   *
+   * `updated_at` is deliberately untouched: no content changed, and bumping it
+   * would misreport the reading as freshly written to anything ordering by it.
+   */
+  async setSimilarity(id: string, similarity: unknown): Promise<boolean> {
+    const changed = await this.sql.execute(
+      "UPDATE readings SET similarity = $3 WHERE tenant_id = $1 AND id = $2",
+      [this.tenantId, id, similarity === null ? null : JSON.stringify(similarity)],
+    );
+    return changed > 0;
   }
 
   /** Escape hatch for a command with a query of its own; still tenant-scoped by the caller. */

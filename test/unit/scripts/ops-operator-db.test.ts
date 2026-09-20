@@ -189,6 +189,31 @@ describe("OperatorCorpus writes", () => {
     expect(sql.calls[0].values).toEqual(["usr_abc", "rd_missing"]);
   });
 
+  it("records a similarity snapshot without touching updated_at", async () => {
+    const sql = fakeSql([], 1);
+    const snapshot = { count: 3, max: 0.82, computed_at: "2026-09-19T00:00:00.000Z" };
+    expect(await new OperatorCorpus(sql, "usr_abc").setSimilarity("rd_1", snapshot)).toBe(true);
+    expect(sql.calls[0].text).toContain("UPDATE readings SET similarity");
+    // No content changed, so bumping updated_at would misreport the reading as
+    // freshly written to anything ordering by it.
+    expect(sql.calls[0].text).not.toContain("updated_at");
+    expect(sql.calls[0].values).toEqual(["usr_abc", "rd_1", JSON.stringify(snapshot)]);
+  });
+
+  it("reports no row when the reading is gone", async () => {
+    const sql = fakeSql([], 0);
+    expect(await new OperatorCorpus(sql, "usr_abc").setSimilarity("rd_missing", {})).toBe(false);
+  });
+
+  it("measures neighbours from the embedding the reading already owns", async () => {
+    // Null, not empty: a reading with no embedding is a failed measurement,
+    // which is a different answer from a reading with no neighbours.
+    const sql = fakeSql([]);
+    expect(await new OperatorCorpus(sql, "usr_abc").neighboursOf("rd_1", 20)).toBeNull();
+    expect(sql.calls[0].text).toContain("FROM reading_embeddings");
+    expect(sql.calls[0].values).toEqual(["usr_abc", "rd_1"]);
+  });
+
   it("purges inbound relationships by target, which no cascade covers", async () => {
     const sql = fakeSql([], 3);
     expect(await new OperatorCorpus(sql, "usr_abc").deleteInboundRelationships("rd_gone")).toBe(3);
