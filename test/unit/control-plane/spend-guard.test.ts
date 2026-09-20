@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { GlobalUsageGuard } from "../../../src/control-plane/global-usage-guard";
 import { utcSpendDay } from "../../../src/control-plane/spend-ledger";
 import type { Env } from "../../../src/index";
+import { fakeHyperdrive } from "../../helpers/fake-control-plane";
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const NOW = Date.now();
@@ -40,7 +41,7 @@ function state(store: DurableObjectStorage): DurableObjectState {
 }
 
 function env(row: Record<string, unknown> | null): Env {
-  return { CONTROL_PLANE: { prepare: () => ({ bind: () => ({ first: async () => row }) }) } as unknown as D1Database } as Env;
+  return { HYPERDRIVE: fakeHyperdrive(row) } as Env;
 }
 
 async function post(guard: { fetch(request: Request): Promise<Response> }, body: unknown): Promise<Record<string, unknown>> {
@@ -54,7 +55,7 @@ describe("spend guard RPCs", () => {
   it("enforces tenant budget and catalog before creating a reservation", async () => {
     const guard = new GlobalUsageGuard(
       state(storage()),
-      env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: 1, policy_version: 8, catalog_version: 3 }),
+      env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: true, policy_version: 8, catalog_version: 3 }),
     );
     expect(await post(guard, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
       ok: true,
@@ -92,7 +93,7 @@ describe("spend guard RPCs", () => {
   it("rejects a stale admission day even when the caller replays its old clock", async () => {
     const map = new Map<string,unknown>();
     const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:100,
-      tenant_daily_spend_microdollars:100,paid_work_enabled:1,policy_version:1,catalog_version:3}));
+      tenant_daily_spend_microdollars:100,paid_work_enabled:true,policy_version:1,catalog_version:3}));
     const yesterday=NOW-86400000;
     expect(await post(guard,{kind:"reserve_spend",tenantId:TENANT,opId:"old",
       quote:{...quote,dayKey:utcSpendDay(yesterday)},nowMs:yesterday})).toMatchObject({ok:false,reason:"operation_conflict"});
@@ -105,7 +106,7 @@ describe("spend guard RPCs", () => {
     try {
       const map = new Map<string,unknown>();
       const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
-        tenant_daily_spend_microdollars:50,paid_work_enabled:1,policy_version:1,catalog_version:3}));
+        tenant_daily_spend_microdollars:50,paid_work_enabled:true,policy_version:1,catalog_version:3}));
       const originalQuote = {...quote,dayKey:utcSpendDay(before)};
       const body = {kind:"reserve_spend",tenantId:TENANT,opId:"midnight",quote:originalQuote,nowMs:before};
       const key = `spend:op:${TENANT}:midnight`;
@@ -129,7 +130,7 @@ describe("spend guard RPCs", () => {
     try {
       const map = new Map<string,unknown>();
       const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
-        tenant_daily_spend_microdollars:50,paid_work_enabled:1,policy_version:1,catalog_version:3}));
+        tenant_daily_spend_microdollars:50,paid_work_enabled:true,policy_version:1,catalog_version:3}));
       const originalQuote = {...quote,dayKey:utcSpendDay(before)};
       const body = {kind:"reserve_spend",tenantId:TENANT,opId:"released",quote:originalQuote,nowMs:before};
       await post(guard,body);
@@ -148,7 +149,7 @@ describe("spend guard RPCs", () => {
     "denies dispatch when %s is tightened below the reserved aggregate", async (limit) => {
       const map = new Map<string, unknown>();
       const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
-        paid_work_enabled:1,policy_version:1,catalog_version:3};
+        paid_work_enabled:true,policy_version:1,catalog_version:3};
       const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
       const identity = {tenantId:TENANT,opId:"held",quote};
       await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
@@ -163,7 +164,7 @@ describe("spend guard RPCs", () => {
 
   it.each([50, 60])("allows dispatch when both tightened caps still cover usage (%i)", async (limit) => {
     const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
-      paid_work_enabled:1,policy_version:1,catalog_version:3};
+      paid_work_enabled:true,policy_version:1,catalog_version:3};
     const guard = new GlobalUsageGuard(state(storage()),env(policy));
     const identity = {tenantId:TENANT,opId:"fits",quote};
     await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
@@ -174,7 +175,7 @@ describe("spend guard RPCs", () => {
   it("keeps dispatched replay and settlement idempotent after both caps are lowered", async () => {
     const map = new Map<string,unknown>();
     const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
-      paid_work_enabled:1,policy_version:1,catalog_version:3};
+      paid_work_enabled:true,policy_version:1,catalog_version:3};
     const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
     const identity = {tenantId:TENANT,opId:"sent",quote};
     await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
@@ -190,7 +191,7 @@ describe("spend guard RPCs", () => {
   it("serializes concurrent tenant reserves at the cap", async () => {
     const guard = new GlobalUsageGuard(
       state(storage()),
-      env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: 1, policy_version: 8, catalog_version: 3 }),
+      env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: true, policy_version: 8, catalog_version: 3 }),
     );
     const results = await Promise.all(
       ["one", "two", "three"].map((opId) =>
@@ -212,7 +213,7 @@ describe("spend guard RPCs", () => {
     const map = new Map<string, unknown>();
     const guard = new GlobalUsageGuard(state(storage(map)), env({
       status: "active", daily_spend_microdollars: 75, tenant_daily_spend_microdollars: 200,
-      paid_work_enabled: 1, policy_version: 8, catalog_version: 3,
+      paid_work_enabled: true, policy_version: 8, catalog_version: 3,
     }));
     const reserve = (tenantId: string, opId: string, amount: number) => post(guard, {
       kind: "reserve_spend", tenantId, opId,
@@ -266,5 +267,5 @@ describe("spend guard RPCs", () => {
 });
 
 function envProxy(row: () => Record<string, unknown> | null): Env {
-  return { CONTROL_PLANE: { prepare: () => ({ bind: () => ({ first: async () => row() }) }) } as unknown as D1Database } as Env;
+  return { HYPERDRIVE: fakeHyperdrive(() => row()) } as Env;
 }

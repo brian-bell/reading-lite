@@ -2,6 +2,7 @@ import { LeaseRecoveryRequestSchema, recoverLeasePair, type LeaseRecoveryRequest
 import { inspectGlobal } from "./operator-inspection";
 import { readSpendStatus } from "./spend-status";
 import type { Env } from "../index";
+import { withControlPlane } from "./db";
 import { GLOBAL_USAGE_GUARD_NAME, SPEND_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
@@ -85,9 +86,9 @@ function positiveInt(value: unknown): number | null {
 
 async function loadGlobalConcurrency(env: Env): Promise<number | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT max_concurrent_work FROM system_policy WHERE id = 1`,
-    ).first<{ max_concurrent_work: number }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ max_concurrent_work: number }>("SELECT max_concurrent_work FROM system_policy WHERE id = 1"),
+    );
     if (!row) return null;
     return positiveInt(row.max_concurrent_work);
   } catch {
@@ -99,14 +100,15 @@ type GlobalSpendPolicy = { dailySpendMicrodollars: number; tenantDailySpendMicro
 
 async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<GlobalSpendPolicy | "deleted" | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
-              tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
-       FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
-       WHERE u.id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: number }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: boolean }>(
+        `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
+                tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
+         FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
+         WHERE u.id = ?`,
+        tenantId,
+      ),
+    );
     if (!row) return null;
     if (row.status !== "active") return "deleted";
     const dailySpendMicrodollars = positiveInt(row.daily_spend_microdollars);
@@ -114,7 +116,7 @@ async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<Global
     const policyVersion = positiveInt(row.policy_version);
     const catalogVersion = Number(row.catalog_version);
     if (dailySpendMicrodollars === null || tenantDailySpendMicrodollars === null || policyVersion === null || !Number.isSafeInteger(catalogVersion) || catalogVersion < 0) return null;
-    return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === 1 };
+    return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === true };
   } catch {
     return null;
   }
@@ -123,9 +125,9 @@ async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<Global
 /** Account deletion fences mutations; pausing paid work still permits refunds. */
 async function tenantCanHoldSpend(env: Env, tenantId: string): Promise<boolean> {
   try {
-    const row = await env.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
-      .bind(tenantId)
-      .first<{ status: string }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId),
+    );
     return row?.status === "active";
   } catch {
     return false;

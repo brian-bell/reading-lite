@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import { authenticateBearer } from "../../src/control-plane/authenticate";
 import { bootstrapFounder } from "../../src/control-plane/bootstrap";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
-import { fromD1 } from "../../src/control-plane/db";
 import type { ApiScope } from "../../src/control-plane/principal";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const TOKEN = "test-token";
 
@@ -44,11 +45,10 @@ async function request(
 
 async function founderUserId(): Promise<string> {
   const workerEnv = env as unknown as Env;
-  const row = await workerEnv.CONTROL_PLANE.prepare(
+  const row = await testControlPlane(workerEnv).first<{ id: string }>(
     "SELECT id FROM users WHERE email_canonical = ?",
-  )
-    .bind("founder@test.example")
-    .first<{ id: string }>();
+    "founder@test.example",
+  );
   if (!row) throw new Error("founder user missing");
   return row.id;
 }
@@ -61,27 +61,25 @@ async function insertScopedToken(secret: string, scopes: readonly ApiScope[]): P
     await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
     secret,
   );
-  await workerEnv.CONTROL_PLANE.prepare(
+  await testControlPlane(workerEnv).run(
     `INSERT INTO api_tokens (
-       id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+       id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
      ) VALUES (?, ?, 'scoped', 'legacy', ?, 1, ?, ?)`,
-  )
-    .bind(tokenId, userId, secretHmac, Date.now(), Date.now() + 60_000)
-    .run();
+    tokenId, userId, secretHmac, toTimestamp(Date.now()), toTimestamp(Date.now() + 60_000),
+  );
   for (const scope of scopes) {
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, ?)",
-    )
-      .bind(tokenId, scope)
-      .run();
+      tokenId, scope,
+    );
   }
   return secret;
 }
 
-describe("D1-backed founder principal", () => {
+describe("founder principal", () => {
   it("authenticates the imported legacy bearer as only the founder tenant", async () => {
     const workerEnv = env as unknown as Env;
-    const result = await authenticateBearer(fromD1(workerEnv.CONTROL_PLANE), {
+    const result = await authenticateBearer(testControlPlane(workerEnv), {
       authorization: `Bearer ${TOKEN}`,
       authRoot: {
         secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET),
@@ -95,12 +93,12 @@ describe("D1-backed founder principal", () => {
     expect(result.principal.userId).toBe(result.principal.tenantId);
     expect(result.principal.userId).toMatch(/^usr_[0-9a-f-]{36}$/);
 
-    const users = await workerEnv.CONTROL_PLANE.prepare(
+    const users = await testControlPlane(workerEnv).all<{ id: string; email_canonical: string; status: string }>(
       "SELECT id, email_canonical, status FROM users",
-    ).all<{ id: string; email_canonical: string; status: string }>();
-    expect(users.results).toHaveLength(1);
-    expect(users.results[0]?.id).toBe(result.principal.userId);
-    expect(users.results[0]?.status).toBe("active");
+    );
+    expect(users).toHaveLength(1);
+    expect(users[0]?.id).toBe(result.principal.userId);
+    expect(users[0]?.status).toBe("active");
 
     const res = await request("/api/readings", `Bearer ${TOKEN}`);
     expect(res.status).toBe(200);
@@ -117,29 +115,27 @@ describe("D1-backed founder principal", () => {
 
   it.each(["suspended", "deleting"])("rejects a %s founder with 403", async (status) => {
     const workerEnv = env as unknown as Env;
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       "UPDATE users SET status = ? WHERE email_canonical = ?",
-    )
-      .bind(status, "founder@test.example")
-      .run();
+      status, "founder@test.example",
+    );
 
     try {
       const res = await request("/api/readings", `Bearer ${TOKEN}`);
       expect(res.status).toBe(403);
       expect(await res.json()).toEqual({ error: "forbidden" });
     } finally {
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).run(
         "UPDATE users SET status = 'active' WHERE email_canonical = ?",
-      )
-        .bind("founder@test.example")
-        .run();
+        "founder@test.example",
+      );
     }
   });
 
   it("refuses to bootstrap a second user onto the founder token HMAC", async () => {
     const workerEnv = env as unknown as Env;
     await expect(
-      bootstrapFounder(fromD1(workerEnv.CONTROL_PLANE), {
+      bootstrapFounder(testControlPlane(workerEnv), {
         email: "other@test.example",
         legacyToken: TOKEN,
         signupMode: "open",
@@ -151,10 +147,12 @@ describe("D1-backed founder principal", () => {
       }),
     ).rejects.toThrow(/different user|owned by a different user/i);
 
-    const users = await workerEnv.CONTROL_PLANE.prepare("SELECT email_canonical FROM users").all<{
+    const users = await testControlPlane(workerEnv).all<{
       email_canonical: string;
-    }>();
-    expect(users.results.map((row) => row.email_canonical)).toEqual(["founder@test.example"]);
+    }>(
+      "SELECT email_canonical FROM users",
+    );
+    expect(users.map((row) => row.email_canonical)).toEqual(["founder@test.example"]);
   });
 });
 

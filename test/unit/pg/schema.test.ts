@@ -27,16 +27,18 @@ describe("reading schema", () => {
        FROM information_schema.table_constraints tc
        JOIN information_schema.key_column_usage kcu USING (constraint_schema, constraint_name)
        WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = 'public'
-         AND tc.table_name <> 'schema_migrations' AND kcu.ordinal_position = 1
+         AND tc.table_name LIKE 'reading%' AND kcu.ordinal_position = 1
        ORDER BY tc.table_name`,
     );
     expect(result.rows).toEqual(READING_TABLES.map((table_name) => ({ table_name, column_name: "tenant_id" })));
   });
 
-  it("includes tenant_id in every foreign key", async () => {
+  // The control-plane tables (control-plane-schema.test.ts) key on the user.
+  it("includes tenant_id in every reading foreign key", async () => {
     const result = await client.query(
       `SELECT c.conname FROM pg_constraint c
        WHERE c.contype = 'f' AND c.connamespace = 'public'::regnamespace
+         AND c.conrelid::regclass::text LIKE 'reading%'
          AND NOT EXISTS (
            SELECT 1 FROM pg_attribute a
            WHERE a.attrelid = c.conrelid AND a.attnum = c.conkey[1] AND a.attname = 'tenant_id')`,

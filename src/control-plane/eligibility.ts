@@ -1,5 +1,6 @@
 import type { SignupMode } from "./bootstrap";
 import type { ControlPlaneDb } from "./db";
+import { fromTimestamp } from "./pg-time";
 
 export interface ExistingUser {
   id: string;
@@ -37,12 +38,13 @@ export async function resolveLoginEligibility(
   if (mode === "closed") return { kind: "ineligible" };
   if (mode === "open") return { kind: "provisionable", emailDisplay: emailCanonical, source: "open" };
 
-  const invite = await db.first<{ email_display: string; expires_at_ms: number | null; consumed_at_ms: number | null }>(
-    "SELECT email_display, expires_at_ms, consumed_at_ms FROM signup_invites WHERE email_canonical = ?",
+  const invite = await db.first<{ email_display: string; expires_at: string | null; consumed_at: string | null }>(
+    "SELECT email_display, expires_at, consumed_at FROM signup_invites WHERE email_canonical = ?",
     emailCanonical,
   );
   if (!invite) return { kind: "ineligible" };
-  if (invite.consumed_at_ms != null) return { kind: "ineligible" };
-  if (invite.expires_at_ms != null && invite.expires_at_ms <= nowMs) return { kind: "ineligible" };
+  if (invite.consumed_at != null) return { kind: "ineligible" };
+  const expiresAtMs = fromTimestamp(invite.expires_at);
+  if (expiresAtMs != null && expiresAtMs <= nowMs) return { kind: "ineligible" };
   return { kind: "provisionable", emailDisplay: invite.email_display, source: "invite" };
 }

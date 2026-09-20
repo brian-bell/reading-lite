@@ -1,13 +1,13 @@
 import type { Context } from "hono";
 import { PostAuthSettingsBodySchema } from "../schemas/api";
 import { jsonAuth } from "./auth-handlers";
-import { fromD1 } from "./db";
+import { fromSql } from "./db";
 import { getUserSettings, updateUserSettings } from "./user-settings";
 import type { AppBindings } from "../middleware";
 
 export async function handleGetSettings(c: Context<AppBindings>): Promise<Response> {
   const principal = c.get("principal");
-  const settings = await getUserSettings(fromD1(c.env.CONTROL_PLANE), String(principal.userId));
+  const settings = await getUserSettings(fromSql(c.get("sql")), String(principal.userId));
   if (!settings) return jsonAuth({ error: "not found" }, 404);
   return jsonAuth(settings, 200);
 }
@@ -18,7 +18,7 @@ export async function handlePostSettings(c: Context<AppBindings>, nowMs: number)
   const parsed = PostAuthSettingsBodySchema.safeParse(json);
   if (!parsed.success) return jsonAuth({ error: "invalid body" }, 400);
 
-  const settings = await updateUserSettings(fromD1(c.env.CONTROL_PLANE), {
+  const settings = await updateUserSettings(fromSql(c.get("sql")), {
     userId: String(principal.userId),
     nowMs,
     notifyImmediate: parsed.data.notify_immediate,

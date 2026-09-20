@@ -8,7 +8,7 @@ import type { ControlPlaneDb, SqlStatement } from "../../src/control-plane/db";
 const MIGRATIONS_DIR = path.join(process.cwd(), "migrations");
 
 export function fromBetterSqlite(sqlite: Database.Database): ControlPlaneDb {
-  return {
+  const db: ControlPlaneDb = {
     async first<T>(sql: string, ...params: unknown[]) {
       return (sqlite.prepare(sql).get(...params) as T | undefined) ?? null;
     },
@@ -28,7 +28,9 @@ export function fromBetterSqlite(sqlite: Database.Database): ControlPlaneDb {
       const info = sqlite.prepare(sql).run(...params);
       return { changes: info.changes };
     },
+    transaction: (work) => work(db),
   };
+  return db;
 }
 
 export function openMigratedControlPlane(): {

@@ -14,7 +14,8 @@ import { logAuthEvent } from "./auth-log";
 import { turnstileSiteKey, verifyTurnstileToken } from "./turnstile";
 import { readAuthRoots } from "./auth-root";
 import { clearSessionCookieHeader, readSessionCookie, sessionCookieHeader } from "./cookies";
-import { fromD1, isUniqueConstraintError, type ControlPlaneDb } from "./db";
+import { fromSql, isUniqueConstraintError, type ControlPlaneDb } from "./db";
+import { toTimestamp } from "./pg-time";
 import { isAuthMailAllowed } from "./mail-allowlist";
 import {
   buildMagicLinkVerifyUrl,
@@ -95,8 +96,8 @@ export async function handleLoginOptions(c: Context<AppBindings>): Promise<Respo
   ) {
     return jsonAuth({ error: "forbidden origin" }, 403);
   }
-  if (!c.env.CONTROL_PLANE) return jsonAuth({ error: "auth misconfigured" }, 500);
-  const mode = await loadSignupMode(fromD1(c.env.CONTROL_PLANE));
+  if (!c.env.HYPERDRIVE) return jsonAuth({ error: "auth misconfigured" }, 500);
+  const mode = await loadSignupMode(fromSql(c.get("sql")));
   const configured = turnstileSiteKey(c.env);
   const turnstile_site_key = mode === "open" && configured ? configured : null;
   return jsonAuth({ turnstile_site_key }, 200);
@@ -119,11 +120,11 @@ export async function handleAuthChallenge(
     return jsonAuth({ error: "invalid body" }, 400);
   }
 
-  if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+  if (!c.env.HYPERDRIVE || !c.env.AUTH_ROOT_SECRET) {
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
-  const db = fromD1(c.env.CONTROL_PLANE);
+  const db = fromSql(c.get("sql"));
   let roots;
   try {
     roots = readAuthRoots(c.env);
@@ -243,11 +244,11 @@ export async function handleAuthRedeem(
   const redemptionId = parseRedemptionId(parsed.data.redemption_id);
   if (!redemptionId) return jsonAuth({ error: "invalid body" }, 400);
 
-  if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+  if (!c.env.HYPERDRIVE || !c.env.AUTH_ROOT_SECRET) {
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
-  const db = fromD1(c.env.CONTROL_PLANE);
+  const db = fromSql(c.get("sql"));
   let roots;
   try {
     roots = readAuthRoots(c.env);
@@ -335,7 +336,7 @@ export async function handleAuthLogout(
   nowMs: number,
 ): Promise<Response> {
   if (!requireSameOrigin(c)) return jsonAuth({ error: "forbidden origin" }, 403);
-  if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+  if (!c.env.HYPERDRIVE || !c.env.AUTH_ROOT_SECRET) {
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
   let roots;
@@ -344,7 +345,7 @@ export async function handleAuthLogout(
   } catch {
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
-  const db = fromD1(c.env.CONTROL_PLANE);
+  const db = fromSql(c.get("sql"));
   const verdict = await authenticateSession(db, {
     cookieHeader: c.req.header("cookie"),
     authRoot: roots.authRoot,
@@ -383,10 +384,10 @@ export async function handleDevMailbox(c: Context<AppBindings>): Promise<Respons
   } catch {
     return jsonAuth({ error: "invalid query" }, 400);
   }
-  if (!c.env.CONTROL_PLANE) return jsonAuth({ error: "auth misconfigured" }, 500);
-  const row = await latestLocalMagicLink(fromD1(c.env.CONTROL_PLANE), emailCanonical);
+  if (!c.env.HYPERDRIVE) return jsonAuth({ error: "auth misconfigured" }, 500);
+  const row = await latestLocalMagicLink(fromSql(c.get("sql")), emailCanonical);
   if (!row) {
-    const byDisplay = await latestLocalMagicLink(fromD1(c.env.CONTROL_PLANE), emailRaw.trim());
+    const byDisplay = await latestLocalMagicLink(fromSql(c.get("sql")), emailRaw.trim());
     if (!byDisplay) return jsonAuth({ error: "not found" }, 404);
     return jsonAuth({ to: byDisplay.to_email, verify_url: byDisplay.verify_url }, 200);
   }
@@ -409,11 +410,11 @@ export async function handleEmailChangeRequest(
     return jsonAuth({ error: "invalid body" }, 400);
   }
 
-  if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+  if (!c.env.HYPERDRIVE || !c.env.AUTH_ROOT_SECRET) {
     return jsonAuth({ error: "auth misconfigured" }, 500);
   }
 
-  const db = fromD1(c.env.CONTROL_PLANE);
+  const db = fromSql(c.get("sql"));
   let roots;
   try {
     roots = readAuthRoots(c.env);
@@ -527,8 +528,8 @@ export async function markChallengeMailSent(
   args: { challengeId: string; nowMs: number },
 ): Promise<void> {
   await db.run(
-    `UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ? AND mail_sent_at_ms IS NULL`,
-    args.nowMs,
+    `UPDATE auth_challenges SET mail_sent_at = ? WHERE id = ? AND mail_sent_at IS NULL`,
+    toTimestamp(args.nowMs),
     args.challengeId,
   );
 }
@@ -549,10 +550,10 @@ export async function rememberMailSentMarker(mark: () => Promise<void>): Promise
 async function listLiveChallenges(
   db: ControlPlaneDb,
   args: { emailCanonical: string; purpose: AuthChallengePurpose; userId?: string },
-): Promise<{ id: string; state: string; issued_at_ms: number }[]> {
+): Promise<{ id: string; state: string }[]> {
   const scope = liveChallengeScope(args);
-  return db.all<{ id: string; state: string; issued_at_ms: number }>(
-    `SELECT id, state, issued_at_ms FROM auth_challenges
+  return db.all<{ id: string; state: string }>(
+    `SELECT id, state FROM auth_challenges
      WHERE ${scope.clause} AND state IN ('issued', 'claimed')`,
     ...scope.params,
   );
@@ -562,7 +563,7 @@ async function listLiveChallenges(
 export async function restoreLiveChallenges(
   db: ControlPlaneDb,
   newChallengeId: string,
-  snapshot: { id: string; state: string; issued_at_ms: number }[],
+  snapshot: { id: string; state: string }[],
 ): Promise<void> {
   try {
     const meta = await db.first<{ email_canonical: string; purpose: string }>(
@@ -600,23 +601,23 @@ export async function restoreLiveChallenges(
     const newestMarked = await db.first<{ id: string }>(
       `SELECT id FROM auth_challenges
        WHERE email_canonical = ? AND purpose = ? AND id != ?
-         AND (mail_sent_at_ms IS NOT NULL OR claim_id IS NOT NULL)
-       ORDER BY rowid DESC
+         AND (mail_sent_at IS NOT NULL OR claim_id IS NOT NULL)
+       ORDER BY issue_seq DESC
        LIMIT 1`,
       meta.email_canonical,
       meta.purpose,
       newChallengeId,
     );
     if (newestMarked) {
-      // Newest mailed wins. claim_id marks a used successor even when mail_sent_at_ms
+      // Newest mailed wins. claim_id marks a used successor even when mail_sent_at
       // never stuck and listLive missed it (consumed rows are not live).
-      // restoreUnusedRevokedChallenge is a no-op when claim_id or consumed_at_ms is set.
+      // restoreUnusedRevokedChallenge is a no-op when claim_id or consumed_at is set.
       await restoreUnusedRevokedChallenge(db, newestMarked.id);
       return;
     }
 
     if (snapshotIssuedIds.length > 0) {
-      // Send succeeded but mail_sent_at_ms never stuck. Treat listed issued ids as mailed.
+      // Send succeeded but mail_sent_at never stuck. Treat listed issued ids as mailed.
       const newestSnapshotIssued = await newestChallengeId(db, snapshotIssuedIds);
       if (newestSnapshotIssued) await restoreUnusedRevokedChallenge(db, newestSnapshotIssued);
       return;
@@ -631,8 +632,8 @@ export async function restoreLiveChallenges(
          AND id != ?
          AND state = 'revoked'
          AND claim_id IS NULL
-         AND consumed_at_ms IS NULL
-       ORDER BY rowid DESC
+         AND consumed_at IS NULL
+       ORDER BY issue_seq DESC
        LIMIT 1`,
       meta.email_canonical,
       meta.purpose,
@@ -650,7 +651,7 @@ export const restoreLiveLoginChallenges = restoreLiveChallenges;
 async function restoreEmailChangeSnapshot(
   db: ControlPlaneDb,
   newChallengeId: string,
-  snapshot: { id: string; state: string; issued_at_ms: number }[],
+  snapshot: { id: string; state: string }[],
 ): Promise<void> {
   const current = await db.first<{ state: string }>(
     `SELECT state FROM auth_challenges WHERE id = ?`,
@@ -702,10 +703,9 @@ function liveChallengeScope(args: {
 
 async function newestChallengeId(db: ControlPlaneDb, ids: string[]): Promise<string | null> {
   if (ids.length === 0) return null;
-  const placeholders = ids.map(() => "?").join(", ");
   const row = await db.first<{ id: string }>(
-    `SELECT id FROM auth_challenges WHERE id IN (${placeholders}) ORDER BY rowid DESC LIMIT 1`,
-    ...ids,
+    "SELECT id FROM auth_challenges WHERE id = ANY (?::text[]) ORDER BY issue_seq DESC LIMIT 1",
+    ids,
   );
   return row?.id ?? null;
 }
@@ -716,7 +716,7 @@ async function restoreUnusedRevokedChallenge(db: ControlPlaneDb, challengeId: st
      WHERE id = ?
        AND state = 'revoked'
        AND claim_id IS NULL
-       AND consumed_at_ms IS NULL`,
+       AND consumed_at IS NULL`,
     challengeId,
   );
 }

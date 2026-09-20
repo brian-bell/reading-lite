@@ -8,6 +8,8 @@ import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { insertSecondTenant } from "../helpers/tenant-fixtures";
+import { toTimestamp } from "../../src/control-plane/pg-time";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -146,12 +148,11 @@ describe("API token lifecycle", () => {
     });
     expect(unknown.res.status).toBe(foreign.res.status);
     expect(await unknown.res.json()).toEqual({ error: "not found" });
-    const retained = await workerEnv.CONTROL_PLANE.prepare(
-      "SELECT revoked_at_ms FROM api_tokens WHERE id = ?",
-    )
-      .bind(foreignToken.id)
-      .first<{ revoked_at_ms: number | null }>();
-    expect(retained?.revoked_at_ms).toBeNull();
+    const retained = await testControlPlane(workerEnv).first<{ revoked_at: string | null }>(
+      "SELECT revoked_at FROM api_tokens WHERE id = ?",
+      foreignToken.id,
+    );
+    expect(retained?.revoked_at).toBeNull();
 
     const ownerDelete = await request(`/api/auth/tokens/${foreignToken.id}`, {
       method: "DELETE",
@@ -239,14 +240,16 @@ describe("API token lifecycle", () => {
 
     const workerEnv = env as unknown as Env;
     const current = (
-      await workerEnv.CONTROL_PLANE.prepare(
-        "SELECT id FROM sessions WHERE revoked_at_ms IS NULL ORDER BY created_at_ms DESC LIMIT 1",
-      ).first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM sessions WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
     )?.id;
     expect(current).toBeTruthy();
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(NOW_MS - 11 * 60 * 1000, current)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS - 11 * 60 * 1000),
+      current,
+    );
 
     const staleCreate = await request("/api/auth/tokens", {
       method: "POST",
@@ -308,9 +311,10 @@ describe("API token lifecycle", () => {
 
     const workerEnv = env as unknown as Env;
     const userId = (
-      await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
-        .bind("founder@test.example")
-        .first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM users WHERE email_canonical = ?",
+        "founder@test.example",
+      )
     )?.id;
     expect(userId).toBeTruthy();
     const listed = await request("/api/auth/tokens", { cookie: session.cookie });
@@ -323,13 +327,17 @@ describe("API token lifecycle", () => {
         await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
         `filler-${i}`,
       );
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).run(
         `INSERT INTO api_tokens (
-           id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+           id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
          ) VALUES (?, ?, ?, 'standard', ?, 1, ?, ?)`,
-      )
-        .bind(id, userId, `filler-${i}`, secretHmac, NOW_MS, NOW_MS + TOKEN_MAX_TTL_MS)
-        .run();
+        id,
+        userId,
+        `filler-${i}`,
+        secretHmac,
+        toTimestamp(NOW_MS),
+        toTimestamp(NOW_MS + TOKEN_MAX_TTL_MS),
+      );
       fillers.push(id);
     }
     const blocked = await request("/api/auth/tokens", {
@@ -341,9 +349,7 @@ describe("API token lifecycle", () => {
     expect(blocked.res.status).toBe(409);
     expect(await blocked.res.json()).toEqual({ error: "too many active tokens" });
     for (const id of fillers) {
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ?")
-        .bind(NOW_MS, id)
-        .run();
+      await testControlPlane(workerEnv).run("UPDATE api_tokens SET revoked_at = ? WHERE id = ?", toTimestamp(NOW_MS), id);
     }
   });
 
@@ -351,9 +357,10 @@ describe("API token lifecycle", () => {
     const session = await redeemSession("clm_token_race");
     const workerEnv = env as unknown as Env;
     const userId = (
-      await workerEnv.CONTROL_PLANE.prepare("SELECT id FROM users WHERE email_canonical = ?")
-        .bind("founder@test.example")
-        .first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM users WHERE email_canonical = ?",
+        "founder@test.example",
+      )
     )?.id;
     expect(userId).toBeTruthy();
     const listed = await request("/api/auth/tokens", { cookie: session.cookie });
@@ -366,13 +373,17 @@ describe("API token lifecycle", () => {
         await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
         `race-fill-${i}`,
       );
-      await workerEnv.CONTROL_PLANE.prepare(
+      await testControlPlane(workerEnv).run(
         `INSERT INTO api_tokens (
-           id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+           id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
          ) VALUES (?, ?, ?, 'standard', ?, 1, ?, ?)`,
-      )
-        .bind(id, userId, `race-fill-${i}`, secretHmac, NOW_MS, NOW_MS + TOKEN_MAX_TTL_MS)
-        .run();
+        id,
+        userId,
+        `race-fill-${i}`,
+        secretHmac,
+        toTimestamp(NOW_MS),
+        toTimestamp(NOW_MS + TOKEN_MAX_TTL_MS),
+      );
       fillers.push(id);
     }
 
@@ -401,13 +412,13 @@ describe("API token lifecycle", () => {
 
     const winner = first.res.status === 201 ? first : second;
     const created = (await winner.res.json()) as CreatedToken;
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ?")
-      .bind(NOW_MS, created.id)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE api_tokens SET revoked_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS),
+      created.id,
+    );
     for (const id of fillers) {
-      await workerEnv.CONTROL_PLANE.prepare("UPDATE api_tokens SET revoked_at_ms = ? WHERE id = ?")
-        .bind(NOW_MS, id)
-        .run();
+      await testControlPlane(workerEnv).run("UPDATE api_tokens SET revoked_at = ? WHERE id = ?", toTimestamp(NOW_MS), id);
     }
   });
 });

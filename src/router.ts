@@ -1,4 +1,3 @@
-import { deleteRefreshJob } from "./control-plane/relationship-refresh-jobs";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -57,7 +56,7 @@ import { handleGetSettings, handlePostSettings } from "./control-plane/settings-
 import { handleDeleteAccount } from "./control-plane/account-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
-import { fromD1 } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
@@ -95,6 +94,10 @@ export function createApp(opts: AppOptions = {}) {
   const app = new Hono<AppBindings>();
 
   app.use("*", corsMiddleware());
+  // One PostgreSQL client per request, shared by authentication and the
+  // handler, and closed once the response is built. It connects on first use,
+  // so /health and a refused preflight never open one.
+  app.use("*", sqlScope);
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
@@ -161,8 +164,8 @@ export function createApp(opts: AppOptions = {}) {
 
   // Authenticated routes: bearer token or host-only session cookie.
   app.use("/api/whoami", requirePrincipal(authNowMs));
-  app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant(), sqlScope);
-  app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant(), sqlScope);
+  app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
 
   // The principal's own identity — no scope gate: every authenticated caller
   // may learn who it is. Operator tooling uses this to verify that a bearer
@@ -170,7 +173,7 @@ export function createApp(opts: AppOptions = {}) {
   // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
   app.get("/api/whoami", async (c) => {
     const principal = c.get("principal");
-    const user = await fromD1(c.env.CONTROL_PLANE).first<{ email_display: string }>(
+    const user = await fromSql(c.get("sql")).first<{ email_display: string }>(
       "SELECT email_display FROM users WHERE id = ?",
       String(principal.userId),
     );
@@ -326,9 +329,7 @@ export function createApp(opts: AppOptions = {}) {
     const { writer, content } = storesFor(c.env, principal, c.get("sql"));
     // One-reading purge inside a live tenant. Account deletion is
     // DELETE /api/account (195a) — do not fold that workflow in here.
-    const out = await purgeReading({ writer, content,
-      deleteRefreshCheckpoint: readingId => deleteRefreshJob(fromD1(c.env.CONTROL_PLANE), principal.tenantId, readingId),
-    }, id, {
+    const out = await purgeReading({ writer, content }, id, {
       pendingTtlSeconds: pendingTtlSeconds(c.env),
       now: services.now(),
     });
@@ -419,7 +420,7 @@ const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 400 | 404 | 409 | 429 | 503;
+  status: 200 | 202 | 400 | 403 | 404 | 409 | 429 | 503;
   headers?: Record<string, string>;
 } {
   switch (out.kind) {
@@ -470,6 +471,11 @@ function toHttp(out: IntakeOutcome): {
         status: 429,
         headers: { "Retry-After": "5" },
       };
+    // The account was marked deleting after this request authenticated; the
+    // claim transaction saw it under the tenant lock and wrote nothing. Same
+    // 403 body the authenticated seam gives a tenant that is not active.
+    case "tenant_inactive":
+      return { body: { error: "forbidden" }, status: 403 };
   }
 }
 

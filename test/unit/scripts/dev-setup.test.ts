@@ -2,57 +2,37 @@ import { describe, expect, it, vi } from "vitest";
 import { runDevSetup } from "../../../scripts/dev-setup";
 
 describe("dev-setup", () => {
-  it("applies local D1 migrations then bootstraps the founder principal", async () => {
-    const calls: string[][] = [];
+  it("migrates local Postgres, then bootstraps the founder principal there", async () => {
+    const migrated: string[] = [];
     const bootstrap = vi.fn().mockResolvedValue({ exitCode: 0 });
+    const run = vi.fn().mockResolvedValue(0);
 
     const code = await runDevSetup({
-      run: async (command: string, args: string[]) => {
-        calls.push([command, ...args]);
-        return 0;
-      },
+      run,
       bootstrap,
       envVars: { READING_LITE_DATABASE_URL: "postgres://self-managed" },
-      migratePostgres: async () => undefined,
+      migratePostgres: async (url) => void migrated.push(url),
     });
 
     expect(code).toBe(0);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]![0]).toBe(process.execPath);
-    expect(calls[0]!.slice(1, 3)).toEqual(["--no-warnings", "--experimental-vm-modules"]);
-    expect(calls[0]![3]).toMatch(/wrangler-dist[/\\]cli\.js$/);
-    expect(calls[0]!.slice(4)).toEqual([
-      "d1",
-      "migrations",
-      "apply",
-      "reading-lite-control-dev",
-      "--local",
-    ]);
+    // No D1: the control plane is on PostgreSQL (ADR 0005), so a self-managed
+    // database means there is no subprocess to run at all.
+    expect(run).not.toHaveBeenCalled();
+    expect(migrated).toEqual(["postgres://self-managed"]);
     expect(bootstrap).toHaveBeenCalledOnce();
   });
 
-  it("stops when migrations fail", async () => {
-    const bootstrap = vi.fn();
-
-    const code = await runDevSetup({
-      run: async () => 1,
-      bootstrap,
-      envVars: { READING_LITE_DATABASE_URL: "postgres://self-managed" },
-      migratePostgres: async () => undefined,
-    });
-
-    expect(code).toBe(1);
-    expect(bootstrap).not.toHaveBeenCalled();
-  });
-
-  it("starts the compose Postgres and migrates it before the D1 steps", async () => {
+  it("starts the compose Postgres and migrates it before the founder bootstrap", async () => {
     const order: string[] = [];
     const code = await runDevSetup({
       run: async (command: string, args: string[]) => {
-        order.push(command === "docker" ? `docker ${args.join(" ")}` : "wrangler d1");
+        order.push(`${command} ${args.join(" ")}`);
         return 0;
       },
-      bootstrap: vi.fn().mockResolvedValue({ exitCode: 0 }),
+      bootstrap: vi.fn().mockImplementation(async () => {
+        order.push("bootstrap");
+        return { exitCode: 0 };
+      }),
       envVars: {},
       migratePostgres: async (url) => {
         order.push(`migrate ${url}`);
@@ -62,19 +42,19 @@ describe("dev-setup", () => {
     expect(order).toEqual([
       "docker compose up -d --wait postgres",
       "migrate postgres://reading_lite:reading_lite@127.0.0.1:54329/reading_lite",
-      "wrangler d1",
+      "bootstrap",
     ]);
   });
 
-  it("returns 1 with a message, before any D1 step, when the Postgres migration fails", async () => {
-    const run = vi.fn().mockResolvedValue(0);
+  it("returns 1 with a message, before the bootstrap, when the Postgres migration fails", async () => {
+    const bootstrap = vi.fn();
     const errors: string[] = [];
     const original = console.error;
     console.error = (line: string) => void errors.push(line);
     try {
       const code = await runDevSetup({
-        run,
-        bootstrap: vi.fn(),
+        run: vi.fn().mockResolvedValue(0),
+        bootstrap,
         envVars: { READING_LITE_DATABASE_URL: "postgres://self-managed" },
         migratePostgres: async () => {
           throw new Error("Migration drift");
@@ -84,7 +64,7 @@ describe("dev-setup", () => {
     } finally {
       console.error = original;
     }
-    expect(run).not.toHaveBeenCalled();
+    expect(bootstrap).not.toHaveBeenCalled();
     expect(errors.join("\n")).toContain("Local Postgres migration failed: Migration drift");
   });
 

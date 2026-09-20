@@ -2,7 +2,7 @@ import type { Context } from "hono";
 import { jsonAuth, type AuthRuntime } from "./auth-handlers";
 import { logAuthEvent } from "./auth-log";
 import { clearSessionCookieHeader } from "./cookies";
-import { fromD1 } from "./db";
+import { fromSql } from "./db";
 import { parseSessionId } from "./ids";
 import {
   listSessionsForUser,
@@ -14,7 +14,7 @@ import type { AppBindings } from "../middleware";
 
 export async function handleListSessions(c: Context<AppBindings>, nowMs: number): Promise<Response> {
   const principal = c.get("principal");
-  const listed = await listSessionsForUser(fromD1(c.env.CONTROL_PLANE), {
+  const listed = await listSessionsForUser(fromSql(c.get("sql")), {
     userId: principal.userId,
     nowMs,
     ...(principal.kind === "session" ? { currentSessionId: principal.sessionId } : {}),
@@ -28,7 +28,7 @@ export async function handleRevokeSession(c: Context<AppBindings>, nowMs: number
   const sessionId = parseSessionId(rawId);
   if (!sessionId) return jsonAuth({ error: "invalid session" }, 400);
 
-  const outcome = await revokeOwnedSession(fromD1(c.env.CONTROL_PLANE), {
+  const outcome = await revokeOwnedSession(fromSql(c.get("sql")), {
     sessionId,
     userId: principal.userId,
     nowMs,
@@ -50,7 +50,7 @@ export async function handleRevokeAllSessions(
   runtime: AuthRuntime,
 ): Promise<Response> {
   const principal = c.get("principal");
-  const db = fromD1(c.env.CONTROL_PLANE);
+  const db = fromSql(c.get("sql"));
   const revoked = await revokeAllSessionsForUser(db, {
     userId: principal.userId,
     nowMs,

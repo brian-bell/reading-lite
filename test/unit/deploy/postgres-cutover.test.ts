@@ -21,21 +21,14 @@ const OFF = { staging: false, production: false };
 function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
   const err: string[] = [];
   const runWrangler = vi.fn(async () => 0);
-  const validateReadiness = vi.fn(() => ({
-    ok: true,
-    env: "staging",
-    d1: { binding: "CONTROL_PLANE", databaseName: "db", databaseId: "real-id" },
-    requiredSecrets: { runtime: [], bootstrapOnly: [] },
-  })) as unknown as DeployWorkerDeps["validateReadiness"];
   const validateTenantActivation = vi.fn(async () => ({ ok: true, message: "already enabled" }));
   const built: DeployWorkerDeps = {
     io: { stdout: () => undefined, stderr: (text) => err.push(text) },
     runWrangler,
-    validateReadiness,
     validateTenantActivation,
     checkPostgresCutover: check,
   };
-  return { built, err, runWrangler, validateReadiness, validateTenantActivation };
+  return { built, err, runWrangler, validateTenantActivation };
 }
 
 describe("PostgreSQL cutover guard", () => {
@@ -62,7 +55,7 @@ describe("PostgreSQL cutover guard", () => {
   });
 
   it("leaves a config without the binding alone, whatever the flags say", () => {
-    const toml = `[[env.production.d1_databases]]\nbinding = "CONTROL_PLANE"\n`;
+    const toml = `[[env.production.r2_buckets]]\nbinding = "READINGS_BUCKET"\n`;
     expect(checkPostgresCutover("production", { execute: true, toml, flags: OFF })).toEqual({ ok: true, bound: false });
   });
 
@@ -76,11 +69,10 @@ describe("PostgreSQL cutover guard", () => {
 describe("ops deploy worker behind the cutover guard", () => {
   const refuse: DeployWorkerDeps["checkPostgresCutover"] = () => ({ ok: false, error: "not cut over" });
 
-  it("--execute exits 2 before the preflight, the activation check, migrations or upload", async () => {
-    const { built, err, runWrangler, validateReadiness, validateTenantActivation } = deps(refuse);
+  it("--execute exits 2 before the activation check or upload", async () => {
+    const { built, err, runWrangler, validateTenantActivation } = deps(refuse);
     expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], built)).toBe(2);
     expect(runWrangler).not.toHaveBeenCalled();
-    expect(validateReadiness).not.toHaveBeenCalled();
     expect(validateTenantActivation).not.toHaveBeenCalled();
     expect(err.join("\n")).toContain("PostgreSQL cutover guard: REFUSED. not cut over");
   });

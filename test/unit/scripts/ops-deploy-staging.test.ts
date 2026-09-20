@@ -20,7 +20,7 @@ function io(): { io: CommandIo; out: string[]; err: string[] } {
 }
 
 describe("ops deploy worker", () => {
-  function makeDeps(ok = true) {
+  function makeDeps() {
     const { io: cio, err } = io();
     const runs: string[][] = [];
     const deps: DeployWorkerDeps = {
@@ -32,19 +32,6 @@ describe("ops deploy worker", () => {
         runs.push(args);
         return 0;
       },
-      validateReadiness: () => ({
-        ok,
-        ...(ok
-          ? {
-              d1: {
-                binding: "CONTROL_PLANE",
-                databaseName: "reading-lite-control-staging",
-                databaseId: "real-id",
-              },
-            }
-          : { error: "placeholder database_id" }),
-        requiredSecrets: { runtime: ["AUTH_ROOT_SECRET", "OPENAI_API_KEY"], bootstrapOnly: ["READER_API_TOKEN"] },
-      }) as never,
     };
     return { deps, err, runs };
   }
@@ -54,50 +41,26 @@ describe("ops deploy worker", () => {
     const { deps, runs } = makeDeps();
     deps.validateCandidate = async candidate => { expect(candidate).toBe(sha); };
     expect(await deployWorkerCommand.run(["--env", "staging", "--release-sha", sha, "--execute"], deps)).toBe(0);
-    expect(runs[1]).toEqual(["deploy", "--env", "staging", "--tag", sha]);
+    expect(runs[0]).toEqual(["deploy", "--env", "staging", "--tag", sha]);
     runs.length = 0;
     deps.validateCandidate = async () => { throw new Error("dirty or mismatched checkout"); };
     await expect(deployWorkerCommand.run(["--release-sha", sha, "--execute"], deps)).rejects.toThrow("checkout");
     expect(runs).toEqual([]);
   });
 
-  it("plan mode prints the remote D1 migrate command and passes wrangler --dry-run", async () => {
+  it("plan mode passes wrangler --dry-run and names the secrets the environment must hold", async () => {
     const { deps, err, runs } = makeDeps();
     expect(await deployWorkerCommand.run(["--env", "staging"], deps)).toBe(0);
     expect(runs).toEqual([["deploy", "--env", "staging", "--dry-run"]]);
-    expect(err.join("\n")).toContain(
-      "wrangler d1 migrations apply reading-lite-control-staging --env staging --remote",
-    );
+    expect(err.join("\n")).toContain("required runtime secret: AUTH_ROOT_SECRET");
+    expect(err.join("\n")).toContain("bootstrap-only secret: READER_API_TOKEN");
   });
 
-  it("--execute applies remote D1 migrations then uploads without --dry-run", async () => {
+  it("--execute uploads without --dry-run, and deploys no schema", async () => {
     const { deps, runs } = makeDeps();
     expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(0);
-    expect(runs).toEqual([
-      ["d1", "migrations", "apply", "reading-lite-control-staging", "--env", "staging", "--remote"],
-      ["deploy", "--env", "staging"],
-    ]);
-  });
-
-  it("a failed migrate does not upload the Worker", async () => {
-    const { deps, runs } = makeDeps();
-    deps.runWrangler = async (args) => {
-      runs.push(args);
-      return args[0] === "d1" ? 1 : 0;
-    };
-    expect(await deployWorkerCommand.run(["--env", "staging", "--execute"], deps)).toBe(1);
-    expect(runs).toEqual([
-      ["d1", "migrations", "apply", "reading-lite-control-staging", "--env", "staging", "--remote"],
-    ]);
-  });
-
-  it("a failed control-plane preflight blocks execute but only warns a plan", async () => {
-    const failing = makeDeps(false);
-    expect(await deployWorkerCommand.run(["--execute"], failing.deps)).toBe(2);
-    expect(failing.runs).toHaveLength(0);
-    const planning = makeDeps(false);
-    expect(await deployWorkerCommand.run([], planning.deps)).toBe(0);
-    expect(planning.runs).toHaveLength(1);
+    // PostgreSQL migrations are `ops db migrate`'s job (reading-lite-gh347.4).
+    expect(runs).toEqual([["deploy", "--env", "staging"]]);
   });
 
   it("rejects an invalid env", async () => {
@@ -105,7 +68,7 @@ describe("ops deploy worker", () => {
     await expect(deployWorkerCommand.run(["--env", "dev"], deps)).rejects.toThrow(UsageError);
   });
 
-  it("refuses unverified activation before any migration or upload", async () => {
+  it("refuses unverified activation before the upload", async () => {
     const { deps, runs, err } = makeDeps();
     deps.validateTenantActivation = async () => ({ ok: false, message: "off to on; 1 deletion-eligible tenant: usr_due" });
     expect(await deployWorkerCommand.run(["--execute"], deps)).toBe(2);
@@ -118,7 +81,7 @@ describe("ops deploy worker", () => {
     const { deps, runs, err } = makeDeps();
     deps.validateTenantActivation = async () => ({ ok: false, message: "unknown activation state" });
     expect(await deployWorkerCommand.run(["--execute", "--acknowledge-tenant-migration"], deps)).toBe(0);
-    expect(runs.map(args => args[0])).toEqual(["d1", "deploy"]);
+    expect(runs.map(args => args[0])).toEqual(["deploy"]);
     expect(err.join("\n")).toContain("OVERRIDE");
   });
 

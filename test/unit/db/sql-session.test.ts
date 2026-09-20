@@ -12,9 +12,13 @@ function fakeOpener(opts: { failOn?: string } = {}) {
       if (text === opts.failOn) throw new Error("connection terminated");
       return [];
     };
-    return {
+    const handle = {
       query: query as Sql["query"],
-      transaction: async (run) => run({ query: query as Sql["query"] }),
+      execute: async (text: string) => (await query(text)).length,
+    };
+    return {
+      ...handle,
+      transaction: async (run) => run(handle),
       end: async () => {
         client.ended = true;
       },

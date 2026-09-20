@@ -17,6 +17,9 @@ import {
   reserveReadingSlot,
 } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { interceptSql } from "../helpers/sql-faults";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -112,7 +115,7 @@ async function redeemSession(redemptionId: string) {
 
 const FOUNDER_SETTINGS_DEFAULTS = {
   schema_version: 1,
-  notify_immediate: 1,
+  notify_immediate: true,
   digest_cadence: "off",
   time_zone: "UTC",
   digest_hour_local: 9,
@@ -121,11 +124,11 @@ const FOUNDER_SETTINGS_DEFAULTS = {
 
 async function restoreFounderSettings(): Promise<void> {
   const workerEnv = env as unknown as Env;
-  const nowMs = Date.now();
-  await workerEnv.CONTROL_PLANE.prepare(
+  const now = toTimestamp(Date.now());
+  await testControlPlane(workerEnv).run(
     `INSERT INTO user_settings (
        user_id, schema_version, notify_immediate, digest_cadence,
-       time_zone, digest_hour_local, digest_weekday, created_at_ms, updated_at_ms
+       time_zone, digest_hour_local, digest_weekday, created_at, updated_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id) DO UPDATE SET
        schema_version = excluded.schema_version,
@@ -134,19 +137,16 @@ async function restoreFounderSettings(): Promise<void> {
        time_zone = excluded.time_zone,
        digest_hour_local = excluded.digest_hour_local,
        digest_weekday = excluded.digest_weekday`,
-  )
-    .bind(
-      FOUNDER_TENANT_ID,
-      FOUNDER_SETTINGS_DEFAULTS.schema_version,
-      FOUNDER_SETTINGS_DEFAULTS.notify_immediate,
-      FOUNDER_SETTINGS_DEFAULTS.digest_cadence,
-      FOUNDER_SETTINGS_DEFAULTS.time_zone,
-      FOUNDER_SETTINGS_DEFAULTS.digest_hour_local,
-      FOUNDER_SETTINGS_DEFAULTS.digest_weekday,
-      nowMs,
-      nowMs,
-    )
-    .run();
+    FOUNDER_TENANT_ID,
+    FOUNDER_SETTINGS_DEFAULTS.schema_version,
+    FOUNDER_SETTINGS_DEFAULTS.notify_immediate,
+    FOUNDER_SETTINGS_DEFAULTS.digest_cadence,
+    FOUNDER_SETTINGS_DEFAULTS.time_zone,
+    FOUNDER_SETTINGS_DEFAULTS.digest_hour_local,
+    FOUNDER_SETTINGS_DEFAULTS.digest_weekday,
+    now,
+    now,
+  );
 }
 
 type AnyMock = ReturnType<typeof vi.fn>;
@@ -386,14 +386,16 @@ describe("GET/POST /api/auth/settings", () => {
 
     const workerEnv = env as unknown as Env;
     const current = (
-      await workerEnv.CONTROL_PLANE.prepare(
-        "SELECT id FROM sessions WHERE revoked_at_ms IS NULL ORDER BY created_at_ms DESC LIMIT 1",
-      ).first<{ id: string }>()
+      await testControlPlane(workerEnv).first<{ id: string }>(
+        "SELECT id FROM sessions WHERE revoked_at IS NULL ORDER BY created_at DESC LIMIT 1",
+      )
     )?.id;
     expect(current).toBeTruthy();
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(NOW_MS - 11 * 60 * 1000, current)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS - 11 * 60 * 1000),
+      current,
+    );
 
     const stale = await request("/api/auth/settings", {
       method: "POST",
@@ -409,9 +411,7 @@ describe("GET/POST /api/auth/settings", () => {
   it("returns 404 when the settings row is missing", async () => {
     const session = await redeemSession("clm_settings_missing");
     const workerEnv = env as unknown as Env;
-    await workerEnv.CONTROL_PLANE.prepare("DELETE FROM user_settings WHERE user_id = ?")
-      .bind(FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(workerEnv).run("DELETE FROM user_settings WHERE user_id = ?", FOUNDER_TENANT_ID);
 
     const got = await request("/api/auth/settings", { cookie: session.cookie });
     expect(got.res.status).toBe(404);
@@ -533,11 +533,11 @@ describe("processReading immediate notification recipient", () => {
     workerEnv.EMAIL_FROM = "reading-lite@test.example";
     workerEnv.APP_ENV = "test";
     delete workerEnv.AUTH_MAIL_ALLOWLIST;
-    await workerEnv.CONTROL_PLANE.prepare(
-      "UPDATE users SET status = 'active', email_display = 'founder@test.example', email_verified_at_ms = COALESCE(email_verified_at_ms, ?) WHERE id = ?",
-    )
-      .bind(Date.now(), FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE users SET status = 'active', email_display = 'founder@test.example', email_verified_at = COALESCE(email_verified_at, ?) WHERE id = ?",
+      toTimestamp(Date.now()),
+      FOUNDER_TENANT_ID,
+    );
   });
 
   it("sends to email_display and never EMAIL_TO, using the tenant list index", async () => {
@@ -591,9 +591,10 @@ describe("processReading immediate notification recipient", () => {
     );
     expect(resendCalls(fetchSilent)).toHaveLength(0);
 
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE user_settings SET notify_immediate = 0 WHERE user_id = ?")
-      .bind(FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE user_settings SET notify_immediate = false WHERE user_id = ?",
+      FOUNDER_TENANT_ID,
+    );
     const fetchOptOut = makeStubFetch();
     await processReady(submitArgs("rd_MAIL04", "https://example.com/opt-out"), fetchOptOut);
     expect(resendCalls(fetchOptOut)).toHaveLength(0);
@@ -606,9 +607,10 @@ describe("processReading immediate notification recipient", () => {
     expect(resendCalls(fetchEmptyFrom)).toHaveLength(0);
     workerEnv.EMAIL_FROM = origFrom;
 
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE users SET email_verified_at_ms = NULL WHERE id = ?")
-      .bind(FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(workerEnv).run(
+      "UPDATE users SET email_verified_at = NULL WHERE id = ?",
+      FOUNDER_TENANT_ID,
+    );
     const fetchUnverified = makeStubFetch();
     await processReady(submitArgs("rd_MAIL06", "https://example.com/unverified"), fetchUnverified);
     expect(resendCalls(fetchUnverified)).toHaveLength(0);
@@ -625,21 +627,14 @@ describe("processReading immediate notification recipient", () => {
   });
 
   it("keeps the manifest ready when recipient lookup throws", async () => {
-    const workerEnv = env as unknown as Env;
-    const origPrepare = workerEnv.CONTROL_PLANE.prepare.bind(workerEnv.CONTROL_PLANE);
-    workerEnv.CONTROL_PLANE.prepare = (sql: string) => {
-      if (sql.includes("LEFT JOIN user_settings")) {
-        throw new Error("d1 lookup failed");
-      }
-      return origPrepare(sql);
-    };
+    const lookup = interceptSql(/LEFT JOIN user_settings/, () => new Error("recipient lookup failed"));
 
     const fetchFn = makeStubFetch();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       await processReady(submitArgs("rd_MAIL09", "https://example.com/lookup-throw"), fetchFn);
     } finally {
-      workerEnv.CONTROL_PLANE.prepare = origPrepare;
+      lookup.mockRestore();
     }
 
     expect(resendCalls(fetchFn)).toHaveLength(0);
@@ -667,7 +662,7 @@ describe("processReading immediate notification recipient", () => {
     expect(diag.attempts[0]!.status).toBe("succeeded");
     const sendEmail = diag.attempts[0]!.events.find((event) => event.stage === "send_email");
     expect(sendEmail?.status).toBe("failed");
-    expect(sendEmail?.error?.message).toContain("d1 lookup failed");
+    expect(sendEmail?.error?.message).toContain("recipient lookup failed");
     consoleErr.mockRestore();
   });
 
@@ -734,9 +729,11 @@ describe("processReading immediate notification recipient", () => {
       url: "https://example.com/resend-shapes",
       setup: async (workerEnv: Env) => {
         const unusual = "first/last@test.example";
-        await workerEnv.CONTROL_PLANE.prepare("UPDATE users SET email_display = ? WHERE id = ?")
-          .bind(unusual, FOUNDER_TENANT_ID)
-          .run();
+        await testControlPlane(workerEnv).run(
+          "UPDATE users SET email_display = ? WHERE id = ?",
+          unusual,
+          FOUNDER_TENANT_ID,
+        );
         const leaked = [unusual, '"Foo Bar"@example.com', "user@exämple.com", "user@localhost", "a @ b"];
         return { leaked, message: `Invalid to: ${leaked.join(" and ")}`, restore: async () => {} };
       },

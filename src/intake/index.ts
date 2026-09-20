@@ -70,6 +70,8 @@ const RETRY: unique symbol = Symbol("retry");
  *                     failed after the rollback ran.
  * - `rate_limited` / `quota_exhausted` — tenant ingress ceilings (→ 429).
  * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
+ * - `tenant_inactive` — the account stopped being active between admission and
+ *                     the claim transaction, which committed nothing (→ 403).
  */
 export type IntakeOutcome =
   | ActivationOutcome
@@ -80,7 +82,8 @@ export type IntakeOutcome =
   | { kind: "unavailable"; reason: "queue_unbound" | "claim_contention" }
   | { kind: "rate_limited"; limit: "request_rate"; resetAtMs: number }
   | { kind: "quota_exhausted"; limit: "hourly" | "monthly"; resetAtMs: number }
-  | { kind: "guard_unavailable" };
+  | { kind: "guard_unavailable" }
+  | { kind: "tenant_inactive" };
 
 export interface ReadingIntakeDeps {
   /** Tenant-scoped stores — hosted callers build them from a TenantContext. */
@@ -268,6 +271,7 @@ export class ReadingIntake {
         summary: activeAttempt,
         payload: queueMessage,
       });
+      if (claimed.kind === "tenant_inactive") return { kind: "tenant_inactive" } satisfies IntakeOutcome;
       if (claimed.kind === "owned") return retry;
       return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
@@ -386,6 +390,7 @@ export class ReadingIntake {
         args.keyPrefix,
         newAttempt(activeAttempt, queueMessage, artifacts),
       );
+      if (claimed.kind === "tenant_inactive") return { kind: "tenant_inactive" } satisfies IntakeOutcome;
       if (claimed.kind === "owned") return retry;
       return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
@@ -505,8 +510,12 @@ function markdownArtifacts(
 // this request read the reading is a conflict. A reading purged or changed
 // since goes back to the caller's loop to be resolved again: a purged owner
 // frees its URL for a fresh claim, and a changed one is re-read.
-function startRefused(kind: "not_found" | "conflict" | "changed"): IntakeOutcome | typeof RETRY {
-  return kind === "conflict" ? { kind: "conflict", reason: "active_attempt" } : RETRY;
+function startRefused(
+  kind: "not_found" | "conflict" | "changed" | "tenant_inactive",
+): IntakeOutcome | typeof RETRY {
+  if (kind === "conflict") return { kind: "conflict", reason: "active_attempt" };
+  if (kind === "tenant_inactive") return { kind: "tenant_inactive" };
+  return RETRY;
 }
 
 function nowMs(services: { now: () => string }): number {

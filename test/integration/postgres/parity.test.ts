@@ -18,7 +18,7 @@ import { mintTenant, testSql } from "../../helpers/pg-fixtures";
 
 const NOW = "2026-09-19T12:00:00.000Z";
 const plan = buildLocalSeed(NOW);
-const tenant = mintTenant();
+const tenant = await mintTenant();
 const rows = localSeedRows(plan, String(tenant.tenantId));
 
 let sql: Sql;

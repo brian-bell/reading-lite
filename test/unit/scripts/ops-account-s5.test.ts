@@ -127,6 +127,7 @@ function remoteFixture() {
       all: vi.fn().mockResolvedValue([]),
       run: vi.fn(),
       batch: vi.fn(),
+      transaction: vi.fn(),
     },
     storage: {
       listObjects: vi.fn().mockResolvedValue([]),
@@ -226,7 +227,7 @@ describe("residue sources and wipe gates", () => {
 });
 
 import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
-import { insertMissingLedgerRows } from "../../../src/control-plane/vector-ledger";
+import { insertMissingLedgerRows } from "../../../scripts/account-lib/vector-ledger";
 import { parseTenantId } from "../../../src/control-plane/ids";
 import { corpusSeedVectorLedgerCommand } from "../../../scripts/ops-lib/commands/corpus-seed-vector-ledger";
 import * as controlPlane from "../../../scripts/account-lib/control-plane";

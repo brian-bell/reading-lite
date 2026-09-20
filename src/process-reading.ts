@@ -27,8 +27,7 @@ import {
 } from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
 import { relationshipTargetIds } from "./modules/relationship-targets";
-import { tenantIsActive, tenantIsDeleting } from "./control-plane/account-delete";
-import { fromD1 } from "./control-plane/db";
+import { tenantIsActive } from "./control-plane/account-delete";
 import { redactEmailsInText } from "./control-plane/email";
 import {
   itemRequestsImmediateEmail,
@@ -120,13 +119,12 @@ async function runAttempt(
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
-    // not spend or write. A confirmed missing user is the same skip. A D1
-    // lookup failure here is not inactive — it throws RateLimitedError so the
-    // queue retries while extract/embed can still do useful work. After a
-    // terminal CAS, lookup throws fail-open instead (see
-    // tenantStillAllowsVisibility): retry cannot republish once
-    // active_attempt is cleared.
-    if (!(await tenantAllowsSpend(env, tenantId))) {
+    // not spend or write. A confirmed missing user is the same skip. A lookup
+    // failure here is not inactive — it throws RateLimitedError so the queue
+    // retries while extract/embed can still do useful work. This gate saves
+    // the spend; publish decides visibility for real, under the tenant lock
+    // inside its own transaction.
+    if (!(await tenantAllowsSpend(io, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
@@ -348,7 +346,7 @@ async function runAttempt(
     await writeAttemptSafe(io, attempt);
 
     const { published } = await runStage(attempt, io, services, "write_manifest", () =>
-      publishReady(io, args, finalManifest, tldrEmbed.embedding, env, tenantId),
+      publishReady(io, args, finalManifest, tldrEmbed.embedding),
     );
 
     if (published && itemRequestsImmediateEmail(args)) {
@@ -562,13 +560,9 @@ async function sendReadingEmailAndLog(
   const startedAt = services.now();
   let recipient: string | undefined;
   try {
-    // Recipient lookup belongs in this try: a thrown D1/settings read after
+    // Recipient lookup belongs in this try: a thrown users/settings read after
     // publication must not reach processReading's outer catch.
-    const decision = await resolveImmediateNotification(
-      fromD1(env.CONTROL_PLANE),
-      env,
-      String(tenant.tenantId),
-    );
+    const decision = await resolveImmediateNotification(io.controlPlane, env, String(tenant.tenantId));
     if (decision.kind === "skip") return;
     recipient = decision.to;
 
@@ -690,7 +684,7 @@ async function markDeadLetteredWith(
     return;
   }
 
-  if (!(await tenantConfirmedAllowsVisibility(env, tenantId))) {
+  if (!(await tenantConfirmedAllowsVisibility(io, tenantId))) {
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
@@ -884,15 +878,17 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
-// Publication. The tenant's eligibility is control-plane state (D1 until slice
-// 1c), so it cannot join the PostgreSQL transaction: it is checked immediately
-// before and again immediately after, and a tenant that stopped being eligible
-// in between is compensated in this same consumer. Everything else — attempt
-// ownership, URL ownership, the revision, the summary, the relationships and
-// the embedding — is one transaction in PgReadingWriter.publish.
+// Publication. Attempt ownership, URL ownership, the revision, the summary,
+// the relationships, the embedding AND the tenant's eligibility are one
+// transaction in PgReadingWriter.publish (slice 1c.3): `users` is in the same
+// database, so publish locks the tenant row FOR SHARE and reads `status`
+// there. `DELETE /api/account` waits behind that lock, so there is no window
+// between the check and the commit to compensate for — an ineligible tenant's
+// reading commits with no embedding and is never searchable, and the account
+// wipe removes it with the rest of the account.
 //
-// A lookup that throws is not a confirmed ineligible tenant: fail open. Once
-// publish commits, `active_attempt` is cleared and no retry can republish.
+// Once publish commits, `active_attempt` is cleared and no retry can
+// republish.
 //
 // Returns `published` so the caller can gate post-commit side effects (the
 // success path only emails when the reading became searchable).
@@ -901,68 +897,35 @@ async function publishReady(
   args: ProcessReadingArgs,
   manifest: Manifest,
   embedding: number[],
-  env: Env,
-  tenantId: string,
 ): Promise<{ committed: boolean; published: boolean }> {
   const content = io.capturedContent();
   if (!content) throw new Error("publishReady: the attempt captured no content");
-  const eligible = () => failOpen(() => tenantConfirmedAllowsVisibility(env, tenantId), true);
-
-  const eligibleBefore = await eligible();
   const out = await io.writer.publish(args, manifest, {
     keyPrefix: args.keyPrefix,
     content,
-    // An ineligible tenant's reading is stored but never made searchable.
-    embedding: eligibleBefore ? embedding : null,
+    embedding,
     claimMissingUrl: true,
   });
   if (!out.committed) {
     // Purged, or another attempt owns the reading: nothing references what
     // this one captured.
     await io.discardUnreferencedContent().catch((err) => console.error(err));
-    return out;
   }
-  if (eligibleBefore && (await eligible())) return out;
-
-  // Compensation must not throw: the reading is committed, and a throw would
-  // reach markFailed.
-  try {
-    if (await failOpen(() => tenantConfirmedDeleting(env, tenantId), false)) {
-      // A tenant being deleted keeps nothing. The account wipe may already
-      // have passed this reading by.
-      await io.writer.purge(args.id, () => false);
-      await io.content.deletePrefix(args.keyPrefix);
-    } else {
-      await io.writer.removeEmbedding(args.id);
-    }
-  } catch (err) {
-    console.error(err);
-  }
-  return { committed: true, published: false };
+  return out;
 }
 
-async function failOpen(check: () => Promise<boolean>, fallback: boolean): Promise<boolean> {
-  try {
-    return await check();
-  } catch (err) {
-    console.error(err);
-    return fallback;
-  }
-}
+const TENANT_STATUS_LOOKUP_URL = "postgres://control-plane/users.status";
 
-const TENANT_STATUS_LOOKUP_URL = "d1://control-plane/users.status";
-
-async function lookupTenantActive(env: Env, tenantId: string): Promise<boolean> {
-  if (!env.CONTROL_PLANE) return true;
-  return tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
+async function lookupTenantActive(io: AttemptIo, tenantId: string): Promise<boolean> {
+  return tenantIsActive(io.controlPlane, tenantId);
 }
 
 // Pre-spend only. Confirmed deleting/missing → false (skip). Lookup failure →
 // RateLimitedError so dispatchQueueMessage retries while extract/embed can
 // still do useful work.
-async function tenantAllowsSpend(env: Env, tenantId: string): Promise<boolean> {
+async function tenantAllowsSpend(io: AttemptIo, tenantId: string): Promise<boolean> {
   try {
-    return await lookupTenantActive(env, tenantId);
+    return await lookupTenantActive(io, tenantId);
   } catch (error) {
     console.error(error);
     if (error instanceof RateLimitedError) throw error;
@@ -970,24 +933,16 @@ async function tenantAllowsSpend(env: Env, tenantId: string): Promise<boolean> {
   }
 }
 
-// Post-CAS and DLQ mark path. Confirmed deleting/missing → false. Lookup
-// throw → true (fail-open): the DLQ never retries, and a post-CAS retry
-// cannot republish.
-async function tenantConfirmedAllowsVisibility(env: Env, tenantId: string): Promise<boolean> {
+// The DLQ mark path, its only caller: publication decides eligibility inside
+// its own transaction now. Confirmed deleting/missing → false. Lookup throw →
+// true (fail-open), because the DLQ never retries.
+async function tenantConfirmedAllowsVisibility(io: AttemptIo, tenantId: string): Promise<boolean> {
   try {
-    return await lookupTenantActive(env, tenantId);
+    return await lookupTenantActive(io, tenantId);
   } catch (error) {
     console.error(error);
     return true;
   }
-}
-
-// Confirmed `deleting` only. Fail-closed for the fence: no D1 binding (unit
-// tests that stub Env) means "not confirmed", so the caller keeps the ordinary
-// ownership gates.
-async function tenantConfirmedDeleting(env: Env, tenantId: string): Promise<boolean> {
-  if (!env.CONTROL_PLANE) return false;
-  return tenantIsDeleting(fromD1(env.CONTROL_PLANE), tenantId);
 }
 
 // May this attempt still write for the reading? Only while it is the active

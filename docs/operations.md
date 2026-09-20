@@ -61,113 +61,103 @@ Then `--tenant "$TENANT"`.
 `DELETE /api/account` marks the account deleting and revokes its credentials.
 The founder and staging fixtures follow the same path as every other tenant.
 The request does not enqueue a wipe. Every 15 minutes, cron starts eligible
-`ACCOUNT_WIPE_JOBS` work after the seven-day `deleting_at_ms` grace period.
+`ACCOUNT_WIPE_JOBS` work after the seven-day `deleting_at` grace period.
 `{ force: true }` skips grace for a new wipe. Cron resumes unfinished or reopened
 wipes during grace and preserves the record's force flag.
 
 The wipe refuses an unset tenant gate or empty key root with `no_tenant_prefix`.
-It never falls back to global R2 keys or unnamespaced vectors. A missing
-`READINGS_INDEX` throws `index_unbound` before any object deletion, including
-on a resumed objects phase. A deleting user with no deletion timestamp logs
+It never falls back to global R2 keys. A deleting user with no deletion timestamp logs
 `account_wipe_missing_deleting_at`; investigate before repairing the timestamp
 or forcing the wipe.
 
-### Progress, seeding, and confirmation
+### Progress and phases
 
-D1 `wipe_progress` holds the seed/object cursors, phase, lease sequence,
-heartbeat, probe/continuation counts, force flag, and completion. The old
-`vector_cursor` column is retired and remains NULL. Writes compare and advance
-`lease_seq`; a delivery that loses ownership reports `lease_held` and acks.
-The queue consumer runs at concurrency 1. `updated_at_ms` is advisory for cron,
-not proof that a job has ended, even after a long delayed retry.
+`wipe_progress` (PostgreSQL, [ADR 0005](decisions/0005-postgresql-storage.md))
+holds the phase, the R2 object cursor, lease sequence, heartbeat, continuation
+count, force flag, and completion. Writes compare and advance `lease_seq`; a
+delivery that loses ownership reports `lease_held` and acks. The queue consumer
+runs at concurrency 1. `updated_at` is advisory for cron, not proof that a job
+has ended, even after a long delayed retry.
 
-Heartbeats are throttled to one minute. Cursor, phase, lease, continuation,
-probe, and completion updates persist whenever a later delivery needs them.
+The phases run in order:
+
+1. `rows` deletes every reading row the tenant owns. Revisions, URLs,
+   relationships, attempts and embeddings go with them by cascade, so a reading
+   leaves search as it leaves the list. It also deletes the tenant's
+   `relationship_refresh_jobs` checkpoints, which name a reading but hold no
+   foreign key to one and so cascade from nothing. A leftover checkpoint cannot
+   spend — the refresh writes require an `active` users row — but removing the
+   account's data is the wipe's job rather than teardown's. The deletes and the advance to `objects` are one
+   transaction, with the lease compare-and-set last, so no tenant is recorded
+   past `rows` while its rows stand and a lost lease rolls the deletes back. A
+   database error fails the delivery before any object is deleted, and the
+   queue retries it.
+2. `objects` pages the tenant's R2 root, 1000 keys at a time, and ends by
+   sweeping rows once more, for a publisher that passed its tenant check before
+   the account was fenced and committed after the rows phase.
+3. `done` writes the completion record — but only after counting the tenant's
+   remaining `readings` and finding none. A non-zero count throws
+   `AccountWipeRowsRemainingError` and the delivery retries: a completion is
+   what teardown hard-deletes the account on, so it has to mean the rows are
+   gone rather than that a DELETE reported a count.
+
+Heartbeats are throttled to one minute. Cursor, phase, lease, continuation, and
+completion updates persist whenever a later delivery needs them.
 `ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds self-sent continuation messages so a
 stalled wipe cannot reset its retry budget forever. Exceeding that bound throws
-and eventually reaches the wipe DLQ, which logs and acks without touching reading
-manifests. Reopening resets the continuation count and repeats seeding.
+and eventually reaches the wipe DLQ, which logs and acks without touching the
+tenant. A finished wipe whose prefix gains objects again is reopened from
+`rows` with a fresh continuation count.
 
-Before either deletion phase, the wipe pages its tenant R2 root, derives IDs
-with `readingIdFromRelativeKey`, and inserts missing vector-ledger rows.
-Existing rows, including delete stamps and confirmation streaks, remain intact.
-Seeding resumes from `seed_cursor` and finishes at `seed_completed_at_ms`.
-No reading object is deleted before its ID is in the ledger.
+Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
+namespace probe or unbound-index gate on this path; the ledger module itself is
+operator-only now (`scripts/account-lib/vector-ledger.ts`, still on wrangler
+D1 for the Vectorize-era `corpus` and `account` commands, which
+reading-lite-gh347.4 ports or retires). Vectors written to Vectorize
+before cutover are left to its retirement at cutover. A PostgreSQL wipe always
+completes with
+`residue=false`; the column keeps the history imported from D1.
 
-`account_wipe_ledger_seeded` reports `rows_created`. Nonzero is expected for a
-corpus predating the ledger; investigate it on a corpus whose writers should
-have covered every ID. Operator seeding is a live-tenant repair or rehearsal
-option, never a wipe prerequisite:
-
-```sh
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite
-npm run ops -- corpus seed-vector-ledger --tenant "$TENANT" --bucket reading-lite --execute
-```
-
-The operator command uses the same insert-only helper and refuses `global`.
-Extra ledger rows cost harmless delete requests; missing rows can leave vectors
-unaddressable by the wipe.
-
-The vector phase selects live ledger rows, submits composed-ID `deleteByIds`,
-and marks each batch `delete_submitted`. That query advances itself without a
-vector cursor. Vector deletes precede paged R2 deletion. The publisher also
-removes its vector promptly when it detects account deletion; the durable
-ledger lets later cleanup address a missed publisher compensation.
-
-Clean completion requires both an empty ledger and a clean namespace probe.
-The probe runs even with an empty ledger. Confirmation follows the measured
-constants in `src/control-plane/vector-ledger.ts`:
-
-- Wait at least 120 seconds after delete submission before counting confirmation.
-- An empty namespaced query clears only `delete_submitted` rows, never live rows.
-- Otherwise, `getByIds` requests contain at most 20 IDs. Clearing a row needs two
-  successful absent observations at least 60 seconds apart. Non-200 responses
-  provide no absence evidence and reset the streak.
-- Retry backoff is 120, 240, then 480 seconds, capped at four confirmation
-  attempts. That bound must stay strictly below the wipe queue's `max_retries`,
-  currently six, because first-confirmation deferral and transient retries do
-  not all spend a probe attempt.
-
-`describe()`, `vectorCount`, and `processedUpToMutation` are not confirmation
-signals; staging measurements saw them move backwards between replicas.
-At the confirmation bound, the wipe logs `account_wipe_namespace_residue` with
-tenant ID only, completes with `residue=1`, and retains unconfirmed ledger rows
-for repair. `probe_saw_residue` records whether a probe saw vectors rather than
-only errors. Completion with residue requires investigation; it is not a clean
-namespace certification.
-
-`completed_at_ms` and `residue` describe current completion and clear on reopen.
-`first_completed_at_ms` and `first_residue` are written once and pinned in SQL.
+`completed_at` and `residue` describe current completion and clear on reopen.
+`first_completed_at` and `first_residue` are written once and pinned in SQL.
 Teardown gates on current completion; reports preserve first-completion history.
-Completion clears cursors and keeps the progress row until teardown.
+Completion clears the cursor and keeps the progress row until teardown.
 
 ### Control-plane teardown and email reuse
 
 Cron runs `src/control-plane/account-teardown.ts` after wipe completion and an
-empty-prefix check. A failure retries on the next tick. Teardown also runs for
-a completed `residue=1` wipe; it copies that flag to the audit record and retains
-unconfirmed vector-ledger rows.
+empty-prefix check. A failure retries on the next tick. It copies the wipe's
+residue flags to the audit record.
 
 1. Write `account_deletions` first. It retains tenant ID, deletion/completion/
    teardown timestamps, and current/first residue flags. It has no foreign key,
    email, display name, or reading IDs. Its presence proves an attempt, not
    successful teardown.
 2. Purge the tenant's TenantUsageGuard storage/alarm and its GlobalUsageGuard
-   leases and spend records. Guard errors stop teardown before D1 deletion.
+   leases and spend records. Guard errors stop teardown before any row deletion.
    Incurred charges remain in the global daily aggregate. AuthRateGuard retains
    hashed TTL-windowed email/IP counters because it has no tenant key.
 3. Resolve owned address history, then recheck the R2 prefix immediately before
-   `db.batch`. Only confirmed-empty permits the batch. Leftover objects reopen
-   the wipe on a later tick; unknown/error observations leave teardown for retry.
-4. Delete child rows before parents in one D1 batch: token scopes/tokens,
-   sessions, challenges, digest deliveries, relationship refresh checkpoints,
-   settings, limits, eligible invites,
-   wipe progress, then users. D1 enforces foreign keys; none cascade.
-   Migration 0012 lets unconfirmed vector-ledger rows outlive users.
+   the final transaction. Only confirmed-empty permits it. Leftover objects
+   reopen the wipe on a later tick; unknown/error observations leave teardown
+   for retry.
+4. In one transaction, lock this account's `auth_challenges` rows, then the
+   `users` and `wipe_progress` rows, re-check that the account is still
+   `deleting` and the wipe still complete, and count the tenant's `readings`.
+   Any remaining row answers `rows_remain` and deletes nothing: `readings`
+   names no `users` row, so PostgreSQL would not refuse the delete, and once
+   the users row is gone cron stops enumerating the tenant and those rows can
+   never be found again. Only then delete child rows before parents: token
+   scopes/tokens, sessions, challenges, digest deliveries, relationship refresh
+   checkpoints, settings, limits, eligible invites, wipe progress, then users.
+   PostgreSQL enforces the foreign keys; none cascade.
 
-An object arriving between the final prefix verdict and D1 commit can still be
+An object arriving between the final prefix verdict and the commit can still be
 orphaned after cron loses the users row it enumerates. The recheck narrows this
-race; it does not close it. Keep that #261 limit in deletion reports.
+race; it does not close it. Keep that #261 limit in deletion reports. Reading
+rows are not exposed to it: the count in step 4 is taken after the `users` lock,
+and the only path that inserts one takes the same row FOR SHARE alongside its
+insert, so it either commits before the count or finds no active account.
 
 The current address remains unavailable until the users row is gone. Under
 `invite_only`, returning users need a fresh invite after teardown. Check directly:
@@ -502,33 +492,34 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against D1. `ops deploy worker` does not create the database or import the
-founder token. `--execute` applies pending remote D1 migrations, then
-uploads, and refuses placeholder `CONTROL_PLANE` `database_id` values in
-`wrangler.toml`.
+against it. `ops deploy worker` does not create the database, import the
+founder token, or deploy schema: apply pending PostgreSQL migrations with
+`npm run ops -- db migrate --execute` against the target database first
+(reading-lite-gh347.4 folds that into the deploy command). `--execute`
+uploads.
 
 #### Tenant-mode activation guard
 
-Before remote migrations or upload, `ops deploy worker --execute` inspects
-the target environment's tenant-mode activation state. A single active version
-serving 100% of traffic with `TENANT_DATA_PLANE=1`, matching `READINGS_BUCKET`,
-`READINGS_INDEX`, and `CONTROL_PLANE` bindings, establishes the baseline for an
-ordinary redeployment. The R2 bucket and Vectorize index must also have creation
+Before the upload, `ops deploy worker --execute` inspects the target
+environment's tenant-mode activation state. A single active version serving
+100% of traffic with `TENANT_DATA_PLANE=1` and matching `READINGS_BUCKET` and
+`READINGS_INDEX` bindings establishes the baseline for an ordinary
+redeployment. The R2 bucket and Vectorize index must also have creation
 timestamps no later than that version, so recreating either resource under its
 old name requires fresh verification. Existing production and staging cutovers
 use this baseline; no new migration or certification record is needed.
 
 Off→on activation, changed resources, split deployments, missing deployment
 state, and failed/incomplete API reads refuse execution with exit 2. When
-activation is unverified, the preflight queries the target D1 database and
-reports tenant IDs in `status='deleting'` at or past the seven-day grace window.
-If that query fails (including a new database without the schema), it reports
-eligibility as unavailable, not zero. This is an activation warning; ongoing
-active-wipe deployment policy belongs to #269.
+activation is unverified, the preflight says so and sends you to the target
+PostgreSQL control plane for deletion eligibility: it holds only Cloudflare API
+credentials, so it no longer reads tenant rows itself. This is an activation
+warning; ongoing active-wipe deployment policy belongs to #269.
 
 To proceed after a refusal, verify the intended corpus in the target tenant R2
-root and Vectorize namespace, and review deletion eligibility in the target D1
-database. For a rebuilt environment, verify its restored tenant corpus before
+root and Vectorize namespace, and review deletion eligibility in the target
+PostgreSQL control plane (tenants in `status='deleting'` whose `deleting_at` is
+at or past the seven-day grace window). For a rebuilt environment, verify its restored tenant corpus before
 activation. The completed founder cutover is historical evidence, not a step to
 repeat: its one-time migration command is retired. Any future conversion from a
 legacy layout requires a separately scoped migration and rehearsal.
@@ -547,8 +538,7 @@ After successful activation the active version becomes the redeployment baseline
 The preflight uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI, or
 Wrangler's current authentication locally. If account selection is ambiguous,
 set `CLOUDFLARE_ACCOUNT_ID`. Credentials need Workers deployment/version read
-access, R2 bucket metadata read access, Vectorize index read access, and D1 query
-access for activation warnings. A permission failure requires correcting access
+access, R2 bucket metadata read access, and Vectorize index read access. A permission failure requires correcting access
 or manually verifying readiness before using the explicit acknowledgement.
 Plan mode prints the check it would perform and runs the existing build dry-run;
 it does not inspect remote readiness or require these read permissions.
@@ -567,10 +557,9 @@ Staging:
 
 ```sh
 cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
-wrangler d1 create reading-lite-control-staging
-# replace [env.staging] CONTROL_PLANE database_id in wrangler.toml
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
-wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
+# DATABASE_URL is a direct connection string for the staging database.
+npm run ops -- db migrate --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
 npm run ops -- deploy worker --env staging --execute
 npm run ops -- deploy web --branch staging --execute
@@ -596,8 +585,9 @@ Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
-and runs `ops deploy worker --env production --execute` (pending remote D1
-migrations, then upload). It does not pass `--var`. `TENANT_DATA_PLANE` is
+and runs `ops deploy worker --env production --execute` (upload only; apply
+PostgreSQL migrations with `ops db migrate` beforehand). It does not pass
+`--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
@@ -611,17 +601,21 @@ serializes Worker and SPA production commands. An older run therefore cannot
 overwrite a newer production release. Neither release workflow has a manual
 trigger that can bypass the chain.
 
-Before migrations or upload, the Worker workflow runs `ops deploy wipe-check`
-after its stale-release check, while holding the production release lock. It
-requires zero unfinished D1 records (`wipe_progress.completed_at_ms IS NULL`)
-and zero backlog in both `reading-lite-wipe` and `reading-lite-wipe-dlq`.
-Stale unfinished records also block: cron can resume them. Completed records
-and `users.status = 'deleting'` alone do not block. Failed API calls, missing
+Before the upload, the Worker workflow runs `ops deploy wipe-check` after its
+stale-release check, while holding the production release lock. It requires
+zero unfinished records in the PostgreSQL control plane
+(`wipe_progress.completed_at IS NULL`) and zero backlog in both
+`reading-lite-wipe` and `reading-lite-wipe-dlq`. The record count is read over
+a direct connection string — the workflow passes
+`--database-url-env PRODUCTION_DATABASE_URL` — inside a read-only transaction;
+the backlogs still come from the Cloudflare API. Stale unfinished records also
+block: cron can resume them. Completed records and `users.status = 'deleting'`
+alone do not block. A missing connection string, failed API calls, missing
 queues, missing schema, or invalid responses fail closed and prevent the Worker
 release artifact from being published, so the SPA cannot follow that release.
 The command can also be run locally with the two Cloudflare environment
-variables below; direct `ops deploy worker` invocations do not automatically
-run this workflow gate.
+variables below plus `DATABASE_URL` (or `--database-url-env`); direct
+`ops deploy worker` invocations do not automatically run this workflow gate.
 
 For an explicitly selected token-revocation release check, use `ops staging
 token-revocation` and `ops deploy release`; see the [operator evidence
@@ -634,7 +628,7 @@ The queue check uses the [Queues REST metrics endpoint](https://developers.cloud
 (`backlog_count`, unacknowledged messages), not aggregated analytics. Cloudflare
 calls these metrics best-effort. The check is a snapshot: the release lock
 serializes deploys but does not stop cron, new wipes, or teardown. A wipe can
-start after the check, including during migrations. This is a rollout speed
+start after the check. This is a rollout speed
 bump, not an atomic drain/maintenance lock.
 
 If blocked, let the wipe and queues drain, then rerun the failed Worker workflow.
@@ -648,35 +642,37 @@ release; even if left set, it cannot bypass the gate for a different commit.
 Do not use a generic `true` value. No manual workflow trigger is needed, so the
 successful Worker rerun still triggers the existing SPA release chain.
 
-The gate requires D1 Read or Write and Queues Read/Write or Workers Scripts
-Read/Write on the production account. The documented deploy token's D1 Edit
-and Workers Scripts Edit should cover these APIs, but its actual scopes must
-be verified by a successful check; HTTP 401/403 is a blocked release, never
-an empty-state result. See [D1 query permissions](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)
-and [queue permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/).
+The gate requires Queues Read/Write or Workers Scripts Read/Write on the
+production account, plus a PostgreSQL role that can read `wipe_progress`. The
+documented deploy token's Workers Scripts Edit should cover the queue APIs, but
+its actual scopes must be verified by a successful check; HTTP 401/403 is a
+blocked release, never an empty-state result. See
+[queue permissions](https://developers.cloudflare.com/api/resources/queues/methods/list/).
 
 GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit, D1 Edit, and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so migrations apply and the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
+| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production control plane. The wipe gate reads `wipe_progress` through it; the workflow fails fast when it is missing. |
 
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
 
 When a release adds an API scope (e.g. `readings:delete`, migration
 `0002_readings_delete_scope.sql`), existing tokens do not pick it up on their
-own: `ops deploy worker --execute` applies the migration, then re-run the
-same founder bootstrap command, its scope grants are idempotent and top up
-the existing token.
+own: apply the migration with `ops db migrate --execute`, then re-run the same
+founder bootstrap command — its scope grants are idempotent and top up the
+existing token.
 
 `ops deploy worker` targets only staging and production (`--env`), so a dev
 Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
 an existing SPA build.
 
-Local `npm run dev` runs `dev:setup` first (local D1 migrations + founder
-bootstrap of `dev-local-token`).
+Local `npm run dev` runs `dev:setup` first (local Postgres migrations, then
+the founder bootstrap of `dev-local-token` into Postgres). There is no local D1
+step: the control plane is PostgreSQL (ADR 0005).
 
 The legacy SPA is served from Cloudflare Pages on the same hostname as the
 Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
@@ -1320,11 +1316,11 @@ npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
   --command "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
 ```
 
-Expect a deferral after new delete submissions. Confirmation cannot count until
-120 seconds after submission, then follows the 120/240/480-second backoff and
-four-attempt bound described under [confirmation](#progress-seeding-and-confirmation).
-A clean probe can complete immediately when there are no submitted rows requiring
-the initial delay. Do not judge a wipe by its number of deliveries alone.
+On the PostgreSQL candidate a wipe has no confirmation wait: it completes in
+the delivery that empties the prefix, one delivery per 20,000 objects (see
+[progress and phases](#progress-and-phases)). The query above reads D1 until
+the operator commands move in slice 1d; on the candidate, read `wipe_progress`
+from PostgreSQL instead.
 
 `probe_saw_residue=1` can record normal propagation even when the final wipe is
 clean. `residue=1` means the bounded wipe completed without confirmation and
@@ -2253,7 +2249,7 @@ and its tests remain available in Git history for historical recovery analysis.
 New environments start with tenant storage. Rebuilt environments need their
 restored tenant data verified before activation; the [activation guard](#tenant-mode-activation-guard)
 remains. Retiring this command does not delete retained legacy data, remove the
-`TENANT_DATA_PLANE` gate, change D1 schema migrations, or remove general corpus
+`TENANT_DATA_PLANE` gate, change schema migrations, or remove general corpus
 repair/vector-backfill tools. A future migration needs its own scoped design,
 tests and rehearsal, not a recurring founder-cutover release check.
 
@@ -2554,8 +2550,8 @@ To reset local R2 to a pristine pack, stop the dev server and run:
 rm -rf .wrangler/state/v3/r2 && npm run seed:local
 ```
 
-Then start `npm run dev` again. Local D1 (accounts, sessions) lives
-elsewhere under `.wrangler/state/v3/` and is untouched.
+Then start `npm run dev` again. Accounts and sessions live in local Postgres
+and are untouched.
 
 Local dev leaves `TENANT_DATA_PLANE` unset, so the local founder account reads
 global-rooted keys — which is exactly what the seeder writes. Do not seed under
@@ -2599,7 +2595,7 @@ docker compose down -v                 # also deletes it
 
 | Who | Database | How it connects |
 |---|---|---|
-| `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then the D1 steps. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
+| `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
 | `npm run seed:local` | `reading_lite` | After seeding R2 it migrates, then writes the fixture pack as rows for the local founder's tenant id, with deterministic vectors. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
 | CI Worker job | `reading_lite_test` | A service container; `TEST_DATABASE_URL` points both pools at it. The ops job has no Postgres, so no test it runs may need a database. |
@@ -2613,8 +2609,9 @@ seeds whatever this names. The Worker does not read it: also export
 or `wrangler dev` keeps using port 54329. Two checkouts cannot both publish
 port 54329; run the service from one of them, since they can share it.
 
-Migrations live in `db/migrations/` (`migrations/` stays D1's) and are
-forward-only. Plan first, against a **direct** connection string, never a
+Migrations live in `db/migrations/` and are forward-only. (`migrations/` is
+the retired D1 schema: nothing runs it any more, and it is kept only to
+describe the live control plane reading-lite-gh348 imports from.) Plan first, against a **direct** connection string, never a
 Hyperdrive one:
 
 ```sh
@@ -2711,7 +2708,7 @@ no embedding calls are made. Missing, non-ready, and purged readings are skipped
 A ready target whose `active_attempt` is still running inside `PENDING_TTL_SECONDS`
 is skipped at scan time; the same in-TTL running state on a judge delivery throws
 `DeferPaidWorkError` and re-enqueues that `(runAt, readingId, keyPrefix)` without
-a D1 checkpoint. A TTL-expired (zombie) running attempt is not a terminal skip:
+a checkpoint row. A TTL-expired (zombie) running attempt is not a terminal skip:
 scan still flags the target, and the judge treats it as not running. The nightly
 cap still counts a reserved judge identity, including identities later deferred
 for in-TTL running. The existing offline neighbourhood-drift rules select judge
@@ -2741,8 +2738,7 @@ it does not extract, embed, re-summarize, change status, or refresh tensions.
 Each HTTP attempt presents the shared processing leases and passes tenant/global
 spend admission. Refresh does not consume a new-reading quota slot.
 
-Migration `0014_relationship_refresh_jobs.sql` adds one latest checkpoint per
-reading to D1. After admission and immediately before fetch, the delivery marks
+`relationship_refresh_jobs` holds one latest checkpoint per reading. After admission and immediately before fetch, the delivery marks
 that job dispatched. HTTP retries within that delivery each receive fresh spend
 admission. Confirmed 429 responses record a retry time and remain eligible for
 delayed re-enqueue with fresh admission; early duplicates honor Retry-After.
@@ -2766,7 +2762,7 @@ row's novelty verdict and rechecks ownership after contention. A saved result
 can repair a failed list write without another paid call. Lost manifest CAS,
 reprocessing, purged inputs, and tenant suppression stop publication; errors
 never create a failed reading. The checkpoint contains no article summary and
-is removed by reading purge and the guarded account-teardown D1 batch.
+is removed by reading purge and the guarded account-teardown transaction.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
 keeps a two-judgement nightly cap; production uses five. Apply the migration through the

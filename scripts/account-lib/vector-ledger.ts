@@ -2,6 +2,22 @@
  * The durable per-tenant vector-id ledger and its confirmation rule
  * (issue #195 slice S3 / #261, migration `0010`).
  *
+ * ## Operator-only, and D1-only, since slice 1c.4
+ *
+ * This used to live in `src/control-plane/`. Nothing in the candidate runtime
+ * reaches it any more: an embedding is a row of `reading_embeddings` that
+ * deletes with its reading in one transaction (ADR 0005), so the account wipe
+ * has no ids to record, submit or confirm, and `vector_ledger` is not among
+ * the tables migration `0003` recreates on PostgreSQL. What is left is the
+ * offline operator paths that still upsert into Vectorize — `corpus
+ * backfill-vectors`, `corpus seed-vector-ledger`, `account
+ * audit-bare-vectors` and the batch write phase — which read and write the
+ * table over wrangler D1. They live until the pre-cutover Vectorize index is
+ * retired; porting or retiring them is `reading-lite-gh347.4`.
+ *
+ * Everything below describes that D1/Vectorize world and is kept verbatim,
+ * because those commands still run in it.
+ *
  * ## What it is for
  *
  * Vectorize has no list or scan at any scope: a vector can only be deleted by
@@ -69,9 +85,9 @@
  * which is inside the propagation window by construction, so every healthy wipe
  * burned one attempt on a hit that carried no information (defect D2).
  */
-import { fromD1, type ControlPlaneDb } from "./db";
-import { parseTenantId, type TenantContext, type TenantId } from "./ids";
-import { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../modules/stores/similarity-store";
+import type { ControlPlaneDb } from "../../src/control-plane/db";
+import type { TenantId } from "../../src/control-plane/ids";
+import { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../../src/modules/stores/similarity-store";
 
 export type VectorLedgerState = "live" | "delete_submitted";
 
@@ -135,7 +151,7 @@ export const VECTOR_LEDGER_REQUIRED_ABSENCES = 2;
  * `getByIds` request size. Single-homed with the other Vectorize API limits;
  * the measurement and the reason it is not 1000 are recorded there.
  */
-export { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../modules/stores/similarity-store";
+export { VECTORIZE_GET_BY_IDS_MAX_IDS } from "../../src/modules/stores/similarity-store";
 
 /** One tenant's ledger row. */
 export interface VectorLedgerEntry {
@@ -293,25 +309,6 @@ export function d1VectorLedger(db: ControlPlaneDb, tenantId: TenantId): VectorLe
       }
     }),
   };
-}
-
-/**
- * The ledger for a tenant in hosted code, or null when there is nothing to
- * ledger into.
- *
- * Null on an unbound `CONTROL_PLANE` (local `wrangler dev` and the Node-pool
- * tests) and on a malformed tenant id. Both are configurations with no account
- * wipe to feed, so a null ledger costs nothing — and a throwing one would take
- * down the publish path over bookkeeping.
- */
-export function vectorLedgerFor(
-  env: { CONTROL_PLANE?: D1Database },
-  tenant: TenantContext,
-): VectorLedger | null {
-  if (!env.CONTROL_PLANE) return null;
-  const tenantId = parseTenantId(String(tenant.tenantId));
-  if (!tenantId) return null;
-  return d1VectorLedger(fromD1(env.CONTROL_PLANE), tenantId);
 }
 
 function dedupe(ids: readonly string[]): string[] {

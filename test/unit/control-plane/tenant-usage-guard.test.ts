@@ -10,6 +10,7 @@ import {
 } from "../../../src/control-plane/tenant-usage-guard";
 import type { Env } from "../../../src/index";
 import { READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "../../../src/control-plane/constants";
+import { fakeHyperdrive } from "../../helpers/fake-control-plane";
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const NOW = Date.parse("2026-09-03T02:14:00.000Z");
@@ -57,24 +58,15 @@ function guardState(storage: DurableObjectStorage = memoryStorage()): DurableObj
   } as DurableObjectState;
 }
 
-function fakeD1(row: Record<string, number> | null, throwOnQuery = false): D1Database {
-  return {
-    prepare: () => ({
-      bind: () => ({
-        first: async () => {
-          if (throwOnQuery) throw new Error("d1 down");
-          return row;
-        },
-      }),
-    }),
-  } as unknown as D1Database;
+function fakePlane(row: Record<string, number> | null, throwOnQuery = false): Hyperdrive {
+  return fakeHyperdrive(throwOnQuery ? new Error("database down") : row);
 }
 
 function envWithLimits(
   row: Record<string, number> | null = { submissions_per_hour: 2, monthly_readings: 3 },
   throwOnQuery = false,
 ): Env {
-  return { CONTROL_PLANE: fakeD1(row, throwOnQuery) } as Env;
+  return { HYPERDRIVE: fakePlane(row, throwOnQuery) } as Env;
 }
 
 async function post(guard: TenantUsageGuard, body: unknown): Promise<Record<string, unknown>> {
@@ -110,7 +102,7 @@ describe("TenantUsageGuard", () => {
     expect(map.has(`m:${utcMonthKey(NOW)}`)).toBe(false);
   });
 
-  it("reserves distinct hourly and monthly reading slots only up to the D1 limits", async () => {
+  it("reserves distinct hourly and monthly reading slots only up to the tenant limits", async () => {
     const map = new Map<string, unknown>();
     const guard = new TenantUsageGuard(
       guardState(memoryStorage(false, map)),

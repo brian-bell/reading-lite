@@ -7,14 +7,18 @@ import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { redeemLoginChallenge } from "../../../src/control-plane/redeem";
 import { ensureUserWithDefaults, issueSessionForClaim } from "../../../src/control-plane/sessions";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+import type { ControlPlaneDb } from "../../../src/control-plane/db";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 
 async function seeded() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -24,26 +28,24 @@ async function seeded() {
     newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  return { sqlite, db };
+  return { raw, db };
 }
 
-function challengeStates(sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"]) {
-  return sqlite
-    .prepare("SELECT id, state FROM auth_challenges ORDER BY issued_at_ms")
-    .all() as { id: string; state: string }[];
+async function challengeStates(raw: ControlPlaneDb) {
+  return raw.all<{ id: string; state: string }>("SELECT id, state FROM auth_challenges ORDER BY issue_seq");
 }
 
-function markMailSent(
-  sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"],
+async function markMailSent(
+  raw: ControlPlaneDb,
   challengeId: string,
   atMs: number,
-): void {
-  sqlite.prepare("UPDATE auth_challenges SET mail_sent_at_ms = ? WHERE id = ?").run(atMs, challengeId);
+): Promise<void> {
+  await raw.run("UPDATE auth_challenges SET mail_sent_at = ? WHERE id = ?", toTimestamp(atMs), challengeId);
 }
 
 describe("restoreLiveLoginChallenges", () => {
   it("does not revive a predecessor that was consumed before issue revoked it", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -52,8 +54,8 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    markMailSent(sqlite, first.challengeId, NOW_MS);
-    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    await markMailSent(raw, first.challengeId, NOW_MS);
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
 
     const consumed = await redeemLoginChallenge(db, {
       credential: first.credential,
@@ -75,7 +77,7 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "consumed" },
       { id: second.challengeId, state: "revoked" },
     ]);
@@ -100,7 +102,7 @@ describe("restoreLiveLoginChallenges", () => {
   });
 
   it("does not re-issue a revoked predecessor that already minted a claim", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -109,14 +111,13 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    markMailSent(sqlite, first.challengeId, NOW_MS);
-    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    await markMailSent(raw, first.challengeId, NOW_MS);
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
 
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
-      )
-      .run("clm_racy", NOW_MS + 1, first.challengeId);
+    await raw.run(
+      `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at = ? WHERE id = ?`,
+      "clm_racy", toTimestamp(NOW_MS + 1), first.challengeId,
+    );
 
     const second = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -129,15 +130,16 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
 
-    const predecessor = sqlite
-      .prepare("SELECT state, claim_id, consumed_at_ms FROM auth_challenges WHERE id = ?")
-      .get(first.challengeId) as { state: string; claim_id: string | null; consumed_at_ms: number | null };
+    const predecessor = withMs(await raw.first(
+      "SELECT state, claim_id, consumed_at FROM auth_challenges WHERE id = ?",
+      first.challengeId,
+    )) as { state: string; claim_id: string | null; consumed_at_ms: number | null };
     expect(predecessor).toEqual({
       state: "revoked",
       claim_id: "clm_racy",
       consumed_at_ms: null,
     });
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "revoked" },
       { id: second.challengeId, state: "revoked" },
     ]);
@@ -153,7 +155,7 @@ describe("restoreLiveLoginChallenges", () => {
   });
 
   it("does not restore an older unused link after a delivered sibling was revoked", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const older = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -162,8 +164,8 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(older.kind).toBe("issued");
     if (older.kind !== "issued") return;
-    markMailSent(sqlite, older.challengeId, NOW_MS);
-    const listedFirst = [{ id: older.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    await markMailSent(raw, older.challengeId, NOW_MS);
+    const listedFirst = [{ id: older.challengeId, state: "issued" }];
 
     const sibling = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -173,7 +175,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(sibling.kind).toBe("issued");
     if (sibling.kind !== "issued") return;
-    markMailSent(sqlite, sibling.challengeId, NOW_MS + 1);
+    await markMailSent(raw, sibling.challengeId, NOW_MS + 1);
 
     const late = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -186,7 +188,7 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, late.challengeId, listedFirst);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: older.challengeId, state: "revoked" },
       { id: sibling.challengeId, state: "issued" },
       { id: late.challengeId, state: "revoked" },
@@ -212,7 +214,7 @@ describe("restoreLiveLoginChallenges", () => {
   });
 
   it("does not restore predecessors when the new challenge is no longer unused issued", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -221,8 +223,8 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    markMailSent(sqlite, first.challengeId, NOW_MS);
-    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    await markMailSent(raw, first.challengeId, NOW_MS);
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
 
     const second = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -244,14 +246,14 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "revoked" },
       { id: second.challengeId, state: "consumed" },
     ]);
   });
 
   it("does not restore an undelivered sibling after two overlapping failed sends", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const delivered = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -260,8 +262,8 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(delivered.kind).toBe("issued");
     if (delivered.kind !== "issued") return;
-    markMailSent(sqlite, delivered.challengeId, NOW_MS);
-    const snapshotA = [{ id: delivered.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    await markMailSent(raw, delivered.challengeId, NOW_MS);
+    const snapshotA = [{ id: delivered.challengeId, state: "issued" }];
 
     const a = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -271,7 +273,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(a.kind).toBe("issued");
     if (a.kind !== "issued") return;
-    const snapshotB = [{ id: a.challengeId, state: "issued", issued_at_ms: NOW_MS + 1 }];
+    const snapshotB = [{ id: a.challengeId, state: "issued" }];
 
     const b = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -285,7 +287,7 @@ describe("restoreLiveLoginChallenges", () => {
     await restoreLiveLoginChallenges(db, a.challengeId, snapshotA);
     await restoreLiveLoginChallenges(db, b.challengeId, snapshotB);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: delivered.challengeId, state: "issued" },
       { id: a.challengeId, state: "revoked" },
       { id: b.challengeId, state: "revoked" },
@@ -315,7 +317,7 @@ describe("restoreLiveLoginChallenges", () => {
   it.each([["mailed", true], ["unmailed", false]])(
     "does not restore mailed A after %s claimed B and failed C",
     async (_label, bMailed) => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const a = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -324,7 +326,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(a.kind).toBe("issued");
     if (a.kind !== "issued") return;
-    markMailSent(sqlite, a.challengeId, NOW_MS);
+    await markMailSent(raw, a.challengeId, NOW_MS);
 
     const b = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -334,13 +336,12 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(b.kind).toBe("issued");
     if (b.kind !== "issued") return;
-    if (bMailed) markMailSent(sqlite, b.challengeId, NOW_MS + 1);
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
-      )
-      .run("clm_b", NOW_MS + 2, b.challengeId);
-    const snapshotC = [{ id: b.challengeId, state: "claimed", issued_at_ms: NOW_MS + 1 }];
+    if (bMailed) await markMailSent(raw, b.challengeId, NOW_MS + 1);
+    await raw.run(
+      `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at = ? WHERE id = ?`,
+      "clm_b", toTimestamp(NOW_MS + 2), b.challengeId,
+    );
+    const snapshotC = [{ id: b.challengeId, state: "claimed" }];
 
     const c = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -353,14 +354,15 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, c.challengeId, snapshotC);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: a.challengeId, state: "revoked" },
       { id: b.challengeId, state: "revoked" },
       { id: c.challengeId, state: "revoked" },
     ]);
-    const leftover = sqlite
-      .prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?")
-      .get(b.challengeId) as { state: string; claim_id: string | null };
+    const leftover = withMs(await raw.first(
+      "SELECT state, claim_id FROM auth_challenges WHERE id = ?",
+      b.challengeId,
+    )) as { state: string; claim_id: string | null };
     expect(leftover).toEqual({ state: "revoked", claim_id: "clm_b" });
 
     const aRedeem = await redeemLoginChallenge(db, {
@@ -375,7 +377,7 @@ describe("restoreLiveLoginChallenges", () => {
   );
 
   it("restores a concurrent first send that the snapshot missed", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -384,7 +386,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    markMailSent(sqlite, first.challengeId, NOW_MS);
+    await markMailSent(raw, first.challengeId, NOW_MS);
 
     const second = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -397,7 +399,7 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, second.challengeId, []);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "issued" },
       { id: second.challengeId, state: "revoked" },
     ]);
@@ -413,7 +415,7 @@ describe("restoreLiveLoginChallenges", () => {
   });
 
   it("restores an issued predecessor whose mail_sent_at write was swallowed", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -422,11 +424,12 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(first.kind).toBe("issued");
     if (first.kind !== "issued") return;
-    const snapshot = [{ id: first.challengeId, state: "issued", issued_at_ms: NOW_MS }];
+    const snapshot = [{ id: first.challengeId, state: "issued" }];
 
-    const marked = sqlite
-      .prepare("SELECT mail_sent_at_ms FROM auth_challenges WHERE id = ?")
-      .get(first.challengeId) as { mail_sent_at_ms: number | null };
+    const marked = withMs(await raw.first(
+      "SELECT mail_sent_at FROM auth_challenges WHERE id = ?",
+      first.challengeId,
+    )) as { mail_sent_at_ms: number | null };
     expect(marked.mail_sent_at_ms).toBeNull();
 
     const second = await issueLoginChallenge(db, {
@@ -440,7 +443,7 @@ describe("restoreLiveLoginChallenges", () => {
 
     await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
 
-    expect(challengeStates(sqlite)).toEqual([
+    expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "issued" },
       { id: second.challengeId, state: "revoked" },
     ]);
@@ -460,7 +463,7 @@ describe("restoreLiveChallenges email_change", () => {
   const FOUNDER_ID = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!;
 
   it("restores a prior address when a later different-address challenge is rolled back", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const login = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -489,8 +492,8 @@ describe("restoreLiveChallenges email_change", () => {
     });
     expect(toA.kind).toBe("issued");
     if (toA.kind !== "issued") return;
-    markMailSent(sqlite, toA.challengeId, NOW_MS + 2);
-    const snapshot = [{ id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 }];
+    await markMailSent(raw, toA.challengeId, NOW_MS + 2);
+    const snapshot = [{ id: toA.challengeId, state: "issued" }];
 
     const toB = await issueEmailChangeChallenge(db, {
       emailCanonical: "address-b@example.com",
@@ -505,11 +508,10 @@ describe("restoreLiveChallenges email_change", () => {
 
     await restoreLiveLoginChallenges(db, toB.challengeId, snapshot);
 
-    const rows = sqlite
-      .prepare(
-        "SELECT email_canonical, state FROM auth_challenges WHERE purpose = ? ORDER BY issued_at_ms",
-      )
-      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; state: string }[];
+    const rows = withMs(await raw.all(
+      "SELECT email_canonical, state FROM auth_challenges WHERE purpose = ? ORDER BY issued_at",
+      EMAIL_CHANGE_PURPOSE,
+    )) as { email_canonical: string; state: string }[];
     expect(rows).toEqual([
       { email_canonical: "address-a@example.com", state: "issued" },
       { email_canonical: "address-b@example.com", state: "revoked" },
@@ -517,7 +519,7 @@ describe("restoreLiveChallenges email_change", () => {
   });
 
   it("restores every unused snapshot row, not the newest marked row in the union", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const login = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -546,7 +548,7 @@ describe("restoreLiveChallenges email_change", () => {
     });
     expect(toA.kind).toBe("issued");
     if (toA.kind !== "issued") return;
-    markMailSent(sqlite, toA.challengeId, NOW_MS + 2);
+    await markMailSent(raw, toA.challengeId, NOW_MS + 2);
 
     const otherId = await ensureUserWithDefaults(db, {
       emailCanonical: "other@example.com",
@@ -573,11 +575,11 @@ describe("restoreLiveChallenges email_change", () => {
     });
     expect(otherB.kind).toBe("issued");
     if (otherB.kind !== "issued") return;
-    markMailSent(sqlite, otherB.challengeId, NOW_MS + 5);
+    await markMailSent(raw, otherB.challengeId, NOW_MS + 5);
 
     const snapshot = [
-      { id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 },
-      { id: otherB.challengeId, state: "issued", issued_at_ms: NOW_MS + 5 },
+      { id: toA.challengeId, state: "issued" },
+      { id: otherB.challengeId, state: "issued" },
     ];
     const callerB = await issueEmailChangeChallenge(db, {
       emailCanonical: "address-b@example.com",
@@ -592,12 +594,11 @@ describe("restoreLiveChallenges email_change", () => {
 
     await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
 
-    const rows = sqlite
-      .prepare(
-        `SELECT email_canonical, user_id, state FROM auth_challenges
-         WHERE purpose = ? ORDER BY issued_at_ms`,
-      )
-      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; user_id: string; state: string }[];
+    const rows = withMs(await raw.all(
+      `SELECT email_canonical, user_id, state FROM auth_challenges
+         WHERE purpose = ? ORDER BY issued_at`,
+      EMAIL_CHANGE_PURPOSE,
+    )) as { email_canonical: string; user_id: string; state: string }[];
     expect(rows).toEqual([
       { email_canonical: "address-a@example.com", user_id: FOUNDER_ID, state: "issued" },
       { email_canonical: "address-b@example.com", user_id: otherId, state: "issued" },
@@ -606,7 +607,7 @@ describe("restoreLiveChallenges email_change", () => {
   });
 
   it("keeps restoring later snapshot ids when one restore unique-conflicts", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const login = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
       emailDisplayRequested: "founder@example.com",
@@ -663,8 +664,8 @@ describe("restoreLiveChallenges email_change", () => {
     if (otherB.kind !== "issued") return;
 
     const snapshot = [
-      { id: otherB.challengeId, state: "issued", issued_at_ms: NOW_MS + 5 },
-      { id: toA.challengeId, state: "issued", issued_at_ms: NOW_MS + 2 },
+      { id: otherB.challengeId, state: "issued" },
+      { id: toA.challengeId, state: "issued" },
     ];
     const callerB = await issueEmailChangeChallenge(db, {
       emailCanonical: "address-b@example.com",
@@ -705,12 +706,11 @@ describe("restoreLiveChallenges email_change", () => {
 
     await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
 
-    const rows = sqlite
-      .prepare(
-        `SELECT email_canonical, user_id, state FROM auth_challenges
-         WHERE purpose = ? ORDER BY issued_at_ms`,
-      )
-      .all(EMAIL_CHANGE_PURPOSE) as { email_canonical: string; user_id: string; state: string }[];
+    const rows = withMs(await raw.all(
+      `SELECT email_canonical, user_id, state FROM auth_challenges
+         WHERE purpose = ? ORDER BY issued_at`,
+      EMAIL_CHANGE_PURPOSE,
+    )) as { email_canonical: string; user_id: string; state: string }[];
     expect(rows).toEqual([
       { email_canonical: "address-a@example.com", user_id: FOUNDER_ID, state: "issued" },
       { email_canonical: "address-b@example.com", user_id: otherId, state: "revoked" },

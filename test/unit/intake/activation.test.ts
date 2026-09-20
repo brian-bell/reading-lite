@@ -128,7 +128,7 @@ const ARTIFACTS: ActivationArtifacts = {
 // The state intake leaves behind before it calls activateAttempt: the reading,
 // its URL, the running attempt and a queued job, committed together.
 async function committedAttempt(manifest: Manifest = pendingManifest()): Promise<TestReadings> {
-  const readings = testReadingsFor(mintTenant());
+  const readings = testReadingsFor(await mintTenant());
   await readings.writer.claimUrl(manifest, KEY_PREFIX, { summary: activeAttempt(), payload: queueMessage() });
   return readings;
 }
@@ -237,7 +237,7 @@ describe("activateAttempt", () => {
 
   it("ready-reprocess rollback: a ready rollbackManifest stays ready with active_attempt cleared on send failure", async () => {
     const ready = pendingManifest({ status: "ready", connections: [], title: "Kept", last_attempt: undefined });
-    const readings = testReadingsFor(mintTenant());
+    const readings = testReadingsFor(await mintTenant());
     await readings.seed({ ...ready, active_attempt: undefined }, { keyPrefix: KEY_PREFIX });
     await readings.writer.startAttempt(ready, { summary: activeAttempt("reprocess"), payload: queueMessage() }, (await readings.manifest(ID))!);
 

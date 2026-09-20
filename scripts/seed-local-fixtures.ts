@@ -105,7 +105,6 @@ function readObject(key: string): Promise<ReadResult> {
   });
 }
 
-const LOCAL_D1 = "reading-lite-control-dev";
 
 export interface PostgresSeedResult {
   tenantId: string;
@@ -123,24 +122,26 @@ export async function replaceTenantReadings(
   for (const reading of rows) await writeReadingRows(tx, reading);
 }
 
-// Local rows belong to the founder that npm run dev bootstrapped into local D1.
+// Local rows belong to the founder that npm run dev bootstrapped into the
+// same local database.
 async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResult> {
   const envVars = { ...loadDotVars(".dev.vars"), ...process.env };
   const email = envVars.FOUNDER_EMAIL;
   if (!email) throw new Error("FOUNDER_EMAIL is not set in .dev.vars");
-  const { makeWranglerD1 } = await import("./lib/founder-bootstrap");
-  const founder = await makeWranglerD1({ database: LOCAL_D1, local: true }).first<{ id: string }>(
-    "SELECT id FROM users WHERE email_canonical = ?",
-    canonicalizeEmail(email),
-  );
-  if (!founder) throw new Error("no local founder for " + email + "; run npm run dev once first");
 
   const { url } = localDatabase(envVars);
   await migrateLocalPostgres(url);
-  const rows = localSeedRows(plan, founder.id);
   const sql = sqlFromConnectionString(url);
+  let founder: { id: string } | undefined;
+  let rows: ReadingRows[];
   try {
-    await sql.transaction((tx) => replaceTenantReadings(tx, founder.id, rows));
+    [founder] = await sql.query<{ id: string }>("SELECT id FROM users WHERE email_canonical = $1", [
+      canonicalizeEmail(email),
+    ]);
+    if (!founder) throw new Error("no local founder for " + email + "; run npm run dev once first");
+    const tenantId = founder.id;
+    rows = localSeedRows(plan, tenantId);
+    await sql.transaction((tx) => replaceTenantReadings(tx, tenantId, rows));
   } finally {
     await sql.end();
   }

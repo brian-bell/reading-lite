@@ -6,6 +6,7 @@ import { resolveLoginEligibility } from "./eligibility";
 import { matchSecretHmac } from "./hmac-match";
 import { parseChallengeId, parseSessionId, parseUserId, type SessionId, type UserId, type UuidSource } from "./ids";
 import { lookupChallenge } from "./challenges";
+import { toTimestamp } from "./pg-time";
 import {
   ensureUserWithDefaults,
   issueSessionForClaim,
@@ -51,14 +52,25 @@ function challengeExpired(challenge: { expires_at_ms: number }, nowMs: number): 
   return challenge.expires_at_ms <= nowMs;
 }
 
+// One transaction that locks the challenge row, then acts. D1's single writer
+// ran a claim and its completion as one serial sequence; the row lock gives
+// parallel redeems of one link the same order, so an idempotent retry of a
+// claim waits for the first to finish and then resumes it.
 export async function redeemLoginChallenge(
   db: ControlPlaneDb,
   input: RedeemLoginInput,
 ): Promise<RedeemResult> {
   const presented = parseCredential(input.credential, parseChallengeId);
   if (!presented) return { kind: "invalid" };
+  return db.transaction((tx) => redeemLocked(tx, presented, input));
+}
 
-  const challenge = await lookupChallenge(db, presented.selector);
+async function redeemLocked(
+  db: ControlPlaneDb,
+  presented: { selector: string; secret: string },
+  input: RedeemLoginInput,
+): Promise<RedeemResult> {
+  const challenge = await lookupChallenge(db, presented.selector, { forUpdate: true });
   const match = await matchSecretHmac(
     presented.secret,
     challenge?.secret_hmac ?? null,
@@ -80,12 +92,12 @@ export async function redeemLoginChallenge(
   if (challenge.state === "issued") {
     const claimed = await db.run(
       `UPDATE auth_challenges
-       SET state = 'claimed', claim_id = ?, claimed_at_ms = ?
-       WHERE id = ? AND state = 'issued' AND expires_at_ms > ?`,
+       SET state = 'claimed', claim_id = ?, claimed_at = ?
+       WHERE id = ? AND state = 'issued' AND expires_at > ?`,
       input.redemptionId,
-      input.nowMs,
+      toTimestamp(input.nowMs),
       challenge.id,
-      input.nowMs,
+      toTimestamp(input.nowMs),
     );
     if (claimed.changes === 0) {
       const latest = await lookupChallenge(db, challenge.id);
@@ -254,24 +266,25 @@ async function completeEmailChange(
   const oldEmailCanonical = user.email_canonical;
   const oldEmailDisplay = user.email_display;
 
+  const now = toTimestamp(input.nowMs);
   const revokeSessions: SqlStatement = {
     sql: `UPDATE sessions
-          SET revoked_at_ms = ?, revocation_reason = ?
-          WHERE user_id = ? AND revoked_at_ms IS NULL AND id != ?`,
-    params: [input.nowMs, "email_change", userId, confirmingSessionId],
+          SET revoked_at = ?, revocation_reason = ?
+          WHERE user_id = ? AND revoked_at IS NULL AND id != ?`,
+    params: [now, "email_change", userId, confirmingSessionId],
   };
   const revokeTokens: SqlStatement = {
-    sql: `UPDATE api_tokens SET revoked_at_ms = ? WHERE user_id = ? AND revoked_at_ms IS NULL`,
-    params: [input.nowMs, userId],
+    sql: `UPDATE api_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`,
+    params: [now, userId],
   };
   const consume: SqlStatement = {
     sql: `UPDATE auth_challenges
           SET state = 'consumed',
-              consumed_at_ms = COALESCE(consumed_at_ms, ?),
+              consumed_at = COALESCE(consumed_at, ?),
               completed_user_id = ?,
               completed_session_id = ?
           WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
-    params: [input.nowMs, userId, confirmingSessionId, challenge.id, input.redemptionId],
+    params: [now, userId, confirmingSessionId, challenge.id, input.redemptionId],
   };
 
   // Crash after swap but before consume: retry sees the new canonical, must not
@@ -291,15 +304,9 @@ async function completeEmailChange(
     await db.batch([
       {
         sql: `UPDATE users
-              SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ?
+              SET email_canonical = ?, email_display = ?, email_verified_at = ?, updated_at = ?
               WHERE id = ? AND status = 'active'`,
-        params: [
-          challenge.email_canonical,
-          challenge.email_display,
-          input.nowMs,
-          input.nowMs,
-          userId,
-        ],
+        params: [challenge.email_canonical, challenge.email_display, now, now, userId],
       },
       revokeSessions,
       revokeTokens,
@@ -336,12 +343,12 @@ async function confirmingSessionForUser(
   if (!sessionId) return null;
   const row = await db.first<{ id: string }>(
     `SELECT id FROM sessions
-     WHERE id = ? AND user_id = ? AND revoked_at_ms IS NULL
-       AND idle_expires_at_ms > ? AND absolute_expires_at_ms > ?`,
+     WHERE id = ? AND user_id = ? AND revoked_at IS NULL
+       AND idle_expires_at > ? AND absolute_expires_at > ?`,
     sessionId,
     input.userId,
-    input.nowMs,
-    input.nowMs,
+    toTimestamp(input.nowMs),
+    toTimestamp(input.nowMs),
   );
   return row ? sessionId : null;
 }
@@ -392,21 +399,22 @@ async function consumeChallenge(
     emailCanonical: string;
   },
 ): Promise<void> {
+  const now = toTimestamp(input.nowMs);
   await db.batch([
     {
       sql: `UPDATE auth_challenges
             SET state = 'consumed',
-                consumed_at_ms = COALESCE(consumed_at_ms, ?),
+                consumed_at = COALESCE(consumed_at, ?),
                 completed_user_id = ?,
                 completed_session_id = ?
             WHERE id = ? AND claim_id = ? AND state IN ('claimed', 'consumed')`,
-      params: [input.nowMs, input.userId, input.sessionId, input.challengeId, input.redemptionId],
+      params: [now, input.userId, input.sessionId, input.challengeId, input.redemptionId],
     },
     {
       sql: `UPDATE signup_invites
-            SET consumed_at_ms = COALESCE(consumed_at_ms, ?)
-            WHERE email_canonical = ? AND consumed_at_ms IS NULL`,
-      params: [input.nowMs, input.emailCanonical],
+            SET consumed_at = COALESCE(consumed_at, ?)
+            WHERE email_canonical = ? AND consumed_at IS NULL`,
+      params: [now, input.emailCanonical],
     },
   ]);
 }

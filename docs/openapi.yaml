@@ -108,8 +108,8 @@ paths:
         Cron starts the tenant R2 and Vectorize wipe after a seven-day grace.
         Vector deletion propagates asynchronously. Once the wipe completes and
         the prefix is confirmed empty, cron writes an audit record, purges
-        tenant Durable Object state, rechecks the prefix, and deletes D1 child
-        rows before the user. No D1 relationship cascades. Global incurred
+        tenant Durable Object state, rechecks the prefix, and deletes child
+        rows before the user. No relationship cascades. Global incurred
         spend and unconfirmed vector-ledger rows survive teardown.
         The founder and staging fixtures have no deletion exemption.
         Retained global corpus data is outside the tenant wipe. See
@@ -222,7 +222,7 @@ paths:
         gesture. Idempotent for the same `redemption_id`; a competing claimant
         fails. Sets a durable host-only `__Host-session` cookie
         (`Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=7776000`) so login
-        survives browser restart. D1 still enforces a 30-day inactivity
+        survives browser restart. The control plane still enforces a 30-day inactivity
         timeout and 90-day absolute expiry. If the request already carries a
         live session cookie for the same user, login redemption refreshes
         `authenticated_at_ms` on that row instead of inserting another session.
@@ -280,7 +280,7 @@ paths:
       summary: Revoke the current browser session and clear the cookie
       security: []
       description: |
-        Same-origin. Revokes the D1 session and expires `__Host-session`.
+        Same-origin. Revokes the stored session and expires `__Host-session`.
         Cookie callers must send `X-CSRF-Token`; a missing or invalid token
         returns 403 without clearing the cookie.
       parameters:
@@ -1122,7 +1122,8 @@ components:
       type: http
       scheme: bearer
       description: |
-        Founder legacy bearer (or session token) looked up in D1. Runtime auth
+        Founder legacy bearer (or session token) looked up in the control
+        plane. Runtime auth
         does not fall back to the `READER_API_TOKEN` secret itself.
 
   parameters:
@@ -1168,6 +1169,9 @@ components:
       description: |
         Authenticated but lacking scope, forbidden principal, or invalid
         cookie CSRF token (session stays; SPA must not treat this as logout).
+        On a write, also an account that stopped being active after the
+        request authenticated: the claim saw it under the tenant lock and
+        committed nothing.
       content:
         application/json:
           schema:

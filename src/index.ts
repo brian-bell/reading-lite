@@ -1,6 +1,7 @@
 import { REFRESH_CRON, scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
 import type { TenantContext } from "./control-plane/ids";
-import { fromD1 } from "./control-plane/db";
+import { fromSql, type ControlPlaneDb } from "./control-plane/db";
+import { withSqlSession } from "./modules/db/sql";
 import type { DigestEnvelopeV1 } from "./control-plane/digest-envelope";
 import {
   admitEnvelopeOrReject,
@@ -35,9 +36,7 @@ import { defaultServices } from "./services";
 export interface Env {
   READINGS_BUCKET: R2Bucket;
   READINGS_INDEX: VectorizeIndex;
-  CONTROL_PLANE: D1Database;
-  // PostgreSQL through Hyperdrive (ADR 0005). No runtime path reads it until
-  // slice 1b switches reads and writes together.
+  // PostgreSQL through Hyperdrive (ADR 0005): readings and the control plane.
   HYPERDRIVE: Hyperdrive;
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
@@ -51,7 +50,7 @@ export interface Env {
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;
-  // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
+  // Imported once as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
   AUTH_ROOT_KEY_VERSION?: string;
@@ -183,7 +182,7 @@ export async function dispatchQueueMessage(
 export async function handleDeadLetter(
   msg: Message<unknown>,
   deps: {
-    db: ReturnType<typeof fromD1>;
+    db: ControlPlaneDb;
     nowMs: number;
     mark: (body: ProcessReadingArgs, tenant: TenantContext) => Promise<void>;
   },
@@ -282,32 +281,36 @@ export default {
       }
       return;
     }
-    if (batch.queue === DEAD_LETTER_QUEUE) {
-      const db = fromD1(env.CONTROL_PLANE);
-      const nowMs = Date.now();
+    // One session per batch for envelope admission; each job opens its own
+    // for the attempt (see processReading).
+    await withSqlSession(env, async (sql) => {
+      const db = fromSql(sql);
+      if (batch.queue === DEAD_LETTER_QUEUE) {
+        const nowMs = Date.now();
+        for (const msg of batch.messages) {
+          await handleDeadLetter(msg, {
+            db,
+            nowMs,
+            mark: (body, tenant) => markDeadLettered(body, env, services, tenant),
+          });
+        }
+        return;
+      }
       for (const msg of batch.messages) {
-        await handleDeadLetter(msg, {
+        await consumeProcessReadingMessage(msg, {
           db,
-          nowMs,
-          mark: (body, tenant) => markDeadLettered(body, env, services, tenant),
+          nowMs: Date.now(),
+          process: (job, tenant) =>
+            dispatchQueueMessage(msg, () => processReading(job, env, services, tenant), {
+              sendDelayed: async (body, delaySeconds) => {
+                const queue = env.READING_JOBS;
+                if (!queue) throw new Error("READING_JOBS unbound");
+                await queue.send(body as ProcessReadingEnvelopeV1, { delaySeconds });
+              },
+            }),
         });
       }
-      return;
-    }
-    for (const msg of batch.messages) {
-      await consumeProcessReadingMessage(msg, {
-        db: fromD1(env.CONTROL_PLANE),
-        nowMs: Date.now(),
-        process: (job, tenant) =>
-          dispatchQueueMessage(msg, () => processReading(job, env, services, tenant), {
-            sendDelayed: async (body, delaySeconds) => {
-              const queue = env.READING_JOBS;
-              if (!queue) throw new Error("READING_JOBS unbound");
-              await queue.send(body as ProcessReadingEnvelopeV1, { delaySeconds });
-            },
-          }),
-      });
-    }
+    });
   },
 };
 

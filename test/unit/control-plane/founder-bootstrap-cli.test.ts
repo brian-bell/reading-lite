@@ -5,7 +5,9 @@ import {
   parseFounderBootstrapArgs,
   runFounderBootstrap,
 } from "../../../scripts/lib/founder-bootstrap";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const ROTATED_ROOT_HEX = "ff".repeat(32);
@@ -44,8 +46,25 @@ describe("founder-bootstrap CLI", () => {
     expect(logs.join("")).toMatch(/confirm-production/);
   });
 
+  it("refuses staging without a direct connection string, before opening anything", async () => {
+    const logs: string[] = [];
+    const result = await runFounderBootstrap(
+      parseFounderBootstrapArgs(["--execute", "--env", "staging", "--email", "a@b.com", "--database-url-env", "STAGING_PG"]),
+      {
+        envVars: { AUTH_ROOT_SECRET: ROOT_HEX, READER_API_TOKEN: "test-token" },
+        nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
+        write: (line) => logs.push(line),
+        openDb: async () => {
+          throw new Error("should not open db");
+        },
+      },
+    );
+    expect(result.exitCode).toBe(2);
+    expect(logs.join("")).toMatch(/missing STAGING_PG/);
+  });
+
   it("prints a dry-run plan and does not write", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     const logs: string[] = [];
 
     const result = await runFounderBootstrap(parseFounderBootstrapArgs(["--email", "Founder@Example.com"]), {
@@ -55,7 +74,7 @@ describe("founder-bootstrap CLI", () => {
       },
       nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
       write: (line) => logs.push(line),
-      openDb: async () => db,
+      openDb: async () => ({ db, close: async () => undefined }),
     });
 
     expect(result.exitCode).toBe(0);
@@ -63,11 +82,11 @@ describe("founder-bootstrap CLI", () => {
     expect(logs.join("")).toMatch(/f\*\*\*@example\.com/);
     expect(logs.join("")).not.toMatch(/founder@example.com/);
     expect(logs.join("")).not.toMatch(/test-token/);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).toEqual({ n: 0 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 0 });
   });
 
   it("writes the founder and imported token on --execute", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
 
     const result = await runFounderBootstrap(
       parseFounderBootstrapArgs(["--execute", "--email", "founder@example.com"]),
@@ -78,21 +97,21 @@ describe("founder-bootstrap CLI", () => {
         },
         nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
         write: () => undefined,
-        openDb: async () => db,
+        openDb: async () => ({ db, close: async () => undefined }),
       },
     );
 
     expect(result.exitCode).toBe(0);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number }).toEqual({ n: 1 });
-    expect(sqlite.prepare("SELECT format FROM api_tokens").get() as { format: string }).toEqual({
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 1 });
+    expect(withMs(await raw.first("SELECT format FROM api_tokens")) as { format: string }).toEqual({
       format: "legacy",
     });
   });
 
   it("defaults previous auth-root version to 1 during secret-only rotation", async () => {
-    const { sqlite, db } = openMigratedControlPlane();
+    const { raw, db } = openControlPlane();
     const nowMs = Date.parse("2026-08-16T12:00:00.000Z");
-    const openDb = async () => db;
+    const openDb = async () => ({ db, close: async () => undefined });
 
     const first = await runFounderBootstrap(
       parseFounderBootstrapArgs(["--execute", "--email", "founder@example.com"]),
@@ -107,9 +126,7 @@ describe("founder-bootstrap CLI", () => {
       },
     );
     expect(first.exitCode).toBe(0);
-    const tokenBefore = sqlite
-      .prepare("SELECT id, hash_key_version FROM api_tokens")
-      .get() as { id: string; hash_key_version: number };
+    const tokenBefore = withMs(await raw.first("SELECT id, hash_key_version FROM api_tokens")) as { id: string; hash_key_version: number };
     expect(tokenBefore.hash_key_version).toBe(1);
 
     // Rotate the secret only — omit AUTH_PREVIOUS_ROOT_KEY_VERSION so the CLI
@@ -129,12 +146,10 @@ describe("founder-bootstrap CLI", () => {
     );
     expect(rotated.exitCode).toBe(0);
 
-    const tokenAfter = sqlite
-      .prepare("SELECT id, hash_key_version FROM api_tokens")
-      .get() as { id: string; hash_key_version: number };
+    const tokenAfter = withMs(await raw.first("SELECT id, hash_key_version FROM api_tokens")) as { id: string; hash_key_version: number };
     expect(tokenAfter.id).toBe(tokenBefore.id);
     expect(tokenAfter.hash_key_version).toBe(1);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get() as { n: number }).toEqual({
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM api_tokens")) as { n: number }).toEqual({
       n: 1,
     });
 

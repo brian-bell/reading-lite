@@ -1,6 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fromD1 } from "../../src/control-plane/db";
 import { consumeProcessReadingMessage, type ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { ApiScope } from "../../src/control-plane/principal";
@@ -19,6 +18,8 @@ import {
   PUBLIC_LOOKUP,
 } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
@@ -80,7 +81,7 @@ async function drainQueue(services: Services): Promise<void> {
     await consumeProcessReadingMessage(
       { body: envelope, ack() {} },
       {
-        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        db: testControlPlane((env as unknown as Env)),
         nowMs: Date.now(),
         process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
       },
@@ -172,11 +173,10 @@ beforeEach(() => {
 afterEach(clearBucket);
 
 async function founderUserId(): Promise<string> {
-  const row = await (env as unknown as Env).CONTROL_PLANE.prepare(
+  const row = await testControlPlane((env as unknown as Env)).first<{ id: string }>(
     "SELECT id FROM users WHERE email_canonical = ?",
-  )
-    .bind("founder@test.example")
-    .first<{ id: string }>();
+    "founder@test.example",
+  );
   if (!row) throw new Error("founder user missing");
   return row.id;
 }
@@ -189,19 +189,17 @@ async function insertScopedToken(secret: string, scopes: readonly ApiScope[]): P
     await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
     secret,
   );
-  await workerEnv.CONTROL_PLANE.prepare(
+  await testControlPlane(workerEnv).run(
     `INSERT INTO api_tokens (
-       id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+       id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
      ) VALUES (?, ?, 'scoped', 'legacy', ?, 1, ?, ?)`,
-  )
-    .bind(tokenId, userId, secretHmac, Date.now(), Date.now() + 60_000)
-    .run();
+    tokenId, userId, secretHmac, toTimestamp(Date.now()), toTimestamp(Date.now() + 60_000),
+  );
   for (const scope of scopes) {
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, ?)",
-    )
-      .bind(tokenId, scope)
-      .run();
+      tokenId, scope,
+    );
   }
   return secret;
 }
@@ -745,8 +743,10 @@ describe("MCP adversarial tenant matrix", () => {
     const before = await snapshot();
     for (const token of [secret, OTHER_TOKEN_SECRET]) {
       if (token === OTHER_TOKEN_SECRET) {
-        await env.CONTROL_PLANE.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:read'")
-          .bind("tok_11111111-1111-4111-8111-111111111111").run();
+        await testControlPlane(env).run(
+          "DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:read'",
+          "tok_11111111-1111-4111-8111-111111111111",
+        );
       }
       const denied = await callTool(app, name, args, { token });
       expect(denied.payload.http_status).toBe(403);

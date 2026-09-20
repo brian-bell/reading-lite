@@ -75,8 +75,8 @@ function allowAllUsage(): TenantUsage {
   };
 }
 
-function makeIntake(overrides: Partial<ReadingIntakeDeps> & { reader?: TestReadings } = {}) {
-  const { reader = testReadingsFor(mintTenant()), ...rest } = overrides;
+async function makeIntake(overrides: Partial<ReadingIntakeDeps> & { reader?: TestReadings } = {}) {
+  const { reader = testReadingsFor(await mintTenant()), ...rest } = overrides;
   const { queue, sent } = captureQueue();
   const deps: ReadingIntakeDeps = {
     store: reader.store,
@@ -124,7 +124,7 @@ async function writeOwnedReading(
 
 describe("ReadingIntake.submit", () => {
   it("activates a new reading for an unclaimed url and enqueues under the principal's envelope", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/new";
 
     const out = await intake.submit(url, { email: false });
@@ -143,7 +143,7 @@ describe("ReadingIntake.submit", () => {
   });
 
   it("reports queue_unbound without claiming the url slot", async () => {
-    const { intake, reader } = makeIntake({ queue: null });
+    const { intake, reader } = await makeIntake({ queue: null });
     const url = "https://example.com/no-queue";
 
     const out = await intake.submit(url, { email: true });
@@ -155,7 +155,7 @@ describe("ReadingIntake.submit", () => {
   });
 
   it("returns the existing manifest for a ready owner", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/ready-owner";
     const owner = await writeOwnedReading(reader, url, { id: "rd_READY", status: "ready" });
 
@@ -166,7 +166,7 @@ describe("ReadingIntake.submit", () => {
   });
 
   it("reprocesses a failed owner in place (same reading id, reprocess trigger)", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/failed-owner";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_FAILED",
@@ -191,7 +191,7 @@ describe("ReadingIntake.submit", () => {
   });
 
   it("claims the url afresh when its failed owner is purged before the start", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/failed-owner-purged";
     const owner = await writeOwnedReading(reader, url, { id: "rd_PURGED", status: "failed", content_status: "failed" });
     const start = reader.writer.startAttempt.bind(reader.writer);
@@ -210,7 +210,7 @@ describe("ReadingIntake.submit", () => {
   });
 
   it("reports claim_contention when the claim keeps losing to an owner that is gone by the next look", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/claim-contended";
     // Every claim loses the unique key, and every re-resolve finds no owner: a
     // submit racing a purge, forever. Bounded, and retryable.
@@ -229,7 +229,7 @@ describe("ReadingIntake.importMarkdown", () => {
   const MARKDOWN = "# Imported\n\nbody text";
 
   it("activates a markdown reading for an unclaimed url with eager artifacts", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/import-new";
 
     const out = await intake.importMarkdown(url, MARKDOWN, { title: "Imported", email: false });
@@ -254,7 +254,7 @@ describe("ReadingIntake.importMarkdown", () => {
   });
 
   it("returns the existing manifest for a ready owner without re-importing", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/import-ready";
     const owner = await writeOwnedReading(reader, url, { id: "rd_READY", status: "ready" });
 
@@ -265,7 +265,7 @@ describe("ReadingIntake.importMarkdown", () => {
   });
 
   it("re-imports a failed owner in place, clearing its error and falling back to the stored title", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/import-failed";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_FAILED",
@@ -295,14 +295,14 @@ describe("ReadingIntake.importMarkdown", () => {
 
 describe("ReadingIntake.reprocess", () => {
   it("reports not_found for an unknown id", async () => {
-    const { intake } = makeIntake();
+    const { intake } = await makeIntake();
     await expect(intake.reprocess("rd_MISSING", { email: false })).resolves.toEqual({
       kind: "not_found",
     });
   });
 
   it("refuses a reading with a fresh running attempt unless forced", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/reprocess-running";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_RUNNING",
@@ -328,7 +328,7 @@ describe("ReadingIntake.reprocess", () => {
   });
 
   it("synthesizes the stored markdown for a source-less reprocess of a markdown reading", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/reprocess-markdown";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_MD",
@@ -349,7 +349,7 @@ describe("ReadingIntake.reprocess", () => {
   });
 
   it("reports missing_markdown when a markdown reading has no stored extraction", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/reprocess-markdown-missing";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_MDGONE",
@@ -365,7 +365,7 @@ describe("ReadingIntake.reprocess", () => {
   });
 
   it("keeps a ready reading ready while it reprocesses, carrying no snapshot in the message", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/reprocess-ready";
     const owner = await writeOwnedReading(reader, url, { id: "rd_READY", status: "ready" });
 
@@ -380,10 +380,10 @@ describe("ReadingIntake.reprocess", () => {
   });
 
   it("reports queue_unbound after the conflict checks", async () => {
-    const { reader } = makeIntake();
+    const { reader } = await makeIntake();
     const url = "https://example.com/reprocess-no-queue";
     const owner = await writeOwnedReading(reader, url, { id: "rd_NOQ", status: "failed" });
-    const { intake } = makeIntake({ reader, queue: null });
+    const { intake } = await makeIntake({ reader, queue: null });
 
     await expect(intake.reprocess(owner.id, { email: false })).resolves.toEqual({
       kind: "unavailable",
@@ -400,7 +400,7 @@ describe("ReadingIntake safe-url guard", () => {
   const CREDS_URL = "https://user:secretpass@example.com/creds";
 
   it("rejects a userinfo url on submit without claiming the by-url slot", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
 
     const out = await intake.submit(CREDS_URL, { email: false });
 
@@ -421,7 +421,7 @@ describe("ReadingIntake safe-url guard", () => {
     "http://[::1]/x",
     "http://10.0.0.5/x",
   ])("rejects the blocked literal host %s on submit before any claim", async (url) => {
-    const { intake, sent } = makeIntake();
+    const { intake, sent } = await makeIntake();
 
     const out = await intake.submit(url, { email: false });
 
@@ -435,7 +435,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("still activates a safe url with a port", async () => {
-    const { intake, sent } = makeIntake();
+    const { intake, sent } = await makeIntake();
 
     const out = await intake.submit("https://example.com:8443/ported", { email: false });
 
@@ -444,7 +444,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("rejects a URL-backed reprocess of a stored userinfo url without flipping the manifest", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS", status: "ready" });
 
     const out = await intake.reprocess(owner.id, { email: false });
@@ -460,7 +460,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("allows a markdown-supplied reprocess of a stored userinfo url", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const owner = await writeOwnedReading(reader, CREDS_URL, { id: "rd_CREDS2", status: "ready" });
 
     const out = await intake.reprocess(owner.id, {
@@ -473,7 +473,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("allows a stored-markdown reprocess of a userinfo url", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const owner = await writeOwnedReading(reader, CREDS_URL, {
       id: "rd_CREDS3",
       status: "failed",
@@ -489,7 +489,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("accepts a userinfo source_url on import because imports never fetch it", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
 
     const out = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
 
@@ -501,7 +501,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("returns the existing manifest when a ready userinfo owner already holds the url", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const owner = await writeOwnedReading(reader, CREDS_URL, {
       id: "rd_CREDS_READY",
       status: "ready",
@@ -515,7 +515,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("returns the existing pending manifest for a userinfo import owner, not 400", async () => {
-    const { intake, sent } = makeIntake();
+    const { intake, sent } = await makeIntake();
     const imported = await intake.importMarkdown(CREDS_URL, "# Imported\n\nbody", { email: false });
     if (imported.kind !== "activated") throw new Error("unreachable");
 
@@ -529,7 +529,7 @@ describe("ReadingIntake safe-url guard", () => {
   });
 
   it("returns invalid_url when a failed URL-backed userinfo owner is resubmitted, without a doomed reprocess", async () => {
-    const { intake, reader, sent } = makeIntake();
+    const { intake, reader, sent } = await makeIntake();
     const owner = await writeOwnedReading(reader, CREDS_URL, {
       id: "rd_CREDS_FAILED",
       status: "failed",
@@ -547,7 +547,7 @@ describe("ReadingIntake safe-url guard", () => {
 
   it("counts a rejected submit against the request-rate admission", async () => {
     const usage = recordingUsage();
-    const { intake } = makeIntake({ usage });
+    const { intake } = await makeIntake({ usage });
 
     const out = await intake.submit(CREDS_URL, { email: false });
 
@@ -586,7 +586,7 @@ function recordingUsage(): TenantUsage & { ops: string[] } {
 describe("ReadingIntake usage quotas", () => {
   it("does not reserve a reading slot for a ready or pending owner", async () => {
     const usage = recordingUsage();
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     const url = "https://example.com/quota-ready";
     await writeOwnedReading(reader, url, { id: "rd_QREADY", status: "ready" });
 
@@ -598,7 +598,7 @@ describe("ReadingIntake usage quotas", () => {
 
   it("does not reserve a reading slot for an active-attempt conflict", async () => {
     const usage = recordingUsage();
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     const url = "https://example.com/quota-conflict";
     const owner = await writeOwnedReading(reader, url, {
       id: "rd_QBUSY",
@@ -620,7 +620,7 @@ describe("ReadingIntake usage quotas", () => {
 
   it("reserves a reading slot when re-activating a failed owner in place", async () => {
     const usage = recordingUsage();
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     const url = "https://example.com/quota-failed";
     await writeOwnedReading(reader, url, {
       id: "rd_QFAIL",
@@ -644,7 +644,7 @@ describe("ReadingIntake usage quotas", () => {
         throw new Error("queue send failed");
       },
     } as unknown as Queue<ProcessReadingEnvelopeV1>;
-    const { intake } = makeIntake({ usage, queue });
+    const { intake } = await makeIntake({ usage, queue });
 
     const out = await intake.submit("https://example.com/quota-send-fail", { email: false });
 
@@ -660,7 +660,7 @@ describe("ReadingIntake usage quotas", () => {
         throw new Error("queue send failed");
       },
     } as unknown as Queue<ProcessReadingEnvelopeV1>;
-    const { intake, reader } = makeIntake({ usage, queue });
+    const { intake, reader } = await makeIntake({ usage, queue });
     vi.spyOn(reader.writer, "failActivation").mockRejectedValue(new Error("rollback write failed"));
 
     await expect(
@@ -675,7 +675,7 @@ describe("ReadingIntake usage quotas", () => {
       ...allowAllUsage(),
       admitRequest: async () => ({ ok: false, reason: "request_rate", resetAtMs: Date.parse(NOW) + 60_000 }),
     };
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     // Credentialed (unfetchable) url: admission is denied before the url would
     // have been rejected as invalid_url.
     const url = "https://user:secretpass@example.com/quota-rate";
@@ -695,7 +695,7 @@ describe("ReadingIntake usage quotas", () => {
       ...allowAllUsage(),
       reserveReading: async () => ({ ok: false, reason: "monthly", resetAtMs: Date.parse(NOW) + 86_400_000 }),
     };
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     const url = "https://example.com/quota-month";
 
     const out = await intake.submit(url, { email: false });
@@ -710,7 +710,7 @@ describe("ReadingIntake usage quotas", () => {
 
   it("releases a reserved slot when claim stays contended", async () => {
     const usage = recordingUsage();
-    const { intake, reader } = makeIntake({ usage });
+    const { intake, reader } = await makeIntake({ usage });
     const url = "https://example.com/quota-contended";
     const cas = vi.spyOn(reader.writer, "claimUrl").mockResolvedValue({ kind: "owned", ownerId: null });
 
@@ -729,7 +729,7 @@ describe("ReadingIntake usage quotas", () => {
       ...allowAllUsage(),
       admitRequest: async () => ({ ok: false, reason: "unavailable" }),
     };
-    const { intake } = makeIntake({ usage });
+    const { intake } = await makeIntake({ usage });
     await expect(intake.submit("https://example.com/quota-guard", { email: false })).resolves.toEqual({
       kind: "guard_unavailable",
     });

@@ -19,6 +19,7 @@ export const sqlScope: MiddlewareHandler<{
   const open = (): Sql => (sql ??= sqlFor(c.env));
   c.set("sql", {
     query: (text, values) => open().query(text, values),
+    execute: (text, values) => open().execute(text, values),
     transaction: (run, opts) => open().transaction(run, opts),
     end: async () => undefined,
   });

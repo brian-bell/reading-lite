@@ -15,7 +15,7 @@ afterEach(() => sql.end());
 
 describe("PgReadingStore.listManifests", () => {
   it("returns newest first as ListIndexItems, with total_filtered across pages", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const old = await readyManifest("rd_old", { created_at: "2026-01-01T00:00:00.000Z" });
     const mid = await readyManifest("rd_mid", { created_at: "2026-02-01T00:00:00.000Z" });
     const fresh = await readyManifest("rd_new", { created_at: "2026-03-01T00:00:00.000Z" });
@@ -37,7 +37,7 @@ describe("PgReadingStore.listManifests", () => {
   });
 
   it("breaks created_at ties by id descending", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     for (const id of ["rd_a", "rd_c", "rd_b"]) await seedManifest(sql, tenant, await readyManifest(id));
     const out = await pgReadingStoreFor(sql, tenant).listManifests({ offset: 0, limit: 10 });
     expect(out.readings.map((item) => item.id)).toEqual(["rd_c", "rd_b", "rd_a"]);
@@ -53,7 +53,7 @@ describe("PgReadingStore.listManifests", () => {
     ["_ as a literal, not a wildcard", "a_b", []],
     ["no field", "absent-everywhere", []],
   ])("q matches %s", async (_label, q, expected) => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await seedManifest(sql, tenant, await readyManifest("rd_title", { title: "A Quiet Morning" }));
     await seedManifest(sql, tenant, await readyManifest("rd_tldr", { tldr: "About a harbour town." }));
     await seedManifest(sql, tenant, await readyManifest("rd_url", { url: "https://example.org/needle" }));
@@ -70,7 +70,7 @@ describe("PgReadingStore.listManifests", () => {
     ["case-insensitively on both sides", "DESIGN", ["rd_tagged"]],
     ["whole tags only", "desig", []],
   ])("tag matches %s", async (_label, tag, expected) => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     await seedManifest(sql, tenant, await readyManifest("rd_tagged", { tags: ["Design", "tools"] }));
     await seedManifest(sql, tenant, await readyManifest("rd_other", { tags: ["redesign"] }));
     const out = await pgReadingStoreFor(sql, tenant).listManifests({ tag, offset: 0, limit: 10 });
@@ -82,7 +82,7 @@ describe("PgReadingStore.listManifests", () => {
 
 describe("PgReadingStore.loadReadingById", () => {
   it("round-trips a ready manifest, ordered relationships and source_date included", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const manifest = await readyManifest("rd_full", {
       source_date: "2026-03-09",
       fetched_at: "2026-04-26T19:59:00.000Z",
@@ -111,7 +111,7 @@ describe("PgReadingStore.loadReadingById", () => {
   });
 
   it("round-trips a failed manifest without a revision", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const manifest = await readyManifest("rd_failed", {
       status: "failed",
       title: undefined, tldr: undefined, tags: undefined, keywords: undefined, people: undefined,
@@ -125,13 +125,13 @@ describe("PgReadingStore.loadReadingById", () => {
   });
 
   it("returns null for an unknown id", async () => {
-    expect(await pgReadingStoreFor(sql, mintTenant()).loadReadingById("rd_missing")).toBeNull();
+    expect(await pgReadingStoreFor(sql, await mintTenant()).loadReadingById("rd_missing")).toBeNull();
   });
 });
 
 describe("PgReadingStore.relationshipTargets", () => {
   it("returns list rows for the ids that exist and skips the rest", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const manifest = await readyManifest("rd_target");
     const keyPrefix = await seedManifest(sql, tenant, manifest);
     await seedManifest(sql, tenant, await readyManifest("rd_unasked"));
@@ -145,7 +145,7 @@ describe("PgReadingStore.relationshipTargets", () => {
 
 describe("PgReadingStore.findOwnerByUrl", () => {
   it("resolves the owning reading and ignores an orphan duplicate of the same URL", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const url = "https://example.com/shared";
     await seedManifest(sql, tenant, await readyManifest("rd_owner", { url }));
     await seedManifest(sql, tenant, await readyManifest("rd_orphan", { url, status: "failed" }), { ownsUrl: false });
@@ -155,7 +155,7 @@ describe("PgReadingStore.findOwnerByUrl", () => {
   });
 
   it("is a pure SELECT: it runs inside a READ ONLY transaction", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const url = "https://example.com/read-only";
     await seedManifest(sql, tenant, await readyManifest("rd_ro", { url }));
     // A Sql wraps one client, so the store's query joins this transaction.
@@ -172,18 +172,18 @@ describe("PgReadingStore.findOwnerByUrl", () => {
   });
 
   it("allows one owner per URL per tenant", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const url = "https://example.com/contested";
     await seedManifest(sql, tenant, await readyManifest("rd_first", { url }));
     await expect(seedManifest(sql, tenant, await readyManifest("rd_second", { url }))).rejects.toThrow(/reading_urls_pkey/);
     // The same URL in another tenant is a different ownership row.
-    await seedManifest(sql, mintTenant(), await readyManifest("rd_first", { url }));
+    await seedManifest(sql, await mintTenant(), await readyManifest("rd_first", { url }));
   });
 });
 
 describe("PgReadingStore content keys", () => {
   it("returns the revision's relative keys, and R2 serves them under the tenant root", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const keyPrefix = await seedManifest(sql, tenant, await readyManifest("rd_content"));
     const keys = await pgReadingStoreFor(sql, tenant).contentKeys("rd_content");
     expect(keys).toEqual({
@@ -203,7 +203,7 @@ describe("PgReadingStore content keys", () => {
   });
 
   it("derives keys from key_prefix for a reading that was never published", async () => {
-    const tenant = mintTenant();
+    const tenant = await mintTenant();
     const keyPrefix = await seedManifest(
       sql,
       tenant,
@@ -219,10 +219,10 @@ describe("PgReadingStore content keys", () => {
 
 describe("PgReadingStore tenant isolation", () => {
   it("never returns another tenant's rows from any method", async () => {
-    const owner = mintTenant();
+    const owner = await mintTenant();
     const url = "https://example.com/private";
     await seedManifest(sql, owner, await readyManifest("rd_private", { url }));
-    const stranger = pgReadingStoreFor(sql, mintTenant());
+    const stranger = pgReadingStoreFor(sql, await mintTenant());
     expect(await stranger.listManifests({ offset: 0, limit: 10 })).toEqual({ readings: [], total_filtered: 0 });
     expect(await stranger.loadReadingById("rd_private")).toBeNull();
     expect(await stranger.relationshipTargets(["rd_private"])).toEqual([]);

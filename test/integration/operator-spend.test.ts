@@ -5,6 +5,7 @@ import { createPaidFetch } from "../../src/control-plane/paid-dispatch";
 import { quotePaidRequest } from "../../src/modules/paid-pricing";
 import type { Env } from "../../src/index";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 // reading-lite-gh319.1: operator commands reach the central spend authority
 // through a service-binding-only entrypoint that forwards exactly the four
@@ -65,8 +66,8 @@ describe("operator spend entrypoint", () => {
       body: JSON.stringify({ model: "text-embedding-3-small", input: "Hello" }),
     };
     const max = (await quotePaidRequest(url, init))!.maxMicrodollars;
-    await env.CONTROL_PLANE.prepare("UPDATE tenant_limits SET daily_spend_microdollars = ? WHERE tenant_id = ?")
-      .bind(max, FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run(
+      "UPDATE tenant_limits SET daily_spend_microdollars = ? WHERE tenant_id = ?", max, FOUNDER_TENANT_ID);
     const kinds: string[] = [];
     const paid = (fetch: typeof globalThis.fetch) => createPaidFetch({
       tenantId: FOUNDER_TENANT_ID,

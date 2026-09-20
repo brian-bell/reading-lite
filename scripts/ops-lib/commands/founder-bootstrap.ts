@@ -7,9 +7,8 @@
 // production write additionally requires --confirm-production.
 
 import {
-  DATABASE_BY_ENV,
   HelpRequested,
-  makeWranglerD1,
+  openPostgresControlPlane,
   parseFounderBootstrapArgs,
   resolveEnvVars,
   runFounderBootstrap,
@@ -55,7 +54,7 @@ export const founderBootstrapCommand: CommandDefinition<FounderBootstrapCommandD
   name: "bootstrap",
   summary: "Create/resolve the founder principal and import the legacy token",
   safety: "plan-first",
-  helpText: `Usage: npm run ops -- founder bootstrap [--email <addr>] [--env local|staging|production] [--execute] [--confirm-production]
+  helpText: `Usage: npm run ops -- founder bootstrap [--email <addr>] [--env local|staging|production] [--database-url-env NAME] [--execute] [--confirm-production]
 
 Idempotently creates or resolves the founder user, default settings,
 explicit placeholder tenant limits, and imports READER_API_TOKEN as a
@@ -64,25 +63,21 @@ explicit placeholder tenant limits, and imports READER_API_TOKEN as a
 Options:
   --email                  Founder address. Default: FOUNDER_EMAIL.
   --env                    local (default), staging, or production.
+  --database-url-env       Staging and production: the environment variable
+                           holding a DIRECT PostgreSQL connection string
+                           (default: DATABASE_URL). Local uses the dev
+                           database (READING_LITE_DATABASE_URL or compose).
   --execute                Apply writes. Otherwise prints the plan.
   --confirm-production     Required with --execute --env production.
   --help                   Show this message.
 
 Credentials: AUTH_ROOT_SECRET and READER_API_TOKEN from the environment
-or .dev.vars / .stg.vars / .prd.vars. Apply D1 migrations first:
-
-  wrangler d1 migrations apply reading-lite-control-dev --local
-  wrangler d1 migrations apply reading-lite-control-staging --env staging --remote
-  wrangler d1 migrations apply reading-lite-control --env production --remote`,
+or .dev.vars / .stg.vars / .prd.vars. The control plane is PostgreSQL
+(ADR 0005); apply its migrations first with \`npm run ops -- db migrate\`.`,
   defaultDeps: (io: CommandIo): FounderBootstrapCommandDeps => ({
     io,
     resolveEnvVars,
-    openDb: async (env) =>
-      makeWranglerD1({
-        database: DATABASE_BY_ENV[env],
-        local: env === "local",
-        ...(env === "local" ? {} : { wranglerEnv: env }),
-      }),
+    openDb: openPostgresControlPlane,
     now: () => Date.now(),
   }),
   run: runFounderBootstrapCommand,

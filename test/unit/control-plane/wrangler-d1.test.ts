@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { makeWranglerD1 } from "../../../scripts/lib/founder-bootstrap";
-import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
-import { parseUserId } from "../../../src/control-plane/ids";
-import { createApiToken } from "../../../src/control-plane/tokens";
 
 const block = (changes: number, results: unknown[] = []) => ({ success: true, results, meta: { changes } });
 const response = (body: unknown) => ({ stdout: JSON.stringify(body), stderr: "", code: 0 });
@@ -101,22 +98,5 @@ describe("makeWranglerD1", () => {
     const run = vi.fn().mockResolvedValue(response([block(1)]));
     await makeWranglerD1({ database: "test-db", local, wranglerEnv, run }).all("SELECT * FROM example WHERE name = ?", "O'Brien");
     expect(run).toHaveBeenCalledWith(["d1", "execute", "test-db", "--command", "SELECT * FROM example WHERE name = 'O''Brien'", "--json", ...flags]);
-  });
-
-  it.each([0, 1])("uses the token INSERT's actual count %i for admission", async (changes) => {
-    const run = vi.fn().mockResolvedValueOnce(response([block(changes)])).mockResolvedValueOnce(response([block(changes)]));
-    const db = makeWranglerD1({ database: "test", local: false, run });
-    const result = await createApiToken(db, {
-      userId: parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!,
-      name: "ops", scopes: ["readings:read"], nowMs: 1000, userAgentLabel: null,
-      authRoot: { secret: parseAuthRootSecret("01".repeat(32)), version: 1 },
-      newUuid: () => "770e8400-e29b-41d4-a716-446655440000",
-      randomBytes: () => new Uint8Array(32).fill(0xab),
-    });
-    if (changes === 0) expect(result).toEqual({ kind: "cap" });
-    else expect(result).toMatchObject({ kind: "ok", created: { token: `tok_770e8400-e29b-41d4-a716-446655440000.${"ab".repeat(32)}` } });
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(run.mock.calls[0][0][4]).toContain("INSERT INTO api_tokens");
-    expect(run.mock.calls[1][0][4]).toContain("INSERT INTO api_token_scopes");
   });
 });

@@ -1,8 +1,8 @@
 # Architecture
 
 Reading Lite runs on one Cloudflare Worker plus PostgreSQL with pgvector
-(through Hyperdrive), D1, Durable Objects, R2, and Queues. Reading state and
-embeddings live in PostgreSQL; captured content stays in R2
+(through Hyperdrive), Durable Objects, R2, and Queues. Reading state,
+embeddings and the control plane live in PostgreSQL; captured content stays in R2
 ([ADR 0005](decisions/0005-postgresql-storage.md)). The Worker owns `/api/*`, `/health`, and `/mcp*`;
 the TanStack Start frontend in `app/`, a separate Worker, handles the other
 routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). Cloudflare
@@ -32,12 +32,15 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
 4. Acquire tenant/global processing leases. Embed the source, query related
    readings, summarize, then embed the TL;DR. The paid checkpoint on the
    attempt row avoids repeating completed provider stages on recovery.
-5. Publish in one transaction (see below). Tenant eligibility is D1 state, so
-   it is checked immediately before and again immediately after.
-6. If the tenant stopped being eligible in between, compensate in the same
-   consumer: a `deleting` tenant's reading is removed outright, any other
-   ineligible tenant's loses its embedding. Send any eligible immediate
-   notification after publication; mail failure does not fail a ready reading.
+5. Publish in one transaction (see below). Tenant eligibility is part of it:
+   the transaction locks the tenant's `users` row FOR SHARE and reads `status`
+   there, so `DELETE /api/account` waits behind an in-flight publish and there
+   is no window to compensate for. An ineligible tenant's reading is stored
+   with no embedding, so it is never searchable; a `deleting` tenant's copy is
+   removed by the account wipe, which sweeps rows again after its objects
+   phase for exactly this publisher.
+6. Send any eligible immediate notification after publication; mail failure
+   does not fail a ready reading.
 
 The hosted reading consumer has `max_concurrency=3` in staging and production.
 Tenant/global leases also limit paid concurrency. Every actual hosted provider
@@ -183,10 +186,13 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
 The R2 `ReadingStore`, `ListIndexStore`, and Vectorize `SimilarityStore` remain
-for the operator scripts, which move in a later slice, and the account wipe
-still runs its Vectorize and vector-ledger phases for vectors written before
-the cutover. No runtime reading path writes manifests, `index/list.json`,
-pointers, or Vectorize.
+for the operator scripts, which move in a later slice. The account wipe no
+longer has Vectorize or vector-ledger phases at all: an embedding is a row that
+deletes with its reading, so the wipe is rows then objects, and the ledger
+module is operator-only (`scripts/account-lib/vector-ledger.ts`). Vectors
+written to Vectorize before the cutover are left to its retirement at cutover.
+No runtime reading path writes manifests, `index/list.json`, pointers, or
+Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover
 copied data and retained global R2 objects and unnamespaced vectors, which
@@ -195,12 +201,18 @@ command is retired; see the [historical cutover](founder-cutover.md).
 
 ## Authentication and background jobs
 
-D1 stores users, credentials, sessions, settings, limits, and deletion records.
+PostgreSQL stores users, credentials, sessions, settings, limits, and deletion
+records ([ADR 0005](decisions/0005-postgresql-storage.md)). Each HTTP request
+shares one client between authentication and its handler. Reads that were a
+read-then-write on D1's single writer now lock then act in one transaction:
+magic-link issue (advisory locks per address and user), redeem (the challenge
+row), session issue and token creation (the user row), founder bootstrap, and
+teardown.
 `src/control-plane/` handles branded IDs, HKDF/HMAC credentials, eligibility,
 CSRF, recent auth, and guard RPCs. `TenantUsageGuard` uses `idFromName(tenantId)`
 for request limits, hourly/monthly reading slots, and processing leases.
 `GlobalUsageGuard` owns global leases and the shared tenant/global spend ledger.
-Runtime auth looks up the imported founder bearer in D1; it never falls back
+Runtime auth looks up the imported founder bearer in PostgreSQL; it never falls back
 to the `READER_API_TOKEN` secret. See the [API guide](api.md).
 
 `FrontendReads` (`src/frontend-reads.ts`) is a named `WorkerEntrypoint` for the
@@ -214,7 +226,7 @@ resolution, `x-expected-tenant`, and handlers match the HTTP API. The rebuilt
 `requirePrincipal` accepts its cookie as same-origin instead of requiring
 `Origin` or `Sec-Fetch-Site`, and nothing on the wire can reach that set. Results
 are `{ status, body }` with no headers, so the entrypoint never sets cookies.
-Session auth still refreshes `last_seen_at_ms`, as on any authenticated GET.
+Session auth still refreshes `last_seen_at`, as on any authenticated GET.
 Every prototype method is RPC-callable, so add one only for an allowlisted read.
 
 `src/index.ts` dispatches fetch, queue, and scheduled events. Cron runs every
@@ -235,11 +247,11 @@ fan-out redrives pending deliveries only after 15 minutes. Each send uses
 and `LOCAL_MAIL_SINK`. See [mail configuration](operations.md#secrets).
 
 Account deletion first suppresses access and revokes credentials. Wipe starts
-after seven days, or with an explicit forced job, and seeds its own vector
-ledger before deleting anything. D1 `wipe_progress` owns seed/object cursors,
-lease sequence, probe counts, and current/first completion records. Cron runs
-`account-teardown.ts` after completion and an empty-prefix check. Its audit
-row survives the account, as do unconfirmed vector IDs for repair. Read the
+after seven days, or with an explicit forced job, and deletes the tenant's
+reading rows and embeddings before its R2 objects. `wipe_progress` owns the
+phase (`rows`, `objects`, `done`), the object cursor, the lease sequence, and
+current/first completion records. Cron runs `account-teardown.ts` after
+completion and an empty-prefix check. Its audit row survives the account. Read the
 [complete deletion rules](operations.md#account-deletion) before changing any
 of these modules.
 

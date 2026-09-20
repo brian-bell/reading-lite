@@ -182,10 +182,13 @@ describe("wipe/ prefix guard", () => {
 
 describe("bucket → control-plane mapping", () => {
   // The mapping decides which control plane the safety briefing sends the
-  // operator to. wrangler.toml owns both names; if either moves, the printed
-  // query would silently point at the wrong (or a nonexistent) database, so
-  // pin the pair rather than trusting two copies to stay in step.
-  it("names, for each env, the bucket and D1 database wrangler.toml declares", async () => {
+  // operator to. wrangler.toml owns the bucket name; if it moves, the printed
+  // query would silently point at the wrong environment, so pin the pair
+  // rather than trusting two copies to stay in step. The D1 database name is
+  // no longer declared there — the control plane is on PostgreSQL (ADR 0005)
+  // and these commands are the last wrangler-D1 callers, ported or retired by
+  // reading-lite-gh347.4.
+  it("names, for each env, the bucket wrangler.toml declares", async () => {
     const { promises: fs } = await import("node:fs");
     const path = await import("node:path");
     const toml = await fs.readFile(
@@ -206,10 +209,8 @@ describe("bucket → control-plane mapping", () => {
     const valueIn = (block: string, key: string): string | undefined =>
       new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m").exec(block)?.[1];
 
-    for (const [bucket, { database, env }] of Object.entries(CONTROL_PLANE_BY_BUCKET)) {
-      const block = blockFor(env);
-      expect(valueIn(block, "bucket_name"), `${env} bucket_name`).toBe(bucket);
-      expect(valueIn(block, "database_name"), `${env} database_name`).toBe(database);
+    for (const [bucket, { env }] of Object.entries(CONTROL_PLANE_BY_BUCKET)) {
+      expect(valueIn(blockFor(env), "bucket_name"), `${env} bucket_name`).toBe(bucket);
     }
   });
 });

@@ -1,5 +1,11 @@
 // Workers-pool helpers for the PostgreSQL store tests. Every test mints its
 // own tenant id, so parallel files never collide on the one shared database.
+//
+// A minted tenant gets a `users` row, because in production it always has one:
+// a tenant id IS a user id, and claim and publish refuse to write for a tenant
+// whose row is missing or not active. A fixture without one would exercise the
+// torn-down path, not the ordinary one. Tests that want a tenant with no row
+// (or a non-active one) say so themselves.
 import { env } from "cloudflare:test";
 import { manifestToRows, writeReadingRows, type ManifestRowsInput } from "../../scripts/pg-lib/manifest-rows";
 import { mintUserId, parseTenantId, type TenantContext } from "../../src/control-plane/ids";
@@ -8,8 +14,17 @@ import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { EMBEDDING_DIM } from "../../src/schemas/api";
 import { ManifestSchema, type Manifest } from "../../src/schemas/manifest";
 import { sha256Hex } from "../../src/services";
+import { insertActiveUser } from "./control-plane-db";
 
-export function mintTenant(): TenantContext {
+export async function mintTenant(): Promise<TenantContext> {
+  const tenant: TenantContext = { tenantId: parseTenantId(mintUserId())! };
+  await insertActiveUser(env, String(tenant.tenantId));
+  return tenant;
+}
+
+// The same id without the users row: a tenant torn down, or one that never
+// existed. Synchronous, so it cannot be mistaken for the ordinary fixture.
+export function mintTenantWithoutUser(): TenantContext {
   return { tenantId: parseTenantId(mintUserId())! };
 }
 

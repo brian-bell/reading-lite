@@ -7,6 +7,8 @@ import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 
@@ -112,19 +114,17 @@ async function insertReadToken(userId: string) {
   );
   const now = Date.parse(NOW);
   const tokenId = `tok_${crypto.randomUUID()}`;
-  await workerEnv.CONTROL_PLANE.prepare(
+  await testControlPlane(workerEnv).run(
     `INSERT INTO api_tokens (
        id, user_id, name, format, secret_hmac, hash_key_version,
-       created_at_ms, expires_at_ms
+       created_at, expires_at
      ) VALUES (?, ?, 'cli', 'standard', ?, 1, ?, ?)`,
-  )
-    .bind(tokenId, userId, secretHmac, now, now + 90 * 24 * 60 * 60 * 1000)
-    .run();
-  await workerEnv.CONTROL_PLANE.prepare(
+    tokenId, userId, secretHmac, toTimestamp(now), toTimestamp(now + 90 * 24 * 60 * 60 * 1000),
+  );
+  await testControlPlane(workerEnv).run(
     "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, 'readings:read')",
-  )
-    .bind(tokenId)
-    .run();
+    tokenId,
+  );
   return { tokenId, bearer: `Bearer ${tokenId}.cd${"cd".repeat(31)}` };
 }
 
@@ -291,16 +291,16 @@ describe("verified email change", () => {
     const session = await redeemUser("stale-changer@test.example", "clm_stale_req");
     const staleEnv = env as unknown as Env;
     const current = (
-      await staleEnv.CONTROL_PLANE.prepare(
-        "SELECT id FROM sessions WHERE user_id = ? AND revoked_at_ms IS NULL LIMIT 1",
+      await testControlPlane(staleEnv).first<{ id: string }>(
+        "SELECT id FROM sessions WHERE user_id = ? AND revoked_at IS NULL LIMIT 1",
+        session.userId,
       )
-        .bind(session.userId)
-        .first<{ id: string }>()
     )?.id;
     expect(current).toBeTruthy();
-    await staleEnv.CONTROL_PLANE.prepare("UPDATE sessions SET authenticated_at_ms = ? WHERE id = ?")
-      .bind(Date.parse(NOW) - 11 * 60 * 1000, current)
-      .run();
+    await testControlPlane(staleEnv).run(
+      "UPDATE sessions SET authenticated_at = ? WHERE id = ?",
+      toTimestamp(Date.parse(NOW) - 11 * 60 * 1000), current,
+    );
     const stale = await request("/api/auth/email-change", {
       method: "POST",
       cookie: session.cookie,
@@ -394,12 +394,12 @@ describe("verified email change", () => {
     expect(callerB.sent).toHaveLength(0);
 
     const workerEnv = env as unknown as Env;
-    const rows = await workerEnv.CONTROL_PLANE.prepare(
+    const rows = await testControlPlane(workerEnv).all<{ email_canonical: string; user_id: string; state: string }>(
       `SELECT email_canonical, user_id, state FROM auth_challenges
        WHERE purpose = 'email_change'
-       ORDER BY issued_at_ms`,
-    ).all<{ email_canonical: string; user_id: string; state: string }>();
-    expect(rows.results).toEqual([
+       ORDER BY issue_seq`,
+    );
+    expect(rows).toEqual([
       { email_canonical: "snap-a@test.example", user_id: caller.userId, state: "issued" },
       { email_canonical: "snap-b@test.example", user_id: other.userId, state: "issued" },
       { email_canonical: "snap-b@test.example", user_id: caller.userId, state: "revoked" },
@@ -422,12 +422,11 @@ describe("verified email change", () => {
     });
     expect(restoredOtherB.res.status).toBe(200);
 
-    const callerFailedB = await workerEnv.CONTROL_PLANE.prepare(
+    const callerFailedB = await testControlPlane(workerEnv).first<{ state: string }>(
       `SELECT state FROM auth_challenges
        WHERE purpose = 'email_change' AND user_id = ? AND email_canonical = ?`,
-    )
-      .bind(caller.userId, "snap-b@test.example")
-      .first<{ state: string }>();
+      caller.userId, "snap-b@test.example",
+    );
     expect(callerFailedB?.state).toBe("revoked");
   });
 });
