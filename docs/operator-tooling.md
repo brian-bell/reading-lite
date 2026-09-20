@@ -36,12 +36,12 @@ criteria.
 
 44 files in `scripts/ops-lib/commands/`.
 
-### Port (14)
+### Port (18)
 
 | Command | What changes |
 |---|---|
 | `corpus audit` | Inventories non-ready readings from `readings` instead of walking `index/list.json` and every manifest. Orphan-duplicate detection becomes a join against `reading_urls`. |
-| `corpus drop` | Deletes the row; `reading_urls`, revisions, relationships and the embedding cascade. No separate Vectorize delete, no list-index rewrite. Still refuses a ready reading without `--force`. |
+| `corpus drop` | Deletes the row; `reading_urls`, revisions, relationships and the embedding cascade. No separate Vectorize delete, no list-index rewrite. `--allow-ready` still gates dropping a ready reading and still refuses the production bucket, but it no longer needs `--vectorize <index>`: the embedding is a row that goes with its reading, so there is no second store to keep in step. |
 | `corpus sweep` | Groups canonicalized URLs over `readings.url`, keeps the best copy, deletes the rest. The embedding delete it used to issue against Vectorize is now the cascade. |
 | `corpus recover` | Reads the audit's `index.json` as before; the state it re-checks before acting comes from rows. Reprocess still goes through the reading API. |
 | `corpus purge-connections` | **Still required.** `reading_relationships` has a foreign key on the *source* only, so deleting a reading leaves every inbound row that named it as `target_id`. One `DELETE … WHERE target_id = $1` replaces the manifest rewrite. |
@@ -49,8 +49,11 @@ criteria.
 | `corpus refresh-connections` | Judged connections are written with the writer's locked compare-and-replace instead of a manifest compare-and-set. |
 | `corpus refresh-tensions` | Same, for tensions. |
 | `corpus ingest` | The batch pipeline's two ownership predicates (`scripts/corpus-lib/batch/r2-ownership.ts`) become reads of `reading_urls`. Sidecars, resume rules and `--sole-writer` are unchanged. |
-| `account wipe` | Plans and enqueues from `wipe_progress` rows (slice 1c) rather than the R2 progress object. |
+| `reading-list check` | Resolves each exported URL against `reading_urls` instead of fetching `index/list.json` through wrangler. Left unported it would mark every already-saved URL unprocessed, and `reading-list process` would resubmit the corpus. |
+| `account wipe` | Reads `users.status` and `wipe_progress` over a direct PostgreSQL connection. It already read them from a database rather than the R2 progress object — the move is D1 to PostgreSQL. |
 | `account residue-scan` | Rewritten source set. `vector_ledger`, `ledger_vectors`, `listed_vectors` and the `d1.*` sources are gone; what remains is per-table row counts for the tenant plus the R2 prefix. |
+| `system status` | Reads policy from PostgreSQL. Unported it reports a frozen policy: `scripts/system-lib/policy.ts` resolves its handle through `controlPlaneDbForBucket`, which is still `makeWranglerD1`. |
+| `system policy` | Same handle, and worse unported — it would write spend caps to a database no Worker binding reads, so a cap the operator believes is set would never apply. |
 | `extract agent` | Takes the content key from the reading's row rather than deriving it from the manifest layout. |
 | `staging prepare-context` | Copies rows plus the R2 content they reference, not manifests, pointers and `index/list.json`. |
 | `staging setup` / `staging teardown` | Provision and tear down the staging database alongside the bucket and queues, and run `ops db migrate` against it. Paired because they must stay mirror images. |
@@ -67,27 +70,30 @@ criteria.
 | `corpus backfill-similarity` | A one-time backfill of a manifest field that predates `similarity`. The values travel into rows through the #348 importer. |
 | `corpus backfill-source-date` | Same: a one-time backfill, from stored raw HTML, of a field the importer carries over. |
 | `corpus normalize-tags` | Same. Write-time normalization in `src/modules/tags.ts` keeps new readings canonical; a future corpus-wide rewrite is a single `UPDATE`, not a command. |
-| `account sweep-wipe-prefix` | Wipe progress is a `wipe_progress` row (slice 1c); nothing writes `wipe/{tenantId}/progress.json` any more. **Kept working, unported, until #351**, which deletes it after confirming the prefix is empty — it is the tool that proves that. |
+| `account sweep-wipe-prefix` | Nothing has written `wipe/{tenantId}/progress.json` since #195 S2 moved wipe progress into the control plane; this command exists to clear records that predate it. **Kept working, unported, until #351**, which deletes it after confirming the prefix is empty — it is the tool that proves that. It reads only R2, so PostgreSQL does not reach it. |
 
-### Unchanged (21)
+### Unchanged (17)
 
-These reach the reading API over HTTP, read fixtures, or already moved to
-PostgreSQL in slices 1a–1c:
+These reach the reading API over HTTP, drive Durable Objects, read fixtures,
+or already moved to PostgreSQL in slices 1a–1c:
 
 `db migrate`, `deploy release`, `deploy web`, `deploy wipe-check`,
 `deploy worker`, `eval summarizer`, `extract probe`, `founder bootstrap`,
 `import bookmarks`, `import markdown`, `import reddit`, `import youtube`,
 `reading-list process`, `reading submit`, `staging smoke`,
-`staging token-revocation`, `system lease-clear`, `system policy`,
-`system status`.
+`staging token-revocation`, `system lease-clear`.
 
-`deploy worker` gains the migration step in this slice, and `import youtube`
-and `staging smoke` get comment corrections only; neither changes behaviour.
+"Unchanged" means the storage decision is a no-op, not that the file is never
+touched: `deploy worker` gains the migration step later in this slice, which
+changes what it does at deploy time but not which store it reads.
+
+18 + 9 + 17 = 44.
 
 ## Skills
 
-`.claude/skills/`. Each of these narrates its own storage reads to the agent
-running it, so a stale one is a wrong instruction, not just stale prose.
+Skills live in `.agents/skills/`; `.claude/skills/` holds the corpus ones
+directly and symlinks the rest. Each narrates its own storage reads to the
+agent running it, so a stale one is a wrong instruction, not just stale prose.
 
 | Skill | Decision |
 |---|---|
@@ -97,6 +103,7 @@ running it, so a stale one is a wrong instruction, not just stale prose.
 | `corpus-recover` | Port — the reason/policy table is unchanged; the inputs come from the ported audit. |
 | `check-reading-list` | Port — reads ownership from rows rather than `index/list.json` via wrangler. |
 | `process-reading-list` | Port — API-only already; its cross-references to the check skill's R2 read need correcting. |
+| `compare-summary-effort` | Port — it reads a production reading's stored Markdown and the connections named in its manifest, both of which are rows now. Its production-stays-GET-only rule is unaffected. |
 | `reddit-import` | Unchanged — imports through the API. |
 | `youtube-import` | Unchanged — imports through the API. |
 | `chrome-reading-list` | Unchanged — never touched the corpus. |
