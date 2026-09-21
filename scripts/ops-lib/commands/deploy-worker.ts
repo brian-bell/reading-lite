@@ -109,6 +109,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
 
   // The last gate before the upload: the database must be at the head of
   // db/migrations/. Fail-closed — a non-zero run uploads nothing.
+  let planFailed = false;
   const databaseUrl = deps.env[databaseUrlEnv];
   if (!databaseUrl) {
     if (execute) {
@@ -126,18 +127,27 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       readMigrations: deps.readMigrations,
       connect: deps.connect,
     });
-    if (migrations !== 0) {
+    if (!migrations.ok) {
       if (execute) {
         deps.io.stderr("[DEPLOY] migrations FAILED; nothing uploaded.");
         return 1;
       }
-      // A plan's job is the config and build dry-run. An unreachable database
-      // must not take that away: report it and carry on.
-      deps.io.stderr("[PLAN] could not read pending migrations; continuing with the build dry-run.");
+      // A plan's job is the config and build dry-run, and an unreachable
+      // database must not take that away: the migration history simply went
+      // unread, which is a gap in the plan rather than evidence against it.
+      // Drift is the opposite — the history WAS read and is not something the
+      // operator may act on — so the dry-run still runs but the plan fails.
+      if (migrations.reason === "unreachable") {
+        deps.io.stderr("[PLAN] could not reach the database; continuing with the build dry-run, migrations uninspected.");
+      } else {
+        planFailed = true;
+        deps.io.stderr("[PLAN] the migration history is not a plan you can act on; the build dry-run below does not make this deploy safe.");
+      }
     }
   }
 
-  return deps.runWrangler(wranglerArgs);
+  const uploaded = await deps.runWrangler(wranglerArgs);
+  return uploaded === 0 && planFailed ? 1 : uploaded;
 }
 
 export const deployWorkerCommand: CommandDefinition<DeployWorkerDeps> = {
@@ -156,7 +166,10 @@ founder token.
 
 Migrations are the last gate before the upload and are fail-closed: a drifted
 or failing migration exits 1 with nothing uploaded, so a release whose code
-expects a new column cannot reach a database that lacks it.
+expects a new column cannot reach a database that lacks it. A plan that finds
+drift also exits 1, after the build dry-run. A plan that cannot reach the
+database warns, dry-runs and exits 0: the history went unread, which is a gap
+in the plan rather than evidence against it.
 
 Before the upload, tenant mode must already be active with matching
 R2/Vectorize bindings and resource creation metadata, or the operator must

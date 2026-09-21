@@ -32,14 +32,24 @@ export interface MigrationRun {
 const label = (file: MigrationFile) => `${file.version}_${file.name}`;
 
 /**
+ * Why a run did not reach the head of db/migrations/.
+ *
+ * Callers need the distinction. A plan may tolerate `unreachable` — the
+ * database was not consulted, which is a gap in the plan, not evidence against
+ * it. `drift` and `failed` are the opposite: the migration history was read
+ * and is not something the operator may act on, so they survive even a plan.
+ */
+export type MigrationFailure = "unreachable" | "drift" | "failed";
+
+export type MigrationOutcome = { ok: true } | { ok: false; reason: MigrationFailure };
+
+/**
  * Apply (or, without `execute`, merely report) the pending migrations.
  *
- * Returns 0 when the database is at or brought to the head of
- * `db/migrations/`, and 1 for drift or any connection/apply failure. A caller
- * that deploys must treat a non-zero return as fail-closed: nothing beyond
- * this point may run.
+ * Reports success, or why not. A caller that deploys must treat any failure
+ * as fail-closed: nothing beyond this point may run.
  */
-export async function runPendingMigrations(run: MigrationRun): Promise<0 | 1> {
+export async function runPendingMigrations(run: MigrationRun): Promise<MigrationOutcome> {
   const { io, mode } = run;
   const files = run.readMigrations();
   let client: MigrationConnection;
@@ -47,7 +57,7 @@ export async function runPendingMigrations(run: MigrationRun): Promise<0 | 1> {
     client = await run.connect(run.databaseUrl);
   } catch (error) {
     io.stderr(error instanceof Error ? error.message : String(error));
-    return 1;
+    return { ok: false, reason: "unreachable" };
   }
   try {
     const plan = await planMigrations(client, files);
@@ -55,14 +65,17 @@ export async function runPendingMigrations(run: MigrationRun): Promise<0 | 1> {
     for (const file of plan.pending) io.stdout(`[${mode}] pending ${label(file)}`);
     if (!run.execute) {
       if (plan.pending.length > 0) io.stdout(`[${mode}] re-run with --execute to apply.`);
-      return 0;
+      return { ok: true };
     }
     for (const file of await migrate(client, files)) io.stdout(`[${mode}] applied ${label(file)}`);
-    return 0;
+    return { ok: true };
   } catch (error) {
-    if (error instanceof MigrationDriftError) io.stderr(`Migration drift: ${error.message}`);
-    else io.stderr(error instanceof Error ? error.message : String(error));
-    return 1;
+    if (error instanceof MigrationDriftError) {
+      io.stderr(`Migration drift: ${error.message}`);
+      return { ok: false, reason: "drift" };
+    }
+    io.stderr(error instanceof Error ? error.message : String(error));
+    return { ok: false, reason: "failed" };
   } finally {
     await client.end();
   }

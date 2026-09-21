@@ -499,8 +499,14 @@ PostgreSQL migrations in `db/migrations/` and then uploads.
 Migrations are the last gate before the upload, after the cutover guard and
 the tenant-activation preflight, and they are fail-closed. Drift or a failing
 file exits 1 with nothing uploaded, so a release whose code expects a new
-column cannot reach a database that lacks it. A plan lists the pending files
-and applies none.
+column cannot reach a database that lacks it.
+
+A plan lists the pending files and applies none. It still exits 1 on drift,
+after running the build dry-run: the history was read and is not something to
+act on, and the dry-run passing does not make the deploy safe. The one
+tolerated failure is an unreachable database — the history simply went unread,
+which is a gap in the plan rather than evidence against it, so the plan warns,
+dry-runs and exits 0.
 
 #### Step 0: the connection strings
 

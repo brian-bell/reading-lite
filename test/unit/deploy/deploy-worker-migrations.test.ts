@@ -17,7 +17,13 @@ const file = (version: string, name: string): MigrationFile => ({
 });
 
 function deps(
-  options: { migrateFails?: boolean; connectFails?: boolean; pending?: MigrationFile[]; env?: Record<string, string> } = {},
+  options: {
+    migrateFails?: boolean;
+    connectFails?: boolean;
+    drift?: boolean;
+    pending?: MigrationFile[];
+    env?: Record<string, string>;
+  } = {},
 ) {
   const order: string[] = [];
   const out: string[] = [];
@@ -37,7 +43,11 @@ function deps(
           throw new Error('relation "readings" does not exist');
         }
         // planMigrations' probe; an absent table means nothing is applied yet.
-        if (text.includes("to_regclass")) return { rows: [{ present: false }] };
+        if (text.includes("to_regclass")) return { rows: [{ present: Boolean(options.drift) }] };
+        // Drift: a recorded migration with no file on disk.
+        if (options.drift && text.includes("FROM schema_migrations")) {
+          return { rows: [{ version: "0001", name: "vanished", checksum: "c".repeat(8) }] };
+        }
         return { rows: [] };
       },
       async end() {},
@@ -83,6 +93,24 @@ describe("ops deploy worker migrations", () => {
     ).toBe(1);
     expect(runWrangler).not.toHaveBeenCalled();
     expect(err.join("\n")).toContain("[DEPLOY] migrations FAILED; nothing uploaded.");
+  });
+
+  it("fails a plan that finds drift, after still dry-running the build", async () => {
+    const { built, err, runWrangler } = deps({ drift: true });
+    expect(await deployWorkerCommand.run(["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"], built)).toBe(1);
+    // The build check is the point of a plan, so it still runs — but an
+    // unreadable migration history is not a plan the operator may act on.
+    expect(runWrangler).toHaveBeenCalledWith(["deploy", "--env", "staging", "--dry-run"]);
+    expect(err.join("\n")).toContain("Migration drift");
+  });
+
+  it("fails an --execute that finds drift, with nothing uploaded", async () => {
+    const { built, err, runWrangler } = deps({ drift: true });
+    expect(
+      await deployWorkerCommand.run(["--env", "production", "--execute", "--database-url-env", "PRODUCTION_DATABASE_URL"], built),
+    ).toBe(1);
+    expect(runWrangler).not.toHaveBeenCalled();
+    expect(err.join("\n")).toContain("Migration drift");
   });
 
   it("still dry-runs the build when a plan cannot reach the database", async () => {

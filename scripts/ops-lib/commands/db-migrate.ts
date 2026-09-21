@@ -70,7 +70,7 @@ Options:
     const envName = values["database-url-env"]!;
     const databaseUrl = deps.env[envName];
     if (!databaseUrl) throw new UsageError(`${envName} is not set; it must hold a direct PostgreSQL connection string`);
-    return runPendingMigrations({
+    const outcome = await runPendingMigrations({
       io: deps.io,
       mode: values.execute ? "MIGRATE" : "PLAN",
       envName,
@@ -79,5 +79,6 @@ Options:
       readMigrations: deps.readMigrations,
       connect: deps.connect,
     });
+    return outcome.ok ? 0 : 1;
   },
 };
