@@ -481,6 +481,12 @@ function teardownStatements(
     { sql: "DELETE FROM relationship_refresh_jobs WHERE tenant_id = ?", params: [tenantId] },
     { sql: "DELETE FROM user_settings WHERE user_id = ?", params: [tenantId] },
     { sql: "DELETE FROM tenant_limits WHERE tenant_id = ?", params: [tenantId] },
+    // The operator refresh pass's run marker (db/migrations/0006). It names
+    // this tenant's reading ids, so it is tenant data, and no tenant is exempt
+    // from deletion. A row left behind would also hand the next
+    // `corpus refresh-neighbours` a marker listing readings that no longer
+    // exist, which it reads as purges and answers with a sweep.
+    { sql: "DELETE FROM corpus_refresh_state WHERE tenant_id = ?", params: [tenantId] },
     // Every address the account ever used, not just its last one: an invite
     // row for a previous address would otherwise outlive the account, carrying
     // its old `email_display` and blocking re-signup there forever.

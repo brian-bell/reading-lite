@@ -314,3 +314,40 @@ export function replaceRelationships(
 ): Promise<ReplaceSetOutcome> {
   return pgReadingWriterFor(sql as Sql, tenant).replacePublishedSetIf(entries);
 }
+
+/**
+ * The tenant's refresh run marker, unparsed. `null` only when there is none.
+ *
+ * Unparsed on purpose: scripts/corpus-lib/refresh-scope.ts owns the marker's
+ * shape and versions it, and it is the one that decides whether a stored
+ * marker is usable. Parsing here would put that decision in two places, and
+ * the pass's answer to an unusable marker — sweep — is not this module's to
+ * make.
+ */
+export async function readRefreshState(sql: SqlQuery, tenantId: string): Promise<unknown | null> {
+  const [row] = await sql.query<{ state: unknown }>(
+    "SELECT state FROM corpus_refresh_state WHERE tenant_id = $1",
+    [tenantId],
+  );
+  return row?.state ?? null;
+}
+
+/**
+ * Stores the run marker for the next pass to scope against.
+ *
+ * One row per tenant, replaced whole: the marker is a statement about one
+ * complete pass, and merging two passes' fields would describe a pass that
+ * never ran.
+ */
+export async function writeRefreshState(
+  sql: SqlQuery,
+  tenantId: string,
+  state: unknown,
+  now: string,
+): Promise<void> {
+  await sql.query(
+    `INSERT INTO corpus_refresh_state (tenant_id, state, updated_at) VALUES ($1, $2::jsonb, $3)
+     ON CONFLICT (tenant_id) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`,
+    [tenantId, JSON.stringify(state), now],
+  );
+}
