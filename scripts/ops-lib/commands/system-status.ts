@@ -1,6 +1,5 @@
 import { parseArgs } from "node:util";
 import { parseTenantId } from "../../../src/control-plane/ids";
-import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import type { SpendStatus } from "../../../src/control-plane/spend-status";
 import { PAID_PRICE_CATALOG_VERSION } from "../../../src/modules/paid-pricing";
 import {
@@ -8,11 +7,12 @@ import {
   policyEnvironment,
   readPolicy,
   type PolicyEnvironment,
+  type PolicySession,
 } from "../../system-lib/policy";
 import { remoteSpendStatus } from "../../system-lib/status";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 export interface StatusDeps extends BaseDeps {
-  connect(env: PolicyEnvironment): ControlPlaneDb;
+  connect(env: PolicyEnvironment): PolicySession;
   accounting(env: PolicyEnvironment, tenant?: string, details?: boolean): Promise<SpendStatus>;
 }
 export const systemStatusCommand: CommandDefinition<StatusDeps> = {
@@ -46,14 +46,20 @@ observations, not an atomic snapshot. Tokens and secrets are never printed.
     const env = policyEnvironment(v.env);
     const tenant = v.tenant === undefined ? undefined : parseTenantId(v.tenant);
     if (tenant === null) throw new UsageError("--tenant must be a usr_… id");
-    let db: ControlPlaneDb;
+    let session: PolicySession;
     try {
-      db = deps.connect(env);
+      session = deps.connect(env);
     } catch {
       throw new Error("Policy connection failed");
     }
-    const global = await readPolicy(db);
-    const tenantPolicy = tenant ? await readPolicy(db, tenant) : undefined;
+    let global, tenantPolicy;
+    try {
+      global = await readPolicy(session.db);
+      tenantPolicy = tenant ? await readPolicy(session.db, tenant) : undefined;
+    } finally {
+      // The accounting call below goes over HTTP, not this connection.
+      await session.close();
+    }
     deps.io.stdout(
       JSON.stringify(
         {

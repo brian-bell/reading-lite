@@ -6,6 +6,9 @@ import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 export interface AccountWipeDeps extends BaseDeps {
   connect(bucket: string): {
     db: ControlPlaneDb;
+    /** Closes the control-plane connection. The CLI sets an exit code rather
+     *  than calling process.exit, so an open socket would hang the command. */
+    closeDb?: () => Promise<void>;
     enqueue(tenant: string, force: boolean, queueId: string): Promise<void>;
   };
 }
@@ -46,6 +49,12 @@ against the bucket. Enqueue acceptance is not wipe or teardown completion.
         "--execute requires --confirm <same tenant> and --queue-id",
       );
     const remote = deps.connect(values.bucket!);
+    try {
+      return await wipe();
+    } finally {
+      await remote.closeDb?.();
+    }
+
     async function check() {
       const user = await remote.db.first<{ status: string }>(
         "SELECT status FROM users WHERE id = ?",
@@ -54,22 +63,24 @@ against the bucket. Enqueue acceptance is not wipe or teardown completion.
       if (user?.status !== "deleting")
         throw new Error("wipe requires an existing tenant already deleting");
     }
-    await check();
-    deps.io.stdout(
-      JSON.stringify({
-        mode: values.execute ? "EXECUTE" : "PLAN",
-        bucket: values.bucket,
-        queue: `${values.bucket}-wipe`,
-        tenant,
-        force: !!values.force,
-      }),
-    );
-    if (!values.execute) return 0;
-    await check();
-    await remote.enqueue(tenant, !!values.force, values["queue-id"]!);
-    deps.io.stdout(
-      "Enqueued; observe wipe_progress and scan after completion. Teardown runs on cron.",
-    );
-    return 0;
+    async function wipe(): Promise<number> {
+      await check();
+      deps.io.stdout(
+        JSON.stringify({
+          mode: values!.execute ? "EXECUTE" : "PLAN",
+          bucket: values!.bucket,
+          queue: `${values!.bucket}-wipe`,
+          tenant,
+          force: !!values!.force,
+        }),
+      );
+      if (!values!.execute) return 0;
+      await check();
+      await remote.enqueue(String(tenant), !!values!.force, values!["queue-id"]!);
+      deps.io.stdout(
+        "Enqueued; observe wipe_progress and scan after completion. Teardown runs on cron.",
+      );
+      return 0;
+    }
   },
 };

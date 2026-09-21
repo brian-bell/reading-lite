@@ -6,7 +6,7 @@ import { prepareContextCopy, copyHash, type CopyInput, type CopyReaders } from '
 import { r2InventoryClientFromVars } from '../../lib/cf-clients';
 import { loadDotVars } from '../../lib/dotvars';
 import { resolveActivationAuth } from '../tenant-activation-preflight';
-import { policyDb } from '../../system-lib/policy';
+import { withPolicyDb } from '../../system-lib/policy';
 import { parseTenantId } from '../../../src/control-plane/ids';
 import { UsageError, type BaseDeps, type CommandDefinition } from '../contract';
 export interface PrepareContextDeps extends BaseDeps {
@@ -32,12 +32,13 @@ approval before applying its remote mutations. --help shows this message.`,
             const vars = { ...loadDotVars(corpusVars ?? '.corpus.vars'), ...process.env };
             if ((vars.CORPUS_R2_ACCOUNT_ID ?? vars.CLOUDFLARE_ACCOUNT_ID) !== accountId || !vars.CORPUS_R2_ACCESS_KEY || !vars.CORPUS_R2_SECRET_KEY)
                 throw Error('Matching-account S3 inventory credentials required for complete destination prefix checks');
-            const db = policyDb('staging');
-            const state = await db.first<{
+            // paid_work_enabled is boolean in PostgreSQL (migration 0003), so
+            // this compares against false, not 0.
+            const state = await withPolicyDb('staging', (db) => db.first<{
                 status: string;
-                paid_work_enabled: number;
-            }>("SELECT u.status, sp.paid_work_enabled FROM users u CROSS JOIN system_policy sp WHERE u.id = ? AND sp.id = 1", destination);
-            if (state?.status !== 'active' || state.paid_work_enabled !== 0)
+                paid_work_enabled: boolean;
+            }>("SELECT u.status, sp.paid_work_enabled FROM users u CROSS JOIN system_policy sp WHERE u.id = ? AND sp.id = 1", destination), { env: vars });
+            if (state?.status !== 'active' || state.paid_work_enabled !== false)
                 throw Error('Staging tenant must be active and paid work disabled');
             const readFetch: typeof fetch = async (input, init) => {
                 if (init?.method !== undefined && !['GET', 'HEAD'].includes(init.method))

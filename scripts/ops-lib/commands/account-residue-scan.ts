@@ -39,6 +39,22 @@ Reads only: never clears ledger rows or repairs listed readings. --help shows he
     if (values.tenant && !parseTenantId(values.tenant))
       throw new UsageError("invalid tenant");
     const remote = deps.connect(values.bucket!);
+    try {
+      return await scan(remote, values, deps);
+    } finally {
+      // ops.ts sets process.exitCode rather than calling process.exit, so an
+      // open control-plane socket would keep the event loop alive forever.
+      await remote.closeDb?.();
+    }
+  },
+};
+
+async function scan(
+  remote: ScanRemote,
+  values: { tenant?: string | undefined; bucket?: string | undefined },
+  deps: Deps,
+): Promise<number> {
+  {
     const tenants = values.tenant
       ? [values.tenant]
       : (
@@ -59,5 +75,5 @@ Reads only: never clears ledger rows or repairs listed readings. --help shows he
     if (!tenants.length)
       deps.io.stdout("No account_deletions rows; no tenants scanned.");
     return code;
-  },
-};
+  }
+}

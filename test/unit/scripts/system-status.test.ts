@@ -9,17 +9,17 @@ const tenant = "usr_550e8400-e29b-41d4-a716-446655440000";
 function fixture() {
   const deps: StatusDeps = {
     io: { stdout: vi.fn(), stderr: vi.fn() },
-    connect: vi.fn(
-      () =>
-        ({
-          first: async () => ({
-            policy_version: 3,
-            daily_spend_microdollars: 1000,
-            paid_work_enabled: 0,
-            catalog_version: 1,
-          }),
-        }) as unknown as ControlPlaneDb,
-    ),
+    connect: vi.fn(() => ({
+      close: async () => {},
+      db: {
+        first: async () => ({
+          policy_version: 3,
+          daily_spend_microdollars: 1000,
+          paid_work_enabled: 0,
+          catalog_version: 1,
+        }),
+      } as unknown as ControlPlaneDb,
+    })),
     accounting: vi.fn(async () => ({
       dayKey: "2026-09-05",
       observedAtMs: 100,
