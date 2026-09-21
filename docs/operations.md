@@ -1523,7 +1523,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement) |
+| `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
@@ -2258,9 +2258,17 @@ until an operator runs this. Cleanup is not automatic.
 # Production founder namespace. Resolve $TENANT from whoami first.
 npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted
 
-# Apply.
-npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted --execute
+# Apply. Pause and drain the realtime writer first.
+npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted --execute --sole-writer
 ```
+
+`--execute` requires `--sole-writer`. A publish already in flight can commit a
+relationship naming the deleted target after the `DELETE` takes its snapshot,
+and no single statement can exclude it — a publisher whose transaction opened
+before the `DELETE` and commits after any verification read is invisible to
+both. Only a paused, drained writer makes the purge verifiable. After deleting,
+the command re-reads the inbound count as a check on that assertion: leftovers
+are reported with `failure_code: "concurrent_writer"` and the command exits 1.
 
 The target id must be absent from the selected tenant's readings: the command
 refuses a target that still exists, and refuses a malformed reading id before

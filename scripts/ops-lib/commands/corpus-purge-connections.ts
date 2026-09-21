@@ -17,14 +17,28 @@
 // a compare-and-set loop with ETag witnesses and a retry budget, and refuse to
 // run unless the operator asserted `--sole-writer`. All of that existed
 // because the relationship lived inside a document that other writers also
-// owned. It does not any more, so the scan, the CAS loop, the conflict budget
-// and the sole-writer assertion are gone with it.
+// owned. It does not any more, so the scan, the CAS loop and the conflict
+// budget are gone with it.
+//
+// What did NOT go away is the concurrency --sole-writer guarded against, so
+// that assertion stays. A publish already in flight can commit a relationship
+// naming the deleted target after the DELETE takes its snapshot;
+// `reading_relationships` has a foreign key on the source only, so nothing
+// refuses it. No single statement can exclude that: a publisher whose
+// transaction opened before the DELETE and commits after any verification read
+// is invisible to both. Only a paused and drained writer makes a purge
+// verifiable, which is what --sole-writer asserts.
+//
+// The post-delete recount below is a diagnostic on top of that assertion, not
+// a replacement for it: it catches an operator who asserted quiescence that did
+// not hold, in the cases it can see.
 //
 // Plan-first: a mode-less run counts what it would delete; --execute deletes.
 
 import { parseArgs } from "node:util";
 import { parseReadingId } from "../../../src/services";
 import { resolveBucket } from "../../corpus-lib/config";
+import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import {
   DATABASE_URL_ENV_FLAG_HELP,
@@ -54,6 +68,7 @@ interface Args {
   id: string;
   local: boolean;
   execute: boolean;
+  soleWriter: boolean;
 }
 
 interface Audit {
@@ -69,8 +84,10 @@ interface Audit {
   tensions_matched: number;
   relationships_would_delete: number;
   relationships_deleted: number;
+  /** Inbound rows still present after the delete: a concurrent publisher. */
+  relationships_remaining: number;
   failures: number;
-  failure_code: "invalid_target" | "target_present" | "storage_error" | null;
+  failure_code: "invalid_target" | "target_present" | "concurrent_writer" | "storage_error" | null;
   failure_stage: FailureStage | null;
 }
 
@@ -79,7 +96,8 @@ type FailureStage =
   | "connect"
   | "check_target"
   | "scan_relationships"
-  | "delete_relationships";
+  | "delete_relationships"
+  | "verify_relationships";
 
 interface RunContext {
   stage: FailureStage;
@@ -97,6 +115,7 @@ function parsePurgeArgs(argv: string[]): Args {
         id: { type: "string" },
         local: { type: "boolean", default: false },
         execute: { type: "boolean", default: false },
+        "sole-writer": { type: "boolean", default: false },
       },
     }));
   } catch (err) {
@@ -112,6 +131,7 @@ function parsePurgeArgs(argv: string[]): Args {
     id: values.id,
     local: values.local === true,
     execute: values.execute === true,
+    soleWriter: values["sole-writer"] === true,
   };
 }
 
@@ -159,6 +179,7 @@ async function runCorpusPurgeConnections(
     tensions_matched: 0,
     relationships_would_delete: 0,
     relationships_deleted: 0,
+    relationships_remaining: 0,
     failures: 0,
     failure_code: null,
     failure_stage: null,
@@ -169,6 +190,19 @@ async function runCorpusPurgeConnections(
     deps.io.stderr("REFUSED: --id must be a valid reading id");
     emitAudit(deps.io, audit);
     return 2;
+  }
+
+  // Before connecting: an --execute run must assert that the realtime writer is
+  // paused and drained. A relationship purge is only verifiable under that
+  // assertion — see the header — and refusing here costs nothing.
+  if (args.execute && !args.soleWriter) {
+    const verdict = soleWriterGuard({
+      execute: true,
+      acknowledged: false,
+      tool: "ops corpus purge-connections",
+    });
+    if (verdict.message) deps.io.stderr(verdict.message);
+    throw new UsageError("--execute requires --sole-writer");
   }
 
   const tenant = requireTenantRows(selector);
@@ -213,6 +247,24 @@ async function runCorpusPurgeConnections(
 
         context.stage = "delete_relationships";
         audit.relationships_deleted = await deleteInboundRelationships(sql, tenantId, args.id);
+
+        // A check on the --sole-writer assertion, not a substitute for it.
+        // This catches a publisher that committed between the DELETE and this
+        // read. It cannot catch one whose transaction opened before the DELETE
+        // and commits after this read — invisible to both snapshots — which is
+        // exactly why quiescence is asserted up front rather than inferred
+        // here. A hit means the assertion did not hold.
+        context.stage = "verify_relationships";
+        const remaining = await countInbound(sql, tenantId, args.id);
+        audit.relationships_remaining = remaining.rows;
+        if (remaining.rows > 0) {
+          recordFailure(audit, "concurrent_writer", "verify_relationships");
+          deps.io.stderr(
+            `${remaining.rows} inbound relationship(s) appeared while this purge ran — a writer was ` +
+              `still publishing into this corpus. Pause writers and re-run to remove them.`,
+          );
+          return 1;
+        }
         return 0;
       },
       deps.openSql,
@@ -240,6 +292,10 @@ separately, since those cost provider spend to produce. The target must already 
 reading's own outbound rows cascade with it, but inbound ones do not, and that
 is what this cleans up. Plans by default.
 
+--execute requires --sole-writer. After deleting, the inbound count is read
+back as a check on that assertion: if rows are still there, they are reported
+and the command exits 1.
+
 Options:
   --id <reading-id>     REQUIRED: deleted bare reading id to purge citations of.
   --tenant <selector>   REQUIRED: the tenant id (usr_…) whose corpus to purge.
@@ -247,7 +303,12 @@ Options:
                         READING_LITE_BUCKET / reading-lite.
 ${DATABASE_URL_ENV_FLAG_HELP}
   --local               Use this checkout's local database.
-  --execute             Apply the plan.
+  --execute             Apply the plan; requires --sole-writer.
+  --sole-writer         Assert that no ingestion, reprocessing, deletion or
+                        publication is running against this corpus. A publisher
+                        in flight can commit a relationship naming the deleted
+                        target after the DELETE, and no single statement can
+                        exclude it.
   --help                Show this message.`,
   defaultDeps: (io: CommandIo): CorpusPurgeConnectionsDeps => ({
     io,

@@ -60,10 +60,49 @@ describe("the bucket-to-database pairing", () => {
     });
   });
 
-  it("refuses an accepted variable that is not set", () => {
+  // An operator who sourced the documented neon.env has only the NEON_ name
+  // set. Insisting on the Actions-only first name would fail every command
+  // that exposes no --database-url-env flag, including account wipe.
+  it("falls through to whichever accepted variable the operator actually set", () => {
+    expect(
+      resolveOperatorDatabaseUrl({
+        bucket: "reading-lite",
+        env: { NEON_MAIN_DATABASE_URL: "postgres://neon-main" },
+      }),
+    ).toEqual({ envName: "NEON_MAIN_DATABASE_URL", url: "postgres://neon-main" });
+    expect(
+      resolveOperatorDatabaseUrl({
+        bucket: "reading-lite-staging",
+        env: { NEON_REHEARSAL_DATABASE_URL: "postgres://neon-rehearsal" },
+      }),
+    ).toEqual({ envName: "NEON_REHEARSAL_DATABASE_URL", url: "postgres://neon-rehearsal" });
+  });
+
+  // Order still decides when both are set: the Actions name wins, so a CI run
+  // that happens to carry a stale NEON_ value does not silently switch.
+  it("prefers the first accepted variable when more than one is set", () => {
+    expect(
+      resolveOperatorDatabaseUrl({
+        bucket: "reading-lite",
+        env: { ...ENV, NEON_MAIN_DATABASE_URL: "postgres://neon-main" },
+      }),
+    ).toEqual({ envName: "PRODUCTION_DATABASE_URL", url: "postgres://prod" });
+  });
+
+  it("names every accepted variable when none of them is set", () => {
     expect(() => resolveOperatorDatabaseUrl({ bucket: "reading-lite", env: {} })).toThrow(
-      /PRODUCTION_DATABASE_URL is not set/,
+      /PRODUCTION_DATABASE_URL, NEON_MAIN_DATABASE_URL/,
     );
+  });
+
+  it("refuses an explicitly named accepted variable that is not set", () => {
+    expect(() =>
+      resolveOperatorDatabaseUrl({
+        bucket: "reading-lite",
+        databaseUrlEnv: "PRODUCTION_DATABASE_URL",
+        env: {},
+      }),
+    ).toThrow(/PRODUCTION_DATABASE_URL is not set/);
   });
 
   // A local corpus seeded from production shares reading ids, so a --local run

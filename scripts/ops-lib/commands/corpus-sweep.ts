@@ -179,6 +179,9 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
       let deleted = 0;
       let absent = 0;
       let errored = 0;
+      // Objects that survived the row that referenced them. Counted apart from
+      // refusals, which leave the reading whole.
+      let residual = 0;
       // Drops the corpus actually held an embedding for, so the post-sweep
       // warning can be exact instead of guessing from status.
       // created_at rides along so a snapshot computed before a copy existed can
@@ -214,19 +217,10 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
           continue;
         }
 
-        // Bytes first, row last — see corpus-drop: a failed object delete must
-        // leave the reading visible rather than strand its content.
-        let failedHere = 0;
-        for (const key of keys) {
-          const res = await r2.deleteObject(key, r2Deps);
-          if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
-          else if (res === "absent") absent++;
-          else { failedHere++; errored++; io.stderr(`    ! delete error  ${key}`); }
-        }
-        if (failedHere > 0) {
-          io.stderr(`    ! keeping row ${t.id} so this sweep stays visible and re-runnable`);
-          continue;
-        }
+        // Row first, objects second — see corpus-drop: the reverse order can
+        // leave a live reading whose content 404s, and this command deletes
+        // ready production readings. Unreferenced residue is the tolerated
+        // failure, a dangling row is not.
         const removed = await deleteReading(sql, tenantId, t.id);
         rowsDeleted += removed;
         // Only a row that actually went takes its embedding with it, so the
@@ -238,6 +232,20 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
             ? `    deleted   row ${t.id} (and its cascade, embedding included)`
             : `    row ${t.id} was already gone`,
         );
+
+        let failedHere = 0;
+        for (const key of keys) {
+          const res = await r2.deleteObject(key, r2Deps);
+          if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
+          else if (res === "absent") absent++;
+          else { failedHere++; errored++; residual++; io.stderr(`    ! delete error  ${key}`); }
+        }
+        if (failedHere > 0) {
+          io.stderr(
+            `    ! ${t.id} is gone from the database but ${failedHere} object(s) outlived it — ` +
+              `unreachable residue. Re-running will not find the row; delete them by key.`,
+          );
+        }
       }
 
       if (!opts.execute) {
@@ -247,10 +255,15 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
 
       io.stdout(`\nrows deleted: ${rowsDeleted}`);
       if (errored > 0) {
-        io.stderr(
-          `\n${errored} object delete(s) failed — their readings were left in place so they ` +
-          `stay visible. Re-run to retry.`,
-        );
+        if (errored > residual) {
+          io.stderr(`\n${errored - residual} reading(s) were refused and left whole. Re-run to retry.`);
+        }
+        if (residual > 0) {
+          io.stderr(
+            `\n${residual} object(s) outlived the row that referenced them. They are unreachable ` +
+              `residue: re-running finds no row, and an account wipe removes them with the prefix.`,
+          );
+        }
         io.stderr(`deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
         return 1;
       }

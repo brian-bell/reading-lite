@@ -194,15 +194,21 @@ describe("ops corpus drop", () => {
 
   // Deleting the row first would strand the bytes where nothing could resolve
   // them again, so a failed object delete must leave the reading visible.
-  it("keeps the row when an object delete fails, so the drop stays re-runnable", async () => {
+  // Row first, objects second. The row delete is the half that must be atomic:
+  // the reverse order could leave a live reading whose content 404s. So a
+  // failed object delete still leaves the row gone, and the command says the
+  // bytes are unreachable residue rather than inviting a useless re-run.
+  it("still deletes the row when an object delete fails, and names the residue", async () => {
     const reading = await seedReading(sql, tenant, "rd_f", { status: "failed" });
     bucket.put(`${reading.keyPrefix}/raw.html`);
     bucket.failOn.add(`${reading.keyPrefix}/raw.html`);
 
     const { io, deps } = dropDeps();
     expect(await corpusDropCommand.run([...tenantArg(), "rd_f", "--execute"], deps)).toBe(1);
-    expect(await readingIds(sql, tenant)).toEqual(["rd_f"]);
-    expect(io.err.join("\n")).toContain("stay visible");
+    expect(await readingIds(sql, tenant)).toEqual([]);
+    expect(bucket.keys()).toEqual([`${reading.keyPrefix}/raw.html`]);
+    expect(io.err.join("\n")).toContain("residue");
+    expect(io.err.join("\n")).toContain(`${reading.keyPrefix}/raw.html`);
   });
 
   // Content keys come from the database now, not from the layout, so they are
@@ -334,7 +340,10 @@ describe("ops corpus purge-connections", () => {
 
     const { io, deps } = purgeDeps();
     expect(
-      await corpusPurgeConnectionsCommand.run([...tenantArg(), "--id", "rd_GNE1234567", "--execute"], deps),
+      await corpusPurgeConnectionsCommand.run(
+        [...tenantArg(), "--id", "rd_GNE1234567", "--execute", "--sole-writer"],
+        deps,
+      ),
     ).toBe(0);
     expect(await countRows(sql, "reading_relationships", tenant)).toBe(1);
     expect(JSON.parse(io.out[io.out.length - 1]!)).toMatchObject({
@@ -367,7 +376,10 @@ describe("ops corpus purge-connections", () => {
 
     const { io, deps } = purgeDeps();
     expect(
-      await corpusPurgeConnectionsCommand.run([...tenantArg(), "--id", "rd_VE12345678", "--execute"], deps),
+      await corpusPurgeConnectionsCommand.run(
+        [...tenantArg(), "--id", "rd_VE12345678", "--execute", "--sole-writer"],
+        deps,
+      ),
     ).toBe(1);
     expect(await countRows(sql, "reading_relationships", tenant)).toBe(1);
     expect(JSON.parse(io.out[io.out.length - 1]!)).toMatchObject({ failure_code: "target_present" });
@@ -387,7 +399,10 @@ describe("ops corpus purge-connections", () => {
 
     const { io, deps } = purgeDeps();
     expect(
-      await corpusPurgeConnectionsCommand.run([...tenantArg(), "--id", "rd_GNE1234567", "--execute"], deps),
+      await corpusPurgeConnectionsCommand.run(
+        [...tenantArg(), "--id", "rd_GNE1234567", "--execute", "--sole-writer"],
+        deps,
+      ),
     ).toBe(0);
     expect(await countRows(sql, "reading_relationships", tenant)).toBe(0);
     expect(JSON.parse(io.out[io.out.length - 1]!)).toMatchObject({
@@ -395,6 +410,64 @@ describe("ops corpus purge-connections", () => {
       tensions_matched: 1,
     });
     expect(io.err.join("\n")).toContain("judged tensions");
+  });
+
+  // Quiescence is asserted, not inferred: no single statement can exclude a
+  // publisher whose transaction opened before the DELETE.
+  it("refuses --execute without --sole-writer, before connecting", async () => {
+    const { io, session, deps } = purgeDeps();
+    await expect(
+      corpusPurgeConnectionsCommand.run([...tenantArg(), "--id", "rd_GNE1234567", "--execute"], deps),
+    ).rejects.toThrow(/--execute requires --sole-writer/);
+    expect(session.urls()).toEqual([]);
+    expect(io.err.join("\n")).toContain("REFUSED");
+  });
+
+  // The recount is a check on that assertion, not a replacement for it: it
+  // catches a publisher that committed between the DELETE and the read, so an
+  // operator who asserted a quiescence that did not hold is told so rather than
+  // handed a clean audit.
+  it("reports a relationship that a concurrent publisher committed after the delete", async () => {
+    await seedReading(sql, tenant, "rd_src");
+    await seedReading(sql, tenant, "rd_late");
+    await seedRelationship(sql, tenant, { sourceId: "rd_src", targetId: "rd_GNE1234567" });
+
+    const io = captureIo();
+    let raced = false;
+    const deps = {
+      io: io.io,
+      openSql: () => ({
+        ...sql,
+        end: async () => {},
+        // Stand in for a publisher whose transaction commits between the
+        // DELETE and the verification read.
+        execute: async (text: string, ...params: unknown[]) => {
+          const removed = await sql.execute(text, ...(params as never[]));
+          if (!raced && text.includes("DELETE FROM reading_relationships")) {
+            raced = true;
+            await seedRelationship(sql, tenant, {
+              sourceId: "rd_late",
+              targetId: "rd_GNE1234567",
+            });
+          }
+          return removed;
+        },
+      }),
+      env: { ...OPERATOR_ENV },
+    };
+
+    expect(
+      await corpusPurgeConnectionsCommand.run(
+        [...tenantArg(), "--id", "rd_GNE1234567", "--execute", "--sole-writer"],
+        deps,
+      ),
+    ).toBe(1);
+    expect(JSON.parse(io.out[io.out.length - 1]!)).toMatchObject({
+      relationships_deleted: 1,
+      relationships_remaining: 1,
+      failure_code: "concurrent_writer",
+    });
+    expect(io.err.join("\n")).toContain("re-run");
   });
 
   it("refuses a malformed target id before connecting", async () => {

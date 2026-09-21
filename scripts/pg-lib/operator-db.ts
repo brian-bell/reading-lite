@@ -162,7 +162,17 @@ export function resolveOperatorDatabaseUrl(args: ResolveDatabaseUrlArgs): Resolv
   }
 
   const target = databaseTargetForBucket(args.bucket);
-  const envName = args.databaseUrlEnv ?? target.databaseUrlEnvs[0]!;
+  // Without an explicit name, the first accepted variable that is actually SET
+  // wins, not simply the first accepted variable. The names are ordered with
+  // the Actions secret first, but an operator at a terminal has sourced
+  // ~/.config/reading-lite/neon.env, where only the NEON_ name exists.
+  // Demanding the Actions name there would fail every command that exposes no
+  // --database-url-env flag of its own, `account wipe` among them. Order still
+  // decides when more than one is set, so CI keeps reading its own secret.
+  const envName =
+    args.databaseUrlEnv ??
+    target.databaseUrlEnvs.find((name) => (env[name]?.trim() ?? "") !== "") ??
+    target.databaseUrlEnvs[0]!;
   if (!target.databaseUrlEnvs.includes(envName)) {
     const other = Object.entries(OPERATOR_DATABASES).find(([, candidate]) =>
       candidate.databaseUrlEnvs.includes(envName),
@@ -178,7 +188,15 @@ export function resolveOperatorDatabaseUrl(args: ResolveDatabaseUrlArgs): Resolv
   }
   const url = env[envName]?.trim();
   if (!url) {
-    throw new UsageError(`${envName} is not set; it must hold a direct PostgreSQL connection string`);
+    // Nothing was set. Name every accepted variable rather than only the one
+    // the default landed on: the operator's next move is to set one of them,
+    // and the NEON_ name is the one the documented neon.env carries.
+    throw new UsageError(
+      args.databaseUrlEnv !== undefined
+        ? `${envName} is not set; it must hold a direct PostgreSQL connection string`
+        : `none of ${target.databaseUrlEnvs.join(", ")} is set; one must hold a direct ` +
+          `PostgreSQL connection string for the ${target.env} database`,
+    );
   }
   return { envName, url };
 }

@@ -157,6 +157,9 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
       let deleted = 0;
       let absent = 0;
       let errored = 0;
+      // Objects that survived the row that referenced them. Counted apart from
+      // refusals, which leave the reading whole.
+      let residual = 0;
 
       for (const t of targets) {
         // Resolved before anything is deleted: the third tier is derived from
@@ -181,21 +184,15 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
           continue;
         }
 
-        // Bytes first, row last. A failed object delete leaves the row in
-        // place, so the reading stays visible to the next audit and the drop
-        // stays re-runnable. Deleting the row first would strand the bytes
-        // where nothing could ever find them again.
-        let failedHere = 0;
-        for (const key of keys) {
-          const res = await r2.deleteObject(key, r2Deps);
-          if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
-          else if (res === "absent") absent++;
-          else { failedHere++; errored++; io.stderr(`    ! delete error  ${key}`); }
-        }
-        if (failedHere > 0) {
-          io.stderr(`    ! keeping row ${t.id} so this drop stays visible and re-runnable`);
-          continue;
-        }
+        // Row first, objects second — the ordering purgeReading already holds
+        // (src/reading-purge.ts) and the one the deletion rules state. The row
+        // delete is one transaction, so the reading stops being listed,
+        // readable, searchable and the owner of its URL at a single instant.
+        // The reverse order is what must not happen here: bytes deleted, then
+        // a dropped connection failing the DELETE, leaving a live reading
+        // whose content 404s. This way the worst case is unreferenced residue,
+        // which no API path can reach and which the tenant's account wipe
+        // removes with its prefix.
         const removed = await deleteReading(sql, tenantId, t.id);
         rowsDeleted += removed;
         // deleteReading returns 0 when a sibling already removed the row. This
@@ -206,6 +203,22 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
             ? `    deleted   row ${t.id} (and its cascade)`
             : `    row ${t.id} was already gone`,
         );
+
+        let failedHere = 0;
+        for (const key of keys) {
+          const res = await r2.deleteObject(key, r2Deps);
+          if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
+          else if (res === "absent") absent++;
+          else { failedHere++; errored++; residual++; io.stderr(`    ! delete error  ${key}`); }
+        }
+        // Say it plainly: re-running will not retry these, because the id no
+        // longer resolves to a row. The keys above are the operator's handle.
+        if (failedHere > 0) {
+          io.stderr(
+            `    ! ${t.id} is gone from the database but ${failedHere} object(s) outlived it — ` +
+              `unreachable residue. Re-running will not find the row; delete them by key.`,
+          );
+        }
       }
 
       if (!opts.execute) {
@@ -215,10 +228,15 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
 
       io.stdout(`\nrows deleted: ${rowsDeleted}`);
       if (errored > 0) {
-        io.stderr(
-          `\n${errored} object delete(s) failed — their readings were left in place so they ` +
-          `stay visible. Re-run to retry.`,
-        );
+        if (errored > residual) {
+          io.stderr(`\n${errored - residual} reading(s) were refused and left whole. Re-run to retry.`);
+        }
+        if (residual > 0) {
+          io.stderr(
+            `\n${residual} object(s) outlived the row that referenced them. They are unreachable ` +
+              `residue: re-running finds no row, and an account wipe removes them with the prefix.`,
+          );
+        }
         io.stderr(`objects deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
         return 1;
       }
