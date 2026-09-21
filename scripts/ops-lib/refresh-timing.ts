@@ -29,7 +29,6 @@ export const PHASE_LIST_READ = "list read";
 export const PHASE_PLANNING_READS = "planning reads";
 export const PHASE_MANIFEST_READ = "reading read";
 export const PHASE_MANIFEST_WRITE = "reading write";
-export const PHASE_LIST_WRITE = "list write";
 export const PHASE_PROVIDER = "provider";
 export const PHASE_SIMILARITY_QUERY = "similarity query";
 export const PHASE_REVERSE_QUERY = "reverse query";
@@ -162,11 +161,11 @@ export function timedNeighboursStore(
 }
 
 /**
- * Times the tier-2/3 storage surface. `manifestReadPhase` is what a command
- * uses to say which reads are the fixed planning cost every invocation repays
- * and which are not: tier 3 flips it when it stops planning, since it re-reads
- * a side it has already written, while tier 2 reads nothing after planning and
- * passes the planning phase throughout.
+ * Times the tier-2/3 store. `manifestReadPhase` is what a command uses to say
+ * which reads are the fixed planning cost every invocation repays and which
+ * are not: tier 3 flips it when it stops planning, since it re-reads a side it
+ * has already written, while tier 2 reads nothing after planning and passes
+ * the planning phase throughout.
  */
 export function timedRefreshStorage(
   storage: RefreshConnectionsStorage,
@@ -174,12 +173,11 @@ export function timedRefreshStorage(
   manifestReadPhase: () => string,
 ): RefreshConnectionsStorage {
   return {
-    readListIndex: () => timer.measure(PHASE_LIST_READ, () => storage.readListIndex()),
-    readManifest: (keyPrefix) =>
-      timer.measure(manifestReadPhase(), () => storage.readManifest(keyPrefix)),
-    putManifestIfMatch: (keyPrefix, manifest, etag) =>
-      timer.measure(PHASE_MANIFEST_WRITE, () => storage.putManifestIfMatch(keyPrefix, manifest, etag)),
-    mergeListRows: (patches) =>
-      timer.measure(PHASE_LIST_WRITE, () => storage.mergeListRows(patches)),
+    listItems: () => timer.measure(PHASE_LIST_READ, () => storage.listItems()),
+    readManifest: (id) => timer.measure(manifestReadPhase(), () => storage.readManifest(id)),
+    // One phase, whatever the write does internally: a pair written in one
+    // transaction is one write, not two.
+    replaceRelationships: (entries) =>
+      timer.measure(PHASE_MANIFEST_WRITE, () => storage.replaceRelationships(entries)),
   };
 }

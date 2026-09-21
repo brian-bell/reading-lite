@@ -1,12 +1,19 @@
 // `ops corpus refresh-tensions` — tier 3 of the corpus refresh: judge
 // directional tensions between pairs the tier-1 report brought together.
 //
-// Plan-first like refresh-connections: the plan reads the report, the list
-// index, and every manifest a candidate pair or --pair names, prints each
-// pair with its overlap evidence and estimated cost plus every free repair,
-// and writes nothing. --execute --sole-writer makes one paid pairwise call per
-// selected pair and writes the derived directional entry to BOTH manifests
-// with ETag CAS. Tensions never touch index/list.json.
+// Plan-first like refresh-connections: the plan reads the report, the corpus,
+// and every reading a candidate pair or --pair names, prints each pair with
+// its overlap evidence and estimated cost plus every free repair, and writes
+// nothing. --execute --sole-writer makes one paid pairwise call per selected
+// pair and writes the derived directional entry to BOTH readings.
+//
+// Both sides in ONE transaction (reading-lite-gh347.4.1). A judged tension is
+// one fact about a pair, and two transactions could leave half of it: the
+// corpus would then hold a tension one reading cites and the other has never
+// heard of. It also fixes the deadlock two passes judging (a,b) and (b,a) at
+// once would otherwise hit, because the writer locks both rows in sorted id
+// order before reading either. The one-sided REPAIRS below stay: they exist
+// for pairs left half-written before this, and for a partner that was deleted.
 //
 // --pair a,b hand-picks a pair: it bypasses the overlap pre-filter and the
 // already-judged skip (operator intent), but both sides must still be live,
@@ -55,7 +62,7 @@ import { describeReportScope } from "../../corpus-lib/refresh-neighbours";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
-import { r2InventoryClientFromVars, refreshS3RequestDeps } from "../../lib/cf-clients";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql } from "../../pg-lib/operator-db";
 import {
   SUMMARIZER_PRICE_DATE,
   approximateTokens,
@@ -103,18 +110,26 @@ import {
   type RefreshTimer,
 } from "../refresh-timing";
 import {
+  openStore,
   parseProductionWorkerVars,
-  storageFromClient,
   type JudgeTransportOverrides,
   type RefreshConnectionsStorage,
-  type StoredRawManifest,
+  type StoreTarget,
+  type StoredManifest,
 } from "./corpus-refresh-connections";
+import {
+  manifestVersion,
+  requireTenantRows,
+  type PublishedReplacement,
+} from "../../pg-lib/operator-corpus";
 
 const ASSUMED_OUTPUT_TOKENS = 128;
 
 interface Args {
   tenant?: string;
   billingTenant?: string;
+  databaseUrlEnv?: string;
+  local: boolean;
   /** null when --pair was given without an explicit --report. */
   report: string | null;
   reportExplicit: boolean;
@@ -144,7 +159,11 @@ export interface TensionProviderPlan {
 export interface CorpusRefreshTensionsDeps extends BaseDeps {
   /** Resolves to null when the report file does not exist. */
   readReport: (path: string) => Promise<string | null>;
-  createStorage: (bucket: string, keyRoot: string) => Promise<RefreshTensionsStorage>;
+  /** Opens the corpus for one pass and closes the session on every exit path. */
+  withStore: <T>(
+    target: StoreTarget,
+    work: (storage: RefreshTensionsStorage) => Promise<T>,
+  ) => Promise<T>;
   // `paidFetch` is the spend-admitted transport, present only under --execute.
   // Without it the provider's judge refuses rather than reach a provider unguarded.
   loadProvider: (execute: boolean, paidFetch?: typeof fetch) => Promise<TensionProviderPlan>;
@@ -218,6 +237,8 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
       options: {
         tenant: { type: "string" },
         "billing-tenant": { type: "string" },
+        "database-url-env": { type: "string" },
+        local: { type: "boolean", default: false },
         report: { type: "string" },
         bucket: {
           type: "string",
@@ -256,6 +277,10 @@ function parseRefreshTensionsArgs(argv: string[]): Args {
     report: values.report ?? (pairs.length > 0 ? null : "refresh-report.json"),
     reportExplicit: values.report !== undefined,
     ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
+    ...(values["database-url-env"] === undefined
+      ? {}
+      : { databaseUrlEnv: values["database-url-env"] }),
+    local: values.local === true,
     bucket: values.bucket!,
     execute: values.execute === true,
     soleWriter: values["sole-writer"] === true,
@@ -277,6 +302,8 @@ async function runCorpusRefreshTensions(
   const timer = createRefreshTimer(deps.now);
   try {
     const tenant = requireOperatorTenant(args.tenant);
+    // As in refresh-connections, and before the spend session opens.
+    requireTenantRows(tenant);
     const billingTenant = resolveBillingTenant(args.billingTenant, { tenant, execute: args.execute });
     // An --execute without --sole-writer is refused inside, before any provider
     // is loaded, so it needs no spend session either.
@@ -324,12 +351,35 @@ async function refreshTensions(
       ? null
       : parseRefreshConnectionsReport(JSON.parse(rawReport) as unknown, selector);
   const provider = await deps.loadProvider(args.execute, paidFetch);
-  const storage = timedRefreshStorage(
-    await deps.createStorage(args.bucket, tenant.keyRoot),
-    timer,
-    () => manifestReadPhase,
+  return deps.withStore(
+    {
+      bucket: args.bucket,
+      local: args.local,
+      ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
+      tenant,
+    },
+    (raw) => judgeTensions(args, deps, timer, { report, provider, selector, storage: raw, setPhase: (phase) => { manifestReadPhase = phase; }, phase: () => manifestReadPhase }),
   );
-  const items = await storage.readListIndex();
+}
+
+interface TensionContext {
+  report: RefreshConnectionsReport | null;
+  provider: TensionProviderPlan;
+  selector: string;
+  storage: RefreshTensionsStorage;
+  setPhase: (phase: string) => void;
+  phase: () => string;
+}
+
+async function judgeTensions(
+  args: Args,
+  deps: CorpusRefreshTensionsDeps,
+  timer: RefreshTimer,
+  ctx: TensionContext,
+): Promise<number> {
+  const { report, provider, selector } = ctx;
+  const storage = timedRefreshStorage(ctx.storage, timer, ctx.phase);
+  const items = await storage.listItems();
   const byId = new Map(items.map((item) => [item.id, item]));
 
   // Every reading a report pair or --pair could name. Manifests are read once
@@ -348,7 +398,7 @@ async function refreshTensions(
     wanted.add(b);
   }
   const manifestsById = new Map<string, RawManifest>();
-  const liveById = new Map<string, StoredRawManifest>();
+  const liveById = new Map<string, StoredManifest>();
   const liveReadyIds = new Set<string>();
   let planningFailed = false;
   const pairIds = new Set(args.pairs.flat());
@@ -359,10 +409,10 @@ async function refreshTensions(
   // The reads are independent, so they overlap; the loop below still walks the
   // ids in sorted order, which is what fixes the order manifests enter
   // `manifestsById` and therefore the plan the candidates are built from.
-  const manifests = createPrefetchingReader<StoredRawManifest | null>((keyPrefix) =>
-    storage.readManifest(keyPrefix),
+  const manifests = createPrefetchingReader<StoredManifest | null>((id) =>
+    storage.readManifest(id),
   );
-  await manifests.prefetch(wantedRows.map((row) => row.key_prefix));
+  await manifests.prefetch(wantedRows.map((row) => row.id));
   for (const id of wantedIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") {
@@ -372,9 +422,9 @@ async function refreshTensions(
       }
       continue;
     }
-    let stored: StoredRawManifest | null;
+    let stored: StoredManifest | null;
     try {
-      stored = await manifests.read(row.key_prefix);
+      stored = await manifests.read(row.id);
     } catch (error) {
       planningFailed = true;
       deps.io.stderr(`  ! ${id}: ${error instanceof Error ? error.message : String(error)}`);
@@ -516,7 +566,7 @@ async function refreshTensions(
     deps.io.stdout("PLAN - no provider call or storage write was made.");
     return planningFailed ? 1 : 0;
   }
-  manifestReadPhase = PHASE_MANIFEST_READ;
+  ctx.setPhase(PHASE_MANIFEST_READ);
   const soleWriter = soleWriterGuard({
     execute: true,
     acknowledged: true,
@@ -546,16 +596,16 @@ async function refreshTensions(
           `not dispatching any more judgements`,
       ),
   });
-  // The manifest to write against: the one planning read and validated, until
-  // a write in this pass invalidates its ETag. Nothing outside the pass can
-  // invalidate it silently — a manifest that changed since planning loses the
-  // conditional write below, which is what reports it.
-  const readLive = async (id: string): Promise<StoredRawManifest> => {
+  // The reading to write against: the one planning read and validated, until
+  // a write in this pass supersedes its version. Nothing outside the pass can
+  // invalidate it silently — a reading that changed since planning loses the
+  // guarded write below, which is what reports it.
+  const readLive = async (id: string): Promise<StoredManifest> => {
     const planned = liveById.get(id);
     if (planned) return planned;
     const row = byId.get(id);
     if (!row) throw new Error("no list row");
-    const current = await storage.readManifest(row.key_prefix);
+    const current = await storage.readManifest(row.id);
     if (!current || !validLiveManifest(current.manifest, row)) {
       throw new Error("manifest changed before write");
     }
@@ -574,25 +624,62 @@ async function refreshTensions(
       );
       return outcome;
     };
+    /** One reading's half of a write, guarded on the version planning read. */
+    const replacement = (
+      id: string,
+      manifest: Record<string, unknown>,
+      current: StoredManifest,
+    ): PublishedReplacement => {
+      const next = ManifestSchema.safeParse(manifest);
+      // The merge is onto a manifest that already parsed, so this can only
+      // fail on what the judgement contributed. Refused rather than written:
+      // a reading the Worker would reject at read time must not be stored.
+      if (!next.success) throw new Error(`judged manifest is invalid: ${next.error.message}`);
+      return {
+        id,
+        matches: async (live) => (await manifestVersion(live)) === current.version,
+        next: next.data,
+      };
+    };
+    const merge = (
+      partnerId: string,
+      entry: Parameters<typeof mergeTensionSide>[2],
+      judgedAt: string | undefined,
+      current: StoredManifest,
+    ): Record<string, unknown> => {
+      const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
+      if (!merged.ok) throw new Error(merged.error);
+      return merged.manifest;
+    };
+    /**
+     * Writes one or both sides. A pair goes in a single call, so it is one
+     * transaction: both entries are locked in sorted id order before either is
+     * read, and a failure leaves neither side written rather than half a
+     * judgement the two readings would disagree about.
+     */
+    const writeSet = async (entries: PublishedReplacement[]): Promise<void> => {
+      // The planned version is spent either way: a win supersedes it, a loss
+      // proves it was already stale. Whoever reads these next reads them fresh.
+      for (const entry of entries) liveById.delete(entry.id);
+      const written = await storage.replaceRelationships(entries);
+      if (!written.replaced) {
+        throw new Error("the reading changed since it was planned; no overwrite performed");
+      }
+      for (const skipped of written.skippedTargets) {
+        outcome.stderr.push(
+          `  ! ${skipped.sourceId}: skipped ${skipped.kind} target ${skipped.targetId}: no longer exists`,
+        );
+      }
+      outcome.written += entries.length;
+    };
     const writeSide = async (
       id: string,
       partnerId: string,
       entry: Parameters<typeof mergeTensionSide>[2],
       judgedAt: string | undefined,
-      current: StoredRawManifest,
+      current: StoredManifest,
     ): Promise<void> => {
-      const merged = mergeTensionSide(current.manifest, partnerId, entry, judgedAt);
-      if (!merged.ok) throw new Error(merged.error);
-      // The ETag is spent either way: a win supersedes it, a loss proves it
-      // was already stale. Whoever reads this side next reads it fresh.
-      liveById.delete(id);
-      const wrote = await storage.putManifestIfMatch(
-        byId.get(id)!.key_prefix,
-        merged.manifest,
-        current.etag,
-      );
-      if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
-      outcome.written++;
+      await writeSet([replacement(id, merge(partnerId, entry, judgedAt, current), current)]);
     };
     const ceilingSkip = (): ExecuteOutcome => {
       outcome.ceilingSkipped = true;
@@ -611,8 +698,8 @@ async function refreshTensions(
       // pair nothing could have judged since the plan was made.
       if (gate.stopped()) return ceilingSkip();
       const { a: aId, b: bId, source, key } = action.candidate;
-      let a: StoredRawManifest;
-      let b: StoredRawManifest;
+      let a: StoredManifest;
+      let b: StoredManifest;
       try {
         a = await readLive(aId);
         b = await readLive(bId);
@@ -648,15 +735,12 @@ async function refreshTensions(
         outcome.stdout.push(`  ${key}  ${formatUsage(result.usage)} ms=${providerMs}`);
         const computedAt = new Date(deps.now()).toISOString();
         const sides = deriveTensionSides(result.judgement, { a: aId, b: bId }, computedAt);
-        await writeSide(aId, bId, sides.a, computedAt, a);
-        try {
-          await writeSide(bId, aId, sides.b, computedAt, b);
-        } catch (error) {
-          return fail(
-            `${key}: ${bId} not written after ${aId} was (one-sided; rerun repairs it)`,
-            error,
-          );
-        }
+        // One call, one transaction: the judgement is one fact about the pair,
+        // and there is no state in which only half of it was written.
+        await writeSet([
+          replacement(aId, merge(bId, sides.a, computedAt, a), a),
+          replacement(bId, merge(aId, sides.b, computedAt, b), b),
+        ]);
         outcome.stdout.push(
           `  ${key}  ${result.judgement.verdict}${result.judgement.side ? ` side=${result.judgement.side}` : ""}`,
         );
@@ -695,14 +779,7 @@ async function refreshTensions(
         const target = await readLive(repair.on);
         const merged = purgeTensionPartner(target.manifest, repair.partner);
         if (!merged.ok) throw new Error(merged.error);
-        liveById.delete(repair.on);
-        const wrote = await storage.putManifestIfMatch(
-          byId.get(repair.on)!.key_prefix,
-          merged.manifest,
-          target.etag,
-        );
-        if (!wrote) throw new Error("manifest CAS lost; no overwrite performed");
-        outcome.written++;
+        await writeSet([replacement(repair.on, merged.manifest, target)]);
       } else {
         const target = await readLive(repair.on);
         await writeSide(repair.on, repair.partner, null, repair.judged_at, target);
@@ -755,7 +832,7 @@ async function refreshTensions(
   );
 
   deps.io.stdout(
-    `\nJudged: ${judged}; manifests written: ${written}; repaired: ${repaired}; ` +
+    `\nJudged: ${judged}; readings written: ${written}; repaired: ${repaired}; ` +
       `skipped since plan: ${skippedSincePlan}; failures: ${failures}` +
       (ceilingSkipped > 0 ? `; skipped at the backoff ceiling: ${ceilingSkipped}` : ""),
   );
@@ -811,15 +888,6 @@ function manifestChangedSinceReport(manifest: RawManifest, reportGeneratedAt: st
 
 function timestamp(value: unknown): number {
   return typeof value === "string" ? Date.parse(value) : Number.NaN;
-}
-
-function defaultStorageVars(): Record<string, string | undefined> {
-  return {
-    ...loadDotVars(".dev.vars"),
-    ...loadDotVars(".prd.vars"),
-    ...loadDotVars(".corpus.vars"),
-    ...process.env,
-  };
 }
 
 async function defaultProviderVars(): Promise<Record<string, string | undefined>> {
@@ -939,11 +1007,13 @@ no scope line.
 
 Execute mode writes each side's directional tension (contradicts, supersedes,
 superseded_by, qualifies, qualified_by) and a judged-pair record to BOTH
-manifests with ETag CAS, changing nothing else. index/list.json is not
-touched. A crash between the two writes leaves a one-sided pair that the next
-run mirrors without another paid call; entries naming a deleted partner are
-purged the same way. It prints the provider token usage of each judgement and a
-run total.
+readings, changing nothing else. Both sides go in ONE transaction, which locks
+the two rows in sorted id order before reading either, so a failure leaves
+neither side written and two passes judging the same pair from opposite ends
+cannot deadlock. The one-sided repairs remain, for pairs left half-written
+before that was true and for entries naming a deleted partner, and cost no
+paid call. It prints the provider token usage of each judgement and a run
+total.
 
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json, except with --pair,
@@ -954,8 +1024,11 @@ Options:
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
                        before it stops dispatching judgements; free repairs still
                        run. Default: 10m (bare = seconds); 30s to 30m.
-  --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
+  --bucket <name>      R2 bucket, which names the database this pass writes.
+                       Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: the tenant id (usr_…) whose corpus to judge.
+${DATABASE_URL_ENV_FLAG_HELP}
+  --local              Use this checkout's own PostgreSQL.
   ${BILLING_TENANT_FLAG_HELP}
                        Default: --tenant. Required to --execute with --tenant global.
   --execute            Make paid provider calls and write results.
@@ -964,18 +1037,9 @@ Options:
   defaultDeps: (io: CommandIo): CorpusRefreshTensionsDeps => ({
     io,
     readReport: readReportIfPresent,
-    createStorage: async (bucket, keyRoot) =>
-      storageFromClient(
-        // Same opt-in as refresh-connections: the policy belongs to these
-        // commands, not to every caller of the shared S3 client.
-        r2InventoryClientFromVars(
-          defaultStorageVars(),
-          bucket,
-          globalThis.fetch,
-          refreshS3RequestDeps(),
-        ),
-        keyRoot,
-      ),
+    // The same session seam as refresh-connections: one corpus, one pairing of
+    // bucket to database, defined in one place.
+    withStore: openStore(openOperatorSql, process.env),
     loadProvider: async (execute, paidFetch) =>
       tensionProviderFromVars(await defaultProviderVars(), execute, paidFetch ? { fetch: paidFetch } : {}),
     openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),

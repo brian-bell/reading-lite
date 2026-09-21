@@ -2,8 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, spendHarness } from "../../helpers/operator-spend";
 import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
 import { RateLimitedError } from "../../../src/modules/http-retry";
-import type { R2InventoryClient } from "../../../scripts/lib/cf-clients";
-import { mergeListRows as applyRowPatches } from "../../../scripts/ops-lib/list-index-cas";
 import type {
   RelationshipJudgementInput,
   RelationshipJudgementResult,
@@ -11,13 +9,16 @@ import type {
 import {
   corpusRefreshConnectionsCommand,
   parseProductionWorkerVars,
-  storageFromClient,
   type CorpusRefreshConnectionsDeps,
   type RefreshConnectionsStorage,
+  type StoreTarget,
 } from "../../../scripts/ops-lib/commands/corpus-refresh-connections";
+import { sha256Hex } from "../../../src/services";
 
 const AT = "2026-08-31T12:00:00.000Z";
 const JUDGED_AT = "2026-08-31T12:01:00.000Z";
+/** Every pass addresses one tenant's rows; `global` has none and is refused. */
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 
 function listRow(id: string) {
   return {
@@ -55,7 +56,6 @@ function manifest(id: string, overrides: Record<string, unknown> = {}) {
     content_sha256: "b".repeat(64),
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-01T00:00:00.000Z",
-    future_field: { keep: id },
     ...overrides,
   };
 }
@@ -64,7 +64,7 @@ function report(ids = ["rd_a", "rd_c"]) {
   return {
     version: 1,
     generated_at: AT,
-    tenant: "global",
+    tenant: TENANT,
     floor: SIMILARITY_FLOOR,
     readings: ids.map((id) => ({
       id,
@@ -86,39 +86,50 @@ function report(ids = ["rd_a", "rd_c"]) {
   };
 }
 
-function harness(opts: { cas?: boolean; failListOnce?: boolean; authority?: Parameters<typeof spendHarness>[0] } = {}) {
-  let items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c")];
-  const manifests = new Map<
-    string,
-    { manifest: Record<string, unknown>; etag: string }
-  >([
-    ["readings/2026/rd_a", { manifest: manifest("rd_a"), etag: "e-a" }],
-    ["readings/2026/rd_b", { manifest: manifest("rd_b"), etag: "e-b" }],
-    ["readings/2026/rd_c", { manifest: manifest("rd_c"), etag: "e-c" }],
+function harness(opts: { cas?: boolean; missingTargets?: string[]; authority?: Parameters<typeof spendHarness>[0] } = {}) {
+  const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c")];
+  const manifests = new Map<string, Record<string, unknown>>([
+    ["rd_a", manifest("rd_a")],
+    ["rd_b", manifest("rd_b")],
+    ["rd_c", manifest("rd_c")],
   ]);
-  const writes: Array<{ keyPrefix: string; manifest: Record<string, unknown>; etag: string }> = [];
-  const listWrites: typeof items[] = [];
-  let failList = opts.failListOnce === true;
+  const writes: Array<{ id: string; manifest: Record<string, unknown> }> = [];
+  const targets: StoreTarget[] = [];
+  // The real content hash the command compares against, so a manifest changed
+  // between planning and the write loses the guard for the same reason it
+  // would against a database.
+  const version = (value: unknown) => sha256Hex(JSON.stringify(value));
   const storage: RefreshConnectionsStorage = {
-    readListIndex: async () => items,
-    readManifest: async (keyPrefix) => manifests.get(keyPrefix) ?? null,
-    putManifestIfMatch: async (keyPrefix, next, etag) => {
-      writes.push({ keyPrefix, manifest: next, etag });
-      if (opts.cas === false) return false;
-      manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
-      return true;
+    listItems: async () => items,
+    readManifest: async (id) => {
+      const found = manifests.get(id);
+      return found === undefined ? null : { manifest: found, version: await version(found) };
     },
-    // The real merge, so a test that inspects a row after the flush sees what
-    // the CAS write would have produced from this run's patches.
-    mergeListRows: async (patches) => {
-      if (failList) {
-        failList = false;
-        throw new Error("list unavailable");
+    replaceRelationships: async (entries) => {
+      // Locked, then read: the guard sees the reading as it stands now.
+      for (const entry of entries) {
+        const live = manifests.get(entry.id);
+        if (live === undefined || opts.cas === false) return { replaced: false, skippedTargets: [] };
+        if (!(await entry.matches(live as never))) return { replaced: false, skippedTargets: [] };
       }
-      items = applyRowPatches(items, patches) as typeof items;
-      listWrites.push(items);
+      const skippedTargets = [];
+      for (const entry of entries) {
+        const next = entry.next as unknown as Record<string, unknown>;
+        for (const connection of (next.connections ?? []) as { id: string }[]) {
+          if (!(opts.missingTargets ?? []).includes(connection.id)) continue;
+          skippedTargets.push({
+            sourceId: entry.id,
+            kind: "connection" as const,
+            targetId: connection.id,
+          });
+        }
+        writes.push({ id: entry.id, manifest: next });
+        manifests.set(entry.id, next);
+      }
+      return { replaced: true, skippedTargets };
     },
   };
+  let active: RefreshConnectionsStorage = storage;
   const out: string[] = [];
   const err: string[] = [];
   const sleeps: number[] = [];
@@ -141,11 +152,13 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean; authority?: Para
   }));
   const spend = spendHarness(opts.authority);
   const readReport = vi.fn(async () => JSON.stringify(report()));
-  const createStorage = vi.fn(async () => storage);
   const deps: CorpusRefreshConnectionsDeps = {
     io: { stdout: (line) => out.push(line), stderr: (line) => err.push(line) },
     readReport,
-    createStorage,
+    withStore: (target, work) => {
+      targets.push(target);
+      return work(active);
+    },
     loadProvider: async () => ({
       provider: "openai",
       model: "gpt-5.6-terra",
@@ -168,9 +181,13 @@ function harness(opts: { cas?: boolean; failListOnce?: boolean; authority?: Para
     sleeps,
     judge,
     readReport,
-    createStorage,
+    storage,
+    /** Hands the command a different store, for the scaled fixtures below. */
+    useStorage: (next: RefreshConnectionsStorage) => {
+      active = next;
+    },
+    targets,
     writes,
-    listWrites,
     manifests,
     items: () => items,
   };
@@ -186,21 +203,40 @@ function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
 }
 
 describe("ops corpus refresh-connections", () => {
-  it("executes a tenant-stamped report through that tenant's storage root", async () => {
-    const tenant = "usr_11111111-1111-4111-8111-111111111111";
+  it("executes a tenant-stamped report against that tenant's rows", async () => {
     const h = harness();
-    h.readReport.mockResolvedValue(JSON.stringify({ ...report(["rd_a"]), tenant }));
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
     expect(await corpusRefreshConnectionsCommand.run(
-      ["--tenant", tenant, "--execute", "--sole-writer"], h.deps,
+      ["--tenant", TENANT, "--execute", "--sole-writer"], h.deps,
     )).toBe(0);
-    expect(h.createStorage).toHaveBeenCalledWith("reading-lite", `u/${tenant}/`);
+    expect(h.targets).toEqual([
+      {
+        bucket: "reading-lite",
+        local: false,
+        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/`, namespace: TENANT },
+      },
+    ]);
     expect(h.writes).toHaveLength(1);
-    expect(h.writes[0]?.keyPrefix).toBe("readings/2026/rd_a");
+    expect(h.writes[0]?.id).toBe("rd_a");
+  });
+
+  // The pre-tenant layout has no rows to judge, and the refusal has to come
+  // before the spend session: a paid session admitted for work that cannot
+  // happen is the failure worth preventing.
+  it("refuses --tenant global before opening a spend session", async () => {
+    const h = harness();
+    await expect(
+      corpusRefreshConnectionsCommand.run(
+        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).rejects.toThrow(/--tenant global addresses the pre-tenant R2 layout/);
+    expect(h.spend.calls).toEqual([]);
   });
   it("prints a Timing block for a plan pass with no provider phase", async () => {
     const h = harness();
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], {
+      await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], {
         ...h.deps,
         now: fakeClock(10),
       }),
@@ -213,16 +249,16 @@ describe("ops corpus refresh-connections", () => {
     // actually took.
     expect(text).toMatch(/planning reads\s+3 calls\s+0\.050s/);
     expect(text).not.toMatch(/^ {2}provider\s+\d+ call/m);
-    expect(text).not.toContain("manifest write");
+    expect(text).not.toContain("reading write");
   });
 
   it("still prints the Timing block when the pass throws on a stale report", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    h.manifests.get("readings/2026/rd_a")!.manifest.updated_at = JUDGED_AT;
+    h.manifests.get("rd_a")!.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).rejects.toThrow(/target rd_a changed/);
@@ -237,18 +273,19 @@ describe("ops corpus refresh-connections", () => {
         // Pinned to one at a time: this test is about which phase each call is
         // attributed to, and overlapping the actions would interleave the fake
         // clock's steps across them.
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--concurrency", "1"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--concurrency", "1"],
         { ...h.deps, now: fakeClock(10) },
       ),
     ).toBe(0);
     const text = h.out.join("\n");
-    // Three manifests read while planning, and none afterwards: each write
-    // goes out against the ETag its planning read returned.
+    // Three readings read while planning, and none afterwards: each write is
+    // guarded on the version its planning read returned.
     expect(text).toMatch(/planning reads\s+3 calls\s+0\.050s/);
-    expect(text).not.toContain("manifest read");
+    expect(text).not.toContain("reading read");
     expect(text).toMatch(/provider\s+2 calls\s+0\.020s/);
-    expect(text).toMatch(/manifest write\s+2 calls/);
-    expect(text).toMatch(/list write\s+1 call/);
+    // One write per judgement, and nothing after them: the verdict went with
+    // the relationships, so there is no closing flush to time.
+    expect(text).toMatch(/reading write\s+2 calls/);
     expect(text).toContain("rd_a  usage input=100 output=20 reasoning=0 ms=10");
   });
 
@@ -291,7 +328,7 @@ binding = "READING_JOBS"
           },
         }),
       );
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       expect(h.out.join("\n")).toContain(
         "Scope: incremental (9 reading(s)) — 4 reading(s) changed since " +
           "2026-08-21T00:00:00.000Z; narrowed by --limit 3",
@@ -303,7 +340,7 @@ binding = "READING_JOBS"
       h.readReport.mockResolvedValue(
         JSON.stringify({ ...report(["rd_a"]), scope: { kind: "full", reason: "--full" } }),
       );
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       expect(h.out.join("\n")).toContain("Scope: full — --full");
     });
 
@@ -311,7 +348,7 @@ binding = "READING_JOBS"
     // so a missing header is not a full pass. Print unstated, not full.
     it("says the scope is unstated when the report carries no header", async () => {
       const h = harness();
-      expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
+      expect(await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
       const printed = h.out.find((line) => line.startsWith("Scope:"));
       expect(printed).toBe("Scope: unstated — the report carries no scope header");
       expect(printed).not.toMatch(/full/i);
@@ -325,7 +362,7 @@ binding = "READING_JOBS"
   it("prints every planned judgement and estimated cost without provider or storage writes", async () => {
     const h = harness();
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(0);
     expect(h.out.join("\n")).toContain("rd_a  judge");
     expect(h.out.join("\n")).toContain("rd_c  judge");
@@ -337,49 +374,50 @@ binding = "READING_JOBS"
     expect(h.out.join("\n")).not.toContain("Usage:");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
-    expect(h.listWrites).toEqual([]);
-  });
+      });
 
   it("refuses execute without sole-writer before reading the report or storage", async () => {
     const h = harness();
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute"],
         h.deps,
       ),
     ).rejects.toThrow(/--sole-writer/);
     expect(h.readReport).not.toHaveBeenCalled();
-    expect(h.createStorage).not.toHaveBeenCalled();
+    expect(h.targets).toEqual([]);
   });
 
-  it("limits selected actions and synchronizes only the selected manifest and list verdict", async () => {
+  it("limits selected actions and writes only the selected reading", async () => {
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(0);
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.writes).toHaveLength(1);
-    expect(h.writes[0]!.keyPrefix).toContain("rd_a");
+    expect(h.writes[0]!.id).toContain("rd_a");
     expect(h.writes[0]!.manifest).toMatchObject({
       novelty_verdict: "familiar",
       connections: [{ id: "rd_b", reason: "related" }],
       connections_computed_at: JUDGED_AT,
       connections_neighbourhood_ids: ["rd_b"],
       updated_at: "2026-01-01T00:00:00.000Z",
-      future_field: { keep: "rd_a" },
     });
-    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
-    expect(h.items().find((row) => row.id === "rd_c")?.novelty_verdict).toBe("novel");
+    // The verdict is a column of the judged reading, so the write that carried
+    // its relationships carried it too, and the reading the limit cut is
+    // untouched.
+    expect(h.manifests.get("rd_a")!.novelty_verdict).toBe("familiar");
+    expect(h.manifests.get("rd_c")!.novelty_verdict).toBe("novel");
   });
 
   it("prints the provider usage per judgement and a run total", async () => {
     const h = harness();
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
@@ -390,75 +428,53 @@ binding = "READING_JOBS"
   });
 
 
-  it("counts the usage but neither blind-writes nor updates the list after a manifest CAS loss", async () => {
+  it("counts the usage and writes nothing when the guarded write is refused", async () => {
     const h = harness({ cas: false });
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(1);
     expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.listWrites).toEqual([]);
-    expect(h.err.join("\n")).toMatch(/CAS lost/);
+        expect(h.err.join("\n")).toMatch(/changed since it was planned/);
     // The judgement was paid for whether or not its write landed.
     expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
   });
 
-  it("reads every manifest once, with no per-action re-read on execute", async () => {
+  it("reads every reading once, with no per-action re-read on execute", async () => {
     const h = harness();
     const reads: string[] = [];
-    const originalCreateStorage = h.deps.createStorage;
-    h.deps.createStorage = async (...args) => {
-      const storage = await originalCreateStorage(...args);
-      const readManifest = storage.readManifest;
-      storage.readManifest = async (keyPrefix) => {
-        reads.push(keyPrefix);
-        return readManifest(keyPrefix);
-      };
-      return storage;
+    const readManifest = h.storage.readManifest;
+    h.storage.readManifest = async (id) => {
+      reads.push(id);
+      return readManifest(id);
     };
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
     expect(h.judge).toHaveBeenCalledTimes(2);
     // rd_a and rd_c are the targets, rd_b their shared candidate: three
-    // manifests, three reads. Planning already holds the ETag each write
-    // needs, so the execute pass adds no read of its own.
+    // readings, three reads. Planning already holds the version each write is
+    // guarded on, so the execute pass adds no read of its own.
     expect([...reads].sort()).toEqual([
-      "readings/2026/rd_a",
-      "readings/2026/rd_b",
-      "readings/2026/rd_c",
+      "rd_a",
+      "rd_b",
+      "rd_c",
     ]);
   });
 
-  it("detects a manifest changed since planning through the CAS alone", async () => {
+  // The guard is the whole detection: the pass does not re-read before it
+  // writes, so a reading changed while a judgement was in flight is caught by
+  // the version compare under the row lock or not at all.
+  it("detects a reading changed since planning through the write guard alone", async () => {
     const h = harness();
-    const originalCreateStorage = h.deps.createStorage;
-    h.deps.createStorage = async (...args) => {
-      const storage = await originalCreateStorage(...args);
-      const putManifestIfMatch = storage.putManifestIfMatch;
-      // A conditional write that actually compares: a stale ETag loses. The
-      // loser is still recorded, because `h.writes` is the attempts the pass
-      // made, not the writes that landed.
-      storage.putManifestIfMatch = async (keyPrefix, next, etag) => {
-        if (h.manifests.get(keyPrefix)?.etag !== etag) {
-          h.writes.push({ keyPrefix, manifest: next, etag });
-          return false;
-        }
-        return putManifestIfMatch(keyPrefix, next, etag);
-      };
-      return storage;
-    };
     // rd_a is rewritten underneath the pass while its judgement is in flight.
     h.judge.mockImplementationOnce(async () => {
-      h.manifests.set("readings/2026/rd_a", {
-        manifest: manifest("rd_a"),
-        etag: "e-a-someone-else",
-      });
+      h.manifests.set("rd_a", manifest("rd_a", { tldr: "rewritten by someone else" }));
       return {
         judgement: {
           novelty_verdict: "familiar" as const,
@@ -477,52 +493,47 @@ binding = "READING_JOBS"
     });
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(1);
     expect(h.err.join("\n")).toContain(
-      "  ! rd_a: manifest CAS lost; no overwrite performed",
+      "  ! rd_a: the reading changed since it was planned; no overwrite performed",
     );
-    // Nothing was overwritten, the pass finished its other action, and the
-    // loser contributes no list-row verdict.
-    expect(h.manifests.get("readings/2026/rd_a")!.etag).toBe("e-a-someone-else");
-    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 1");
-    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("novel");
-    expect(h.items().find((row) => row.id === "rd_c")?.novelty_verdict).toBe("familiar");
+    // Nothing was overwritten, and the pass finished its other action. The
+    // verdict is a column of the same row, so a lost write leaves the row's
+    // verdict exactly as the other writer left it.
+    expect(h.manifests.get("rd_a")!.tldr).toBe("rewritten by someone else");
+    expect(h.manifests.get("rd_a")!.novelty_verdict).toBe("novel");
+    expect(h.out.join("\n")).toContain("Judged: 1; failures: 1");
+    expect(h.manifests.get("rd_c")!.novelty_verdict).toBe("familiar");
   });
 
-  it("continues after a planning read failure and flushes earlier successes", async () => {
+  it("continues after a planning read failure and still writes the readings it judged", async () => {
     const h = harness();
-    const originalCreateStorage = h.deps.createStorage;
-    h.deps.createStorage = async (...args) => {
-      const storage = await originalCreateStorage(...args);
-      const readManifest = storage.readManifest;
-      storage.readManifest = async (keyPrefix) => {
-        if (keyPrefix.endsWith("rd_c")) throw new Error("temporary R2 read failure");
-        return readManifest(keyPrefix);
-      };
-      return storage;
+    const readManifest = h.storage.readManifest;
+    h.storage.readManifest = async (id) => {
+      if (id === "rd_c") throw new Error("temporary read failure");
+      return readManifest(id);
     };
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(1);
     expect(h.judge).toHaveBeenCalledOnce();
     expect(h.writes).toHaveLength(1);
-    expect(h.listWrites).toHaveLength(1);
-    expect(h.err.join("\n")).toContain("rd_c: temporary R2 read failure");
-    expect(h.out.join("\n")).toContain("Judged: 1; list rows healed: 0; failures: 0");
+    expect(h.err.join("\n")).toContain("rd_c: temporary read failure");
+    expect(h.out.join("\n")).toContain("Judged: 1; failures: 0");
   });
 
   it("drops a provider connection when the neighbour manifest is missing", async () => {
     const h = harness();
-    h.manifests.delete("readings/2026/rd_b");
+    h.manifests.delete("rd_b");
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
         h.deps,
       ),
     ).toBe(0);
@@ -532,10 +543,10 @@ binding = "READING_JOBS"
   it("rejects a report when a target was reprocessed after it was generated", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    h.manifests.get("readings/2026/rd_a")!.manifest.updated_at = JUDGED_AT;
+    h.manifests.get("rd_a")!.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).rejects.toThrow(/target rd_a changed.*regenerate/);
@@ -546,10 +557,10 @@ binding = "READING_JOBS"
   it("rejects a report when a candidate neighbour was reprocessed after it was generated", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    h.manifests.get("readings/2026/rd_b")!.manifest.updated_at = JUDGED_AT;
+    h.manifests.get("rd_b")!.updated_at = JUDGED_AT;
     await expect(
       corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).rejects.toThrow(/neighbour rd_b changed.*regenerate/);
@@ -560,9 +571,9 @@ binding = "READING_JOBS"
   it("reports an invalid target manifest as an incomplete plan", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    delete h.manifests.get("readings/2026/rd_a")!.manifest.content_type;
+    delete h.manifests.get("rd_a")!.content_type;
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
     expect(h.err.join("\n")).toMatch(/rd_a.*invalid or mismatched/);
     expect(h.judge).not.toHaveBeenCalled();
@@ -572,9 +583,9 @@ binding = "READING_JOBS"
   it("reports a target without usable stored summary text as incomplete", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    h.manifests.get("readings/2026/rd_a")!.manifest.summary_markdown = "  ";
+    h.manifests.get("rd_a")!.summary_markdown = "  ";
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
     expect(h.err.join("\n")).toMatch(/rd_a.*no stored summary text/);
     expect(h.judge).not.toHaveBeenCalled();
@@ -584,235 +595,103 @@ binding = "READING_JOBS"
   it("continues planning but fails the run when a candidate manifest cannot be read", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a", "rd_c"])));
-    const originalRead = h.deps.createStorage;
-    h.deps.createStorage = async (...args) => {
-      const storage = await originalRead(...args);
-      const readManifest = storage.readManifest;
-      storage.readManifest = async (keyPrefix) => {
-        if (keyPrefix.endsWith("rd_b")) throw new Error("invalid JSON");
-        return readManifest(keyPrefix);
-      };
-      return storage;
+    const readManifest = h.storage.readManifest;
+    h.storage.readManifest = async (id) => {
+      if (id === "rd_b") throw new Error("row does not parse");
+      return readManifest(id);
     };
     expect(
-      await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps),
+      await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps),
     ).toBe(1);
-    expect(h.err.join("\n")).toContain("candidate rd_b: invalid JSON");
+    expect(h.err.join("\n")).toContain("candidate rd_b: row does not parse");
     expect(h.err.join("\n")).toContain("invalid candidate manifest(s): rd_b");
     expect(h.judge).not.toHaveBeenCalled();
     expect(h.writes).toEqual([]);
   });
 
-  it("heals a list write failure on rerun without another paid judgement", async () => {
-    const h = harness({ failListOnce: true });
-    const argv = [
-      "--tenant",
-      "global",
-      "--billing-tenant",
-      BILLING_TENANT,
-      "--execute",
-      "--sole-writer",
-      "--limit",
-      "1",
-    ];
-    expect(await corpusRefreshConnectionsCommand.run(argv, h.deps)).toBe(1);
-    expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("novel");
-
-    expect(await corpusRefreshConnectionsCommand.run(argv, h.deps)).toBe(0);
-    expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBe("familiar");
-  });
-
-  it("heals a list row whose judged manifest carries no verdict at all", async () => {
+  // The verdict used to live on a second document, so a failed flush left a
+  // row disagreeing with the manifest beside it and a later pass had to heal
+  // it. Both are one row now: the verdict lands inside the same transaction as
+  // the relationships, and there is no state where only one of them is there.
+  it("writes the verdict and the relationships as one write", async () => {
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    // Judged for this report, but the manifest has no verdict while the row
-    // still claims one: the drift a heal exists to clear.
-    const stored = h.manifests.get("readings/2026/rd_a")!.manifest;
-    stored.connections_computed_at = JUDGED_AT;
-    delete stored.novelty_verdict;
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+    expect(h.writes).toHaveLength(1);
+    expect(h.writes[0]!.manifest).toMatchObject({
+      novelty_verdict: "familiar",
+      connections: [{ id: "rd_b", reason: "related" }],
+    });
+  });
+
+  // A reading dropped between the judgement and the write. The write keeps the
+  // rest and reports the target, so nothing needs `corpus purge-connections`
+  // run behind the refresh.
+  it("reports a connection target that no longer exists", async () => {
+    const h = harness({ missingTargets: ["rd_b"] });
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    expect(
+      await corpusRefreshConnectionsCommand.run(
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        h.deps,
+      ),
+    ).toBe(0);
+    expect(h.err.join("\n")).toContain(
+      "  ! rd_a: skipped connection target rd_b: no longer exists",
+    );
+    expect(h.out.join("\n")).toContain("targets skipped as missing: 1");
+  });
+
+  // Already judged for this report: a resume marker, and the whole of it.
+  it("skips a reading already judged for this report, with no paid call", async () => {
+    const h = harness();
+    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
+    h.manifests.get("rd_a")!.connections_computed_at = JUDGED_AT;
 
     expect(
       await corpusRefreshConnectionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
+        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
         h.deps,
       ),
     ).toBe(0);
 
     expect(h.judge).not.toHaveBeenCalled();
-    expect(h.out.join("\n")).toContain("Judged: 0; list rows healed: 1; failures: 0");
-    expect(h.items().find((row) => row.id === "rd_a")?.novelty_verdict).toBeUndefined();
+    expect(h.writes).toEqual([]);
+    expect(h.out.join("\n")).toContain("Judged: 0; failures: 0");
   });
 });
 
 /**
- * A minimal R2InventoryClient that records every method call, so a test can
- * assert how many requests one manifest read costs.
+ * A store that reports how many reads were in flight at once, and in what
+ * order they finished, so the planning reader's cap and its in-order
+ * collection can be asserted separately.
  */
-function fakeInventoryClient(objects: Map<string, { body: string; etag: string }>) {
-  const calls: string[] = [];
-  const client = {
-    async get(key: string) {
-      calls.push(`get ${key}`);
-      return objects.get(key)?.body ?? null;
-    },
-    async getWithEtag(key: string) {
-      calls.push(`getWithEtag ${key}`);
-      const found = objects.get(key);
-      return found ? { body: found.body, etag: found.etag } : null;
-    },
-    async listObjects(prefix?: string) {
-      calls.push(`listObjects ${prefix ?? ""}`);
-      return [...objects.entries()]
-        .filter(([key]) => prefix === undefined || key.startsWith(prefix))
-        .map(([key, value]) => ({ key, size: value.body.length, etag: value.etag }));
-    },
-    async put(key: string) {
-      calls.push(`put ${key}`);
-    },
-    async putIfAbsent() {
-      return true;
-    },
-    async putIfMatch(key: string, _body: unknown, etag: string) {
-      calls.push(`putIfMatch ${key} ${etag}`);
-      return true;
-    },
-    async head() {
-      return true;
-    },
-    async delete() {},
-    async listKeys() {
-      return [...objects.keys()];
-    },
-    async getBytes() {
-      return null;
-    },
-  } as unknown as R2InventoryClient;
-  return { client, calls };
-}
-
-describe("storageFromClient", () => {
-  const key = "t/readings/2026/rd_a/manifest.json";
-
-  it("reads a manifest with a single request", async () => {
-    const { client, calls } = fakeInventoryClient(
-      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),
-    );
-    const storage = storageFromClient(client, "t/");
-
-    await expect(storage.readManifest("readings/2026/rd_a")).resolves.toEqual({
-      manifest: manifest("rd_a"),
-      etag: "e-a",
-    });
-    // One GET, not the LIST+GET pair this used to need for the ETag.
-    expect(calls).toEqual([`getWithEtag ${key}`]);
-  });
-
-  it("returns null for a manifest that is not there", async () => {
-    const { client, calls } = fakeInventoryClient(new Map());
-    const storage = storageFromClient(client, "t/");
-
-    await expect(storage.readManifest("readings/2026/rd_a")).resolves.toBeNull();
-    expect(calls).toEqual([`getWithEtag ${key}`]);
-  });
-
-  it("rejects a manifest body that is not a JSON object", async () => {
-    const { client } = fakeInventoryClient(new Map([[key, { body: "[1,2]", etag: "e-a" }]]));
-    const storage = storageFromClient(client, "t/");
-
-    await expect(storage.readManifest("readings/2026/rd_a")).rejects.toThrow(
-      /manifest readings\/2026\/rd_a is not an object/,
-    );
-  });
-
-  it("refuses a manifest read that carried no ETag", async () => {
-    const { client } = fakeInventoryClient(
-      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "" }]]),
-    );
-    const storage = storageFromClient(client, "t/");
-
-    // An empty token would fail the later If-Match, after the judgement is paid.
-    await expect(storage.readManifest("readings/2026/rd_a")).rejects.toThrow(
-      /manifest readings\/2026\/rd_a was read without an ETag/,
-    );
-  });
-
-  it("merges verdicts into the live list index under If-Match, retrying a 412", async () => {
-    const listKey = "t/index/list.json";
-    // The corpus gains rd_new and rewrites rd_a's title while the run judges;
-    // the first conditional put loses to that writer.
-    const versions = [
-      { items: [listRow("rd_a"), listRow("rd_b")], etag: "v1" },
-      {
-        items: [{ ...listRow("rd_a"), title: "Retitled" }, listRow("rd_b"), listRow("rd_new")],
-        etag: "v2",
-      },
-    ];
-    const puts: Array<{ etag: string; body: string }> = [];
-    let read = 0;
-    const client = {
-      async getWithEtag(key: string) {
-        expect(key).toBe(listKey);
-        const version = versions[Math.min(read++, versions.length - 1)]!;
-        return { body: JSON.stringify({ version: 1, items: version.items }), etag: version.etag };
-      },
-      async putIfMatch(key: string, body: string, etag: string) {
-        expect(key).toBe(listKey);
-        puts.push({ etag, body });
-        return puts.length > 1;
-      },
-    } as unknown as R2InventoryClient;
-
-    await storageFromClient(client, "t/").mergeListRows([
-      { id: "rd_a", novelty_verdict: "familiar" },
-      { id: "rd_b", novelty_verdict: undefined },
-    ]);
-
-    expect(puts.map((put) => put.etag)).toEqual(["v1", "v2"]);
-    const written = JSON.parse(puts[1]!.body) as { items: Array<Record<string, unknown>> };
-    // The concurrent insertion and the concurrent title both survive; only the
-    // two judged fields are this run's to write.
-    expect(written.items.map((row) => row.id)).toEqual(["rd_a", "rd_b", "rd_new"]);
-    expect(written.items[0]!.title).toBe("Retitled");
-    expect(written.items[0]!.novelty_verdict).toBe("familiar");
-    expect(written.items[1]).not.toHaveProperty("novelty_verdict");
-  });
-
-  it("passes the ETag from the read straight back to the CAS write", async () => {
-    const { client, calls } = fakeInventoryClient(
-      new Map([[key, { body: JSON.stringify(manifest("rd_a")), etag: "e-a" }]]),
-    );
-    const storage = storageFromClient(client, "t/");
-
-    const stored = await storage.readManifest("readings/2026/rd_a");
-    await storage.putManifestIfMatch("readings/2026/rd_a", { id: "rd_a" }, stored!.etag);
-    expect(calls).toEqual([`getWithEtag ${key}`, `putIfMatch ${key} e-a`]);
-  });
-});
-
-/** Tracks overlap and resolves later ids first, so ordering cannot be luck. */
 function trackingStorage(
   items: ReturnType<typeof listRow>[],
-  manifests: Map<string, { manifest: Record<string, unknown>; etag: string }>,
+  manifests: Map<string, Record<string, unknown>>,
 ) {
   let inFlight = 0;
   let peak = 0;
   const completed: string[] = [];
   const storage: RefreshConnectionsStorage = {
-    readListIndex: async () => items,
-    readManifest: async (keyPrefix) => {
+    listItems: async () => items,
+    readManifest: async (id) => {
       inFlight++;
       peak = Math.max(peak, inFlight);
-      // Later key prefixes finish first, so an in-order result can only come
-      // from collecting by input position rather than by completion.
-      await new Promise((resolve) => setTimeout(resolve, keyPrefix.endsWith("9") ? 0 : 2));
+      // Later ids finish first, so an in-order result can only come from
+      // collecting by input position rather than by completion.
+      await new Promise((resolve) => setTimeout(resolve, id.endsWith("9") ? 0 : 2));
       inFlight--;
-      completed.push(keyPrefix);
-      return manifests.get(keyPrefix) ?? null;
+      completed.push(id);
+      const found = manifests.get(id);
+      return found === undefined ? null : { manifest: found, version: `v-${id}` };
     },
-    putManifestIfMatch: async () => true,
-    mergeListRows: async () => {},
+    replaceRelationships: async () => ({ replaced: true, skippedTargets: [] }),
   };
   return { storage, peak: () => peak, completed };
 }
@@ -824,9 +703,7 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
 
   function scaled() {
     const items = [...ids, ...ids.map(neighbourOf)].map(listRow);
-    const manifests = new Map(
-      items.map((row) => [row.key_prefix, { manifest: manifest(row.id), etag: `e-${row.id}` }]),
-    );
+    const manifests = new Map(items.map((row) => [row.id, manifest(row.id)]));
     const tracked = trackingStorage(items, manifests);
     const h = harness();
     const scaledReport = {
@@ -850,14 +727,14 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
       })),
     };
     h.readReport.mockResolvedValue(JSON.stringify(scaledReport));
-    h.createStorage.mockResolvedValue(tracked.storage);
+    h.useStorage(tracked.storage);
     return { h, tracked };
   }
 
   it("overlaps planning reads up to the cap and keeps plan output in report order", async () => {
     const { h, tracked } = scaled();
 
-    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
 
     expect(tracked.peak()).toBe(8);
     // Proof the fixture actually completes out of order, so the assertion below
@@ -869,10 +746,10 @@ describe("ops corpus refresh-connections planning read concurrency", () => {
     expect(planned).toEqual(ids);
   });
 
-  it("reads every manifest once across both planning waves", async () => {
+  it("reads every reading once across both planning waves", async () => {
     const { h, tracked } = scaled();
 
-    expect(await corpusRefreshConnectionsCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
+    expect(await corpusRefreshConnectionsCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], h.deps)).toBe(0);
 
     expect(tracked.completed).toHaveLength(COUNT * 2);
     expect(new Set(tracked.completed).size).toBe(COUNT * 2);
@@ -910,22 +787,25 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 
   function scaled(opts: { casLossFor?: string } = {}) {
     const items = [...ids, ...ids.map(neighbourOf)].map(listRow);
-    const manifests = new Map<string, { manifest: Record<string, unknown>; etag: string }>(
-      items.map((row) => [row.key_prefix, { manifest: manifest(row.id), etag: `e-${row.id}` }]),
+    const manifests = new Map<string, Record<string, unknown>>(
+      items.map((row) => [row.id, manifest(row.id)]),
     );
-    const writes: Array<{ keyPrefix: string; etag: string }> = [];
-    let listWrite: typeof items | undefined;
+    const writes: Array<{ id: string }> = [];
     const storage: RefreshConnectionsStorage = {
-      readListIndex: async () => items,
-      readManifest: async (keyPrefix) => manifests.get(keyPrefix) ?? null,
-      putManifestIfMatch: async (keyPrefix, next, etag) => {
-        writes.push({ keyPrefix, etag });
-        if (opts.casLossFor !== undefined && keyPrefix.endsWith(opts.casLossFor)) return false;
-        manifests.set(keyPrefix, { manifest: next, etag: `${etag}-next` });
-        return true;
+      listItems: async () => items,
+      readManifest: async (id) => {
+        const found = manifests.get(id);
+        return found === undefined ? null : { manifest: found, version: `v-${id}` };
       },
-      mergeListRows: async (patches) => {
-        listWrite = applyRowPatches(items, patches) as typeof items;
+      replaceRelationships: async (entries) => {
+        for (const entry of entries) writes.push({ id: entry.id });
+        if (opts.casLossFor !== undefined && entries.some((entry) => entry.id === opts.casLossFor)) {
+          return { replaced: false, skippedTargets: [] };
+        }
+        for (const entry of entries) {
+          manifests.set(entry.id, entry.next as unknown as Record<string, unknown>);
+        }
+        return { replaced: true, skippedTargets: [] };
       },
     };
 
@@ -934,7 +814,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     const judgeOrder: string[] = [];
     const h = harness();
     h.readReport.mockResolvedValue(JSON.stringify(scaledReport()));
-    h.createStorage.mockResolvedValue(storage);
+    h.useStorage(storage);
     // The provider is the whole point of the flag: give it latency, and resolve
     // later readings first so an in-order result cannot be luck.
     h.judge.mockImplementation(async (input) => {
@@ -957,19 +837,12 @@ describe("ops corpus refresh-connections execute concurrency", () => {
         },
       };
     });
-    return {
-      h,
-      manifests,
-      writes,
-      judgeOrder,
-      peak: () => peak,
-      listWrite: () => listWrite,
-    };
+    return { h, manifests, writes, judgeOrder, peak: () => peak };
   }
 
   const execute = (h: ReturnType<typeof harness>, ...extra: string[]) =>
     corpusRefreshConnectionsCommand.run(
-      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
+      ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
       h.deps,
     );
 
@@ -977,7 +850,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
   const executeOnAClock = (h: ReturnType<typeof harness>, ...extra: string[]) => {
     let clock = Date.parse(JUDGED_AT);
     return corpusRefreshConnectionsCommand.run(
-      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
+      ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", ...extra],
       {
         ...h.deps,
         now: () => clock,
@@ -1003,7 +876,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
       .filter((line) => line.includes("usage input="))
       .map((line) => line.trim().split(/\s+/)[0]);
     expect(printed).toEqual(ids);
-    expect(s.h.out.join("\n")).toContain(`Judged: ${COUNT}; list rows healed: 0; failures: 0`);
+    expect(s.h.out.join("\n")).toContain(`Judged: ${COUNT}; failures: 0`);
   });
 
   it("honours a lower cap", async () => {
@@ -1028,23 +901,19 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 
     // Exactly one write attempt for the loser, and its manifest is untouched:
     // no partial write, and no second worker retrying it.
-    const attempts = s.writes.filter((write) => write.keyPrefix.endsWith(lost));
+    const attempts = s.writes.filter((write) => write.id === lost);
     expect(attempts).toHaveLength(1);
-    expect(s.manifests.get(`readings/2026/${lost}`)!.manifest.connections).toEqual([]);
-    expect(s.manifests.get(`readings/2026/${lost}`)!.etag).toBe(`e-${lost}`);
+    expect(s.manifests.get(lost)!.connections).toEqual([]);
     expect(
-      s.h.err.filter((line) => line.includes("manifest CAS lost")),
-    ).toEqual([`  ! ${lost}: manifest CAS lost; no overwrite performed`]);
-    expect(s.h.out.join("\n")).toContain(
-      `Judged: ${COUNT - 1}; list rows healed: 0; failures: 1`,
-    );
-    // The lost reading contributes no list-row verdict either.
-    expect(
-      s.listWrite()!.find((row) => row.id === lost)!.novelty_verdict,
-    ).toBe("novel");
-    expect(
-      s.listWrite()!.find((row) => row.id === ids[4])!.novelty_verdict,
-    ).toBe("familiar");
+      s.h.err.filter((line) => line.includes("changed since it was planned")),
+    ).toEqual([
+      `  ! ${lost}: the reading changed since it was planned; no overwrite performed`,
+    ]);
+    expect(s.h.out.join("\n")).toContain(`Judged: ${COUNT - 1}; failures: 1`);
+    // The verdict is a column of the same row, so a lost write leaves it as it
+    // was while the winners carry theirs.
+    expect(s.manifests.get(lost)!.novelty_verdict).toBe("novel");
+    expect(s.manifests.get(ids[4]!)!.novelty_verdict).toBe("familiar");
     // Its call was still billed, which is what the usage total is for.
     expect(s.h.out.join("\n")).toContain(`Usage: ${COUNT} judgements;`);
   });
@@ -1073,7 +942,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
     // cleared, so a transient limit costs the pass a pause, not a reading.
     expect(s.h.judge).toHaveBeenCalledTimes(COUNT + 1);
     expect(s.h.out.join("\n")).toContain(
-      `Judged: ${COUNT}; list rows healed: 0; failures: 0`,
+      `Judged: ${COUNT}; failures: 0`,
     );
   });
 
@@ -1098,7 +967,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
         "(status 429, retry after 1000ms)",
     );
     expect(s.h.out.join("\n")).toContain(
-      `Judged: ${COUNT - 1}; list rows healed: 0; failures: 1`,
+      `Judged: ${COUNT - 1}; failures: 1`,
     );
   });
 
@@ -1127,19 +996,21 @@ describe("ops corpus refresh-connections execute concurrency", () => {
       `  ! skip ${ids[COUNT - 1]}: backoff ceiling reached before this action ran`,
     );
     expect(s.h.out.join("\n")).toContain(
-      `Judged: 0; list rows healed: 0; failures: 2; skipped at the backoff ceiling: ${COUNT - 2}`,
+      `Judged: 0; failures: 2; skipped at the backoff ceiling: ${COUNT - 2}`,
     );
     // Nothing was written, and the pass says so with a non-zero exit.
     expect(s.writes).toEqual([]);
-    expect(s.listWrite()).toBeUndefined();
   });
 
-  it("leaves the list row of an action it skipped at the ceiling alone", async () => {
+  // The ceiling stops paid work, and a stopped action must leave its reading
+  // exactly as it found it: writing anything for a reading nothing judged
+  // would re-plan it forever.
+  it("leaves a reading it skipped at the ceiling untouched", async () => {
     const s = scaled();
     const inner = s.h.judge.getMockImplementation()!;
     // The first reading is judged, everything after it walks into the wall, so
-    // the pass writes one row and then reaches the ceiling with most of the
-    // plan undispatched.
+    // the pass writes one reading and then reaches the ceiling with most of
+    // the plan undispatched.
     s.h.judge.mockImplementation(async (input) => {
       if (input.reading.id === ids[0]) return inner(input);
       throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
@@ -1147,40 +1018,9 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 
     expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "120s")).toBe(1);
 
-    const rows = s.listWrite()!;
-    expect(rows.find((row) => row.id === ids[0])!.novelty_verdict).toBe("familiar");
-    // A skipped action never read its manifest, so it has no verdict to flush;
-    // writing its `undefined` would clear a row the manifest still stands
-    // behind and re-plan the reading forever.
-    expect(rows.find((row) => row.id === ids[COUNT - 1])!.novelty_verdict).toBe("novel");
-    expect(rows.every((row) => row.novelty_verdict !== undefined)).toBe(true);
-  });
-
-  it("still heals list rows after the ceiling, since a heal is not a paid call", async () => {
-    const s = scaled();
-    // The last planned action is a list heal: judged for this report already,
-    // with a manifest verdict the row disagrees with.
-    const healed = ids[COUNT - 1]!;
-    const stored = s.manifests.get(`readings/2026/${healed}`)!.manifest;
-    stored.connections_computed_at = JUDGED_AT;
-    stored.novelty_verdict = "familiar";
-    s.h.judge.mockImplementation(async () => {
-      throw new RateLimitedError(429, 60_000, "https://api.openai.com/v1/responses");
-    });
-
-    expect(await executeOnAClock(s.h, "--concurrency", "1", "--max-backoff", "120s")).toBe(1);
-
-    // The ceiling stopped the paid judgements, but the free heal behind it ran
-    // and wrote its row, the same way --limit caps judgements and never repairs.
-    expect(s.h.out.join("\n")).toContain(
-      `Judged: 0; list rows healed: 1; failures: 2; skipped at the backoff ceiling: ${COUNT - 3}`,
-    );
-    expect(
-      s.listWrite()!.find((row) => row.id === healed)!.novelty_verdict,
-    ).toBe("familiar");
-    expect(s.h.err).not.toContain(
-      `  ! skip ${healed}: backoff ceiling reached before this action ran`,
-    );
+    expect(s.manifests.get(ids[0]!)!.novelty_verdict).toBe("familiar");
+    expect(s.manifests.get(ids[COUNT - 1]!)!.novelty_verdict).toBe("novel");
+    expect(s.writes.map((write) => write.id)).toEqual([ids[0]]);
   });
 
   it("keeps a --max-backoff that is not a duration out of the pass", async () => {
@@ -1211,7 +1051,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
       s.h.err.filter((line) => line.includes("pausing new judgements")),
     ).toHaveLength(COUNT);
     expect(s.h.out.join("\n")).toContain(
-      `Judged: ${COUNT}; list rows healed: 0; failures: 0`,
+      `Judged: ${COUNT}; failures: 0`,
     );
   });
 
@@ -1237,7 +1077,7 @@ describe("ops corpus refresh-connections execute concurrency", () => {
 // transport the command hands it, as the real judge client does.
 describe("ops corpus refresh-connections spend admission", () => {
   const run = (h: ReturnType<typeof harness>, ...argv: string[]) =>
-    corpusRefreshConnectionsCommand.run(["--tenant", "global", ...argv], h.deps);
+    corpusRefreshConnectionsCommand.run(["--tenant", TENANT, ...argv], h.deps);
   const billed = ["--billing-tenant", BILLING_TENANT];
 
   function paying(h: ReturnType<typeof harness>, request: RequestInit) {
@@ -1259,9 +1099,12 @@ describe("ops corpus refresh-connections spend admission", () => {
     expect(h.spend.fetch).not.toHaveBeenCalled();
   });
 
-  it("refuses to execute for --tenant global without a valid --billing-tenant", async () => {
+  // A tenant pass bills itself, so --billing-tenant is optional here; what it
+  // must never do is bill something that is not a tenant. (The one selector
+  // that required an explicit billing tenant was `global`, which this command
+  // now refuses outright — it has no rows to judge.)
+  it("refuses a malformed --billing-tenant before opening a spend session", async () => {
     const h = harness();
-    await expect(run(h, "--execute", "--sole-writer")).rejects.toThrow(/requires --billing-tenant/);
     await expect(run(h, "--execute", "--sole-writer", "--billing-tenant", "global")).rejects.toThrow(
       /malformed --billing-tenant/,
     );

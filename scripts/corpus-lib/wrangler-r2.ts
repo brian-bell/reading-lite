@@ -328,21 +328,6 @@ export async function writeJsonObject(key: string, body: unknown, deps: R2Deps):
   }
 }
 
-// The nightly-refresh run marker. Read strictly so the two outcomes stay
-// distinguishable at this layer: null is a confirmed-absent marker, and a
-// failed read throws. Both end in a full sweep — the command catches the throw
-// and says so on stderr — but only because the command decided that, and it can
-// only report the difference if this function keeps it.
-export async function readRefreshState(deps: R2Deps): Promise<unknown | null> {
-  const raw = await readObjectStrict(layout.refreshStateKey(), deps);
-  return raw === null ? null : JSON.parse(raw);
-}
-
-export async function writeRefreshState(state: unknown, deps: R2Deps): Promise<void> {
-  await writeJsonObject(layout.refreshStateKey(), state, deps);
-}
-
-
 // Collect each stream as raw bytes and decode once at close. Decoding per
 // "data" chunk splits a multibyte UTF-8 character that straddles a chunk
 // boundary into U+FFFD replacement characters — which is how rebuild-list once

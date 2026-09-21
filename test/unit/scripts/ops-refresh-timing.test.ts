@@ -151,26 +151,25 @@ describe("timed storage wrappers", () => {
     expect(block).toContain("reading write");
   });
 
-  it("splits tier-2/3 manifest reads between planning and execute", async () => {
+  it("splits tier-2/3 reading reads between planning and execute", async () => {
     const timer = createRefreshTimer(fakeClock(1));
     let phase = PHASE_PLANNING_READS;
     const storage = timedRefreshStorage(
       {
-        readListIndex: async () => [],
-        readManifest: async () => ({ manifest: { id: "rd_a" }, etag: "e" }),
-        putManifestIfMatch: async () => true,
-        mergeListRows: async () => {},
+        listItems: async () => [],
+        readManifest: async (id) => ({ manifest: { id }, version: "v" }),
+        replaceRelationships: async () => ({ replaced: true, skippedTargets: [] }),
       },
       timer,
       () => phase,
     );
 
-    await storage.readListIndex();
-    await storage.readManifest("readings/2026/rd_a");
-    await storage.readManifest("readings/2026/rd_b");
+    await storage.listItems();
+    await storage.readManifest("rd_a");
+    await storage.readManifest("rd_b");
     phase = PHASE_MANIFEST_READ;
-    await storage.readManifest("readings/2026/rd_a");
-    await storage.putManifestIfMatch("readings/2026/rd_a", {}, "e");
+    await storage.readManifest("rd_a");
+    await storage.replaceRelationships([]);
 
     const block = timer.format();
     expect(block).toMatch(/planning reads\s+2 calls/);
