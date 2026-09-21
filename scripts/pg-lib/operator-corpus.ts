@@ -13,6 +13,14 @@
 // `SweepItem`), so the pure planners take these rows unchanged. Nothing
 // re-maps them field by field, which is what would let a field quietly go
 // missing.
+//
+// The writes below (reading-lite-gh347.4.1) are the refresh passes' half of the
+// module, and they follow the same rule from the other side: the relationship
+// replace is the Worker's own `PgReadingWriter.replacePublishedSetIf`, not an
+// operator copy of it. Two writers to `reading_relationships` with different
+// lock disciplines is exactly the hazard one shared writer removes. Only the
+// neighbour snapshot is written here, because it is a single column and has no
+// runtime writer to borrow.
 
 import type { TenantContext } from "../../src/control-plane/ids";
 import { parseTenantId } from "../../src/control-plane/ids";
@@ -22,7 +30,17 @@ import {
   type ContentKeys,
   type PgReadingStore,
 } from "../../src/modules/stores/postgres/reading-store";
+import {
+  pgReadingWriterFor,
+  type PublishedReplacement,
+  type ReplaceSetOutcome,
+  type SkippedTarget,
+} from "../../src/modules/stores/postgres/reading-writer";
+import { pgSimilarityStoreFor } from "../../src/modules/stores/postgres/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity-store";
+import type { Manifest, SimilaritySnapshot } from "../../src/schemas/manifest";
 import type { ListIndexItem } from "../../src/schemas/api";
+import { sha256Hex } from "../../src/services";
 import { UsageError } from "../ops-lib/contract";
 import { operatorTenantSelector, type OperatorTenant } from "../corpus-lib/tenant";
 
@@ -210,4 +228,89 @@ export async function latestAttemptStage(
   if (stage === undefined) return null;
   const status = (last?.status as string | undefined) ?? row.status ?? "?";
   return `${stage}/${status}`;
+}
+
+export type { PublishedReplacement, ReplaceSetOutcome, SkippedTarget };
+
+/**
+ * A reading's exact neighbourhood: the pgvector cosine scan over this tenant's
+ * rows, self included, as `queryByVectorId` returns it.
+ *
+ * `null` when the reading owns no embedding, which is a different answer from
+ * "no neighbours" and the one the refresh pass reports as unmeasurable.
+ *
+ * The scan is exact rather than approximate (ADR 0005), so an operator pass
+ * and the Worker see the same neighbourhood for the same corpus — a refresh
+ * that measured against a different index from the one serving reads would
+ * write drift nobody could reproduce.
+ */
+export function neighboursOf(
+  sql: SqlQuery,
+  tenant: TenantContext,
+  id: string,
+  topK: number,
+): Promise<SimilarityMatch[] | null> {
+  return pgSimilarityStoreFor(sql as Sql, tenant).queryByVectorId(id, topK);
+}
+
+/**
+ * Writes one reading's measured `similarity` snapshot and nothing else.
+ *
+ * Deliberately not `updated_at`: no content changed, and bumping it would
+ * misreport the reading as freshly written to everything that orders by it —
+ * the list the SPA serves, and the refresh pass's own incremental scope, which
+ * would then re-measure the reading it just measured, every night, forever.
+ * This is the one-field discipline `withSimilarity` carried on the manifest,
+ * expressed as a column.
+ *
+ * Returns false when no row was updated: the reading was purged while the pass
+ * was measuring it.
+ */
+export async function setSimilarity(
+  sql: SqlQuery,
+  tenantId: string,
+  id: string,
+  similarity: SimilaritySnapshot,
+): Promise<boolean> {
+  const updated = await sql.execute(
+    "UPDATE readings SET similarity = $3::jsonb WHERE tenant_id = $1 AND id = $2",
+    [tenantId, id, JSON.stringify(similarity)],
+  );
+  return updated > 0;
+}
+
+/**
+ * The version of a manifest an operator pass compares against, standing in for
+ * the ETag the manifest-era compare-and-set witnessed.
+ *
+ * The same content hash `src/relationship-judge.ts` uses for the hosted judge,
+ * so the two agree on what "changed since I read it" means. A pass reads a
+ * manifest, judges from it, and hands this predicate to the replace, which
+ * re-reads under the row lock: identical hash, identical manifest.
+ */
+export function manifestVersion(manifest: Manifest): Promise<string> {
+  return sha256Hex(JSON.stringify(manifest));
+}
+
+/**
+ * Replaces the judged relationship set of one or more readings, in one
+ * transaction, through the Worker's own writer.
+ *
+ * A judged set is rows in `reading_relationships` AND the flags on the
+ * reading's current revision (`connections_present`, `tensions_present`,
+ * `connections_computed_at`, `connections_neighbourhood_ids`,
+ * `tensions_judged`). The flags are load-bearing: relationship rows cannot
+ * tell an absent array from an empty one, so a set written as rows without its
+ * flag reads back as never computed. The writer writes both halves or neither.
+ *
+ * Pass both halves of a directional tension as one call. Two calls are two
+ * transactions, and a crash between them leaves a corpus that disagrees with
+ * itself about a pair it judged once.
+ */
+export function replaceRelationships(
+  sql: SqlQuery,
+  tenant: TenantContext,
+  entries: readonly PublishedReplacement[],
+): Promise<ReplaceSetOutcome> {
+  return pgReadingWriterFor(sql as Sql, tenant).replacePublishedSetIf(entries);
 }

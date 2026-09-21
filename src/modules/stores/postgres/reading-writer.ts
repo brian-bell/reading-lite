@@ -85,6 +85,28 @@ export interface CommitOutcome {
   published: boolean;
 }
 
+// One reading's half of a relationship replace: the manifest to write and the
+// guard that decides, under the row lock, whether it still should be.
+export interface PublishedReplacement {
+  id: string;
+  matches: (current: Manifest) => boolean | Promise<boolean>;
+  next: Manifest;
+}
+
+// A relationship the replace dropped because its target reading no longer
+// exists. The pass reports these; nothing is written for them.
+export interface SkippedTarget {
+  sourceId: string;
+  kind: "connection" | "tension";
+  targetId: string;
+}
+
+export interface ReplaceSetOutcome {
+  // Every entry was written, or none was.
+  replaced: boolean;
+  skippedTargets: SkippedTarget[];
+}
+
 export type PurgeOutcome =
   | { kind: "not_found" }
   | { kind: "conflict" }
@@ -322,35 +344,117 @@ export class PgReadingWriter {
   // attempt that published them, so attempt ownership does not apply. `matches`
   // sees the reading as it stands under the row lock, which is what the etag
   // CAS on manifest.json gave it. Content keys and the embedding are untouched.
+  //
+  // One entry of the set below, written that way so the codebase has one lock
+  // order rather than two.
   async replacePublishedIf(
     id: string,
     matches: (current: Manifest) => boolean | Promise<boolean>,
     next: Manifest,
   ): Promise<boolean> {
-    if (next.status !== "ready") throw new Error("replacePublishedIf: manifest is not ready");
-    return this.sql.transaction(async (tx) => {
-      const row = await this.lock(tx, id);
-      if (!row || row.status !== "ready" || row.current_revision_id === null) return false;
-      const current = await new PgReadingStore(tx, this.tenantId).loadReadingById(id);
-      if (!current || !(await matches(current.manifest))) return false;
+    const outcome = await this.replacePublishedSetIf([{ id, matches, next }]);
+    return outcome.replaced;
+  }
 
-      const rows = manifestToRows(next, { tenantId: this.tenantId, keyPrefix: row.key_prefix, ownsUrl: false });
-      const v = rows.revision!;
-      await this.updateReading(tx, next);
-      await tx.query(
-        `UPDATE reading_revisions SET summary_markdown = $4, usage = $5::jsonb, connections_present = $6,
-           tensions_present = $7, connections_computed_at = $8, connections_neighbourhood_ids = $9,
-           tensions_judged = $10::jsonb
-         WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
-        [
-          this.tenantId, id, row.current_revision_id, v.summary_markdown, json(v.usage), v.connections_present,
-          v.tensions_present, v.connections_computed_at, v.connections_neighbourhood_ids, json(v.tensions_judged),
-        ],
-      );
-      await tx.query("DELETE FROM reading_relationships WHERE tenant_id = $1 AND source_id = $2", [this.tenantId, id]);
-      await insertRelationships(tx, this.tenantId, id, rows.relationships);
-      return true;
+  // Several published readings replaced in ONE transaction, all or none.
+  //
+  // A directional tension is judged once and belongs on both readings
+  // (`a contradicts b` and `b superseded_by a`). Written as two separate
+  // replaces that is two transactions: a crash between them leaves half a pair
+  // on the corpus, and two passes judging the overlapping pairs (a,b) and
+  // (b,a) at once take each other's rows in opposite orders and deadlock. So
+  // the pair is one call: every reading it names is locked up front, in sorted
+  // id order, before any of them is read.
+  //
+  // `matches` still decides per entry, and a single `false` abandons the whole
+  // set: half a judged pair is not a partial success, it is a corpus that
+  // disagrees with itself.
+  async replacePublishedSetIf(entries: readonly PublishedReplacement[]): Promise<ReplaceSetOutcome> {
+    for (const entry of entries) {
+      if (entry.next.status !== "ready") throw new Error("replacePublishedSetIf: manifest is not ready");
+    }
+    const ids = entries.map((entry) => entry.id);
+    if (new Set(ids).size !== ids.length) {
+      // Two entries for one reading would have the second silently discard the
+      // first's relationship rows, which is never what a caller means.
+      throw new Error("replacePublishedSetIf: a reading may appear once");
+    }
+    if (entries.length === 0) return { replaced: false, skippedTargets: [] };
+
+    return this.sql.transaction(async (tx) => {
+      const abandoned: ReplaceSetOutcome = { replaced: false, skippedTargets: [] };
+      const locked = new Map<string, LockedRow>();
+      // Sorted, so two passes that overlap on a pair queue behind each other
+      // instead of each holding the row the other needs next.
+      for (const id of [...ids].sort()) {
+        const row = await this.lock(tx, id);
+        if (!row || row.status !== "ready" || row.current_revision_id === null) return abandoned;
+        locked.set(id, row);
+      }
+
+      const store = new PgReadingStore(tx, this.tenantId);
+      const current = new Map<string, Manifest>();
+      for (const entry of entries) {
+        const reading = await store.loadReadingById(entry.id);
+        if (!reading) return abandoned;
+        current.set(entry.id, reading.manifest);
+      }
+      // Every guard runs before any write: a set is abandoned whole, and a
+      // guard never sees a sibling's half-written state.
+      for (const entry of entries) {
+        if (!(await entry.matches(current.get(entry.id)!))) return abandoned;
+      }
+
+      const skippedTargets: SkippedTarget[] = [];
+      for (const entry of entries) {
+        const row = locked.get(entry.id)!;
+        const rows = manifestToRows(entry.next, {
+          tenantId: this.tenantId,
+          keyPrefix: row.key_prefix,
+          ownsUrl: false,
+        });
+        const v = rows.revision!;
+        const live = await this.liveReadings(tx, rows.relationships.map((rel) => rel.target_id));
+        const kept = rows.relationships.filter((rel) => {
+          if (live.has(rel.target_id)) return true;
+          skippedTargets.push({ sourceId: entry.id, kind: rel.kind, targetId: rel.target_id });
+          return false;
+        });
+        await this.updateReading(tx, entry.next);
+        await tx.query(
+          `UPDATE reading_revisions SET summary_markdown = $4, usage = $5::jsonb, connections_present = $6,
+             tensions_present = $7, connections_computed_at = $8, connections_neighbourhood_ids = $9,
+             tensions_judged = $10::jsonb
+           WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
+          [
+            this.tenantId, entry.id, row.current_revision_id, v.summary_markdown, json(v.usage), v.connections_present,
+            v.tensions_present, v.connections_computed_at, v.connections_neighbourhood_ids, json(v.tensions_judged),
+          ],
+        );
+        await tx.query(
+          "DELETE FROM reading_relationships WHERE tenant_id = $1 AND source_id = $2",
+          [this.tenantId, entry.id],
+        );
+        await insertRelationships(tx, this.tenantId, entry.id, kept);
+      }
+      return { replaced: true, skippedTargets };
     });
+  }
+
+  // Which of these readings still exist, read inside the replace's
+  // transaction. `reading_relationships` has a foreign key on the source only,
+  // so a row naming a deleted target is accepted by the schema and becomes the
+  // dangling inbound row `corpus purge-connections` cleans up after a drop. A
+  // judgement that raced a delete is the one way a refresh can produce one, so
+  // the targets are resolved at the last moment, under the same lock as the
+  // write, and the missing ones are dropped and reported rather than stored.
+  private async liveReadings(tx: SqlQuery, ids: readonly string[]): Promise<Set<string>> {
+    if (ids.length === 0) return new Set();
+    const rows = await tx.query<{ id: string }>(
+      "SELECT id FROM readings WHERE tenant_id = $1 AND id = ANY($2::text[])",
+      [this.tenantId, [...new Set(ids)]],
+    );
+    return new Set(rows.map((row) => row.id));
   }
 
   // Reading purge. `isRunning` is the caller's staleness rule, evaluated under
