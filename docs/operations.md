@@ -1520,9 +1520,9 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
 | `npm run ops -- corpus drop` | remove readings by URL or id: deletes the row (the URL claim, revisions, attempts, its own outbound relationships and the embedding cascade) plus the reading's captured R2 content; inbound citations do **not** cascade — follow with `corpus purge-connections`; `--allow-ready` permits a ready one, off production |
 | `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest, embeddings included; inbound citations do **not** cascade — follow with `corpus purge-connections` per dropped id) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure readings against the tenant's stored vectors, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted `similarity` snapshots) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
-| `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
+| `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
@@ -1541,92 +1541,57 @@ production founder id is also recorded in the cutover log in
 `docs/founder-cutover.md`, but that file lists a **staging** founder id as
 well, do not copy the wrong one.
 
-Never run a production refresh with `--tenant global`. That selector still
-resolves to the legacy pre-cutover layout, which no longer receives readings;
-refreshing it spends judgements on a copy nobody reads.
+`--tenant global` is refused outright by all three passes. It names the
+pre-tenant R2 layout, which has no rows, and a refusal is the honest answer:
+resolving it would report an empty corpus rather than a wrong question. The
+refusal comes before the spend session opens, so no paid session is admitted
+for work that cannot happen.
 
-Production credentials do not live in the repo either. All three refresh
-commands read them the same way, and that is where the trap is: `.corpus.vars`
-S3 keys are commonly scoped to the staging bucket and then 403 against the
-production bucket, and every one of them prefers S3 keys over a Cloudflare API
-token whenever both are present, so stale staging keys silently win over an
-otherwise correct token. Source production keys from outside the repo; the
-credentials row of the cutover log in `docs/founder-cutover.md` records what an
-actual production run needed.
+The connection string does not live in the repo. Each pass resolves its
+database from `--bucket` through `scripts/pg-lib/operator-db.ts` — an allowlist
+of variable names per environment, not a pattern — so `reading-lite` means
+`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` and nothing else, and an
+unrecognised bucket gets no database rather than a production-shaped guess.
+`--database-url-env` names a different accepted variable; `--local` uses this
+checkout's own PostgreSQL and refuses to accept a deployed variable at all.
+Operators source the Neon strings from `~/.config/reading-lite/neon.env`, so no
+connection string enters the repository or the process list. The provider
+credentials the two paid passes need are still read from `.corpus.vars` and the
+environment.
 
-`refresh-neighbours` used to be the exception, running every call through a
-`wrangler` subprocess and ignoring `CORPUS_R2_*` entirely. It now picks its
-storage path automatically: direct when `CORPUS_R2_*` keys or a Cloudflare API
-token are present, wrangler otherwise, and it prints which one it took in the
-header (`Storage: direct (S3/REST) — CORPUS_R2_* keys`). Direct needs both
-halves, an R2 credential for the manifests and a Cloudflare API token for
-Vectorize, which has no S3 access-key path, so R2 keys alone stay on wrangler.
-`--via wrangler` forces the old path, `--via direct` forces the new one (and
-fails with the missing credential rather than falling back), and `--local`
-always uses wrangler because nothing else can reach the miniflare bucket. A
-direct run also prints the Cloudflare account it resolved (`Account: …`) under
-that line: the bucket name alone does not say whose bucket, and the trap above
-is precisely a shell that loaded the wrong credential file.
-Direct is the reason to prefer it: it removes the ~0.8s of Node start-up the
-wrangler path paid on every Vectorize query and every manifest read. Measured on
-staging (29 ready readings, plan mode): 46.6s over wrangler against 10.0s
-direct, with manifest reads 25.7s → 3.4s and Vectorize queries 19.5s → 6.5s.
-Both paths write a byte-identical `refresh-report.json`, and each flushes
-`index/list.json` through its own client, so a direct run needs no wrangler auth
-at all.
-
-`corpus backfill-source-date` uses the same `--via` flag, credential auto-select,
-and `Storage:` header, but it is R2-only: `CORPUS_R2_*` S3 keys alone take the
-direct path. It does not query Vectorize, so a `CORPUS_CF_API_TOKEN` that 403s
-on the wrangler Workers R2 route is not required. `--via direct` forces that
-path (and fails on missing S3/REST credentials rather than falling back).
-`--local` still uses wrangler.
+There is one storage path now, so the `--via` flag, its credential
+auto-selection and the `Storage:`/`Account:` header lines are gone with the two
+backends they chose between. Each pass opens one direct PostgreSQL session for
+its whole run and closes it on every exit path, success and failure alike.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads`, the
-manifests read while planning, `manifest read` for reads outside a planning
-pass, `vectorize query`, `reverse query`, the scoping queries an incremental
-tier-1 pass makes, kept apart from the measurement ones because the scope
-trades one for the other, `run marker`, `provider`, `manifest write`,
-`list write`),
-each with its call count and total wall time, then the run total. The block is
-printed even when the pass ends in an error, and failed calls are counted, since
-a stalled read is exactly the wall time worth seeing. Execute mode also prints
-`ms=` per judgement beside its token usage. Two things the counts do not say:
-they count storage calls, not HTTP requests (a `refresh-neighbours` manifest
-read is one request on the direct path but a whole wrangler process around one
-on the wrangler path, which is most of why the same row times so differently
-between them), and a time includes any retry and its backoff, so one unusually
-slow call may be a call that quietly retried. Record the block: it is the baseline a later run or a
-performance change is compared against, and it is what tells a slow pass apart
-from a hung one.
+readings read while planning, `reading read` for reads outside a planning pass,
+`similarity query`, `reverse query`, the scoping queries an incremental tier-1
+pass makes, kept apart from the measurement ones because the scope trades one
+for the other, `run marker`, `provider`, `reading write`), each with its call
+count and total wall time, then the run total. The block is printed even when
+the pass ends in an error, and failed calls are counted, since a stalled read
+is exactly the wall time worth seeing. Execute mode also prints `ms=` per
+judgement beside its token usage. One thing the counts do not say: a time
+includes any retry and its backoff, so one unusually slow call may be a call
+that quietly retried. A judged pair is one `reading write`, not two, because
+tier 3 writes both sides in one transaction. Record the block: it is the
+baseline a later run or a performance change is compared against, and it is
+what tells a slow pass apart from a hung one.
 
-Two robustness limits sit behind those numbers. `refresh-connections` and
-`refresh-tensions` reach R2 over the S3 API when `CORPUS_R2_*` keys are set,
-and every request on that path carries a 30-second deadline and gets up to
-three attempts on a timeout, a network fault, a 5xx, or a 429 (honouring
-`Retry-After`), so one transient read no longer ends the run. Conditional
-writes are the exception: they get the deadline but are never repeated, because
-a retry can see its own landed write and report a lost race that did not
-happen. Both commands' judgement calls retry 5xx the same way, and a 429
-surfaces as a `RateLimitedError` naming the retry-after the provider asked for, that one is what the execute pass's global backoff reacts to (below).
+The provider calls keep their own robustness policy. `refresh-connections` and
+`refresh-tensions` retry 5xx, and a 429 surfaces as a `RateLimitedError` naming
+the retry-after the provider asked for; that one is what the execute pass's
+global backoff reacts to (below). The judgement calls carry no deadline of
+their own, so a stall there still looks like a silent pass, and the `Timing:`
+block is what makes it visible.
 
-Those limits are these two commands' policy and nothing else's. The other ops
-commands that talk to R2 over the S3 API, `corpus ingest`, `corpus recover`,
-`corpus purge-connections`, `staging teardown`, keep
-the single attempt and the absent deadline they were written and run against.
-
-`refresh-neighbours` is the one exception, and only in part: it gets the same
-deadline and retry for its manifest reads and writes whenever it runs direct
-over S3 keys. Everything else is still uncovered. The Cloudflare REST client, the R2 fallback used when only `CLOUDFLARE_API_TOKEN` is set, and every
-Vectorize query on the direct path, backs off on 429 but has no deadline and
-no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
-retry but carry no deadline of their own. A stall on any of them still looks
-like a silent pass, the `Timing:` block is what makes it visible.
-
-`ops corpus refresh-neighbours` re-queries Vectorize by the stored vector id of
-each ready reading in scope, by default the readings that moved since the run
-marker, and under `--full` every one of them, per **Scope** below, with no
+`ops corpus refresh-neighbours` measures each ready reading in scope against
+the tenant's stored vectors — the exact pgvector cosine scan the Worker serves
+`/api/readings/similar` from, so an operator pass and the product cannot
+disagree about a neighbourhood — by default the readings that moved since the
+run marker, and under `--full` every one of them, per **Scope** below, with no
 embedding calls and no LLM. It prints the staleness inventory,
 and always writes its report (`--out`, default `./refresh-report.json`; give
 each writer its own path, see below), the input contract for later
@@ -1645,20 +1610,19 @@ the same candidate set remains. A newly present older candidate receives
 `uncited_neighbour`; so does a previously considered uncited candidate that
 later falls below the floor or becomes non-ready. This baseline tracks ID
 membership; reprocessing the same candidate ID is not a membership change. The
-producer preserves live ingestion's selection order: raw
-Vectorize top five, similarity floor, then ready-ID intersection. It does not
-fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
-R2. `--execute` rewrites only
-drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
-≥ 0.02) and then flushes `index/list.json` by merging only the `similarity`
-field of the rows it measured onto the live index, so a row added or rewritten
-while the pass ran is no longer reverted. On the direct path that merge is an
-`If-Match` compare-and-set retried with jittered backoff; on the wrangler
-fallback, which has no conditional put, the read→put window is unguarded. So
-`--execute` is refused without `--sole-writer`: do not run it while
-submissions are in flight. Leaves status, vectors, title, tldr, tags, keywords,
-entities, and `summary_markdown` untouched. A second immediate `--execute`
-writes nothing.
+producer preserves live ingestion's selection order: the raw
+top five, similarity floor, then ready-ID intersection. It does not
+fill vacated slots with lower-ranked ready readings. Plan mode writes nothing.
+`--execute` rewrites only drifted `similarity` snapshots (count change or
+`|Δmax|`/`|Δmean|` ≥ 0.02), one column of one row — the list row IS the reading
+row, so there is no second document to keep in lockstep and no closing flush.
+It touches nothing else, `updated_at` included: bumping it would misreport the
+reading as freshly written and put it back in the next incremental scope every
+night. `--execute` is still refused without `--sole-writer`, because a pass
+that measures the corpus while other writers change it reports a corpus that
+never existed. Leaves status, vectors, title, tldr, tags, keywords, entities,
+and `summary_markdown` untouched. A second immediate `--execute` writes
+nothing.
 
 ```sh
 # The corpus-wide staleness inventory this section describes needs --full: a
@@ -1677,27 +1641,26 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
 which is now the default and stays accepted as a way of saying so out loud).
 `--full` is the explicit sweep: every ready reading, O(N) whatever changed, the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
-of them. (That 16 minutes is the wrangler path; the same sweep on the now-default
-direct path models at ~3.5–4 min, see the staging proof below. The argument for
-the narrowed scope does not rest on the slower figure.) The default measures only the
-readings whose neighbourhood could have moved since the run marker stored at
-`index/refresh-state.json` (per tenant): those created or reprocessed since it,
-and the reverse neighbourhood of each changed vector (one topK-100
-metadata-less query per changed reading, keeping matches
+of them. (That figure is from the R2-and-Vectorize era; it is the shape of the
+argument that matters, not the number.) The default measures only the
+readings whose neighbourhood could have moved since the run marker, a
+`corpus_refresh_state` row per tenant (db/migrations/0006): those created or
+reprocessed since it, and the reverse neighbourhood of each changed vector (one
+topK-100 query per changed reading, keeping matches
 at or above the similarity floor less 0.1, so a reading that far away cannot
 gain or lose a floored neighbour because that one vector changed). The reverse
-query is the only source of strangers: `index/list.json` rows carry no
+query is the only source of strangers: a list row carries no
 citations, so a reading that cites a changed one is found because it still
 scores above the bound, which holds for every change except a vector that
 moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, a deleted one, or one written before this check existed, the marker
-is version 2 and a version-1 marker is rejected with a message that says so), a
-marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
-that has since left the list (a purge names nothing a timestamp can find), a
-failed reverse query, a changed *ready*
+first run, a deleted one, or one in an older format, the marker is version 3
+and an older one is rejected with a message that says so, which is also how the
+R2-era version-2 markers retire), a marker carrying an invalidation, a reading
+the marker recorded that has since left the corpus (a purge names nothing a
+timestamp can find), a failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown, never a narrower pass. A short result is a complete
@@ -1709,7 +1672,7 @@ every night should be run as `--full` outright rather than paying the reverse
 queries first.
 
 It also sweeps once narrowing stops paying. Every reverse query and every
-measurement is one Vectorize query, and a sweep is one per ready reading. Before
+measurement is one similarity query, and a sweep is one per ready reading. Before
 each reverse query, the first included, the pass compares the reverse queries
 it has still to make plus the ready readings already known to be in scope
 (changed, carried forward, or brought in by a reverse answer, each counted
@@ -1719,9 +1682,9 @@ which keeps a quiet night whose only scope is the carried unmeasurable readings
 out of the zero-measured-sweep check below. A bulk ingest or mass reprocess
 that already outweighs the corpus therefore sweeps without any reverse query,
 and the reason names both costs (`Scope: full — incremental scope would cost
-at least 812 Vectorize queries (412 reverse still to run, 400 reading(s) to
+at least 812 similarity queries (412 reverse still to run, 400 reading(s) to
 measure) against 553 for a full sweep — after 0 of 412 changed reading(s)`).
-Manifest reads are not counted, which tips close calls toward the sweep.
+Reading reads are not counted, which tips close calls toward the sweep.
 `--limit` takes no part in the comparison and caps whichever plan results.
 
 An incremental report is a statement about its scope, not about the corpus: a
@@ -1736,14 +1699,15 @@ nothing sweeps, those persistent flags never resurface and the served
 `similarity` numbers drift indefinitely.
 
 A reading the scope does bring in is measured like any other target, so its
-`similarity` snapshot and its list row are brought current in the same pass, nothing about being in scope defers a measurement to the sweep.
+`similarity` snapshot is brought current in the same pass, nothing about being
+in scope defers a measurement to the sweep.
 
 **What an incremental pass keeps exact, and what it only keeps approximate.**
 Flags are exact: the bound is derived so that a reading further away than it
 cannot gain or lose a *floored* neighbour because one vector changed. The
 stored `similarity` snapshot is not, and this is broader than the moved-vector
-case above. That snapshot, and the `index/list.json` row the API and the SPA
-serve, summarises the **raw** topK, sub-floor scores included, so a vector
+case above. That snapshot, which the API and the SPA serve straight off the
+reading's row, summarises the **raw** topK, sub-floor scores included, so a vector
 merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
 at any score, far below the bound. Between sweeps those numbers are therefore
 approximate on every reading the scope left out. The drift is deterministic and
@@ -1754,23 +1718,28 @@ than a number: a reprocess that moves a vector far enough to leave a stranger's
 floored neighbourhood is invisible to the reverse query, which runs against the
 vector's new position.
 
-A purge and a Vectorize-only write used to be on that list and are not any more.
-The marker records the list ids it saw, not a row count, so a day that purges
+A purge and an embedding-only write used to be on that list and are not any more.
+The marker records the reading ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
-(Every id, not just the ready ones: a non-ready row can still own an indexed
-vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
-stamps `invalidated_by` on the marker before its first upsert, and again, with
-a different value, after its last, so the next pass sweeps on its own. That
-marker is the only R2 object it writes, and it needs an R2 write credential for
-it; a stamp it cannot write before upserting stops the run before it spends
-anything. A refresh pass that finds a stamp it did not start with leaves the
-marker alone rather than clearing a sweep it did not perform, which is what the
-second stamp is for: a pass that swept while vectors were still arriving must
-not report the corpus as covered.
+(Every id, not just the ready ones: a non-ready row can still own a stored
+vector, so its removal moves neighbourhoods too.) The marker also carries
+`invalidated_by`, stamped by a writer that moves embeddings without touching
+the readings rows, so the next pass sweeps on its own. A refresh pass that
+finds a stamp it did not start with leaves the marker alone rather than
+clearing a sweep it did not perform: a pass that swept while vectors were still
+arriving must not report the corpus as covered. Nothing stamps it today —
+`corpus backfill-vectors`, which did, was retired in reading-lite-gh347.4.6
+because an embedding now commits and cascades inside its reading's own
+transaction — and the field stays because a marker written before that must
+keep being read.
 
 **Staging proof, 2026-09-02**, the measurement the default flip rests on
-(`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
-global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
+(`reading-lite-staging`, 39→47 readings, over the R2 and Vectorize storage of
+the time, `--tenant global`; eight `--execute --sole-writer` passes, all exit
+0). The wall-clock figures belong to that storage and are kept as the record of
+why the narrowed scope is the default; the *shape* of the result — what the
+scope covers and what it defers — is a property of the rules, not of the
+store. Passes 1–5 are the
 protocol proper, full → incremental (quiet) → ingest 8 URLs → incremental →
 full → full; 6–8 were added to price a second quiet night and to exercise the
 escalation path deliberately. All eight, in order:
@@ -1805,18 +1774,13 @@ denominator for the escalation rate below.
   `Snapshot drift: 0`, so it is deferred, not lost. That is the
   exact-versus-approximate paragraph above, measured.
 - **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
-  the pass resolves an empty scope and returns before it opens Vectorize or
-  reads a manifest, provided the marker carries no still-ready
-  `unmeasurable_ids`, each of which costs a query and a manifest read on even
-  the quietest night, by design. The measured runs took the ETag short-circuit (an unchanged
-  `index/list.json` ETag ends the scope immediately), but the win does not
-  depend on it, where no ETag is available, which is every wrangler-path run
-  and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
-  the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
-  unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
-  4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
-  ~10 changed readings ~15 s; at 10x corpus that is ~35–40 min against the same
-  ~15 s.
+  the pass resolves an empty scope and returns before it makes a similarity
+  query or reads a reading, provided the marker carries no still-ready
+  `unmeasurable_ids`, each of which costs a query and a read on even the
+  quietest night, by design. The list-ETag short-circuit those runs took is
+  gone with the document that had one; every pass now dates the rows it read,
+  which reaches the same empty scope by the route the ETag-less runs already
+  took.
 - **Tier 1 spends no LLM or embedding tokens at all**, 0 across all eight
   passes. The scope buys wall clock and Cloudflare API calls, not provider
   spend. What it does change is how many readings tiers 2/3 are handed.
@@ -1831,32 +1795,34 @@ returned zero strangers, because that corpus is sparse and clustered, so
 saturation there says nothing about production) and the natural production
 purge rate. Both change the size of the win, not its sign.
 
-A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
-unmeasurable rather than unfinished. The pass records its id under
+A reading with no stored vector, or whose rows no longer satisfy
+`ManifestSchema`, is unmeasurable rather than unfinished. The pass records its id under
 `unmeasurable_ids` on the marker, measures it again on every later pass until it
 is repaired, and exits 3 so it stays visible, the marker advances past it
-rather than pinning the whole scope on an ever-older timestamp. A failed query,
-an unparseable manifest, a failed manifest write or a failed `index/list.json`
-flush is different: that pass left work undone, so the marker stays where it was
-and the exit is 1. Note what a frozen marker does and does not buy: the next
-incremental pass re-covers everything changed since that older timestamp, which
-is more than it would otherwise have looked at, but a reading that failed
-without its list row moving is not named anywhere (unlike `unmeasurable_ids`),
+rather than pinning the whole scope on an ever-older timestamp. A failed query
+or a failed snapshot write is different: that pass left work undone, so the
+marker stays where it was and the exit is 1. (A reading purged between the
+corpus read and its own read is neither: there is nothing to measure and
+nothing to repair, the pass says so and carries on, and the next pass sees the
+id missing and sweeps.) Note what a frozen marker does and does not buy: the
+next incremental pass re-covers everything changed since that older timestamp,
+which is more than it would otherwise have looked at, but a reading that failed
+without its row moving is not named anywhere (unlike `unmeasurable_ids`),
 so the weekly `--full` sweep is what actually finds it again.
 
 **A whole sweep of unmeasurable readings is a different thing again.** A sweep
 that measured *none* of its ready readings is not a corpus with a lot of broken
-readings; it is a pass that could not read the corpus. A wrong `--vectorize`
-index, a wrong `--tenant` namespace, an expired Vectorize credential and an
-upstream failing every query all present this way. Advancing the marker there
+readings; it is a pass that could not read the corpus. A connection string for
+the wrong environment, a `--tenant` with no rows, and a database failing every
+query all present this way. Advancing the marker there
 would declare the whole corpus refreshed on the strength of zero measurements
 and never look at it again, so the pass instead leaves both `last_run_at` and
 `last_full_run_at` where they were, prints `Configuration failure: this pass
 swept the corpus and measured 0 of N ready reading(s)` with the `no vector` /
-`failed` / `schema-invalid` breakdown, and exits 1.
+`failed` / `unparseable` breakdown, and exits 1.
 
 **Only a sweep reports one**, because only a sweep's scope is large enough to
-say so, and because a sweep's scope comes from `index/list.json` rather than
+say so, and because a sweep's scope comes from the rows rather than
 from the marker, so it reaches the same verdict on the first pass as on the
 hundredth, with no marker to bootstrap from. An incremental scope is routinely
 one or two readings, often exactly the ones carried under `unmeasurable_ids` for
@@ -1881,13 +1847,13 @@ exit 1 on every sweep, marker frozen. That is the intended
 reading of the evidence (a corpus in which nothing is measurable is not a corpus
 you can refresh), and on a corpus that small a permanent sweep costs nothing.
 The production corpus is in no danger of it by size: a sweep there measures
-hundreds of readings, so the condition cannot fire unless the index really is
-unreachable. It can fire by state, though, a Vectorize namespace cutover that
-has migrated R2 but not yet re-upserted the vectors leaves every ready reading
-vectorless, which is what this condition is built to notice. Every sweep will
-exit 1 for the length of such a window, while the nightly `--since-last-run`
-may well go quiet, since a cutover moves no list rows, so pause the schedule or
-finish the re-upsert (`corpus backfill-vectors`) before relying on either.
+hundreds of readings, so the condition cannot fire unless the corpus really is
+unreadable. It can fire by state, though — a migration that has moved the
+readings but not yet their embeddings leaves every ready reading vectorless,
+which is what this condition is built to notice. Every sweep will exit 1 for
+the length of such a window, while the nightly `--since-last-run` may well go
+quiet, since a migration like that moves no row timestamps, so pause the
+schedule or finish the embedding backfill before relying on either.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -1925,10 +1891,8 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 Scoped refreshes (invocations without `--full`) print a stderr warning when
 `last_full_run_at` is missing, unusable, or **older than seven days**. Exactly
 seven days is still within the threshold. The warning shows the timestamp and
-age (or `age unknown`) and a full-sweep command for the selected tenant,
-bucket, Vectorize index, and storage path (`--via`). On the direct path the
-warning also names the Cloudflare account stdout would have printed, so a
-stderr-only log is enough to check before `--execute`. Check the external
+age (or `age unknown`) and a full-sweep command for the selected tenant and
+bucket, so a stderr-only log is enough to check before `--execute`. Check the external
 weekly schedule and run that command after pausing/draining concurrent
 writers for `--sole-writer`.
 
@@ -1971,9 +1935,9 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 | Code | Meaning | Who acts |
 |---|---|---|
 | 0 | Nothing outstanding. | nobody |
-| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator, re-run, or fix the index/credentials first |
-| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator, fix the invocation |
-| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone, repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed similarity query, or a failed snapshot write. | operator, re-run, or fix the connection first |
+| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--tenant global`, a non-integer `--limit`. | operator, fix the invocation |
+| 3 | The pass itself completed, but specific readings need a human: no stored vector, or rows that fail `ManifestSchema`. | someone, repair those readings (`corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It
 can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
@@ -1985,9 +1949,9 @@ truncating `--limit`, an invalidation arriving mid-pass, can all exit 3 too.
 The codes apply in plan mode as well as under `--execute`; a dry run reports
 what it found. Two existing behaviours change, in opposite directions, so a
 scheduled run wants the `case` below rather than a bare `if`: a pass that finds
-a reading with no indexed vector used to exit 0 in plan mode and now exits 3
+a reading with no stored vector used to exit 0 in plan mode and now exits 3
 (or 1 if the sweep measured nothing at all), while a pass whose only complaint
-is an unmeasurable reading, no vector, or a manifest failing `ManifestSchema`, used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
+is an unmeasurable reading, no vector, or rows failing `ManifestSchema`, used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
 There is no cron wrapper script in this repository, and nothing in git schedules
@@ -2007,13 +1971,12 @@ esac
 
 `refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
 non-zero cause they have, a planning read that failed, a judgement that failed,
-a lost manifest CAS, a `--max-backoff` ceiling, and for `refresh-connections`
-the `index/list.json` flush it alone performs, is a re-run-or-fix case, which
-is code 1 under the same rule. Code 3 stays reserved
-in those two commands rather than mapped onto their nearest analogue (a live
-manifest that is invalid at plan time), because that condition currently shares
-one `planningFailed` flag with transient read errors, and splitting it is a
-separate change.
+a write refused because the reading changed since it was planned, and a
+`--max-backoff` ceiling, is a re-run-or-fix case, which is code 1 under the
+same rule. Code 3 stays reserved in those two commands rather than mapped onto
+their nearest analogue (a live reading that is invalid at plan time), because
+that condition currently shares one `planningFailed` flag with transient read
+errors, and splitting it is a separate change.
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,
@@ -2040,22 +2003,24 @@ Execute mode reads the target's stored summary and judges it only against live,
 ready neighbours carried by the report. It drops provider ids outside that
 set, preserves an existing connection object when the provider reaffirms its
 id, and replaces `connections`, `novelty_verdict`,
-`connections_computed_at`, and `connections_neighbourhood_ids`. Manifest writes use ETag CAS against the ETag the
-planning read returned, execute re-reads nothing, so a manifest that changed
-between the plan and the write loses that conditional write and is reported as
-a CAS loss. The judgement is made before that write, so a CAS loss is a
-judgement already paid for and thrown away, a run of them is a run of wasted
-spend, not just wasted writes. Under `--sole-writer` nothing should change in
-that window. The list index is written after successful manifest updates so its
-verdict matches the manifest: that flush is itself an `If-Match`
-read-merge-write, retried with jittered backoff, and it writes only the
-`novelty_verdict` of the rows this run judged or healed.
+`connections_computed_at`, and `connections_neighbourhood_ids`. Each write is
+one transaction that locks the reading's row and re-reads it under that lock,
+comparing it against the version the planning read returned; execute re-reads
+nothing itself, so a reading that changed between the plan and the write is
+refused rather than overwritten. The judgement is made before that write, so a
+refusal is a judgement already paid for and thrown away, a run of them is a run
+of wasted spend, not just wasted writes. Under `--sole-writer` nothing should
+change in that window. The novelty verdict is a column of the same row, so it
+lands inside that transaction with the relationships it was judged beside:
+there is no second document to flush and nothing that can disagree with it.
 
-The manifest timestamp is the resume marker. If a manifest write succeeds but
-the list write fails, rerun with the same report: the command heals the list row
-without another paid judgement. `--limit` caps judgement and healing actions.
-Provider errors and lost CAS races leave the reading ready and never blind-write
-over newer state. The price estimate uses a four-UTF-8-bytes-per-token
+A judged reading is its own resume marker: a rerun with the same report costs
+nothing for the readings a previous pass finished. `--limit` caps judgement
+actions. Provider errors and refused writes leave the reading ready and never
+blind-write over newer state. A connection naming a reading deleted while the
+judgement ran is dropped inside the transaction and reported
+(`skipped connection target rd_… : no longer exists`), so no refresh needs
+`corpus purge-connections` run behind it. The price estimate uses a four-UTF-8-bytes-per-token
 approximation, a 256-output-token assumption, and the dated price table printed
 by the command; it is a planning estimate, not a bill. Execute mode admits
 each judgement against the spend caps, billed to `--billing-tenant` (default a
@@ -2145,23 +2110,23 @@ ceiling. A pass that still cannot finish inside that is one to split with
 `--limit` and resume when the provider is quieter, not one to park on the
 sole-writer window for hours.
 
-The ceiling bounds the paid work only, on the same rule as `--limit`: a list
-heal or an integrity repair makes no provider call and cannot be rate limited,
-so the pass still runs the free work behind the ceiling before it exits.
+The ceiling bounds the paid work only, on the same rule as `--limit`: an
+integrity repair makes no provider call and cannot be rate limited, so the pass
+still runs the free work behind the ceiling before it exits.
 
-Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
-rerun resumes from the manifests as it always does.
+Ctrl-C is safe at any point: every write is a committed transaction, and a
+rerun resumes from the readings as it always did from the manifests.
 
-Because the calls overlap, every `Timing:` row a concurrent action produces, `provider`, `manifest write`, and for `refresh-tensions` `manifest read`, sums
+Because the calls overlap, every `Timing:` row a concurrent action produces, `provider`, `reading write`, and for `refresh-tensions` `reading read`, sums
 the call durations rather than the wall time they occupied, the same way
 `planning reads` already did, so under `--concurrency` a row can exceed the
 run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
-window must cover provider calls, manifest CAS writes, and the final conditional
-`index/list.json` merge. The command also refuses the report if a target or
-candidate neighbour was reprocessed after the report was generated.
+window must cover the provider calls and the writes that follow them. The
+command also refuses the report if a target or candidate neighbour was
+reprocessed after the report was generated.
 
 `ops corpus refresh-tensions` is the pairwise sibling. It reads the same
 report, pairs every flagged reading with each live ready neighbour, collapses
@@ -2187,12 +2152,16 @@ Execute mode makes one pairwise provider call per selected pair and writes
 each side's directional entry, `contradicts` (symmetric), `supersedes` /
 `superseded_by`, `qualifies` / `qualified_by`, always from that reading's point
 of view with one shared reason, plus a `tensions_judged` record to BOTH
-manifests with ETag CAS, against the ETags the planning reads returned; only a
-side an earlier action in the same pass already wrote is read again. A `none`
-verdict removes any prior entry for the pair
-and is remembered so the pair is not re-judged nightly. Only `tensions` and
-`tensions_judged` change; `updated_at`, connections, and every summary field
-stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
+readings — in ONE transaction, which locks the two rows in sorted id order
+before reading either and is guarded on the versions the planning reads
+returned; only a side an earlier action in the same pass already wrote is read
+again. A pair therefore never lands half-written, and two passes judging the
+same pair from opposite ends cannot deadlock. (The one-sided repairs remain,
+for pairs left half-written before that was true and for entries naming a
+deleted partner; they cost no paid call.) A `none` verdict removes any prior
+entry for the pair and is remembered so the pair is not re-judged nightly. Only
+`tensions` and `tensions_judged` change; `updated_at`, connections, and every
+summary field stay untouched. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
 `--concurrency` and `--max-backoff` work as they do for `refresh-connections`
@@ -2789,8 +2758,11 @@ Cursor writes use CAS. `REFRESH_MAX_JUDGEMENTS` defaults to `100` and accepts
 integers 1–1000. The cap counts distinct reserved judge jobs per nightly budget,
 not delivery attempts. Remaining candidates carry into later nights without
 rescanning; a fresh full scan begins on a later night after dispatch completes.
-The scan does not read or update the offline `index/refresh-state.json` marker,
-or rewrite similarity snapshots, manifests, list rows or vectors.
+The scan does not read or update the offline refresh pass's run marker (the
+`corpus_refresh_state` row), or rewrite similarity snapshots, readings or
+vectors. The two markers are deliberately separate: this cursor is the hosted
+scan's, still an R2 object with its own CAS, and the operator's marker moved
+onto the rows it describes.
 
 A pending batch reserves allowance before sending. Failed/uncertain sends retain
 that reservation; the next scheduled invocation recovers a lost continuation.
