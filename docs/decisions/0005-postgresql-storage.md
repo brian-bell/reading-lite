@@ -419,7 +419,9 @@ it migrates local PostgreSQL and bootstraps the founder there.
   none. The queue backlogs still come from the Cloudflare API, unchanged.
 - **`ops deploy worker` deploys no schema.** There is no D1 database to
   migrate and no placeholder database id to refuse; PostgreSQL migrations are
-  `ops db migrate`'s, and folding them into the deploy command is 1d. The
+  `ops db migrate`'s, and folding them into the deploy command is 1d.
+  *(Superseded in 1d by reading-lite-gh347.4.4: the deploy applies the pending
+  PostgreSQL migrations before the upload, fail-closed.)* The
   cutover guard, the tenant-activation guard and the release lock are
   untouched. The activation preflight no longer reads deletion eligibility: it
   holds only Cloudflare credentials, so it names the check the operator must
