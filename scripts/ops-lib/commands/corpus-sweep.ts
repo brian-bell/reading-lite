@@ -1,8 +1,15 @@
 // `ops corpus sweep` — find readings that are the same resource under
-// different URL spellings, keep the best copy, and drop the rest (vectors
-// included). See scripts/corpus-lib/sweep.ts for the ranking and safety
-// rationale. Plan-first: a mode-less run reports each group, the keeper and
-// why, and every object it would delete; --execute applies the sweep.
+// different URL spellings, keep the best copy, and drop the rest. See
+// scripts/corpus-lib/sweep.ts for the ranking and safety rationale.
+//
+// The URL claim is unique per tenant, which catches a repeat of the same
+// spelling; it cannot catch two spellings of one resource, so this command
+// survives the move to PostgreSQL (reading-lite-gh347.4.7). Groups are built
+// over `readings.url`, and a drop is the row plus its captured content — the
+// embedding cascades, so there is no Vectorize probe and no `--vectorize`.
+//
+// Plan-first: a mode-less run reports each group, the keeper and why, and
+// every row and object it would delete; --execute applies the sweep.
 
 import {
   invalidatedByDrop,
@@ -10,35 +17,45 @@ import {
   planSweep,
   type SweepItem,
 } from "../../corpus-lib/sweep";
-import { shouldRewriteIndex } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
+import {
+  DATABASE_URL_ENV_FLAG_HELP,
+  openOperatorSql,
+  resolveOperatorDatabaseUrl,
+  withOperatorSql,
+  type OpenOperatorSql,
+} from "../../pg-lib/operator-db";
+import {
+  contentKeysFor,
+  deleteReading,
+  hasEmbedding,
+  listItems,
+  operatorReadings,
+  partitionKeysByPrefix,
+  requireTenantRows,
+} from "../../pg-lib/operator-corpus";
+import type { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
-import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
 
 export interface CorpusSweepR2 {
-  readListIndex: (deps: R2Deps) => Promise<unknown[]>;
-  readManifest: (keyPrefix: string, deps: R2Deps) => Promise<any | null>;
-  keysForReading: (id: string, prefix: string, url: string, deps: R2Deps) => Promise<string[]>;
   deleteObject: (key: string, deps: R2Deps) => Promise<"deleted" | "absent" | "error">;
-  deleteVector: (index: string, id: string) => Promise<"deleted" | "error">;
-  vectorExists: (index: string, id: string, namespace?: string) => Promise<boolean>;
-  writeListIndex: (items: unknown[], deps: R2Deps) => Promise<void>;
 }
 
 export interface CorpusSweepDeps extends BaseDeps {
   r2: CorpusSweepR2;
+  openSql: OpenOperatorSql;
+  env: Record<string, string | undefined>;
 }
 
 interface Opts {
   tenant?: string;
+  databaseUrlEnv?: string;
   only: string[];
   keep: string[];
   drop?: string;
   bucket: string;
-  vectorizeIndex?: string;
   remote: boolean;
   execute: boolean;
 }
@@ -57,7 +74,7 @@ function parseSweepArgs(argv: string[]): Opts {
     else if (a === "--local") opts.remote = false;
     else if (a === "--bucket") opts.bucket = requireValue(argv[++i], a);
     else if (a === "--tenant") opts.tenant = requireValue(argv[++i], a);
-    else if (a === "--vectorize") opts.vectorizeIndex = requireValue(argv[++i], a);
+    else if (a === "--database-url-env") opts.databaseUrlEnv = requireValue(argv[++i], a);
     else if (a === "--keep") opts.keep.push(requireValue(argv[++i], a));
     else if (a === "--drop") opts.drop = requireValue(argv[++i], a);
     else if (a.startsWith("--")) throw new UsageError(`unknown flag: ${a}`);
@@ -74,9 +91,10 @@ function requireValue(v: string | undefined, flag: string): string {
 async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<number> {
   const opts = parseSweepArgs(argv);
   const { io, r2 } = deps;
-  const vectorizeIndex = opts.vectorizeIndex ?? opts.bucket;
-  const tenant = requireOperatorTenant(opts.tenant);
-  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: tenant.keyRoot, remote: opts.remote };
+  const selector = requireOperatorTenant(opts.tenant);
+  const tenant = requireTenantRows(selector);
+  const tenantId = String(tenant.tenantId);
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: selector.keyRoot, remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same
   // material but are genuinely different resources, so no canonicalization rule
@@ -86,158 +104,185 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     throw new UsageError("--drop takes exactly one --keep <rd_ID> and no other selectors");
   }
 
-  const items = (await r2.readListIndex(r2Deps)) as SweepItem[];
+  const { url } = resolveOperatorDatabaseUrl({
+    bucket: opts.bucket,
+    ...(opts.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: opts.databaseUrlEnv }),
+    local: !opts.remote,
+    env: deps.env,
+  });
 
-  const plan = opts.drop !== undefined
-    ? planExplicitPair(items, { drop: opts.drop, keep: opts.keep[0]! })
-    : planSweep(items, { only: opts.only, keep: opts.keep });
+  return withOperatorSql(
+    url,
+    async (sql) => {
+      const store = operatorReadings(sql, tenant);
+      const items = (await listItems(store)) as SweepItem[];
 
-  if (plan.errors.length > 0) {
-    for (const e of plan.errors) io.stderr(`✗ ${e}`);
-    return 1;
-  }
+      const plan = opts.drop !== undefined
+        ? planExplicitPair(items, { drop: opts.drop, keep: opts.keep[0]! })
+        : planSweep(items, { only: opts.only, keep: opts.keep });
 
-  io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
-  io.stdout(`Vectorize: ${vectorizeIndex}`);
-  io.stdout(`Corpus: ${items.length} readings`);
-  io.stdout(`Duplicate groups: ${plan.groups.length}`);
-  io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}\n`);
+      if (plan.errors.length > 0) {
+        for (const e of plan.errors) io.stderr(`✗ ${e}`);
+        return 1;
+      }
 
-  if (plan.groups.length === 0) {
-    io.stdout("No duplicate groups found — nothing to sweep.");
-    return 0;
-  }
+      io.stdout(`Bucket: ${opts.bucket}${opts.remote ? "" : " (local)"}`);
+      io.stdout(`Tenant: ${tenantId}`);
+      io.stdout(`Corpus: ${items.length} readings`);
+      io.stdout(`Duplicate groups: ${plan.groups.length}`);
+      io.stdout(`Mode: ${opts.execute ? "EXECUTE" : "PLAN"}\n`);
 
-  const targets = plan.groups.flatMap((g) => g.drops);
+      if (plan.groups.length === 0) {
+        io.stdout("No duplicate groups found — nothing to sweep.");
+        return 0;
+      }
 
-  // Safety: every prefix must be id-scoped under readings/. Never touch a
-  // prefix that doesn't carry its own reading id.
-  for (const t of targets) {
-    if (
-      !t.id || !t.key_prefix || typeof t.url !== "string" ||
-      !t.key_prefix.startsWith(READINGS_PREFIX) || !t.key_prefix.endsWith(t.id)
-    ) {
-      io.stderr(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(t)}`);
-      return 1;
-    }
-  }
+      const targets = plan.groups.flatMap((g) => g.drops);
 
-  // The invariant that lets sweep touch ready readings at all: each group keeps
-  // exactly one survivor, and that survivor is never in the drop set.
-  const dropIds = new Set(targets.map((t) => t.id));
-  for (const g of plan.groups) {
-    if (dropIds.has(g.keeper.id) || g.drops.length !== g.items.length - 1) {
-      io.stderr(`refusing to proceed: group ${g.key} would not keep exactly one survivor`);
-      return 1;
-    }
-  }
-
-  for (const g of plan.groups) {
-    io.stdout(`▸ ${g.key}`);
-    io.stdout(`    keep  ${g.keeper.id}  [${g.keeper.status}]  ${g.keeper.url}  (${g.reason})`);
-    for (const d of g.drops) io.stdout(`    drop  ${d.id}  [${d.status}]  ${d.url}`);
-    io.stdout("");
-  }
-
-  let deleted = 0;
-  let absent = 0;
-  let errored = 0;
-  // Drops the index actually held a vector for, so the post-sweep warning can
-  // be exact instead of guessing from status. created_at rides along so a
-  // snapshot computed before a copy existed can rule that copy out.
-  const vectoredDrops: { id: string; created_at?: string }[] = [];
-
-  for (const t of targets) {
-    const keys = await r2.keysForReading(t.id, t.key_prefix, t.url, r2Deps);
-    const vectorId = tenantVectorId(tenant.namespace, t.id);
-    io.stdout(`• dropping ${t.id}  ${t.url}`);
-    // Ask the index whether a vector exists rather than inferring it from
-    // status — every status-based rule was wrong in some direction (see
-    // corpus-lib/wrangler-r2.vectorExists). The probe is read-only, so the plan
-    // reports exactly what an execute would delete.
-    //
-    // Skipped under --local: Vectorize has no local emulator, so these commands
-    // always target the real index while --local scopes R2 only. A local corpus
-    // seeded from production shares reading ids, so touching Vectorize here
-    // would mutate PRODUCTION during an operation presented as local.
-    let hasVector = false;
-    if (!opts.remote) {
-      io.stdout(`    skipping vector (--local: Vectorize has no local store)`);
-    } else {
-      hasVector = await r2.vectorExists(vectorizeIndex, vectorId, tenant.namespace);
-      if (hasVector) vectoredDrops.push({ id: t.id, created_at: t.created_at });
-      else io.stdout(`    no vector indexed for ${t.id}`);
-    }
-    if (hasVector) {
-      if (!opts.execute) {
-        io.stdout(`    would delete vector  ${vectorizeIndex}/${t.id}`);
-      } else {
-        const res = await r2.deleteVector(vectorizeIndex, vectorId);
-        if (res === "deleted") {
-          deleted++;
-          io.stdout(`    deleted   vector:${vectorizeIndex}/${t.id}`);
-        } else {
-          // Skip the objects too: leaving the reading intact keeps the corpus
-          // consistent and the sweep re-runnable, where a half-drop would
-          // strand a vector pointing at a reading that no longer exists.
-          errored++;
-          io.stderr(`    ! delete error  vector:${vectorizeIndex}/${t.id} — skipping its objects`);
-          continue;
+      // Safety: every prefix must be id-scoped under readings/. Never touch a
+      // prefix that doesn't carry its own reading id.
+      for (const t of targets) {
+        if (
+          !t.id || !t.key_prefix || typeof t.url !== "string" ||
+          !t.key_prefix.startsWith(READINGS_PREFIX) || !t.key_prefix.endsWith(t.id)
+        ) {
+          io.stderr(`refusing to proceed: target failed prefix/id guard: ${JSON.stringify(t)}`);
+          return 1;
         }
       }
-    }
-    for (const key of keys) {
+
+      // The invariant that lets sweep delete ready readings at all, on
+      // production, without an --allow-ready gate: each group keeps exactly one
+      // survivor, and that survivor is never in the drop set. This is the
+      // equivalent of drop's production refusal — a sweep is only ever
+      // proposed alongside a keeper, so it can never empty a group.
+      const dropIds = new Set(targets.map((t) => t.id));
+      for (const g of plan.groups) {
+        if (
+          dropIds.has(g.keeper.id) ||
+          g.drops.length !== g.items.length - 1 ||
+          g.items.length < 2
+        ) {
+          io.stderr(`refusing to proceed: group ${g.key} would not keep exactly one survivor`);
+          return 1;
+        }
+      }
+
+      for (const g of plan.groups) {
+        io.stdout(`▸ ${g.key}`);
+        io.stdout(`    keep  ${g.keeper.id}  [${g.keeper.status}]  ${g.keeper.url}  (${g.reason})`);
+        for (const d of g.drops) io.stdout(`    drop  ${d.id}  [${d.status}]  ${d.url}`);
+        io.stdout("");
+      }
+
+      let rowsDeleted = 0;
+      let deleted = 0;
+      let absent = 0;
+      let errored = 0;
+      // Objects that survived the row that referenced them. Counted apart from
+      // refusals, which leave the reading whole.
+      let residual = 0;
+      // Drops the corpus actually held an embedding for, so the post-sweep
+      // warning can be exact instead of guessing from status.
+      // created_at rides along so a snapshot computed before a copy existed can
+      // rule that copy out.
+      const vectoredDrops: { id: string; created_at?: string }[] = [];
+
+      for (const t of targets) {
+        const resolved = await contentKeysFor(sql, store, tenantId, t.id);
+        // Same bound as corpus drop, and it matters more here: sweep deletes
+        // ready readings on production without an --allow-ready gate, so the
+        // only thing standing between a corrupt stored key and an arbitrary
+        // delete is this check.
+        const { within: keys, foreign } = partitionKeysByPrefix(resolved, t.key_prefix);
+        io.stdout(`• dropping ${t.id}  ${t.url}`);
+        if (foreign.length > 0) {
+          io.stderr(
+            `    ! refusing ${t.id}: ${foreign.length} stored content key(s) fall outside ` +
+              `${t.key_prefix}/ — ${foreign.join(", ")}`,
+          );
+          errored += foreign.length;
+          continue;
+        }
+        // Asked, not inferred from status. A ready reading normally has an
+        // embedding, but nothing in the schema requires one, and the code this
+        // replaced probed the index for exactly that reason ("every
+        // status-based rule was wrong in some direction").
+        const embedded = await hasEmbedding(sql, tenantId, t.id);
+        const vectored = { id: t.id, ...(t.created_at === undefined ? {} : { created_at: t.created_at }) };
+        if (!opts.execute) {
+          if (embedded) vectoredDrops.push(vectored);
+          for (const key of keys) io.stdout(`    would delete  ${key}`);
+          io.stdout(`    would delete row  ${t.id} (and its cascade, embedding included)`);
+          continue;
+        }
+
+        // Row first, objects second — see corpus-drop: the reverse order can
+        // leave a live reading whose content 404s, and this command deletes
+        // ready production readings. Unreferenced residue is the tolerated
+        // failure, a dangling row is not.
+        const removed = await deleteReading(sql, tenantId, t.id);
+        rowsDeleted += removed;
+        // Only a row that actually went takes its embedding with it, so the
+        // invalidated-keeper report must not claim a neighbour lost a vector
+        // that is still there.
+        if (embedded && removed > 0) vectoredDrops.push(vectored);
+        io.stdout(
+          removed > 0
+            ? `    deleted   row ${t.id} (and its cascade, embedding included)`
+            : `    row ${t.id} was already gone`,
+        );
+
+        let failedHere = 0;
+        for (const key of keys) {
+          const res = await r2.deleteObject(key, r2Deps);
+          if (res === "deleted") { deleted++; io.stdout(`    deleted   ${key}`); }
+          else if (res === "absent") absent++;
+          else { failedHere++; errored++; residual++; io.stderr(`    ! delete error  ${key}`); }
+        }
+        if (failedHere > 0) {
+          io.stderr(
+            `    ! ${t.id} is gone from the database but ${failedHere} object(s) outlived it — ` +
+              `unreachable residue. Re-running will not find the row; delete them by key.`,
+          );
+        }
+      }
+
       if (!opts.execute) {
-        io.stdout(`    would delete  ${key}`);
-        continue;
+        io.stdout("\nPLAN — nothing changed. Re-run with --execute to apply.");
+        return 0;
       }
-      const res = await r2.deleteObject(key, r2Deps);
-      if (res === "deleted") {
-        deleted++;
-        io.stdout(`    deleted   ${key}`);
-      } else if (res === "absent") absent++;
-      else {
-        errored++;
-        io.stderr(`    ! delete error  ${key}`);
-      }
-    }
-  }
 
-  const kept = items.filter((i) => !dropIds.has(i.id));
-  io.stdout(
-    `\nindex/list.json: ${items.length} items → ${kept.length} ` +
-    `(removing ${items.length - kept.length} entr${items.length - kept.length === 1 ? "y" : "ies"})`,
+      io.stdout(`\nrows deleted: ${rowsDeleted}`);
+      if (errored > 0) {
+        if (errored > residual) {
+          io.stderr(`\n${errored - residual} reading(s) were refused and left whole. Re-run to retry.`);
+        }
+        if (residual > 0) {
+          io.stderr(
+            `\n${residual} object(s) outlived the row that referenced them. They are unreachable ` +
+              `residue: re-running finds no row, and an account wipe removes them with the prefix.`,
+          );
+        }
+        io.stderr(`deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
+        return 1;
+      }
+      io.stdout(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
+
+      // The sweep has already deleted rows and objects by now, so the report is
+      // strictly informational: never let it fail the command.
+      try {
+        await reportInvalidatedKeepers(io, store, plan.groups, dropIds, vectoredDrops);
+      } catch (e) {
+        io.stderr(
+          `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
+          `The sweep itself succeeded; re-read the keepers if you need that report.`,
+        );
+      }
+      return 0;
+    },
+    deps.openSql,
   );
-
-  if (!opts.execute) {
-    io.stdout("\nPLAN — nothing changed. Re-run with --execute to apply.");
-    return 0;
-  }
-
-  if (!shouldRewriteIndex(errored)) {
-    io.stderr(
-      `\n${errored} delete(s) failed — leaving index/list.json unchanged so the ` +
-      `partially-deleted reading stays visible. Re-run to retry.`,
-    );
-    io.stderr(`deleted: ${deleted}, absent (skipped): ${absent}, errors: ${errored}`);
-    return 1;
-  }
-
-  await r2.writeListIndex(kept, r2Deps);
-  io.stdout("\nindex/list.json rewritten.");
-  io.stdout(`Done. deleted: ${deleted}, absent (skipped): ${absent}`);
-
-  // The sweep has already deleted objects and rewritten the index by now, so
-  // the report is strictly informational: never let it fail the command.
-  try {
-    await reportInvalidatedKeepers(io, r2, plan.groups, dropIds, vectoredDrops, r2Deps, tenant);
-  } catch (e) {
-    io.stderr(
-      `\ncould not report invalidated keepers: ${e instanceof Error ? e.message : String(e)}\n` +
-      `The sweep itself succeeded; re-read the keepers' manifests if you need that report.`,
-    );
-  }
-  return 0;
 }
 
 // A sweep changes the corpus around each keeper, so the keeper's frozen
@@ -245,17 +290,15 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
 // Nothing recomputes them, so at minimum say so.
 async function reportInvalidatedKeepers(
   io: CommandIo,
-  r2: CorpusSweepR2,
+  store: PgReadingStore,
   groups: { keeper: { id: string; key_prefix: string; url: string } }[],
   droppedIds: Set<string>,
   vectoredDrops: { id: string; created_at?: string }[],
-  r2Deps: R2Deps,
-  tenant: OperatorTenant,
 ): Promise<void> {
   const flagged = [];
   for (const g of groups) {
-    const manifest = await r2.readManifest(g.keeper.key_prefix, r2Deps).catch(() => null);
-    const v = invalidatedByDrop(g.keeper.id, manifest, droppedIds, vectoredDrops);
+    const loaded = await store.loadReadingById(g.keeper.id).catch(() => null);
+    const v = invalidatedByDrop(g.keeper.id, loaded?.manifest ?? null, droppedIds, vectoredDrops);
     if (v.invalidated) flagged.push({ ...v, url: g.keeper.url });
   }
   if (flagged.length === 0) return;
@@ -269,11 +312,15 @@ async function reportInvalidatedKeepers(
     io.stdout(`  ${f.id}  ${bits.join("; ")}`);
     io.stdout(`      ${f.url}`);
   }
+  // `corpus backfill-similarity` used to be the cheap repair here. It was
+  // retired in reading-lite-gh347.4.6 — it backfilled a field the importer now
+  // carries over — and nothing replaced it, so say what is true rather than
+  // naming a command that no longer exists.
   io.stdout(
-    `\nRefresh the measured score without an LLM call (no re-summarization, no tag churn):\n` +
-    `  npm run ops -- corpus backfill-similarity --tenant ${operatorTenantSelector(tenant)} ${flagged.map((f) => f.id).join(" ")} --rescore --execute\n` +
-    `The novelty_verdict itself only refreshes on a reprocess, which DOES re-roll\n` +
-    `title and tags -- so weigh that before reprocessing purely to fix a label.`,
+    `\nNothing recomputes these automatically. The measured similarity refreshes on the\n` +
+    `next relationship refresh pass; the novelty_verdict only refreshes on a reprocess,\n` +
+    `which DOES re-roll title and tags -- so weigh that before reprocessing purely to\n` +
+    `fix a label.`,
   );
 }
 
@@ -296,39 +343,34 @@ resources (a video and the tweet arguing the same thing), no URL rule can pair
 them -- assert it with --drop <rd_ID> --keep <rd_ID>. The keeper must be ready.
 
 Unlike corpus drop, this WILL drop a ready reading on production, because a
-drop is only ever proposed alongside a surviving keeper and the reading's
-Vectorize vector is deleted with it. --vectorize defaults to the bucket name
-(the two match in every environment).
+drop is only ever proposed alongside a surviving keeper, and the dropped
+reading's embedding is deleted with its row.
 
-Plan by default — prints each group, the keeper and why, and every object it
-would delete. Add --execute to apply.
+Inbound citations do NOT cascade: other readings keep connection and tension
+rows naming a dropped copy as their target. After a sweep, clean each dropped
+id up with:
+  npm run ops -- corpus purge-connections --tenant <usr_…> --id <dropped-id>
 
-Run when nothing is being submitted: the list.json rewrite is a plain put, not
-a CAS write, so a concurrent queue write could be lost.
+Plan by default — prints each group, the keeper and why, and every row and
+object it would delete. Add --execute to apply.
 
 Options:
   --keep <rd_ID>      Force the keeper for the group containing this id.
   --drop <rd_ID>      Operator-asserted pair mode (with exactly one --keep).
-  --bucket <name>     R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
-  --vectorize <idx>   Vectorize index. Default: the bucket name.
-  --local             Use the local miniflare bucket (Vectorize is skipped).
+  --bucket <name>     Data bucket, which selects the database. Default:
+                      READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: the tenant id (usr_…) whose corpus to sweep.
+${DATABASE_URL_ENV_FLAG_HELP}
+  --local             Use this checkout's local database and R2 cache.
   --execute           Apply the sweep.
   --help              Show this message.`,
   defaultDeps: (io: CommandIo): CorpusSweepDeps => ({
     io,
     r2: {
-      readListIndex: async (d) => (await import("../../corpus-lib/wrangler-r2")).readListIndex(d),
-      readManifest: async (kp, d) => (await import("../../corpus-lib/wrangler-r2")).readManifest(kp, d),
-      keysForReading: async (id, prefix, url, d) =>
-        (await import("../../corpus-lib/wrangler-r2")).keysForReading(id, prefix, url, d),
       deleteObject: async (key, d) => (await import("../../corpus-lib/wrangler-r2")).deleteObject(key, d),
-      deleteVector: async (index, id) => (await import("../../corpus-lib/wrangler-r2")).deleteVector(index, id),
-      vectorExists: async (index, id, namespace) =>
-        (await import("../../corpus-lib/wrangler-r2")).vectorExists(index, id, { namespace }),
-      writeListIndex: async (items, d) =>
-        (await import("../../corpus-lib/wrangler-r2")).writeListIndex(items as never, d),
     },
+    openSql: openOperatorSql,
+    env: process.env,
   }),
   run: runCorpusSweep,
 };

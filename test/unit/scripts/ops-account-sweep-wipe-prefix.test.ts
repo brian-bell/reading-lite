@@ -15,7 +15,7 @@ import {
 } from "../../../scripts/account-lib/wipe-prefix";
 import {
   accountSweepWipePrefixCommand,
-  CONTROL_PLANE_BY_BUCKET,
+  OPERATOR_DATABASES,
   type WipeSweepStorage,
 } from "../../../scripts/ops-lib/commands/account-sweep-wipe-prefix";
 import type { R2ObjectMeta } from "../../../scripts/lib/cf-clients";
@@ -209,7 +209,7 @@ describe("bucket → control-plane mapping", () => {
     const valueIn = (block: string, key: string): string | undefined =>
       new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m").exec(block)?.[1];
 
-    for (const [bucket, { env }] of Object.entries(CONTROL_PLANE_BY_BUCKET)) {
+    for (const [bucket, { env }] of Object.entries(OPERATOR_DATABASES)) {
       expect(valueIn(blockFor(env), "bucket_name"), `${env} bucket_name`).toBe(bucket);
     }
   });
@@ -260,12 +260,12 @@ describe("ops account sweep-wipe-prefix", () => {
 
 
 
-  it("points the D1 query at the control plane matching the bucket", async () => {
+  it("points the evidence query at the database variable matching the bucket", async () => {
     const storage = fakeStorage({ listings: [[object(PROGRESS_KEY)]] });
     const { out } = await run(["--bucket", "reading-lite-staging"], storage);
 
-    expect(out).toContain("reading-lite-control-staging --env staging");
-    expect(out).not.toContain("--env production");
+    expect(out).toContain("STAGING_DATABASE_URL");
+    expect(out).not.toContain("PRODUCTION_DATABASE_URL");
   });
 
   it("offers no query at all for a bucket with no mapped control plane", async () => {

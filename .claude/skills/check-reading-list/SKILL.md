@@ -1,6 +1,6 @@
 ---
 name: check-reading-list
-description: Mark which entries of a reading-list JSON export are already in the reading-lite corpus. Reads index/list.json straight from the R2 bucket via wrangler and stamps each entry with "processed": true|false. Use when triaging a Chrome reading-list / bookmarks JSON export before importing, or to find what still needs submitting.
+description: Mark which entries of a reading-list JSON export are already in the reading-lite corpus. Resolves each exported URL against the tenant's URL claims in PostgreSQL and stamps each entry with "processed": true|false. Use when triaging a Chrome reading-list / bookmarks JSON export before importing, or to find what still needs submitting.
 ---
 
 # check-reading-list
@@ -23,53 +23,56 @@ as-is). This matches Chrome's reading-list export, e.g.:
 
 ## How membership is decided
 
-- The corpus is read directly from R2: `wrangler r2 object get
-  <bucket>/index/list.json --remote --pipe`. That file lists every reading with
-  its `url` and `status`.
-- An entry is `processed: true` only when its URL appears in `index/list.json`
-  with status **`ready`** (successfully summarized). `pending`/`failed` count as
+- Only the exported URLs are looked up, not the whole corpus: each is hashed
+  and resolved against the tenant's `reading_urls` claims, joined to the
+  reading for its status.
+- An entry is `processed: true` only when its URL is claimed by a reading whose
+  status is **`ready`** (successfully summarized). `pending`/`failed` count as
   not processed — they are still re-submittable. Override with `--status` /
   `--any-status`.
-- Matching is **exact URL string** — the same key the worker hashes for its
-  by-url dedup pointer, so this agrees with what a re-submit would classify.
-  (A trailing `?utm_…` or `/` difference is a different URL.)
+- Matching is **exact URL string** — the same key the worker hashes when it
+  claims a URL, so this agrees with what a re-submit would classify. (A
+  trailing `?utm_…` or `/` difference is a different URL.)
 
 ## Prerequisites
 
-A Cloudflare session that can read R2: run `wrangler login`, or set
-`CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`) in the environment. No
-reading-lite API token is needed — this path does not hit the HTTP API.
+- `--tenant <usr_…>`: whose corpus counts as "processed". Production's is
+  `GET /api/whoami`'s `tenant_id`.
+- A direct PostgreSQL connection string in the variable paired with the bucket
+  (`PRODUCTION_DATABASE_URL` for `reading-lite`); operators source these from
+  `~/.config/reading-lite/neon.env`. No reading-lite API token is needed — this
+  path does not hit the HTTP API.
 
 ## Usage
 
 ```bash
-# Default: production bucket, ready-only, rewrites the file in place.
-npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json --execute
+# Default: production, ready-only, rewrites the file in place.
+npm run ops -- reading-list check --tenant "$TENANT" \
+  --file ~/Desktop/chrome-reading-list.json --execute
 
 # Preview the counts without writing.
-npm run ops -- reading-list check --file ~/Desktop/chrome-reading-list.json
+npm run ops -- reading-list check --tenant "$TENANT" \
+  --file ~/Desktop/chrome-reading-list.json
 
 # Write to a new file instead of in place.
-npm run ops -- reading-list check --file in.json --out annotated.json --execute
+npm run ops -- reading-list check --tenant "$TENANT" --file in.json --out annotated.json --execute
 
 # Count anything present in the corpus (pending/failed too).
-npm run ops -- reading-list check --file in.json --any-status --execute
-
-# An alternate R2 bucket.
-npm run ops -- reading-list check --file in.json --bucket some-other-bucket --execute
+npm run ops -- reading-list check --tenant "$TENANT" --file in.json --any-status --execute
 ```
 
-Flags: `--file` (required), `--out` (default: in place), `--bucket` (default
-`reading-lite`, or `READING_LITE_BUCKET` env), `--status <s>` (repeatable,
-default `ready`), `--any-status`, `--local` (read miniflare cache), `--execute`
+Flags: `--file` (required), `--tenant` (required), `--out` (default: in place),
+`--bucket` (default `reading-lite`, or `READING_LITE_BUCKET` env, and it selects
+the database), `--database-url-env <NAME>`, `--status <s>` (repeatable, default
+`ready`), `--any-status`, `--local` (this checkout's database), `--execute`
 (write the annotated file; omit it to plan).
 
 The script prints a JSON summary to stdout:
 
 ```json
 {
-  "file": "…", "out": "…", "bucket": "reading-lite",
-  "match_statuses": ["ready"], "corpus_urls": 1234,
+  "file": "…", "out": "…", "bucket": "reading-lite", "tenant": "usr_…",
+  "match_statuses": ["ready"], "tenant_readings": 1234,
   "total": 52, "processed": 30, "unprocessed": 22, "missingUrl": 0,
   "executed": true
 }
@@ -79,14 +82,16 @@ The script prints a JSON summary to stdout:
 
 - CLI: `scripts/ops-lib/commands/reading-list-check.ts` (via `scripts/ops.ts`)
 - Corpus logic (pure, unit-tested): `scripts/check-corpus-lib/corpus.ts`
-- Wrangler R2 read (injectable runner): `scripts/check-corpus-lib/fetch-index.ts`
-- Tests: `test/unit/check-corpus/` (node project in `vitest.workspace.ts`)
+- URL lookup: `PgReadingStore.ownersByUrls`, through
+  `scripts/pg-lib/operator-corpus.ts`
+- Tests: `test/unit/check-corpus/` plus the end-to-end cases in
+  `test/unit/scripts/ops-corpus-pg.test.ts`
 
 ## Notes / gotchas
 
-- Plan first (omit `--execute`) to sanity-check `corpus_urls` is non-zero — a zero there
-  usually means wrong bucket or an unauthenticated wrangler session, not an
-  empty corpus.
-- `index/list.json` is the worker's maintained list index. If it were ever
-  stale, membership would lag; in practice every terminal write updates it
-  (see CLAUDE.md "Maintain `index/list.json` on every terminal write").
+- Plan first (omit `--execute`) to sanity-check `tenant_readings` is non-zero —
+  that is the tenant's whole corpus size, so a zero means the wrong tenant or
+  the wrong database. (`processed` counting zero is not the same signal: a fresh
+  export legitimately overlaps nothing.)
+- The URL claim and its reading commit together, so membership cannot lag the
+  corpus the way a denormalized list index could.

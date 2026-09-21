@@ -98,7 +98,7 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | `corpus drop` | `corpus-drop.ts` | Resolves selectors against `index/list.json`, deletes the id-scoped R2 prefix and the by-url pointer, rewrites the list index, deletes the Vectorize vector | **port** | Dropping a reading is still real work. reading-lite-gh347.4.7 deletes the row and lets `reading_urls`, revisions, relationships and the embedding cascade; `--vectorize` goes with the index. Its R2 delete has to cover all three `contentKeys` tiers. |
 | `corpus ingest` | `corpus-ingest.ts` | The offline batch write phase: manifests, by-url pointers and `index/list.json`, plus a parse-time vector-ledger guard | **port** | This is the one operator path that spends provider money before it writes, and today a completed batch publishes nothing the library can see. reading-lite-gh347.4.2 commits rows instead. The ledger guard is deleted here and nothing replaces it, because an embedding now commits and deletes inside its reading's transaction. |
 | `corpus normalize-tags` | `corpus-normalize-tags.ts` | `index/list.json` plus manifests, rewriting tags | **retire now** | A one-time backfill of a field the gh348 importer carries over. |
-| `corpus purge-connections` | `corpus-purge-connections.ts` | Parses every manifest to find inbound connections naming a deleted reading, and rewrites them | **port** | The dangling-inbound problem survives: `reading_relationships` has a foreign key on the source only, so a deleted reading leaves every inbound row naming it as `target_id`. reading-lite-gh347.4.7 replaces the manifest rewrite with one `DELETE ... WHERE target_id = $1`. |
+| `corpus purge-connections` | `corpus-purge-connections.ts` | Parses every manifest to find inbound connections naming a deleted reading, and rewrites them | **port** | The dangling-inbound problem survives: `reading_relationships` has a foreign key on the source only, so a deleted reading leaves every inbound row naming it as `target_id`. reading-lite-gh347.4.7 replaces the manifest rewrite with one `DELETE ... WHERE target_id = $1`. The CAS loop and its conflict budget went with the manifests; `--sole-writer` did not, because a publisher in flight can still commit an inbound row after the DELETE's snapshot and no statement can exclude it. A post-delete recount checks that assertion and exits 1 on leftovers. |
 | `corpus rebuild-list` | `corpus-rebuild-list.ts` | Scans every manifest under `readings/` and rewrites `index/list.json` from them | **retire now** | There is no denormalized list to rebuild. The list is a query over `readings`, which cannot drift from itself. |
 | `corpus recover` | `corpus-recover.ts` | A corpus-audit index plus `index/list.json` for its status poll; `--batch` writes manifests, pointers, vectors and the list index | **port** | Split across two slices: reading-lite-gh347.4.7 moves the `--monitor` status poll onto the tenant's readings, and reading-lite-gh347.4.2 moves the `--batch` write path. |
 | `corpus refresh-connections` | `corpus-refresh-connections.ts` | `index/list.json` and manifests, judging connections and writing them back through a manifest compare-and-set | **port** | reading-lite-gh347.4.1. A judged set becomes rows in `reading_relationships` plus the load-bearing summary flags on the current `reading_revisions` row, which are what distinguish an empty set from an uncomputed one. |
@@ -197,6 +197,62 @@ performs is a wrong instruction, not stale prose.
 | `chrome-reading-list` | Chrome's local Sync Data LevelDB | **unchanged** | It never touched the corpus. |
 | `reading-lite-local` | Local `wrangler dev` and the seeded fixture pack | **unchanged** | Local development only; the fixture pack moves with the seed script, not with this inventory. |
 | `beads` | The beads database | **unchanged** | Work tracking, not storage. |
+
+## The operator PostgreSQL seam
+
+reading-lite-gh347.4.7 built the seam every surviving operator command needs
+and moved the first commands onto it: `corpus audit`, `drop`, `sweep`,
+`purge-connections`, `recover --monitor` and `reading-list check`.
+
+**`scripts/pg-lib/operator-db.ts`** holds the bucket-to-database pairing and the
+session lifetime. It pairs a bucket with a deploy environment and with the
+**variable names** that may hold that environment's DIRECT connection string —
+never a D1 database and a wrangler `--env`. An unrecognised bucket gets no
+database, and a variable that names the other environment is refused, because
+the variable name is the only evidence available before connecting. This is one
+table, so the corpus commands and the `deploy worker` / `deploy wipe-check`
+allowlist cannot disagree. `withOperatorSql` closes the session on success, on
+usage error and on failure alike.
+
+**`scripts/pg-lib/operator-corpus.ts`** is the operator's view of the corpus.
+Every read delegates to `PgReadingStore` — the store the Worker reads through —
+so the operator and the Worker cannot disagree about what a reading is, which
+matters because the operator's answer is what an irreversible delete is planned
+from. The only queries written there are ones that are not about a reading: the
+attempt event log behind `corpus audit --deep`, and the DELETEs.
+
+**`--tenant global` is refused** by all of them. It names the pre-tenant R2
+layout — an empty key root — and no `readings` row can carry it. Left
+resolvable it would report an empty corpus rather than a wrong question. The
+R2-only commands that still address retained pre-tenant objects keep accepting
+it.
+
+**Deletion order is row first, objects second**, the ordering `purgeReading`
+holds and the one the [deletion rules](operations.md#account-deletion) state. A
+reading's captured content is resolved through `contentKeys`, which answers in
+three tiers (the current revision, the latest capturing attempt, and the legacy
+spelling under the stored `key_prefix`), and all three are read *before* the row
+is deleted, because the third tier is derived from the `key_prefix` the row
+takes with it.
+
+The row delete is one transaction, so the reading stops being listed, readable,
+searchable and the owner of its URL at a single instant. Deleting the bytes
+first would mean a failed row delete — a dropped connection is enough — left a
+live reading whose content 404s, and `corpus sweep` does this to ready
+production readings. With the row gone first, a failed object delete leaves
+only unreferenced residue: the command names the surviving keys and exits 1,
+re-running will not retry them because the id no longer resolves, and an
+account wipe removes them with the tenant's prefix. That is the same price
+`src/reading-purge.ts` pays for making the visible half atomic.
+
+**What the pairing rewrite took with it.** `scripts/account-lib/control-plane.ts`
+and `scripts/ops-lib/database-url-env.ts` are gone, folded into the new module.
+`system policy`, `system status`, `staging prepare-context` and
+`account-lib/remote.ts` now resolve their control-plane handle over a direct
+connection through it, and `account sweep-wipe-prefix` prints a `psql` evidence
+query naming the paired variable instead of a `wrangler d1 execute` one.
+`scripts/corpus-lib/delete-plan.ts` and `check-corpus-lib/fetch-index.ts` went
+with the by-url pointer and the list index they read.
 
 ## Why `backfill-vectors` is safe to retire
 

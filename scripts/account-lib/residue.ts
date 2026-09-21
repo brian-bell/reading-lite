@@ -9,6 +9,9 @@ import type { AuditVectors } from "./vectors";
 import { enumerateNamespace } from "./vectors";
 export interface ScanRemote {
   db: ControlPlaneDb;
+  /** Closes the control-plane connection. The CLI sets an exit code rather
+   *  than calling process.exit, so an open socket would hang the command. */
+  closeDb?: () => Promise<void>;
   storage: {
     listObjects(prefix: string): Promise<{ key: string }[]>;
     get(key: string): Promise<string | null>;
@@ -141,7 +144,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     ],
     [
       "signup_invites",
-      "email_canonical IN (SELECT email_canonical FROM users WHERE id = ?) OR (consumed_at_ms IS NOT NULL AND email_canonical IN (SELECT email_canonical FROM auth_challenges WHERE user_id = ? OR completed_user_id = ?))",
+      "email_canonical IN (SELECT email_canonical FROM users WHERE id = ?) OR (consumed_at IS NOT NULL AND email_canonical IN (SELECT email_canonical FROM auth_challenges WHERE user_id = ? OR completed_user_id = ?))",
       [tenant, tenant, tenant],
     ],
   ] as const) {

@@ -91,7 +91,12 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch 
 ## Prerequisites
 
 - A reading-API bearer token (for writes): `--token`, `READER_API_TOKEN`, or `.prd.vars`/`.dev.vars`.
-- For `--monitor`: a Cloudflare session to read `index/list.json` (wrangler login).
+- For `--monitor`: a direct PostgreSQL connection string in the variable paired
+  with the bucket (`PRODUCTION_DATABASE_URL` for `reading-lite`), from
+  `~/.config/reading-lite/neon.env`. The poll SELECTs the tenant's readings;
+  `--bucket` selects the database and `--database-url-env <NAME>` overrides the
+  variable. `--tenant global` is refused on that path — it names the pre-tenant
+  R2 layout, which has no rows.
 
 ## Usage
 

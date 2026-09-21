@@ -1,35 +1,38 @@
 ---
 name: corpus-sweep
-description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which by-url ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest including their Vectorize vectors — so it works on ready readings, which corpus-drop refuses. Also drops an operator-asserted pair (--drop/--keep) for readings that share material but are genuinely different resources, which no URL rule can pair. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
+description: Find and clean duplicate readings in the reading-lite corpus — the same resource stored under two different URL spellings (youtu.be/X vs youtube.com/watch?v=X, a reddit comment permalink vs its thread, http vs https, utm-tagged vs clean), which by-url ownership cannot catch and corpus-drop cannot reconcile. Canonicalizes URLs, groups the copies, keeps the best one, and drops the rest including their embeddings — so it works on ready readings, which corpus-drop refuses on production. Also drops an operator-asserted pair (--drop/--keep) for readings that share material but are genuinely different resources, which no URL rule can pair. Dry-run by default. Use when the user says a reading is a duplicate, wants duplicates found or deduped, or when corpus-drop refuses an id because it is ready.
 ---
 
 # corpus-sweep
 
 Reconciles **duplicate readings of the same resource** and drops the redundant
-copies completely — R2 objects, by-url pointer, list entry, and Vectorize
-vector.
+copies completely — the reading's captured content in R2, and its row, which
+takes the URL claim, revisions, attempts, relationships and the embedding with
+it.
 
 **Dry-run by default. It only writes with `--execute`.**
 
 ## The gap it fills
 
-By-url ownership (`index/by-url/{sha256(url)}`) is keyed on the *exact*
-submitted URL. So `https://youtu.be/X` and `https://www.youtube.com/watch?v=X`
-claim two different slots, the eager claim never collides, and both readings
-reach `ready`. Nothing in the write path can tell they are one video.
+URL ownership is keyed on the *exact* submitted URL, so `https://youtu.be/X`
+and `https://www.youtube.com/watch?v=X` claim two different rows in
+`reading_urls`, the unique constraint never fires, and both readings reach
+`ready`. Nothing in the write path can tell they are one video.
 
 `corpus-drop` can't fix that: it matches selectors by exact URL equality, and it
-refuses `ready` readings on production because a ready reading owns a Vectorize
-embedding a blind drop would dangle.
+refuses `ready` readings on production because a ready reading is the live,
+searchable copy of its URL.
 
 Sweep goes where drop won't, because it carries a stronger invariant than
 "never touch ready":
 
 1. A drop is only ever proposed **as part of a group that keeps a survivor** —
-   the resource never leaves the corpus entirely.
-2. Every ready drop's **vector is deleted with it**, before its objects. If the
-   vector delete fails, the reading's objects are left alone and the sweep stays
-   re-runnable rather than stranding a vector.
+   the resource never leaves the corpus entirely. A group that would not keep
+   exactly one survivor is refused outright.
+2. The drop's **embedding goes with its row**, in the same statement, so a
+   half-finished sweep cannot leave a vector pointing at a reading that no
+   longer exists. Content is deleted first and the row last, so a failed object
+   delete leaves the reading visible and the sweep re-runnable.
 
 ## What counts as the same resource
 
@@ -106,11 +109,14 @@ npm run ops -- corpus sweep --tenant "$TENANT" rd_PQ132K3HK5 --execute
 npm run ops -- corpus sweep --tenant "$TENANT" rd_A --keep rd_B --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
-Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable), `--bucket` (default
-`READING_LITE_BUCKET` env, then `reading-lite`), `--vectorize <index>` (defaults
-to the bucket name — they match in every environment), `--local`, `--execute`,
-`--help`.
+`--tenant` is required on every corpus command, and here it must be a real
+tenant id — `--tenant global` names the pre-tenant R2 layout, which has no rows,
+and is refused. Production uses `--tenant "$TENANT"` from `GET /api/whoami`
+(see `docs/operations.md`); staging takes its founder tenant id.
+Flags: `--drop <rd_ID>` (asserted-pair mode), `--keep <rd_ID>` (repeatable),
+`--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`; it selects
+the database too), `--database-url-env <NAME>`, `--local`, `--execute`,
+`--help`. There is no `--vectorize`: the embedding is a row that cascades.
 
 Errors, rather than guessing, when a selector names something that is not part
 of any duplicate group, or when `--keep` names two ids in the same group.
@@ -130,11 +136,10 @@ reading — a cited connection, or a snapshot measured while the dropped copy wa
 still indexed. It flags only those, not every keeper, so the warning stays worth
 reading.
 
-To refresh the measured score (no LLM call, no re-summarization, no tag churn):
-
-```bash
-npm run ops -- corpus backfill-similarity --tenant "$TENANT" rd_KEEPER --rescore --execute
-```
+Nothing recomputes these for you. The measured similarity refreshes on the next
+relationship refresh pass (`corpus refresh-neighbours`). The one-field repair
+that used to be offered here, `corpus backfill-similarity`, was retired in
+reading-lite-gh347.4.6 and has no replacement.
 
 The `novelty_verdict` label itself only refreshes on a **reprocess**, which
 re-runs the summarizer and re-rolls the title and tags on unchanged source text.
@@ -143,28 +148,33 @@ which is the more granular signal anyway.
 
 ## Prerequisites
 
-A Cloudflare session that can read **and write** R2 *and* Vectorize:
-`wrangler login`, or `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`).
-
-Run it when nothing is being submitted: the `index/list.json` rewrite is a plain
-put, not a CAS write, so a concurrent queue write could be lost.
+- `--tenant <usr_…>` (not `global`).
+- A direct PostgreSQL connection string in the variable paired with the bucket
+  (`PRODUCTION_DATABASE_URL` for `reading-lite`), from
+  `~/.config/reading-lite/neon.env`.
+- A Cloudflare session that can read **and write** R2, for the content deletes:
+  `wrangler login`, or `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`). No
+  Vectorize credential is needed any more.
 
 ## Always dry-run first
 
 The default run prints every group, the keeper and why it won, and every object
-and vector it would delete — and changes nothing. Confirm the keeper choices,
+and row it would delete — and changes nothing. Confirm the keeper choices,
 then re-run with `--execute`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-sweep.ts` (via `scripts/ops.ts`)
 - Pure planner (tested): `scripts/corpus-lib/sweep.ts`
-- R2/Vectorize read/delete/put: `scripts/corpus-lib/wrangler-r2.ts`
-- Tests: `test/unit/corpus/sweep.test.ts` (node project)
+- Rows and content keys: `scripts/pg-lib/operator-corpus.ts`, over
+  `PgReadingStore`
+- R2 delete: `scripts/corpus-lib/wrangler-r2.ts`
+- Tests: `test/unit/corpus/sweep.test.ts` (ranking) and
+  `test/unit/scripts/ops-corpus-pg.test.ts` (end to end)
 
 ## Related
 - **`corpus-drop`** — drop a specific URL or id you already know is junk. Use it
   for dead links and failed cruft; use sweep when the problem is *two copies of
-  one thing*, or when drop refuses an id for being ready.
+  one thing*, or when drop refuses an id for being ready on production.
 - **`corpus-audit`** — inventory of everything not `ready`.
 - **`reddit-import` / `youtube-import`** — recover a fetch-blocked reading
   instead of dropping it. These import under the *clean* URL, which typically

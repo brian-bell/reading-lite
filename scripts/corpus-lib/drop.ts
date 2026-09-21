@@ -14,8 +14,9 @@
 //     copies (the orphan-dup cleanup case), erroring only if the url has *no*
 //     non-ready copy to drop.
 //
-// Staging cleanup can opt into ready deletion with `allowReady`; callers must
-// also clean vectors (the by-url pointer is handled by the deletion plan).
+// Staging cleanup can opt into ready deletion with `allowReady`. Under ADR
+// 0005 the URL claim and the embedding are rows that cascade with the reading,
+// so there is nothing else for the caller to clean up.
 
 export interface DropListItem {
   id: string;
@@ -35,14 +36,6 @@ export type ResolveResult =
   | { ok: true; targets: DropTarget[]; keptReady: DropListItem[] }
   | { ok: false; errors: string[] };
 
-// Only rewrite index/list.json once every object delete succeeded. If any
-// delete errored (e.g. a transient R2 failure on manifest.json or a pointer),
-// dropping the reading from the list would hide it from audits while its
-// objects/pointers linger — an inconsistent corpus that's harder to retry.
-// Leaving the list intact keeps the reading visible and the drop re-runnable.
-export function shouldRewriteIndex(erroredDeletes: number): boolean {
-  return erroredDeletes === 0;
-}
 
 const isId = (s: string): boolean => s.startsWith("rd_");
 
@@ -65,7 +58,7 @@ export function resolveDropTargets(
     if (isId(sel)) {
       const it = byId.get(sel);
       if (!it) {
-        errors.push(`id not found in index/list.json: ${sel}`);
+        errors.push(`id not found in this tenant's corpus: ${sel} (check --tenant and --bucket)`);
         continue;
       }
       if (it.status === "ready" && !allowReady) {
@@ -79,7 +72,7 @@ export function resolveDropTargets(
     // URL selector: match every copy of this url.
     const matches = items.filter((i) => i.url === sel);
     if (matches.length === 0) {
-      errors.push(`url not found in index/list.json: ${sel}`);
+      errors.push(`url not found in this tenant's corpus: ${sel} (check --tenant and --bucket)`);
       continue;
     }
     const droppable = allowReady ? matches : matches.filter((i) => i.status !== "ready");

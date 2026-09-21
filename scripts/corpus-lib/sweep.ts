@@ -281,8 +281,8 @@ export function planExplicitPair(
   const byId = new Map(items.map((i) => [i.id, i]));
   const drop = byId.get(sel.drop);
   const keep = byId.get(sel.keep);
-  if (!drop) errors.push(`id not found in index/list.json: ${sel.drop}`);
-  if (!keep) errors.push(`id not found in index/list.json: ${sel.keep}`);
+  if (!drop) errors.push(`id not found in this tenant's corpus: ${sel.drop} (check --tenant and --bucket)`);
+  if (!keep) errors.push(`id not found in this tenant's corpus: ${sel.keep} (check --tenant and --bucket)`);
   if (errors.length > 0) return { groups: [], errors, readyDropCount: 0 };
 
   if (keep!.status !== "ready") {

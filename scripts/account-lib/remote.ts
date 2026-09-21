@@ -5,10 +5,13 @@
 import { z } from "zod";
 import { loadDotVars } from "../lib/dotvars";
 import { r2InventoryClientFromVars } from "../lib/cf-clients";
+import { fromSql, type ControlPlaneDb } from "../../src/control-plane/db";
+import type { Sql } from "../../src/modules/db/sql";
 import {
-  controlPlaneDbForBucket,
-  controlPlaneForBucket,
-} from "./control-plane";
+  OPERATOR_DATABASES,
+  openOperatorSql,
+  resolveOperatorDatabaseUrl,
+} from "../pg-lib/operator-db";
 import type { AuditVectors } from "./vectors";
 const Vector = z.object({
   id: z.string(),
@@ -24,7 +27,7 @@ export function accountRemote(
     ...process.env,
   },
 ) {
-  const target = controlPlaneForBucket(bucket);
+  const target = OPERATOR_DATABASES[bucket];
   if (!target) throw new Error(`unmapped account bucket: ${bucket}`);
   // Optional entries in .corpus.vars.example may be empty; skip them just
   // as the R2 credential resolver does, while preserving non-empty overrides.
@@ -101,8 +104,27 @@ export function accountRemote(
       );
     },
   };
+  // The control-plane handle is opened on first use and closed by `closeDb`.
+  // Lazily, because this adapter is also constructed for R2- and Vectorize-only
+  // work: resolving the connection variable eagerly would make those paths
+  // fail on a machine that has no database credentials at all.
+  let sql: Sql | null = null;
+  const controlPlaneSql = (): Sql =>
+    (sql ??= openOperatorSql(resolveOperatorDatabaseUrl({ bucket, env: vars }).url));
+
   return {
-    db: controlPlaneDbForBucket(bucket),
+    db: {
+      first: (text, ...params) => fromSql(controlPlaneSql()).first(text, ...params),
+      all: (text, ...params) => fromSql(controlPlaneSql()).all(text, ...params),
+      batch: (statements) => fromSql(controlPlaneSql()).batch(statements),
+      run: (text, ...params) => fromSql(controlPlaneSql()).run(text, ...params),
+      transaction: (work) => fromSql(controlPlaneSql()).transaction(work),
+    } as ControlPlaneDb,
+    closeDb: async () => {
+      const open = sql;
+      sql = null;
+      if (open) await open.end().catch(() => undefined);
+    },
     storage: r2InventoryClientFromVars(vars, bucket, fetchFn),
     vectors,
     probe: async (namespace: string) =>

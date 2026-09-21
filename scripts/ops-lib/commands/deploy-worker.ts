@@ -17,7 +17,7 @@ import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { CONTROL_PLANE_REQUIRED_SECRETS } from "../../control-plane-env";
 import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
 import { runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
-import { assertDatabaseUrlEnvMatches } from "../database-url-env";
+import { assertDatabaseUrlEnvMatches } from "../../pg-lib/operator-db";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { checkPostgresCutover } from "../postgres-cutover";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
