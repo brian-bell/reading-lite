@@ -25,7 +25,14 @@ import { planByAction, recoveryAction } from "../../corpus-lib/policy";
 import { verifyRealtimeTenant } from "../../corpus-lib/realtime-tenant";
 import { shouldPauseAfter } from "../../corpus-lib/throttle";
 import { tallyByIds } from "../../corpus-lib/audit";
-import type { R2Deps } from "../../corpus-lib/wrangler-r2";
+import {
+  DATABASE_URL_ENV_FLAG_HELP,
+  openOperatorSql,
+  resolveOperatorDatabaseUrl,
+  withOperatorSql,
+  type OpenOperatorSql,
+} from "../../pg-lib/operator-db";
+import { listItems, operatorReadings, requireTenantRows } from "../../pg-lib/operator-corpus";
 import type { BatchRunResult } from "../../corpus-lib/batch/run";
 import type { PersistedSidecar } from "../../corpus-lib/batch/types";
 import { sidecarPath } from "../../corpus-lib/batch/sidecar";
@@ -53,7 +60,10 @@ export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
   ) => Pick<ReadingApi, "reprocess" | "importMarkdown" | "whoami">;
   // Realtime local-extract (browser-header fetch wired in by defaultDeps).
   extract: (url: string) => Promise<ExtractedContent>;
-  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
+  // --monitor polls the tenant's readings; the recovery writes themselves go
+  // through the hosted API, not this session.
+  openSql: OpenOperatorSql;
+  env: Record<string, string | undefined>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   batch: {
@@ -90,6 +100,7 @@ interface Args {
   // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (an alternate bucket)
   // rather than being masked by the default production bucket.
   bucketFlag?: string;
+  databaseUrlEnv?: string;
 }
 
 const ONLY_ACTIONS: RecoveryAction[] = ["reprocess", "local-extract", "skip", "none"];
@@ -107,6 +118,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
         only: { type: "string" },
         limit: { type: "string" },
         bucket: { type: "string" },
+        "database-url-env": { type: "string" },
         url: { type: "string" },
         token: { type: "string" },
         monitor: { type: "boolean", default: false },
@@ -136,6 +148,9 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
     limit: values.limit ? Number(values.limit) : Infinity,
     bucket: resolveBucket(values.bucket),
     ...(values.bucket === undefined ? {} : { bucketFlag: values.bucket }),
+    ...(values["database-url-env"] === undefined
+      ? {}
+      : { databaseUrlEnv: values["database-url-env"] }),
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
@@ -191,6 +206,20 @@ function describeError(out: ReadingApiOutcome): string {
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
   const tenant = requireOperatorTenant(args.tenant);
+  // Resolved up front, not at the monitor loop: --monitor runs after every paid
+  // reprocess, so a selector that cannot name rows — or an unset connection
+  // variable, which is sourced from a dotfile and easy to forget — must refuse
+  // before the spending, not after it.
+  const monitorTarget = args.monitor
+    ? {
+        tenant: requireTenantRows(tenant),
+        url: resolveOperatorDatabaseUrl({
+          bucket: args.bucket,
+          ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
+          env: deps.env,
+        }).url,
+      }
+    : null;
   const doc = JSON.parse(await deps.readFile(args.index)) as {
     rows: AuditRow[];
     tenant?: string;
@@ -344,14 +373,23 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
 
   if (args.monitor && touched.length > 0) {
     deps.io.stderr(`\nMonitoring ${touched.length} readings...`);
-    for (let i = 0; i < 60; i++) {
-      const items = await deps.readListIndex({ bucket: args.bucket, keyRoot: tenant.keyRoot, remote: true });
-      const t = tallyByIds(items, touched);
-      const ts = new Date(deps.now()).toISOString().slice(11, 19);
-      deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
-      if (t.pending === 0) break;
-      await deps.sleep(15_000);
-    }
+    const { tenant: monitored, url } = monitorTarget!;
+    // One session for the whole poll, closed however the loop ends.
+    await withOperatorSql(
+      url,
+      async (sql) => {
+        const store = operatorReadings(sql, monitored);
+        for (let i = 0; i < 60; i++) {
+          const items = (await listItems(store)) as ListItem[];
+          const t = tallyByIds(items, touched);
+          const ts = new Date(deps.now()).toISOString().slice(11, 19);
+          deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
+          if (t.pending === 0) break;
+          await deps.sleep(15_000);
+        }
+      },
+      deps.openSql,
+    );
   }
 
   printSummary(deps.io, { executed: true, reprocessed, extracted, inProgress, errors, touched });
@@ -493,10 +531,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         maxBytes: 30_000_000,
       });
     },
-    readListIndex: async (r2Deps) => {
-      const { readListIndex } = await import("../../corpus-lib/wrangler-r2");
-      return readListIndex(r2Deps);
-    },
+    openSql: openOperatorSql,
+    env: process.env,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
     openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
@@ -583,7 +619,9 @@ Options:
   --execute         Actually perform the actions (otherwise prints the plan).
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
-  --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
+  --bucket <name>   Data bucket; selects the database --monitor polls and the
+                    bucket --batch writes. Default: reading-lite.
+${DATABASE_URL_ENV_FLAG_HELP}
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
                        layout. Scopes this command's direct R2 reads and the batch
                        path. Realtime API writes act as the bearer token's tenant,

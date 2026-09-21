@@ -2,7 +2,6 @@ import { spawnCommand } from "../lib/wrangler-cli";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { keysForDroppedReading } from "./delete-plan";
 import type { ListItem } from "./types";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 
@@ -343,36 +342,6 @@ export async function writeRefreshState(state: unknown, deps: R2Deps): Promise<v
   await writeJsonObject(layout.refreshStateKey(), state, deps);
 }
 
-// Every deletable key under one reading's id-scoped prefix, including its by-url
-// ownership pointer ONLY when the dropped reading actually owns it (the pointer
-// can legitimately belong to a surviving ready copy of the same URL — see
-// `keysForDroppedReading`). Reads the manifest and pointer live; raw.* exts are
-// best-effort guesses that idempotent deletes absorb. The `wrangler r2 object`
-// CLI (this tool's only R2 access — corpus-drop intentionally needs just
-// `wrangler login`, not S3/API creds) has no prefix list, so attempt coverage is
-// limited to the manifest's two recorded attempt ids.
-export async function keysForReading(
-  id: string,
-  keyPrefix: string,
-  url: string,
-  deps: R2Deps,
-): Promise<string[]> {
-  return keysForDroppedReading(id, keyPrefix, url, {
-    // A corrupt manifest must not abort the drop: the static keys + pointer
-    // logic can still proceed, so a parse failure degrades to null (matching the
-    // DeletePlanDeps contract and the corpus-delete-orphans shim).
-    readManifest: async (kp) => {
-      try {
-        return await readManifest(kp, deps);
-      } catch {
-        return null;
-      }
-    },
-    // Strict: a confirmed-absent pointer returns null (not owned), but an
-    // untrusted read error throws so we never strand a pointer this reading owns.
-    readObject: (key) => readObjectStrict(key, deps),
-  });
-}
 
 // Collect each stream as raw bytes and decode once at close. Decoding per
 // "data" chunk splits a multibyte UTF-8 character that straddles a chunk

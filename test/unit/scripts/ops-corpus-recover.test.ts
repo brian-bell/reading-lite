@@ -98,7 +98,8 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
       content_status: "captured", content_type: "text/html",
       markdown: "# extracted body", title: "T",
     }) as never,
-    readListIndex: async () => [],
+    openSql: () => { throw new Error("no test here reaches --monitor's session"); },
+    env: {},
     sleep: async () => {},
     now: () => Date.parse("2026-08-22T12:00:00Z"),
     batch: {
