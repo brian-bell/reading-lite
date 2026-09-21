@@ -398,7 +398,7 @@ async function runCorpusRefreshNeighbours(
  * command that reads rows: the pre-tenant layout has no rows, and resolving it
  * to zero of them would report an empty corpus rather than a wrong question.
  */
-function openStore(
+export function openStore(
   open: OpenOperatorSql,
   env: Record<string, string | undefined>,
 ): CorpusRefreshNeighboursDeps["withStore"] {

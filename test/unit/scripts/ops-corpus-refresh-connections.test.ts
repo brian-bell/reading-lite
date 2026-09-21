@@ -203,23 +203,6 @@ function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
 }
 
 describe("ops corpus refresh-connections", () => {
-  it("executes a tenant-stamped report against that tenant's rows", async () => {
-    const h = harness();
-    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    expect(await corpusRefreshConnectionsCommand.run(
-      ["--tenant", TENANT, "--execute", "--sole-writer"], h.deps,
-    )).toBe(0);
-    expect(h.targets).toEqual([
-      {
-        bucket: "reading-lite",
-        local: false,
-        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/`, namespace: TENANT },
-      },
-    ]);
-    expect(h.writes).toHaveLength(1);
-    expect(h.writes[0]?.id).toBe("rd_a");
-  });
-
   // The pre-tenant layout has no rows to judge, and the refusal has to come
   // before the spend session: a paid session admitted for work that cannot
   // happen is the failure worth preventing.

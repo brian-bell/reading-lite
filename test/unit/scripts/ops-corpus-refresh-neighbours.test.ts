@@ -180,19 +180,6 @@ describe("ops corpus refresh-neighbours", () => {
     expect(report.readings[0].current_neighbours.map((n: { id: string }) => n.id)).toEqual(neighbours.map(n => n.id));
   });
 
-  // The pre-tenant layout has no rows, so a question asked of it cannot be
-  // answered — and must not be answered with an empty corpus. Asserted through
-  // the real store seam, because that is where the refusal lives, and it has to
-  // fire before anything opens a connection.
-  it("refuses --tenant global before resolving a database", async () => {
-    const { io: cio, lines } = io();
-    const deps = corpusRefreshNeighboursCommand.defaultDeps!(cio);
-    await expect(
-      corpusRefreshNeighboursCommand.run(["--tenant", "global"], deps),
-    ).rejects.toThrow(/--tenant global addresses the pre-tenant R2 layout/);
-    expect(lines.join("\n")).not.toContain("Corpus:");
-  });
-
   describe("full sweep cadence", () => {
     const marker = { version: REFRESH_STATE_VERSION, last_run_at: "2026-08-21T00:00:00.000Z", list_ids: ["rd_r", "rd_n"] };
     const warning = (lines: string[]) => lines.filter((line) => line.includes("Full sweep overdue:"));

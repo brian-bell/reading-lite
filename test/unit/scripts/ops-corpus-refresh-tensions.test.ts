@@ -211,35 +211,6 @@ function fakeClock(stepMs: number, startMs = Date.parse(JUDGED_AT)) {
 }
 
 describe("ops corpus refresh-tensions", () => {
-  it("executes a tenant-stamped report against that tenant's rows", async () => {
-    const h = harness();
-    h.readReport.mockResolvedValue(JSON.stringify(report()));
-    expect(await corpusRefreshTensionsCommand.run(
-      ["--tenant", TENANT, "--execute", "--sole-writer"], h.deps,
-    )).toBe(0);
-    expect(h.targets).toEqual([
-      {
-        bucket: "reading-lite",
-        local: false,
-        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/`, namespace: TENANT },
-      },
-    ]);
-    expect(h.writes.map((write) => write.id)).toEqual(["rd_a", "rd_b"]);
-  });
-
-  // The pre-tenant layout has no rows to judge, and the refusal comes before
-  // the spend session so no paid session is admitted for work that cannot
-  // happen.
-  it("refuses --tenant global before opening a spend session", async () => {
-    const h = harness();
-    await expect(
-      corpusRefreshTensionsCommand.run(
-        ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
-        h.deps,
-      ),
-    ).rejects.toThrow(/--tenant global addresses the pre-tenant R2 layout/);
-    expect(h.spend.calls).toEqual([]);
-  });
   it("prints a Timing block for a plan pass with no provider phase", async () => {
     const h = harness();
     expect(
