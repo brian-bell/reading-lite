@@ -122,6 +122,7 @@ describes only the live control plane that reading-lite-gh348 imports from.
 | Reading storage ([ADR 0005](docs/decisions/0005-postgresql-storage.md)) | `src/modules/db/`, `src/modules/stores/postgres/`, `db/migrations/`, `scripts/pg-lib/` |
 | R2 content and keys | `src/modules/stores/content-store.ts`, `layout.ts` |
 | Operator commands | `scripts/ops.ts`, `scripts/ops-lib/registry.ts`, `scripts/ops-lib/commands/`, shared `scripts/*-lib/` |
+| Operator PostgreSQL seam | `scripts/pg-lib/operator-db.ts` (bucket/database pairing, session lifetime), `scripts/pg-lib/operator-corpus.ts` |
 | Contracts and SPA | `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, `web/` |
 | New frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
 
@@ -248,7 +249,9 @@ loopback. Never enable `LOCAL_MAIL_SINK` in deployed environments.
 All supported operator workflows use `npm run ops -- <group> <command>`.
 Durable changes plan by default and require `--execute`. Every `corpus` command
 requires `--tenant`; production uses `/api/whoami`'s `tenant_id`.
-`--tenant global` addresses retained pre-tenant data, not the live corpus.
+`--tenant global` addresses retained pre-tenant R2 data, not the live corpus,
+and it is R2-only: the commands that read or delete rows refuse it, because no
+`readings` row can carry the pre-tenant empty key root.
 
 Production and staging pin `TENANT_DATA_PLANE=1`. Removing the pin after tenant
 writes resume requires a freeze and reverse reconciliation, or explicit

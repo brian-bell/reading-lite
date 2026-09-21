@@ -1117,12 +1117,18 @@ staging founder tenant, not `global`. Resolve `$STG_TENANT` from staging's
 ```sh
 npm run ops -- corpus audit --tenant "$STG_TENANT" --bucket reading-lite-staging --execute
 npm run ops -- corpus drop --tenant "$STG_TENANT" "https://example.com/reading-lite-staging-123" \
-  --bucket reading-lite-staging --allow-ready \
-  --vectorize reading-lite-staging --execute
+  --bucket reading-lite-staging --allow-ready --execute
 ```
 
-`--tenant global` still addresses staging's retained pre-tenant copy, which the
-gate makes invisible to the Worker. Use it only when you mean that copy.
+`--allow-ready` no longer takes `--vectorize`: the embedding is a row that
+cascades with the reading (ADR 0005).
+
+`--tenant global` still addresses staging's retained pre-tenant R2 copy, which
+the gate makes invisible to the Worker. It is **R2-only**: the commands that
+read or delete rows (`corpus audit`, `drop`, `sweep`, `purge-connections`,
+`recover --monitor`, `reading-list check`) refuse it, because no `readings` row
+can carry the pre-tenant empty key root and a resolvable `global` would report
+an empty corpus rather than a wrong question.
 
 ### Rehearsing account deletion on staging
 
@@ -1399,9 +1405,10 @@ read is not proof that vectors are present or absent.
 Residue checks afterwards.
 
 **1. R2 under the tenant root, expect zero objects.** Do **not** use
-`corpus audit` for this: it reads `index/list.json` first and hard-errors
-("could not read index/list.json") when the object is missing, which is exactly
-the state a successful wipe leaves behind. List the prefix directly instead,
+`corpus audit` for this: it inventories the tenant's `readings` rows, so after
+a successful wipe it reports an empty corpus and says nothing at all about
+objects left in the bucket — which is the one thing this step is checking.
+List the prefix directly instead,
 with the repo's own R2 client rather than a hand-rolled `aws` invocation, `r2InventoryClientFromVars` (`scripts/lib/cf-clients.ts`) is what
 `ops account sweep-wipe-prefix` already uses, and it reads the same
 `CORPUS_R2_*` / `CLOUDFLARE_API_TOKEN` values from the environment or
@@ -1509,20 +1516,14 @@ first complete calibration run, its costs, and the retained thresholds.
 
 | Script | What it does |
 |---|---|
-| `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
+| `npm run ops -- corpus audit` | inventory of every non-ready reading from the tenant's rows, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
 | `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
-| `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
-| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
-| `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
+| `npm run ops -- corpus drop` | remove readings by URL or id: deletes the row (the URL claim, revisions, attempts, its own outbound relationships and the embedding cascade) plus the reading's captured R2 content; inbound citations do **not** cascade — follow with `corpus purge-connections`; `--allow-ready` permits a ready one, off production |
+| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest, embeddings included; inbound citations do **not** cascade — follow with `corpus purge-connections` per dropped id) |
 | `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
-| `npm run ops -- corpus backfill-source-date` | fill missing `manifest.source_date` by re-running `readabilityFromHtml` over stored `raw.html` (no refetch; writes only that field; `--via` / `CORPUS_R2_*` like refresh-neighbours — S3 keys alone are enough) |
-| `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
-| `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
-| `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
-| `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
+| `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
@@ -2247,53 +2248,44 @@ later commits a terminal manifest would strip the new fields off that row.
 ### Purging connections to a deleted reading
 
 `ops corpus purge-connections` is the explicit offline cleanup for inbound
-`connections[]` entries that still name one deleted reading. `DELETE
-/api/readings/:id` deliberately does not scan the corpus, enqueue cleanup, or
-write a tombstone, so a reading-detail link may return 404 until an operator
-runs this sweep. Cleanup is not automatic.
+relationship rows that still name one deleted reading. `reading_relationships`
+has a foreign key on the source only, so deleting a reading cascades away the
+rows it cites but leaves every row that cites IT. `DELETE /api/readings/:id`
+deliberately does not clean those up, so a reading-detail link may return 404
+until an operator runs this. Cleanup is not automatic.
 
 ```sh
 # Production founder namespace. Resolve $TENANT from whoami first.
 npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted
 
-# Apply after establishing the sole-writer window.
-npm run ops -- corpus purge-connections \
-  --tenant "$TENANT" --id rd_deleted --execute --sole-writer
-
-# Pre-tenant leftover copy, or a gate-off env (local).
-npm run ops -- corpus purge-connections --tenant global --id rd_deleted
+# Apply.
+npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted --execute
 ```
 
-The target id must be absent from the selected namespace before the scan and
-again immediately before mutation. The command refuses a present target or any
-malformed canonical manifest, with no preflight writes. Only exact
-`readings/{year}/{month}/{timestamp}-{id}/manifest.json` objects enter the
-scan; nested attempt or backup objects and other manifest-shaped JSON are
-ignored. Each selected key must also round-trip from the parsed manifest's
-`id` and `created_at`. The command compares the bare `id` inside each
-connection even when R2 object keys are tenant-prefixed, removes every exact
-match, preserves unrelated connection order and manifest fields, and is
-idempotent when rerun.
+The target id must be absent from the selected tenant's readings: the command
+refuses a target that still exists, and refuses a malformed reading id before
+it connects. `--tenant global` is refused too — it names the pre-tenant R2
+layout, which has no rows.
 
-`--execute` is accepted only with `--sole-writer`. For this command,
-`--sole-writer` is the operator assertion that no ingestion, reprocessing,
-deletion, or recreation can mutate the selected corpus for the command's full
-duration. Each manifest update still uses its listed ETag as an `If-Match` CAS.
-On conflict the command boundedly re-lists, validates, proves the target is
-still absent, recomputes against the newest manifest, and retries; it never
-blind-writes. Exhaustion or target recreation exits nonzero and reports whether
-earlier manifests were already changed.
+`--sole-writer` is gone, and so is the compare-and-set machinery it protected.
+The manifest-era command had to list and parse every manifest in the bucket and
+rewrite the matches under ETag `If-Match` retries, because the relationship
+lived inside a document other writers also owned. It is a row keyed by
+`target_id` now, so the whole operation is one `DELETE`, and a concurrent
+writer cannot lose it.
 
-The single-line JSON audit reports `mode`, the explicit tenant/global selector
-(and `tenant_audit_stamp.tenant_id` for tenant mode), `target_id`, manifests
-scanned and matched, matching entries, manifests written or that would be
-written, unchanged manifests, conflicts, retries, failures, and
-`partial_execution`. Failures also include a bounded `failure_code` and
-`failure_stage`; provider response bodies and credentials are never copied
-into the audit or error stream. The command emits exactly one final audit even
-when a later storage operation fails after earlier writes. R2 listing
-pagination is completed by the shared client and canonical manifest keys are
-processed in deterministic lexical order.
+**It deletes judged tensions as well as connections.** Both dangle the same way
+when their target is deleted, and both live in `reading_relationships`. The
+audit reports `tensions_matched` separately, and the command warns on stderr
+when that count is non-zero, because tensions cost provider spend to produce.
+
+The single-line JSON audit reports `mode`, the tenant selector (and
+`tenant_audit_stamp.tenant_id`), `target_id`, `relationships_matched`,
+`sources_matched`, `tensions_matched`, `relationships_would_delete`,
+`relationships_deleted`, and `failures`. Failures also include a bounded
+`failure_code` (`invalid_target`, `target_present`, `storage_error`) and
+`failure_stage`; credentials and driver messages are never copied into the
+audit or error stream.
 
 `ops corpus recover` has two execution paths: `--wave` paces realtime
 submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the

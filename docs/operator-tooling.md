@@ -198,6 +198,52 @@ performs is a wrong instruction, not stale prose.
 | `reading-lite-local` | Local `wrangler dev` and the seeded fixture pack | **unchanged** | Local development only; the fixture pack moves with the seed script, not with this inventory. |
 | `beads` | The beads database | **unchanged** | Work tracking, not storage. |
 
+## The operator PostgreSQL seam
+
+reading-lite-gh347.4.7 built the seam every surviving operator command needs
+and moved the first commands onto it: `corpus audit`, `drop`, `sweep`,
+`purge-connections`, `recover --monitor` and `reading-list check`.
+
+**`scripts/pg-lib/operator-db.ts`** holds the bucket-to-database pairing and the
+session lifetime. It pairs a bucket with a deploy environment and with the
+**variable names** that may hold that environment's DIRECT connection string —
+never a D1 database and a wrangler `--env`. An unrecognised bucket gets no
+database, and a variable that names the other environment is refused, because
+the variable name is the only evidence available before connecting. This is one
+table, so the corpus commands and the `deploy worker` / `deploy wipe-check`
+allowlist cannot disagree. `withOperatorSql` closes the session on success, on
+usage error and on failure alike.
+
+**`scripts/pg-lib/operator-corpus.ts`** is the operator's view of the corpus.
+Every read delegates to `PgReadingStore` — the store the Worker reads through —
+so the operator and the Worker cannot disagree about what a reading is, which
+matters because the operator's answer is what an irreversible delete is planned
+from. The only queries written there are ones that are not about a reading: the
+attempt event log behind `corpus audit --deep`, and the DELETEs.
+
+**`--tenant global` is refused** by all of them. It names the pre-tenant R2
+layout — an empty key root — and no `readings` row can carry it. Left
+resolvable it would report an empty corpus rather than a wrong question. The
+R2-only commands that still address retained pre-tenant objects keep accepting
+it.
+
+**Deletion order is bytes first, row last.** A reading's captured content is
+resolved through `contentKeys`, which answers in three tiers (the current
+revision, the latest capturing attempt, and the legacy spelling under the
+stored `key_prefix`), and all three are read before anything is deleted. If an
+object delete fails the row is left in place, so the reading stays visible to
+the next audit and the operation stays re-runnable. Deleting the row first
+would strand the bytes where nothing could resolve them again.
+
+**What the pairing rewrite took with it.** `scripts/account-lib/control-plane.ts`
+and `scripts/ops-lib/database-url-env.ts` are gone, folded into the new module.
+`system policy`, `system status`, `staging prepare-context` and
+`account-lib/remote.ts` now resolve their control-plane handle over a direct
+connection through it, and `account sweep-wipe-prefix` prints a `psql` evidence
+query naming the paired variable instead of a `wrangler d1 execute` one.
+`scripts/corpus-lib/delete-plan.ts` and `check-corpus-lib/fetch-index.ts` went
+with the by-url pointer and the list index they read.
+
 ## Why `backfill-vectors` is safe to retire
 
 This verdict was challenged in review, and the challenge was half right, so the
