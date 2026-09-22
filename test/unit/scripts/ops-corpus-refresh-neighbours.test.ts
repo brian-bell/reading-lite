@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ManifestSchema } from "../../../src/schemas/manifest";
 import {
   corpusRefreshNeighboursCommand,
   type CorpusRefreshNeighboursDeps,
@@ -66,6 +67,10 @@ const VALID_MANIFEST = {
   updated_at: AT,
 };
 
+function invalidManifestError() {
+  return ManifestSchema.safeParse({ ...VALID_MANIFEST, status: "invalid" }).error!;
+}
+
 function makeDeps(opts: {
   items?: RefreshRow[];
   matches?: RefreshNeighbour[] | null;
@@ -74,10 +79,10 @@ function makeDeps(opts: {
   manifest?: unknown;
   /** Per-id manifest override, so one reading can be broken and another not. */
   manifestFor?: (id: string) => unknown | undefined;
-  /** The store refusing to parse a reading's rows. */
-  manifestThrow?: string;
+  /** A database or validation failure while loading a reading. */
+  manifestThrow?: Error;
   /** The same, for one reading while the others read normally. */
-  manifestThrowFor?: (id: string) => string | undefined;
+  manifestThrowFor?: (id: string) => Error | undefined;
   queryThrow?: (id: string) => Error | undefined;
   writeThrow?: (id: string) => Error | undefined;
   /** A reading purged between the corpus read and its snapshot write. */
@@ -107,9 +112,9 @@ function makeDeps(opts: {
       calls.stateWrites.push(state);
     },
     readManifest: async (id) => {
-      if (opts.manifestThrow) throw new Error(opts.manifestThrow);
+      if (opts.manifestThrow) throw opts.manifestThrow;
       const thrownFor = opts.manifestThrowFor?.(id);
-      if (thrownFor) throw new Error(thrownFor);
+      if (thrownFor) throw thrownFor;
       const override = opts.manifestFor?.(id);
       if (override !== undefined) return override as Record<string, unknown> | null;
       if (opts.manifest !== undefined) return opts.manifest as Record<string, unknown> | null;
@@ -279,7 +284,7 @@ describe("ops corpus refresh-neighbours", () => {
   it("counts the reads of a failed run and still prints the block", async () => {
     // Every reading in the sweep fails to parse, which is the whole-scope
     // verdict (exit 1), not the per-reading one.
-    const { deps, lines } = makeDeps({ manifestThrow: "row does not parse" });
+    const { deps, lines } = makeDeps({ manifestThrow: invalidManifestError() });
     const code = await corpusRefreshNeighboursCommand.run(
       ["--tenant", TENANT, "--execute", "--sole-writer"],
       { ...deps, now: fakeClock(5) },
@@ -509,7 +514,7 @@ describe("ops corpus refresh-neighbours", () => {
   it("treats a reading whose rows do not parse as unmeasurable, not a report row", async () => {
     const { deps, calls, lines } = makeDeps({
       items: [READY, NEIGHBOUR],
-      manifestThrow: "status: invalid enum value",
+      manifestThrow: invalidManifestError(),
     });
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", TENANT, "rd_r"], deps);
     // The operator named this reading, so measuring none of it says nothing
@@ -878,12 +883,30 @@ describe("ops corpus refresh-neighbours", () => {
       expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
     });
 
+    it("leaves the marker unchanged on a database read failure while completing other readings", async () => {
+      const { deps, calls, lines } = makeDeps({
+        state: MARKER,
+        manifestThrowFor: (id) => id === "rd_r"
+          ? Object.assign(new Error("canceling statement due to statement timeout"), { code: "57014" })
+          : undefined,
+      });
+      const code = await corpusRefreshNeighboursCommand.run(
+        ["--tenant", TENANT, "--full", "--execute", "--sole-writer"],
+        deps,
+      );
+      expect(code).toBe(1);
+      expect(calls.stateWrites).toEqual([]);
+      expect(calls.snapshots.map(({ id }) => id)).toEqual(["rd_n"]);
+      expect(lines.join("\n")).toContain("reading read failed for rd_r: canceling statement due to statement timeout");
+      expect(lines.join("\n")).not.toContain("reading does not parse");
+    });
+
     it("records a reading that does not parse as unmeasurable too", async () => {
       const { deps, calls } = makeDeps({
         state: MARKER,
         // rd_n measures normally, so the pass is a partial gap rather than the
         // whole-scope configuration failure below.
-        manifestThrowFor: (id) => (id === "rd_r" ? "status: invalid enum value" : undefined),
+        manifestThrowFor: (id) => (id === "rd_r" ? invalidManifestError() : undefined),
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", TENANT, "--full", "--execute", "--sole-writer"],
@@ -943,7 +966,7 @@ describe("ops corpus refresh-neighbours", () => {
     it("does not claim the marker advanced on an exit-3 pass that left it alone", async () => {
       const { deps, calls, lines } = makeDeps({
         state: MARKER,
-        manifestThrow: "status: invalid enum value",
+        manifestThrow: invalidManifestError(),
       });
       const code = await corpusRefreshNeighboursCommand.run(
         ["--tenant", TENANT, "rd_r", "--execute", "--sole-writer"],

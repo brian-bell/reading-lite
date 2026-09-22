@@ -27,6 +27,7 @@
 // to.
 
 import path from "node:path";
+import { ZodError } from "zod";
 import {
   REFRESH_CANDIDATE_TOP_K,
   buildRefreshReport,
@@ -557,12 +558,16 @@ async function refreshNeighbours(
         try {
           manifest = await store.readManifest(t.id);
         } catch (e) {
-          // The store parses what it reads (AGENTS.md), so a throw here is a
-          // reading whose stored rows no longer satisfy the schema. Skipped
-          // rather than measured, so it stays visible to a later repair.
-          invalid++;
-          unmeasurableIds.push(t.id);
-          io.stderr(`  ! reading does not parse for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+          // Only validation errors identify rows that need repair. Database
+          // failures leave work unfinished and must keep the marker in place.
+          if (e instanceof ZodError) {
+            invalid++;
+            unmeasurableIds.push(t.id);
+            io.stderr(`  ! reading does not parse for ${t.id}: ${e.message}`);
+          } else {
+            errored++;
+            io.stderr(`  ! reading read failed for ${t.id}: ${e instanceof Error ? e.message : String(e)}`);
+          }
           continue;
         }
         if (manifest === null) {
