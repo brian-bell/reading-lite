@@ -35,13 +35,13 @@ function deps(
     manifests?: Record<string, Manifest>;
     cold?: Record<string, { id: string; key_prefix: string; manifest: Manifest }>;
   } = {},
-): FreshMarkdownDeps & { ids: string[]; coldCalls: { url: string; forceScan: boolean }[] } {
+): FreshMarkdownDeps & { ids: string[]; coldCalls: { url: string }[] } {
   const byUrl = seed.byUrl ?? {};
   const manifests = seed.manifests ?? {};
   const cold = seed.cold ?? {};
   let n = 0;
   const ids: string[] = [];
-  const coldCalls: { url: string; forceScan: boolean }[] = [];
+  const coldCalls: { url: string }[] = [];
   return {
     ids,
     coldCalls,
@@ -51,8 +51,8 @@ function deps(
     async readManifest(keyPrefix) {
       return manifests[keyPrefix] ?? null;
     },
-    async findByUrlInList(url, _urlHash, opts) {
-      coldCalls.push({ url, forceScan: opts?.forceScan === true });
+    async findReadingByUrl(url) {
+      coldCalls.push({ url });
       return cold[url] ?? null;
     },
     newId() {
@@ -196,78 +196,7 @@ describe("prepareFreshMarkdown — existing owner", () => {
     });
   });
 
-  it("skips a fresh pointer whose manifest hasn't landed yet (initializing window)", async () => {
-    const a = article();
-    const d = deps({
-      // pointer written seconds ago (same now()), manifest not yet written: a
-      // realtime submit is in flight.
-      byUrl: { [hex(a.sourceUrl!)]: { id: "rd_OWNER", key_prefix: "readings/2026/06/22T000000Z-rd_OWNER" } },
-      manifests: {} as Record<string, Manifest>,
-    });
-    const plan = await prepareFreshMarkdown([a], d);
 
-    expect(plan.toIngest).toHaveLength(0);
-    expect(d.ids).toHaveLength(0); // don't touch the in-flight claim
-    expect(plan.dispositions[0]!.kind).toBe("skip-initializing");
-  });
-
-  // A damaged by-url pointer stays occupied for this slice: fresh ingest must
-  // report it as occupied-needs-repair instead of scanning for a repair target
-  // and claiming over it. Each row seeds a cold owner that a scan WOULD find,
-  // so `coldCalls` staying empty proves the branch never consults the list
-  // index — reading the pointer as unclaimed would take the no-pointer path
-  // and, against a stale index, mint a duplicate.
-  it.each([
-    {
-      name: "a stale pointer whose manifest is gone",
-      // pointer from years ago, manifest gone: a genuinely damaged pointer.
-      byUrl: { id: "rd_OLD", key_prefix: "readings/2020/01/01T000000Z-rd_OLD" } as const,
-      manifests: {} as Record<string, Manifest>,
-      coldStatus: "failed" as const,
-    },
-    {
-      name: "a structurally-damaged pointer (missing id/key_prefix)",
-      byUrl: "damaged" as const,
-      manifests: {} as Record<string, Manifest>,
-      coldStatus: "failed" as const,
-    },
-    {
-      name: "a pointer cross-wired to another reading's manifest",
-      byUrl: { id: "rd_OWNER", key_prefix: "readings/kp-other" } as const,
-      manifests: {
-        // the manifest behind the pointer belongs to a DIFFERENT url/id.
-        "readings/kp-other": manifest({
-          id: "rd_OTHER",
-          url: "https://example.com/other",
-          url_hash: hex("https://example.com/other"),
-          status: "ready",
-        }),
-      },
-      coldStatus: "ready" as const,
-    },
-  ])("skips $name as occupied-needs-repair without a cold repair scan", async ({ byUrl, manifests, coldStatus }) => {
-    const a = article();
-    const d = deps({
-      byUrl: { [hex(a.sourceUrl!)]: byUrl },
-      manifests,
-      cold: {
-        [a.sourceUrl!]: {
-          id: "rd_OWNER",
-          key_prefix: "readings/kp-owner",
-          manifest: manifest({ id: "rd_OWNER", status: coldStatus, created_at: "2025-12-01T00:00:00.000Z" }),
-        },
-      },
-    });
-    const plan = await prepareFreshMarkdown([a], d);
-
-    expect(d.coldCalls).toEqual([]);
-    expect(d.ids).toEqual([]);
-    expect(plan.toIngest).toHaveLength(0);
-    expect(plan.dispositions[0]!.kind).toBe("skip-occupied-needs-repair");
-  });
-});
-
-describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", () => {
   it("re-ingests a failed reading found only via the list index in place, not a duplicate", async () => {
     // A prior legacy failed ingest may have a by-id pointer + list row but no
     // by-url pointer. A rerun therefore sees getByUrl=null; without the cold
@@ -302,7 +231,7 @@ describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", 
     });
     // No pointer at all → plain cold lookup, no forced scan (a first-time URL
     // submit must not pay for a full bucket scan, matching the Worker).
-    expect(d.coldCalls).toEqual([{ url: a.sourceUrl, forceScan: false }]);
+    expect(d.coldCalls).toEqual([{ url: a.sourceUrl }]);
   });
 
   it("skips a ready reading found via the list index even without a by-url pointer", async () => {
@@ -325,7 +254,7 @@ describe("prepareFreshMarkdown — cold list-index lookup (no by-url pointer)", 
 
   it("mints a new reading when the cold lookup finds nothing", async () => {
     const a = article();
-    const d = deps(); // findByUrlInList returns null
+    const d = deps(); // findReadingByUrl returns null
     const plan = await prepareFreshMarkdown([a], d);
 
     expect(d.ids).toEqual(["rd_NEW0"]);
@@ -354,7 +283,6 @@ describe("tallyDispositions", () => {
       { kind: "ingest-failed", url: "u", id: "3", article: a, target: {} as any },
       { kind: "skip-ready", url: "u", id: "4", article: a },
       { kind: "skip-pending", url: "u", id: "5", article: a },
-      { kind: "skip-initializing", url: "u", id: "6", article: a },
       { kind: "skip-occupied-needs-repair", url: "u", id: "7", article: a, reason: "occupied" },
       { kind: "skip-no-source", url: null, id: null, article: a },
     ];
@@ -363,7 +291,7 @@ describe("tallyDispositions", () => {
       ingestFailed: 1,
       skipReady: 1,
       skipPending: 1,
-      skipInitializing: 1,
+      skipInitializing: 0,
       skipOccupiedNeedsRepair: 1,
       skipNoSource: 1,
       toIngest: 3,

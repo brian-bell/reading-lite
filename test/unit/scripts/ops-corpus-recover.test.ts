@@ -252,10 +252,11 @@ describe("ops corpus recover — realtime routing", () => {
 
   it("refuses to resume a batch sidecar under a different tenant", async () => {
     const r = makeDeps();
+    r.deps.readFile = async () => JSON.stringify({ tenant: OTHER_TENANT, rows: ROWS });
     r.deps.batch.loadSidecar = async () =>
       ({ batchId: "batch_9", targets: [], provider: "openai", tenant: "usr_11111111-1111-4111-8111-111111111111" }) as never;
     const code = await corpusRecoverCommand.run(
-      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"],
+      ["--tenant", OTHER_TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"],
       r.deps,
     );
     expect(code).toBe(1);
@@ -377,9 +378,15 @@ describe("ops corpus recover — realtime routing", () => {
 });
 
 describe("ops corpus recover — batch routing", () => {
-  it("plan mode reads the sidecar but resolves no config and submits nothing", async () => {
+  function makeBatchDeps() {
     const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch"], r.deps);
+    r.deps.readFile = async () => JSON.stringify({ tenant: TENANT, rows: ROWS });
+    return r;
+  }
+
+  it("plan mode reads the sidecar but resolves no config and submits nothing", async () => {
+    const r = makeBatchDeps();
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--batch"], r.deps);
     expect(code).toBe(0);
     expect(r.sidecarLoads).toHaveLength(1);
     expect(r.configResolves).toHaveLength(0);
@@ -390,17 +397,17 @@ describe("ops corpus recover — batch routing", () => {
   });
 
   it("plan mode announces a resume when a sidecar exists", async () => {
-    const r = makeDeps();
-    r.deps.batch.loadSidecar = async () => ({ batchId: "batch_9", targets: [{}, {}], provider: "openai" }) as never;
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--batch"], r.deps);
+    const r = makeBatchDeps();
+    r.deps.batch.loadSidecar = async () => ({ batchId: "batch_9", targets: [{}, {}], provider: "openai", tenant: TENANT }) as never;
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--batch"], r.deps);
     expect(code).toBe(0);
     expect(r.err.join("\n")).toContain("would RESUME in-flight batch batch_9 (2 readings)");
     expect(r.batchExecutes).toHaveLength(0);
   });
 
   it("--batch --execute refuses without --sole-writer", async () => {
-    const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute"], r.deps);
+    const r = makeBatchDeps();
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute"], r.deps);
     expect(code).toBe(2);
     expect(r.err.join("\n")).toContain("REFUSED");
     expect(r.configResolves).toHaveLength(0);
@@ -410,18 +417,18 @@ describe("ops corpus recover — batch routing", () => {
   // reading-lite-gh319.2: wiring only; the ingest tests own the payer rules.
   it.each([
     ["a fresh batch plan", null],
-    ["a resume plan", { batchId: "batch_9", targets: [], provider: "openai" }],
+    ["a resume plan", { batchId: "batch_9", targets: [], provider: "openai", tenant: TENANT }],
   ])("%s opens no spend session", async (_label, sidecar) => {
-    const r = makeDeps();
+    const r = makeBatchDeps();
     r.deps.batch.loadSidecar = async () => sidecar as never;
-    expect(await corpusRecoverCommand.run(["--tenant", "global", "--batch"], r.deps)).toBe(0);
+    expect(await corpusRecoverCommand.run(["--tenant", TENANT, "--batch"], r.deps)).toBe(0);
     expect(r.spend.openSpend).not.toHaveBeenCalled();
   });
 
   it("--batch --execute admits the batch through the bucket's spend authority, billed to the payer", async () => {
-    const r = makeDeps();
+    const r = makeBatchDeps();
     const code = await corpusRecoverCommand.run(
-      ["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"],
+      ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"],
       r.deps,
     );
     expect(code).toBe(1); // the stubbed batch reports one failed reading
@@ -431,14 +438,14 @@ describe("ops corpus recover — batch routing", () => {
   });
 
   it("refuses --billing-tenant outside --batch, where the hosted API bills the token's tenant", async () => {
-    const r = makeDeps();
-    await expect(corpusRecoverCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT], r.deps))
+    const r = makeBatchDeps();
+    await expect(corpusRecoverCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT], r.deps))
       .rejects.toThrow("--billing-tenant applies only to --batch");
   });
 
   it("--batch --execute --sole-writer routes reprocess + local-extract rows through the batch seam", async () => {
-    const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"], r.deps);
+    const r = makeBatchDeps();
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"], r.deps);
     // The stubbed report contains one failed row, so the command reports failure.
     expect(code).toBe(1);
     expect(r.batchExecutes).toHaveLength(1);
@@ -447,23 +454,23 @@ describe("ops corpus recover — batch routing", () => {
   });
 
   it("pins the sidecar provider when resuming an executed batch", async () => {
-    const r = makeDeps();
+    const r = makeBatchDeps();
     r.deps.batch.loadSidecar = async () =>
-      ({ batchId: "batch_9", targets: [], provider: "anthropic" }) as never;
+      ({ batchId: "batch_9", targets: [], provider: "anthropic", tenant: TENANT }) as never;
     r.deps.batch.execute = async () => ({ report: [], dropped: [], resumed: true, batchId: "batch_9" });
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"], r.deps);
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer"], r.deps);
     expect(code).toBe(0);
     expect(r.configResolves).toEqual([
       {
         resumeProvider: "anthropic",
-        tenant: { kind: "global", keyRoot: "", namespace: undefined },
+        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/`, namespace: TENANT },
       },
     ]);
   });
 
   it("--limit caps how many rows enter the batch", async () => {
-    const r = makeDeps();
-    const code = await corpusRecoverCommand.run(["--tenant", "global", "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer", "--limit", "1"], r.deps);
+    const r = makeBatchDeps();
+    const code = await corpusRecoverCommand.run(["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--batch", "--execute", "--sole-writer", "--limit", "1"], r.deps);
     expect(code).toBe(1);
     expect(r.batchExecutes[0].map((row) => row.reading_id)).toEqual(["rd_a"]);
   });

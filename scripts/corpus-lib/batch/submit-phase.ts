@@ -353,13 +353,13 @@ async function persistFreshContent(
   const { target, fresh } = st.extracted;
   if (!fresh || st.extracted.contentAlreadyWritten) return;
   await putObject(
-    layout.rawKey(target.keyPrefix, extToken(fresh.content_type)),
+    layout.revisionRawKey(target.keyPrefix, target.attemptId, extToken(fresh.content_type)),
     fresh.raw,
     fresh.content_type,
   );
   if (fresh.markdown) {
     await putObject(
-      layout.extractedKey(target.keyPrefix),
+      layout.revisionExtractedKey(target.keyPrefix, target.attemptId),
       fresh.markdown,
       "text/markdown; charset=utf-8",
     );

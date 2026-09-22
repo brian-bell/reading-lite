@@ -211,8 +211,8 @@ describe("submitBatch", () => {
       saveSidecar: noopSave(),
     });
     const keys = putObject.mock.calls.map((c) => c[0]);
-    expect(keys).toContain("readings/2026/01/01T000000Z-rd_a/raw.html");
-    expect(keys).toContain("readings/2026/01/01T000000Z-rd_a/extracted.md");
+    expect(keys).toContain(`readings/2026/01/01T000000Z-rd_a/revisions/${summarizeTarget().extracted.target.attemptId}/raw.html`);
+    expect(keys).toContain(`readings/2026/01/01T000000Z-rd_a/revisions/${summarizeTarget().extracted.target.attemptId}/extracted.md`);
   });
 
   it("does not write content objects when markdown was reused from R2", async () => {
