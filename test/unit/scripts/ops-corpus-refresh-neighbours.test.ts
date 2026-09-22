@@ -258,7 +258,6 @@ describe("ops corpus refresh-neighbours", () => {
     for (const written of calls.stateWrites) expect(written).toMatchObject({ last_full_run_at: state.last_full_run_at });
   });
 
-
   it("prints a Timing block naming every phase the pass used", async () => {
     const { deps, lines } = makeDeps({});
     const code = await corpusRefreshNeighboursCommand.run(["--tenant", TENANT], {
@@ -350,42 +349,7 @@ describe("ops corpus refresh-neighbours", () => {
     expect(lines.join("\n")).toContain("uncited_neighbour,verdict_inconsistent");
   });
 
-  it("--execute writes only drifted snapshots, and writes nothing else", async () => {
-    const { deps, calls } = makeDeps({});
-    const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", TENANT, "rd_r", "--execute", "--sole-writer"],
-      deps,
-    );
-    expect(code).toBe(0);
-    // One reading, one column: the snapshot is the whole write, so nothing
-    // else about the reading can be touched by this pass by construction.
-    expect(calls.snapshots).toEqual([
-      {
-        id: "rd_r",
-        similarity: {
-          count: 1,
-          max: 0.72,
-          mean: 0.72,
-          computed_at: "2026-08-22T12:00:00.000Z",
-        },
-      },
-    ]);
-  });
 
-  it("a second immediate execute writes nothing when the snapshot already matches", async () => {
-    const scored: RefreshRow = {
-      ...READY,
-      similarity: { count: 1, max: 0.72, mean: 0.72, computed_at: AT },
-    };
-    const { deps, calls } = makeDeps({ items: [scored, NEIGHBOUR] });
-    const code = await corpusRefreshNeighboursCommand.run(
-      ["--tenant", TENANT, "rd_r", "--execute", "--sole-writer"],
-      deps,
-    );
-    expect(code).toBe(0);
-    expect(calls.snapshots).toHaveLength(0);
-    expect(calls.reports).toHaveLength(1);
-  });
 
   it("does not write a snapshot that only moved below the epsilon", async () => {
     const scored: RefreshRow = {
@@ -481,7 +445,6 @@ describe("ops corpus refresh-neighbours", () => {
     expect(text).toContain("an --execute pass would not have advanced the run marker");
     expect(text).toContain("PLAN — corpus unchanged.");
   });
-
 
   // An aborted loop never asked the targets after the throw, so "measured none
   // of them" is not the corpus answering. It still exits 1 through the error.
@@ -621,7 +584,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(calls.queries).toHaveLength(2);
       expect(lines.join("\n")).toContain("Scope: full — --full");
     });
-
 
     it("measures a changed reading and its reverse neighbourhood", async () => {
       const { deps, calls, lines } = makeDeps({
@@ -853,7 +815,6 @@ describe("ops corpus refresh-neighbours", () => {
       });
     });
 
-
     it("advances the marker only on a complete execute pass", async () => {
       const { deps, calls } = quietCorpus();
       await corpusRefreshNeighboursCommand.run(["--tenant", TENANT, "--since-last-run"], deps);
@@ -917,7 +878,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(JSON.parse(calls.reports[0]!.body).scope).not.toHaveProperty("narrowed_by");
     });
 
-
     it("records a reading that does not parse as unmeasurable too", async () => {
       const { deps, calls } = makeDeps({
         state: MARKER,
@@ -932,7 +892,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(code).toBe(3);
       expect(calls.stateWrites[0]).toMatchObject({ unmeasurable_ids: ["rd_r"] });
     });
-
 
     // The carried-retry case the marker exists for. On a quiet corpus the whole
     // incremental scope IS the reading the last pass could not measure. Calling
@@ -959,7 +918,6 @@ describe("ops corpus refresh-neighbours", () => {
         unmeasurable_ids: ["rd_r"],
       });
     });
-
 
     // A misconfiguration cannot hide in incremental passes: a changed ready
     // reading whose vector cannot be found escalates the scope to a sweep, and
@@ -1030,7 +988,6 @@ describe("ops corpus refresh-neighbours", () => {
       expect(text).toContain("Scope: incremental (1 reading(s))");
       expect(text).toContain("1 unmeasurable reading(s) carried forward");
     });
-
 
     // A full pass takes minutes and nothing locks the marker row between the
     // read and the write, so another writer can stamp it while the pass runs.

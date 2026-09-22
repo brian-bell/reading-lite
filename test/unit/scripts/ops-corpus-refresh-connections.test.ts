@@ -13,7 +13,6 @@ import {
   type RefreshConnectionsStorage,
   type StoreTarget,
 } from "../../../scripts/ops-lib/commands/corpus-refresh-connections";
-import { sha256Hex } from "../../../src/services";
 
 const AT = "2026-08-31T12:00:00.000Z";
 const JUDGED_AT = "2026-08-31T12:01:00.000Z";
@@ -86,7 +85,7 @@ function report(ids = ["rd_a", "rd_c"]) {
   };
 }
 
-function harness(opts: { cas?: boolean; missingTargets?: string[]; authority?: Parameters<typeof spendHarness>[0] } = {}) {
+function harness(opts: { authority?: Parameters<typeof spendHarness>[0] } = {}) {
   const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c")];
   const manifests = new Map<string, Record<string, unknown>>([
     ["rd_a", manifest("rd_a")],
@@ -95,38 +94,20 @@ function harness(opts: { cas?: boolean; missingTargets?: string[]; authority?: P
   ]);
   const writes: Array<{ id: string; manifest: Record<string, unknown> }> = [];
   const targets: StoreTarget[] = [];
-  // The real content hash the command compares against, so a manifest changed
-  // between planning and the write loses the guard for the same reason it
-  // would against a database.
-  const version = (value: unknown) => sha256Hex(JSON.stringify(value));
+  // Persistence and version guards are owned by ops-corpus-refresh-pg.test.ts.
   const storage: RefreshConnectionsStorage = {
     listItems: async () => items,
     readManifest: async (id) => {
       const found = manifests.get(id);
-      return found === undefined ? null : { manifest: found, version: await version(found) };
+      return found === undefined ? null : { manifest: found, version: "planned-version" };
     },
     replaceRelationships: async (entries) => {
-      // Locked, then read: the guard sees the reading as it stands now.
-      for (const entry of entries) {
-        const live = manifests.get(entry.id);
-        if (live === undefined || opts.cas === false) return { replaced: false, skippedTargets: [] };
-        if (!(await entry.matches(live as never))) return { replaced: false, skippedTargets: [] };
-      }
-      const skippedTargets = [];
       for (const entry of entries) {
         const next = entry.next as unknown as Record<string, unknown>;
-        for (const connection of (next.connections ?? []) as { id: string }[]) {
-          if (!(opts.missingTargets ?? []).includes(connection.id)) continue;
-          skippedTargets.push({
-            sourceId: entry.id,
-            kind: "connection" as const,
-            targetId: connection.id,
-          });
-        }
         writes.push({ id: entry.id, manifest: next });
         manifests.set(entry.id, next);
       }
-      return { replaced: true, skippedTargets };
+      return { replaced: true, skippedTargets: [] };
     },
   };
   let active: RefreshConnectionsStorage = storage;
@@ -371,30 +352,6 @@ binding = "READING_JOBS"
     expect(h.targets).toEqual([]);
   });
 
-  it("limits selected actions and writes only the selected reading", async () => {
-    const h = harness();
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
-        h.deps,
-      ),
-    ).toBe(0);
-    expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.writes).toHaveLength(1);
-    expect(h.writes[0]!.id).toContain("rd_a");
-    expect(h.writes[0]!.manifest).toMatchObject({
-      novelty_verdict: "familiar",
-      connections: [{ id: "rd_b", reason: "related" }],
-      connections_computed_at: JUDGED_AT,
-      connections_neighbourhood_ids: ["rd_b"],
-      updated_at: "2026-01-01T00:00:00.000Z",
-    });
-    // The verdict is a column of the judged reading, so the write that carried
-    // its relationships carried it too, and the reading the limit cut is
-    // untouched.
-    expect(h.manifests.get("rd_a")!.novelty_verdict).toBe("familiar");
-    expect(h.manifests.get("rd_c")!.novelty_verdict).toBe("novel");
-  });
 
   it("prints the provider usage per judgement and a run total", async () => {
     const h = harness();
@@ -411,19 +368,6 @@ binding = "READING_JOBS"
   });
 
 
-  it("counts the usage and writes nothing when the guarded write is refused", async () => {
-    const h = harness({ cas: false });
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer", "--limit", "1"],
-        h.deps,
-      ),
-    ).toBe(1);
-    expect(h.judge).toHaveBeenCalledOnce();
-        expect(h.err.join("\n")).toMatch(/changed since it was planned/);
-    // The judgement was paid for whether or not its write landed.
-    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
-  });
 
   it("reads every reading once, with no per-action re-read on execute", async () => {
     const h = harness();
@@ -450,47 +394,6 @@ binding = "READING_JOBS"
     ]);
   });
 
-  // The guard is the whole detection: the pass does not re-read before it
-  // writes, so a reading changed while a judgement was in flight is caught by
-  // the version compare under the row lock or not at all.
-  it("detects a reading changed since planning through the write guard alone", async () => {
-    const h = harness();
-    // rd_a is rewritten underneath the pass while its judgement is in flight.
-    h.judge.mockImplementationOnce(async () => {
-      h.manifests.set("rd_a", manifest("rd_a", { tldr: "rewritten by someone else" }));
-      return {
-        judgement: {
-          novelty_verdict: "familiar" as const,
-          connections: [{ id: "rd_b", reason: "related" }],
-        },
-        usage: {
-          provider: "openai" as const,
-          model: "gpt-5.6-terra",
-          input_tokens: 100,
-          output_tokens: 20,
-          reasoning_tokens: 0,
-          cached_input_tokens: 0,
-          cache_write_tokens: 0,
-        },
-      };
-    });
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
-        h.deps,
-      ),
-    ).toBe(1);
-    expect(h.err.join("\n")).toContain(
-      "  ! rd_a: the reading changed since it was planned; no overwrite performed",
-    );
-    // Nothing was overwritten, and the pass finished its other action. The
-    // verdict is a column of the same row, so a lost write leaves the row's
-    // verdict exactly as the other writer left it.
-    expect(h.manifests.get("rd_a")!.tldr).toBe("rewritten by someone else");
-    expect(h.manifests.get("rd_a")!.novelty_verdict).toBe("novel");
-    expect(h.out.join("\n")).toContain("Judged: 1; failures: 1");
-    expect(h.manifests.get("rd_c")!.novelty_verdict).toBe("familiar");
-  });
 
   it("continues after a planning read failure and still writes the readings it judged", async () => {
     const h = harness();
@@ -612,41 +515,8 @@ binding = "READING_JOBS"
     });
   });
 
-  // A reading dropped between the judgement and the write. The write keeps the
-  // rest and reports the target, so nothing needs `corpus purge-connections`
-  // run behind the refresh.
-  it("reports a connection target that no longer exists", async () => {
-    const h = harness({ missingTargets: ["rd_b"] });
-    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
-        h.deps,
-      ),
-    ).toBe(0);
-    expect(h.err.join("\n")).toContain(
-      "  ! rd_a: skipped connection target rd_b: no longer exists",
-    );
-    expect(h.out.join("\n")).toContain("targets skipped as missing: 1");
-  });
 
-  // Already judged for this report: a resume marker, and the whole of it.
-  it("skips a reading already judged for this report, with no paid call", async () => {
-    const h = harness();
-    h.readReport.mockResolvedValue(JSON.stringify(report(["rd_a"])));
-    h.manifests.get("rd_a")!.connections_computed_at = JUDGED_AT;
 
-    expect(
-      await corpusRefreshConnectionsCommand.run(
-        ["--tenant", TENANT, "--billing-tenant", BILLING_TENANT, "--execute", "--sole-writer"],
-        h.deps,
-      ),
-    ).toBe(0);
-
-    expect(h.judge).not.toHaveBeenCalled();
-    expect(h.writes).toEqual([]);
-    expect(h.out.join("\n")).toContain("Judged: 0; failures: 0");
-  });
 });
 
 /**

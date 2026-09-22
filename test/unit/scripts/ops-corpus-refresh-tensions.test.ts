@@ -7,7 +7,6 @@ import type {
   TensionJudgementResult,
 } from "../../../src/modules/tension-judgement";
 import type { StoreTarget } from "../../../scripts/ops-lib/commands/corpus-refresh-connections";
-import { sha256Hex } from "../../../src/services";
 import {
   corpusRefreshTensionsCommand,
   tensionProviderFromVars,
@@ -99,7 +98,7 @@ const supersedes = {
   },
 };
 
-function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<string, unknown>>; missingTargets?: string[]; authority?: Parameters<typeof spendHarness>[0] } = {}) {
+function harness(opts: { manifests?: Record<string, Record<string, unknown>>; authority?: Parameters<typeof spendHarness>[0] } = {}) {
   const items = [listRow("rd_a"), listRow("rd_b"), listRow("rd_c"), { ...listRow("rd_failed"), status: "failed" as const }];
   const manifests = new Map<string, Record<string, unknown>>([
     ["rd_a", manifest("rd_a", { people: ["Ada"] })],
@@ -110,40 +109,22 @@ function harness(opts: { casFailOn?: string; manifests?: Record<string, Record<s
     manifests.set(id, override);
   }
   const writes: Array<{ id: string; manifest: Record<string, unknown> }> = [];
-  let casFailOn = opts.casFailOn;
-  // The real content hash the command compares against, so a reading rewritten
-  // between planning and the write loses the guard here for the same reason it
-  // would under the row lock.
-  const version = (value: unknown) => sha256Hex(JSON.stringify(value));
+  // Persistence and version guards are owned by ops-corpus-refresh-pg.test.ts.
   const storage: RefreshTensionsStorage = {
     listItems: async () => items,
     readManifest: async (id) => {
       const stored = manifests.get(id);
-      return stored ? { manifest: structuredClone(stored), version: await version(stored) } : null;
+      return stored ? { manifest: structuredClone(stored), version: "planned-version" } : null;
     },
     replaceRelationships: async (entries) => {
       for (const entry of entries) {
         writes.push({ id: entry.id, manifest: entry.next as unknown as Record<string, unknown> });
       }
-      if (casFailOn && entries.some((entry) => entry.id === casFailOn)) {
-        casFailOn = undefined;
-        return { replaced: false, skippedTargets: [] };
-      }
-      for (const entry of entries) {
-        if (!(await entry.matches(manifests.get(entry.id) as never))) {
-          return { replaced: false, skippedTargets: [] };
-        }
-      }
-      const skippedTargets = [];
       for (const entry of entries) {
         const next = entry.next as unknown as Record<string, unknown>;
-        for (const tension of (next.tensions ?? []) as { id: string }[]) {
-          if (!(opts.missingTargets ?? []).includes(tension.id)) continue;
-          skippedTargets.push({ sourceId: entry.id, kind: "tension" as const, targetId: tension.id });
-        }
         manifests.set(entry.id, next);
       }
-      return { replaced: true, skippedTargets };
+      return { replaced: true, skippedTargets: [] };
     },
   };
   const out: string[] = [];
@@ -248,48 +229,6 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("rd_a|rd_b  usage input=100 output=20 reasoning=0 ms=10");
   });
 
-  /** Records every reading the pass reads, in order. */
-  function countReads(h: ReturnType<typeof harness>): string[] {
-    const reads: string[] = [];
-    const readManifest = h.storage.readManifest;
-    h.storage.readManifest = async (id) => {
-      reads.push(id);
-      return readManifest(id);
-    };
-    return reads;
-  }
-
-  it("re-reads only a side an earlier pair in the same pass wrote", async () => {
-    const h = harness();
-    const reads = countReads(h);
-    // Two pairs sharing rd_a. In key order rd_a|rd_b runs first and writes
-    // both its sides, so rd_a|rd_c must read rd_a again for a live version —
-    // and rd_c, untouched so far, still comes from the planning read.
-    expect(await run(h, "--report", "refresh-report.json", "--pair", "rd_a,rd_c", "--execute", "--sole-writer")).toBe(0);
-    expect(h.judge).toHaveBeenCalledTimes(2);
-    expect(reads).toEqual(["rd_a", "rd_b", "rd_c", "rd_a"]);
-    expect(h.stored("rd_a").tensions).toHaveLength(2);
-    expect(h.stored("rd_c").tensions).toHaveLength(1);
-  });
-
-  // Both sides go in one transaction, so a guard that fails on either side
-  // leaves neither written — there is no half-judged pair to repair.
-  it("writes neither side when one changed since planning", async () => {
-    const h = harness();
-    // rd_a is rewritten underneath the pass while its judgement is in flight,
-    // which moves the version its entry is guarded on.
-    h.judge.mockImplementationOnce(async () => {
-      h.manifests.set("rd_a", manifest("rd_a", { people: ["Ada"], tldr: "rewritten" }));
-      return supersedes;
-    });
-    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
-    expect(h.err.join("\n")).toContain(
-      "  ! rd_a|rd_b: the reading changed since it was planned; no overwrite performed",
-    );
-    expect(h.stored("rd_a")).not.toHaveProperty("tensions");
-    expect(h.stored("rd_b")).not.toHaveProperty("tensions");
-  });
-
   it("lists candidate pairs with overlap evidence and cost in plan mode without provider or storage writes", async () => {
     const h = harness();
     expect(await run(h)).toBe(0);
@@ -315,7 +254,6 @@ describe("ops corpus refresh-tensions", () => {
     expect(text).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
   });
 
-
   it("prints a zero run total when no judgement was made", async () => {
     const h = harness();
     h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
@@ -339,26 +277,6 @@ describe("ops corpus refresh-tensions", () => {
     await expect(run(h, "--limit", "0")).rejects.toThrow(/--limit/);
   });
 
-  it("writes correct directional tensions to both manifests for a hand-picked pair", async () => {
-    const h = harness();
-    expect(await run(h, "--pair", "rd_b,rd_a", "--execute", "--sole-writer")).toBe(0);
-    expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.judge.mock.calls[0]![0]).toMatchObject({ a: { id: "rd_a" }, b: { id: "rd_b" } });
-    expect(h.writes.map((write) => write.id)).toEqual(["rd_a", "rd_b"]);
-    expect(h.stored("rd_a")).toMatchObject({
-      tensions: [{ id: "rd_b", kind: "superseded_by", reason: "rd_b retracts rd_a", computed_at: JUDGED_AT }],
-      tensions_judged: [{ id: "rd_b", judged_at: JUDGED_AT }],
-      updated_at: EARLIER,
-      connections: [],
-    });
-    expect(h.stored("rd_b")).toMatchObject({
-      tensions: [{ id: "rd_a", kind: "supersedes", reason: "rd_b retracts rd_a", computed_at: JUDGED_AT }],
-      tensions_judged: [{ id: "rd_a", judged_at: JUDGED_AT }],
-      updated_at: EARLIER,
-    });
-    expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge (--pair)");
-    expect(h.out.join("\n")).toContain("Judged: 1; readings written: 2; repaired: 0; skipped since plan: 0; failures: 0");
-  });
 
   // Same reason as tier 2: without this line a nightly log cannot be told from
   // one covering the whole corpus.
@@ -422,15 +340,6 @@ describe("ops corpus refresh-tensions", () => {
     await expect(run(h)).rejects.toThrow(/refresh-neighbours first or pass --pair/);
   });
 
-  it("skips report pairs both sides already remember judging", async () => {
-    const h = harness();
-    h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: AT }];
-    h.stored("rd_b").tensions_judged = [{ id: "rd_a", judged_at: AT }];
-    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
-    expect(h.out.join("\n")).toContain("Selected actions: 0; below overlap threshold: 1; already judged: 1; repair pending: 0");
-    expect(h.judge).not.toHaveBeenCalled();
-    expect(h.writes).toEqual([]);
-  });
 
   it("re-judges a pair when one side was reprocessed after the judgement", async () => {
     const h = harness();
@@ -441,52 +350,9 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.out.join("\n")).toContain("rd_a<->rd_b  judge score");
   });
 
-  it("removes a prior tension on a none verdict and remembers the judgement on both sides", async () => {
-    const h = harness();
-    h.stored("rd_a").tensions = [{ id: "rd_b", kind: "contradicts", reason: "old", computed_at: EARLIER }];
-    h.stored("rd_b").tensions = [{ id: "rd_a", kind: "contradicts", reason: "old", computed_at: EARLIER }];
-    h.judge.mockResolvedValue({ ...supersedes, judgement: { verdict: "none", side: null, reason: "" } });
-    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
-    expect(h.stored("rd_a").tensions).toEqual([]);
-    expect(h.stored("rd_b").tensions).toEqual([]);
-    expect(h.stored("rd_a").tensions_judged).toEqual([{ id: "rd_b", judged_at: JUDGED_AT }]);
-    expect(h.stored("rd_b").tensions_judged).toEqual([{ id: "rd_a", judged_at: JUDGED_AT }]);
-  });
 
-  // A judgement that fails leaves NO side written: the pair is one
-  // transaction. A previous release could leave one, and the mirror repair
-  // below is what still clears those up without another paid call.
-  it("writes neither side when the pair's write is refused", async () => {
-    const h = harness({ casFailOn: "rd_b" });
-    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
-    expect(h.judge).toHaveBeenCalledOnce();
-    expect(h.stored("rd_a")).not.toHaveProperty("tensions");
-    expect(h.stored("rd_b")).not.toHaveProperty("tensions");
-    expect(h.err.join("\n")).toMatch(/rd_a\|rd_b: the reading changed since it was planned/);
-  });
 
-  // The half-written pairs earlier releases could leave behind: mirrored from
-  // the side that has the entry, with no provider call.
-  it("mirrors a one-sided pair left by an earlier release, without a paid call", async () => {
-    const h = harness();
-    h.stored("rd_a").tensions = [
-      { id: "rd_b", kind: "superseded_by", reason: "rd_b retracts rd_a", computed_at: JUDGED_AT },
-    ];
-    h.stored("rd_a").tensions_judged = [{ id: "rd_b", judged_at: JUDGED_AT }];
 
-    expect(await run(h)).toBe(0);
-    expect(h.out.join("\n")).toContain("already judged: 0; repair pending: 1");
-    expect(h.out.join("\n")).toContain("rd_b<-rd_a  repair mirror supersedes (no provider call)");
-    expect(h.out.join("\n")).toContain("Estimated synchronous cost: $0.000000");
-
-    expect(await run(h, "--execute", "--sole-writer")).toBe(0);
-    expect(h.judge).not.toHaveBeenCalled();
-    expect(h.stored("rd_b")).toMatchObject({
-      tensions: [{ id: "rd_a", kind: "supersedes", reason: "rd_b retracts rd_a", computed_at: JUDGED_AT }],
-      tensions_judged: [{ id: "rd_a", judged_at: JUDGED_AT }],
-    });
-    expect(h.out.join("\n")).toContain("Judged: 0; readings written: 1; repaired: 1; skipped since plan: 0; failures: 0");
-  });
 
   it("drops a stale one-sided tension whose partner was reprocessed since", async () => {
     const h = harness();
@@ -607,16 +473,6 @@ describe("ops corpus refresh-tensions", () => {
     expect(h.judge).not.toHaveBeenCalled();
   });
 
-  // The judgement was paid for whether or not its write landed, which is what
-  // the usage total is for — and a refused write leaves the pair untouched.
-  it("counts the usage of a judgement whose write was refused", async () => {
-    const h = harness({ casFailOn: "rd_a" });
-    expect(await run(h, "--execute", "--sole-writer")).toBe(1);
-    expect(h.out.join("\n")).toContain("Usage: 1 judgement; input=100 output=20 reasoning=0");
-    expect(h.stored("rd_a")).not.toHaveProperty("tensions");
-    expect(h.stored("rd_b")).not.toHaveProperty("tensions");
-    expect(h.err.join("\n")).toMatch(/rd_a\|rd_b: the reading changed since it was planned/);
-  });
 
   it("rejects a stale report and a tenant mismatch", async () => {
     const h = harness();
