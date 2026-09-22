@@ -338,16 +338,30 @@ export async function readRefreshState(sql: SqlQuery, tenantId: string): Promise
  * One row per tenant, replaced whole: the marker is a statement about one
  * complete pass, and merging two passes' fields would describe a pass that
  * never ran.
+ *
+ * Hold the active user's row FOR SHARE through the upsert, like the runtime
+ * reading writer. Account deletion and teardown take a conflicting user lock:
+ * they either remove this marker after it commits, or this write observes an
+ * inactive/missing user and refuses. The marker has no users foreign key.
  */
 export async function writeRefreshState(
-  sql: SqlQuery,
+  sql: Sql,
   tenantId: string,
   state: unknown,
   now: string,
 ): Promise<void> {
-  await sql.query(
-    `INSERT INTO corpus_refresh_state (tenant_id, state, updated_at) VALUES ($1, $2::jsonb, $3)
-     ON CONFLICT (tenant_id) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`,
-    [tenantId, JSON.stringify(state), now],
-  );
+  await sql.transaction(async (tx) => {
+    const [user] = await tx.query<{ status: string }>(
+      "SELECT status FROM users WHERE id = $1 FOR SHARE",
+      [tenantId],
+    );
+    if (user?.status !== "active") {
+      throw new Error("cannot write refresh state: account is not active");
+    }
+    await tx.query(
+      `INSERT INTO corpus_refresh_state (tenant_id, state, updated_at) VALUES ($1, $2::jsonb, $3)
+       ON CONFLICT (tenant_id) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at`,
+      [tenantId, JSON.stringify(state), now],
+    );
+  });
 }

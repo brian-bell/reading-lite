@@ -159,6 +159,11 @@ rows are not exposed to it: the count in step 4 is taken after the `users` lock,
 and the only path that inserts one takes the same row FOR SHARE alongside its
 insert, so it either commits before the count or finds no active account.
 
+The operator's `corpus_refresh_state` marker follows the same rule: its upsert
+holds an active user's row `FOR SHARE` until commit. Teardown removes the
+marker under its user-row lock, so a late refresh cannot recreate reading IDs
+for an account that has been deleted.
+
 The current address remains unavailable until the users row is gone. Under
 `invite_only`, returning users need a fresh invite after teardown. Check directly:
 
