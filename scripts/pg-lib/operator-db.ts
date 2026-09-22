@@ -180,7 +180,7 @@ export function resolveOperatorDatabaseUrl(args: ResolveDatabaseUrlArgs): Resolv
     throw new UsageError(
       other
         ? `--database-url-env ${envName} names the ${other[1].env} database, but ` +
-          `--bucket ${args.bucket} is ${target.env}. ` +
+          `bucket ${args.bucket} is ${target.env}. ` +
           `Expected one of: ${target.databaseUrlEnvs.join(", ")}.`
         : `--database-url-env ${envName} does not name the ${target.env} database. ` +
           `Expected one of: ${target.databaseUrlEnvs.join(", ")}.`,

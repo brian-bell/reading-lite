@@ -17,7 +17,6 @@ export interface StagingResources {
   wipeDlq: string;
   refreshQueue: string;
   refreshDlq: string;
-  d1: string;
 }
 
 export interface WranglerCommand {
@@ -52,8 +51,15 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   wipeDlq: "reading-lite-staging-wipe-dlq",
   refreshQueue: "reading-lite-staging-refresh",
   refreshDlq: "reading-lite-staging-refresh-dlq",
-  d1: "reading-lite-control-staging",
 };
+
+// Staging's control plane and corpus live in PostgreSQL: the Neon rehearsal
+// branch, paired with this bucket in scripts/pg-lib/operator-db.ts. Setup
+// migrates it and teardown retains it; neither creates nor drops it, so it
+// has no entry here. The old D1 control plane (reading-lite-control-staging)
+// is deliberately absent from both lists too: it is the #348 importer's
+// source, so teardown must not delete it, and staying orphaned after the
+// cutover is expected until #351 retires it.
 
 const ALREADY_EXISTS = [
   /vectorize\.index\.duplicate_name/i,
@@ -153,11 +159,6 @@ export function buildStagingSetupCommands(
       args: ["queues", "create", resources.refreshDlq],
       idempotentOk: ALREADY_EXISTS,
     },
-    {
-      label: "Create staging D1 control plane",
-      args: ["d1", "create", resources.d1],
-      idempotentOk: ALREADY_EXISTS,
-    },
   ];
 }
 
@@ -254,11 +255,6 @@ export function buildStagingTeardownCommands(
     {
       label: "Delete staging Vectorize index",
       args: ["vectorize", "delete", resources.vectorizeIndex, "--force"],
-      idempotentOk: MISSING_RESOURCE,
-    },
-    {
-      label: "Delete staging D1 control plane",
-      args: ["d1", "delete", resources.d1, "--skip-confirmation"],
       idempotentOk: MISSING_RESOURCE,
     },
     {

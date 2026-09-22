@@ -17,6 +17,14 @@ import type { CommandIo } from "../ops-lib/contract";
 
 export type MigrationConnection = MigrationClient & { end(): Promise<void> };
 
+/** A DIRECT pg session for a migration run; the commands' default `connect`. */
+export async function connectMigrationClient(databaseUrl: string): Promise<MigrationConnection> {
+  const { default: pg } = await import("pg");
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  return client;
+}
+
 export interface MigrationRun {
   io: CommandIo;
   // Label for the reported lines: "PLAN", "MIGRATE", "DEPLOY".

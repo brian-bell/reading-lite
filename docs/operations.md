@@ -1105,15 +1105,42 @@ idempotent, "already exists" on setup and "already gone" on teardown are
 treated as success, while unexpected Wrangler or R2 API failures stop the run.
 
 ```sh
+# STAGING_DATABASE_URL, or on a laptop NEON_REHEARSAL_DATABASE_URL from
+# `set -a; . ~/.config/reading-lite/neon.env; set +a`.
 npm run ops -- staging setup --execute
 npm run ops -- staging teardown --execute
 ```
 
+Staging's database is the Neon rehearsal branch, reached through the
+[operator database pairing](#step-0-the-connection-strings) for `reading-lite-staging`.
+Setup resolves it before any Cloudflare change and migrates it with the same
+run as `ops db migrate`; an unset, mis-paired, unreachable, or failing database
+stops setup with nothing created. Its plan connects read-only to list pending
+migrations; with no staging variable set, or the database unreachable, the plan
+notes that and still prints the Cloudflare plan, while migration drift fails
+it. The role needs DDL, including `CREATE EXTENSION vector`. Setup never
+creates the database and teardown never drops it.
+
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-reading, digest, and wipe Queue/DLQ pairs and Vectorize index, deletes staging D1, empties the bucket via
-the S3-compatible R2 API, and deletes the bucket. The bucket-empty step needs
-the `CORPUS_R2_*` credentials above. Setup creates the same three queue families. See the command help for the
-complete resource plan.
+reading, digest, wipe, and refresh Queue/DLQ pairs and the Vectorize index,
+empties the bucket via the S3-compatible R2 API, and deletes the bucket:
+exactly the Cloudflare resources setup creates. The bucket-empty step needs
+the `CORPUS_R2_*` credentials above. It retains the staging PostgreSQL
+database, and it retains staging's old D1 (`reading-lite-control-staging`)
+deliberately: that D1 is the #348 importer's source, and #351 retires it.
+
+Do not run `ops founder bootstrap --env staging`, set
+`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`, or run `ops staging smoke --execute`
+against PostgreSQL-backed staging before the #349 import. The importer refuses
+a target database holding any application row, and a bootstrapped founder
+would conflict with the imported one. The cloud-agent installer enforces this:
+`STAGING_FOUNDER_BOOTSTRAP_OPEN` in `scripts/cloud-agent-install.ts` stays
+`false` until #349 flips it, so `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` is skipped
+with a log line. Cloud agents supply the database as the `STAGING_DATABASE_URL`
+Cursor secret, which is never written to `.stg.vars`. `ops founder bootstrap`
+resolves staging's and production's databases through the same pairing as the
+other operator commands, so `--database-url-env` naming another environment's
+database (or a bare `DATABASE_URL`) is refused.
 
 Smoke-test idempotent submits against staging:
 

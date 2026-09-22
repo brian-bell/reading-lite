@@ -287,7 +287,12 @@ See [deploying](docs/operations.md#deploying) for secrets, guards, and exception
 `.cursor/environment.json` installs both npm projects and runs
 `scripts/cloud-agent-install.ts`. Cursor environment secrets are
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
-`READER_API_TOKEN`, and `FOUNDER_EMAIL`; the installer writes `.stg.vars`.
-Staging founder state persists in PostgreSQL (the bootstrap needs `DATABASE_URL`,
-a direct connection string). Bootstrap again after credential rotation,
-or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for idempotent bootstrap on each install.
+`READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL` (a direct
+connection string to the Neon rehearsal branch; founder bootstrap resolves it
+through the operator-db pairing); the installer writes `.stg.vars`.
+Staging founder state persists in PostgreSQL. Do not bootstrap staging before
+the #349 import: the importer refuses a database holding application rows.
+Until then the installer skips `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`
+(`STAGING_FOUNDER_BOOTSTRAP_OPEN`, which #349 flips). After it, bootstrap again
+after credential rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for
+idempotent bootstrap on each install.

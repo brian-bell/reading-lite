@@ -12,6 +12,7 @@ import {
   parseFounderBootstrapArgs,
   resolveEnvVars,
   runFounderBootstrap,
+  STAGING_BOOTSTRAP_PROHIBITION,
   type BootstrapEnvName,
   type FounderBootstrapCliArgs,
   type FounderBootstrapDeps,
@@ -64,16 +65,24 @@ Options:
   --email                  Founder address. Default: FOUNDER_EMAIL.
   --env                    local (default), staging, or production.
   --database-url-env       Staging and production: the environment variable
-                           holding a DIRECT PostgreSQL connection string
-                           (default: DATABASE_URL). Local uses the dev
-                           database (READING_LITE_DATABASE_URL or compose).
+                           holding a DIRECT PostgreSQL connection string,
+                           checked against the environment's database
+                           pairing. Staging: STAGING_DATABASE_URL or
+                           NEON_REHEARSAL_DATABASE_URL. Production:
+                           PRODUCTION_DATABASE_URL or NEON_MAIN_DATABASE_URL.
+                           Default: whichever accepted name is set. Local
+                           uses the dev database (READING_LITE_DATABASE_URL
+                           or compose).
   --execute                Apply writes. Otherwise prints the plan.
   --confirm-production     Required with --execute --env production.
   --help                   Show this message.
 
 Credentials: AUTH_ROOT_SECRET and READER_API_TOKEN from the environment
 or .dev.vars / .stg.vars / .prd.vars. The control plane is PostgreSQL
-(ADR 0005); apply its migrations first with \`npm run ops -- db migrate\`.`,
+(ADR 0005); apply its migrations first with \`npm run ops -- db migrate\`
+(staging: \`npm run ops -- staging setup\` migrates it).
+
+${STAGING_BOOTSTRAP_PROHIBITION}`,
   defaultDeps: (io: CommandIo): FounderBootstrapCommandDeps => ({
     io,
     resolveEnvVars,
