@@ -81,7 +81,6 @@ describe("wrangler CLI launcher", () => {
       "scripts/ops-lib/commands/deploy-worker.ts",
       "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",
-      "scripts/lib/founder-bootstrap.ts",
     ];
     for (const file of spawners) {
       const src = readFileSync(path.join(process.cwd(), file), "utf8");

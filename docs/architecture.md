@@ -303,8 +303,15 @@ service binding, with no public admin route. `OperatorSpend` is the paid
 operator commands' equivalent for the four spend verbs, reached through
 `scripts/system-lib/wrangler-spend.toml` and wrapped by
 `ops-lib/operator-spend.ts`. `system policy` uses the tested
-`ops-lib/policy-contract.ts`. `staging prepare-context` builds local fixture
-packets; it does not apply them remotely. Their guides are
+`ops-lib/policy-contract.ts`. `staging prepare-context` reads production and
+staging PostgreSQL through the operator database pairing. Each database supplies
+a read-only repeatable snapshot; only the current resolved R2 content is read.
+Its v2 local fixture packet contains tenant-rewritten reading/revision/ownership/
+relationship/embedding payloads, content blobs, source fingerprints and staging
+absence preconditions. No R2 manifest, pointer, list index or Vectorize metadata
+is used. Historical attempts are omitted; application revalidates all evidence
+and publishes rows atomically after creating content. Preparation never applies
+the packet remotely. Their guides are
 [paid spend](paid-provider-spend.md) and [context preparation](staging-context-copy.md).
 
 The SPA uses cookie sessions, React Query invalidation, and routed views for

@@ -105,31 +105,30 @@ describe("residue sources and wipe gates", () => {
       detail: expect.objectContaining({ first_completed_at_ms: 42 }),
     });
   });
-  it("reports a listed reading missing its vector even without a ledger row", async () => {
+  it("keeps PostgreSQL residue after another source fails, and continues querying", async () => {
     const r = remoteFixture();
-    r.vectors.get.mockResolvedValue([]);
-    r.storage.get.mockResolvedValue(
-      JSON.stringify({
-        version: 1,
-        items: [
-          {
-            id,
-            key_prefix: `readings/2026/04/26T200000Z-${id}`,
-            url: "https://example.com",
-            status: "ready",
-            created_at: "2026-04-26T20:00:00.000Z",
-          },
-        ],
-      }),
-    );
+    r.db.all.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM readings WHERE")) throw Error("read unavailable");
+      if (sql.includes("FROM reading_embeddings WHERE")) return [{ n: 2 }];
+      return sql.includes("COUNT(*)") ? [{ n: 0 }] : [];
+    });
     const result = await scanResidue(r, tenant);
-    expect(
-      result.findings.find((f) => f.source === "listed_vectors")?.detail,
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id, composed: "candidate_absent" }),
-      ]),
-    );
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "pg.readings", state: "unknown" }),
+      expect.objectContaining({ source: "pg.reading_embeddings", state: "residue", detail: { count: 2 } }),
+      expect.objectContaining({ source: "pg.users", state: "clear" }),
+    ]));
+    expect(result).toMatchObject({ residue: true, incomplete: true });
+    expect(r.storage.get).not.toHaveBeenCalled();
+  });
+  it.each(["success", "enumeration failure", "invalid audit tenant"])("closes the scan session after %s", async (scenario) => {
+    const r = { ...remoteFixture(), closeDb: vi.fn().mockResolvedValue(undefined) };
+    if (scenario === "enumeration failure") r.db.all.mockRejectedValue(Error("offline"));
+    if (scenario === "invalid audit tenant") r.db.all.mockResolvedValue([{ tenant_id: "invalid" }]);
+    const run = accountResidueScanCommand.run(["--all-deleted"], { io: { stdout: vi.fn(), stderr: vi.fn() }, connect: () => r });
+    if (scenario === "success") await expect(run).resolves.toBe(0);
+    else await expect(run).rejects.toThrow();
+    expect(r.closeDb).toHaveBeenCalledOnce();
   });
   it("plans without enqueue, requires matching confirmation, and rechecks deleting before execute", async () => {
     const r = remoteFixture();

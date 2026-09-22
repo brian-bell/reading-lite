@@ -225,19 +225,22 @@ operator work and its accepted limits. Fresh repairs require a reviewed plan.
 ```sh
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
 npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
 ```
 
 The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
-records, ledger rows (including `delete_submitted` rows from individual purges),
-a namespace query, a full vector ID inventory, per-reading vector observations,
-and every D1 table touched by teardown. `account_deletions` is expected retained
-audit evidence. Its `first_completed_at_ms` / `first_residue` describe history;
-`residue = 1` in that record is not a measurement of today's namespace. An audit
-row is written *before* teardown and does not itself prove teardown completed.
-Remaining users/child/progress rows mean control-plane cleanup is still pending
-or incomplete; they are reported even during the normal interval before cron.
-On a live tenant the ordinary corpus and D1 rows naturally report as present.
+records, retained legacy Vectorize namespace observations, and PostgreSQL rows.
+The `pg.*` sources cover readings, embeddings, corpus refresh state, relationship
+refresh jobs, users, sessions, tokens/scopes, settings, limits, digests, wipe
+progress, challenges and attributable invites. Reading children cascade from
+`readings`; embeddings also have their own observation. A failed source stays
+`unknown` without hiding residue found by any other source.
+
+`account_deletions` is expected retained audit evidence. Its `first_completed_at`
+and `first_residue` describe history; a true historical residue flag is not a
+measurement of today's storage. An audit row is written before teardown and
+does not prove completion. Remaining corpus/control-plane rows report residue,
+including during the normal interval before cron. Live tenant data naturally
+reports as present. The scan is observation, not the runtime teardown gate.
 
 Exit status is **1 for residue or incomplete visibility**, 2 for invalid usage,
 and 0 only when all scanned sources are clear or expected. The residue-scan command
@@ -253,15 +256,20 @@ spent-invite residual may be inert. Queues and concurrent work are not inspected
 These limitations must accompany any closeout report; do not relabel exit 1 as
 an unconditional clean certification.
 
-A ready list entry whose composed vector is absent is reported by reading ID
-under `listed_vectors`, even without a ledger row. This catches the observable
-shape of a purge whose vector delete succeeded and `markDeleteSubmitted` failed.
-The scan cannot distinguish that intent from propagation delay or other vector
-drift. Its single reads are candidate absences, not S3's two spaced successful
-confirmations. It neither retires ledger rows nor repairs listed readings.
+`ready_reading_embeddings` lists ready readings without embedding rows. This
+is an `unknown` diagnostic, not deletion residue: inactive tenants or readings
+that do not own their URL may deliberately have no embedding. `pg.readings`
+and `pg.reading_embeddings` independently report actual row presence. The scan
+neither infers damage nor repairs a reading. No frozen R2 list or manifest is
+read.
+
+An empty observable corpus can therefore report `residue:false` and still
+report `incomplete:true` with exit 1. The storage port preserves that established
+visibility contract; it does not manufacture a clean certification from missing
+DO/address-history observations.
 
 Cloudflare now supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/).
-The audit enumerates the **whole index snapshot**, retrieves vectors through
+For retained legacy Vectorize evidence, the audit enumerates the **whole index snapshot**, retrieves vectors through
 `get_by_ids` in chunks of at most 20, and selects their actual namespace. There
 is no namespace filter on the list endpoint. Discovery does not depend on ledger
 rows, which a prior wipe may have cleared, or a bounded similarity query.
