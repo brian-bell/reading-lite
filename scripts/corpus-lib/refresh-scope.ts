@@ -1,14 +1,14 @@
 // What a tier-1 refresh pass has to measure, and the run marker that decides it.
 //
 // `corpus refresh-neighbours --full` re-measures every ready reading.
-// Vectorize is deterministic for an unchanged index, so a nightly sweep over an
+// The scan is deterministic for an unchanged corpus, so a nightly sweep over an
 // unchanged corpus spends its whole wall clock re-deriving snapshots it already
 // holds: run A's immediate rerun measured 553 readings in 16 minutes and wrote
 // zero of them.
 //
 // The only neighbourhoods that can have moved since the last run are the ones
 // near a vector that was added, replaced, or removed. This module decides that
-// set from the list index and a run marker, as a pure function of data the
+// set from the corpus listing and a run marker, as a pure function of data the
 // caller has already fetched:
 //
 //   changed   rows created or reprocessed since the marker (`created_at` /
@@ -41,10 +41,10 @@
 //   - a reprocess that moves a vector far enough to LEAVE a stranger's floored
 //     neighbourhood: the reverse query runs against the vector's new position,
 //     and the old one is gone. Nothing the planner can read remembers the old
-//     neighbourhood — index/list.json rows carry no connections, tensions or
-//     judged-candidate ids (manifestToIndexItem), so citations are only
-//     reachable by reading every manifest, which is the O(N) cost the scope
-//     exists to avoid. That stranger's re-judgement is deferred to the sweep;
+//     neighbourhood — a list row carries no connections, tensions or
+//     judged-candidate ids, so citations are only reachable by reading every
+//     reading's relationships, which is the O(N) cost the scope exists to
+//     avoid. That stranger's re-judgement is deferred to the sweep;
 //   - and, more broadly than the moved-vector case, the stored `similarity`
 //     snapshot and list row of ANY reading the scope leaves out. The bound
 //     above is a claim about floored neighbourhoods, and therefore about
@@ -60,7 +60,7 @@
 //     numbers the API and the SPA serve are approximate rather than current.
 //     It is deterministic and it clears on the next `--full`: an immediate
 //     second sweep reported zero drift;
-// A purge and a Vectorize-only write used to be on that list too, and are not
+// A purge and an embedding-only write used to be on that list too, and are not
 // any more:
 //
 //   - a purge is named, not counted. The marker records the list ids it saw,
@@ -68,21 +68,24 @@
 //     a day that purges as many readings as it ingests no longer looks still.
 //     Ids rather than a hash of them because the question is "which readings
 //     are gone", and a digest answers only "something differs", which the row
-//     timestamps and the list ETag already say. EVERY id, not just the ready
+//     timestamps already say. EVERY id, not just the ready
 //     ones: status is not a statement about vector ownership (the same reason
 //     the reverse queries ignore it), so a row that was ready last week, is
 //     `failed` today and purged tomorrow would slip past a ready-only record
 //     while its vector left the index. A row that merely stopped being ready is
 //     not a removal — it is still in the list, its own timestamps put it in
 //     `changed`, and its vector is queried from there.
-//   - a Vectorize-only write invalidates the marker. `corpus backfill-vectors`
-//     restores vectors with R2 read-only, so neither the row timestamps nor the
-//     list ETag move while neighbourhoods do; it therefore stamps
-//     `invalidated_by` on the marker, and the next pass sweeps on its own
-//     rather than on operator discipline.
+//   - a write that moves embeddings without touching the readings rows
+//     invalidates the marker: the row timestamps do not move while
+//     neighbourhoods do. Such a writer stamps `invalidated_by` on the marker,
+//     and the next pass sweeps on its own rather than on operator discipline.
+//     (`corpus backfill-vectors`, which stamped it, was retired in
+//     reading-lite-gh347.4.6 — `reading_embeddings` has a foreign key to
+//     `readings` now, so a bare vector is unrepresentable. The field stays
+//     because the marker must keep reading one written before that.)
 //
 // And the scope is only worth narrowing while it is narrower. Every reverse
-// query and every measurement is one Vectorize query, and a sweep is one per
+// query and every measurement is one similarity query, and a sweep is one per
 // ready reading. A bulk ingest or a mass reprocess can change so much that the
 // reverse queries plus the readings they bring in cost more than the sweep
 // they exist to avoid, for less coverage. `scopeCostTally` settles that with
@@ -110,7 +113,7 @@
 //
 // Pure by construction: the reverse-neighbour queries are performed by the
 // command and handed in as data, so every rule here is unit-testable without a
-// Vectorize index.
+// database.
 
 import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
 import type { RefreshRow } from "./refresh-neighbours";
@@ -130,16 +133,20 @@ export const REVERSE_SCORE_BOUND = SIMILARITY_FLOOR - 0.1;
 
 /**
  * The stored marker's format. Bumped from 1 when `list_row_count` became
- * `list_ids`: a version-1 marker cannot answer the purge question at all, and
- * `parseRefreshState` has to reject it. The bump is what lets the command say
- * "this marker predates the purge check" rather than "this marker is damaged",
- * which are the same null and very different operator instructions. Nothing
- * migrates: the pass that meets a version-1 marker sweeps and writes a
- * version-2 one, which also restores `last_full_run_at`.
+ * `list_ids`, and from 2 when the marker moved onto the rows it describes
+ * (reading-lite-gh347.4.1) and lost `list_etag` with the document that had one.
+ * A marker the parser does not recognise is rejected rather than migrated, and
+ * the bump is what lets the command say "this marker predates the current
+ * format" rather than "this marker is damaged" — the same null, very different
+ * operator instructions. The pass that meets an old one sweeps and writes a
+ * current one, which is correct rather than lossy: a sweep measures everything
+ * the marker would have narrowed away.
  */
-export const REFRESH_STATE_VERSION = 2;
+export const REFRESH_STATE_VERSION = 3;
 
-/** The per-tenant run marker, stored at `index/refresh-state.json`. */
+/**
+ * The per-tenant run marker, a `corpus_refresh_state` row (db/migrations/0006).
+ */
 export interface RefreshState {
   version: typeof REFRESH_STATE_VERSION;
   /** When the last pass that advanced the marker ran. */
@@ -166,8 +173,6 @@ export interface RefreshState {
    * pass full; advancing the marker clears it.
    */
   invalidated_by?: string;
-  /** `index/list.json` ETag, when the storage path exposes one. */
-  list_etag?: string;
 }
 
 /**
@@ -238,7 +243,6 @@ export function parseRefreshState(raw: unknown): RefreshState | null {
   if (isTimestamp(rec.last_full_run_at)) {
     state.last_full_run_at = new Date(rec.last_full_run_at).toISOString();
   }
-  if (typeof rec.list_etag === "string" && rec.list_etag !== "") state.list_etag = rec.list_etag;
   return state;
 }
 
@@ -256,7 +260,6 @@ export function buildRefreshState(opts: {
   listIds: readonly string[];
   /** The in-scope ids this pass could not measure, if any. */
   unmeasurableIds?: readonly string[];
-  listEtag?: string;
 }): RefreshState {
   const lastFull = opts.full ? opts.runAt : opts.previous?.last_full_run_at;
   const state: RefreshState = {
@@ -272,7 +275,6 @@ export function buildRefreshState(opts: {
   if (unmeasurable.length > 0) state.unmeasurable_ids = unmeasurable;
   // `invalidated_by` is deliberately not carried: this pass measured its whole
   // scope, so whatever forced it full has been answered.
-  if (opts.listEtag !== undefined && opts.listEtag !== "") state.list_etag = opts.listEtag;
   return state;
 }
 
@@ -280,8 +282,6 @@ export interface ChangedSince {
   kind: "incremental";
   since: string;
   changed: string[];
-  /** True when the list index is byte-identical to the one the marker saw. */
-  listUnchanged: boolean;
 }
 
 /**
@@ -296,7 +296,6 @@ export interface ChangedSince {
 export function changedSince(
   list: readonly RefreshRow[],
   marker: RefreshState | null,
-  listEtag?: string,
 ): FullScope | ChangedSince {
   if (marker === null) return { kind: "full", reason: "no usable run marker" };
   // A command that changed vectors without changing anything R2 can date says
@@ -320,20 +319,15 @@ export function changedSince(
     };
   }
   const sinceMs = Date.parse(marker.last_run_at) - MARKER_CLOCK_SKEW_MS;
-  // The ETag is the strongest statement available: an unchanged document means
-  // no row was created, reprocessed, purged, or re-flushed, so nothing can have
-  // moved. Only equality is informative — every --execute flush rewrites the
-  // document, so a differing ETag says nothing on its own.
-  const listUnchanged =
-    listEtag !== undefined && marker.list_etag !== undefined && listEtag === marker.list_etag;
-  const changed = listUnchanged
-    ? []
-    : list.filter((row) => rowChangedSince(row, sinceMs)).map((row) => row.id);
+  // Every row is dated by the same rule, with no whole-corpus shortcut. The
+  // list index had an ETag, and an unchanged one meant no row could have moved;
+  // rows have no such token, and inventing one from a MAX(updated_at) would
+  // answer a question this scan already answers per row.
+  const changed = list.filter((row) => rowChangedSince(row, sinceMs)).map((row) => row.id);
   return {
     kind: "incremental",
     since: marker.last_run_at,
     changed: [...new Set(changed)].sort(),
-    listUnchanged,
   };
 }
 
@@ -348,9 +342,8 @@ export function incrementalScope(
   list: readonly RefreshRow[],
   marker: RefreshState | null,
   reverseNeighbours: ReadonlyMap<string, ReverseMatches>,
-  listEtag?: string,
 ): RefreshScope {
-  const base = changedSince(list, marker, listEtag);
+  const base = changedSince(list, marker);
   if (base.kind === "full") return base;
 
   const known = new Set(list.map((row) => row.id));
@@ -424,9 +417,7 @@ export function incrementalScope(
   const carried = carriedIds(list, marker);
   for (const id of carried) scope.add(id);
 
-  const changedReason = base.listUnchanged
-    ? "index/list.json unchanged since the last run"
-    : `${base.changed.length} reading(s) changed since ${base.since}`;
+  const changedReason = `${base.changed.length} reading(s) changed since ${base.since}`;
   return {
     kind: "incremental",
     reason:
@@ -486,7 +477,7 @@ export function scopeCostTally(
       return {
         kind: "full",
         reason:
-          `incremental scope would cost at least ${incremental} Vectorize queries ` +
+          `incremental scope would cost at least ${incremental} similarity queries ` +
           `(${remaining} reverse still to run, ${toMeasure.size} reading(s) to measure) ` +
           `against ${ready.size} for a full sweep — after ${asked} of ` +
           `${changed.length} changed reading(s)`,
@@ -507,7 +498,7 @@ export function describeScope(scope: RefreshScope): string {
  * complete — the query was cut off at topK and every match it did return is at
  * or above the bound, so there may be more above it that never came back.
  *
- * A result shorter than topK is complete by construction: Vectorize returned
+ * A result shorter than topK is complete by construction: the scan returned
  * everything it had, bound or no bound. That is what keeps an isolated reading
  * — one match, itself, at 1.0 — from escalating every night.
  *

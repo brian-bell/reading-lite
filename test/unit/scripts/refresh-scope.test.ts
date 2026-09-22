@@ -35,6 +35,9 @@ function marker(over: Partial<RefreshState> = {}): RefreshState {
   return { version: REFRESH_STATE_VERSION, last_run_at: LAST_RUN, list_ids: [], ...over };
 }
 
+/** The current marker version, in the rejection tables below. */
+const V = REFRESH_STATE_VERSION;
+
 function reverse(entries: Record<string, ReverseMatches>): Map<string, ReverseMatches> {
   return new Map(Object.entries(entries));
 }
@@ -46,14 +49,12 @@ describe("parseRefreshState", () => {
       runAt: LAST_RUN,
       full: true,
       listIds: ["rd_b", "rd_a"],
-      listEtag: "abc123",
     });
     expect(built).toEqual({
-      version: 2,
+      version: REFRESH_STATE_VERSION,
       last_run_at: LAST_RUN,
       last_full_run_at: LAST_RUN,
       list_ids: ["rd_a", "rd_b"],
-      list_etag: "abc123",
     });
     expect(parseRefreshState(JSON.parse(JSON.stringify(built)))).toEqual(built);
   });
@@ -67,7 +68,7 @@ describe("parseRefreshState", () => {
       listIds: ["rd_a"],
     });
     expect(built).toEqual({
-      version: 2,
+      version: REFRESH_STATE_VERSION,
       last_run_at: AFTER,
       last_full_run_at: BEFORE,
       list_ids: ["rd_a"],
@@ -87,7 +88,7 @@ describe("parseRefreshState", () => {
       unmeasurableIds: ["rd_stuck", "rd_stuck"],
     });
     expect(built).toEqual({
-      version: 2,
+      version: REFRESH_STATE_VERSION,
       last_run_at: AFTER,
       last_full_run_at: AFTER,
       list_ids: ["rd_a", "rd_stuck"],
@@ -99,19 +100,23 @@ describe("parseRefreshState", () => {
     expect(parseRefreshState(null)).toBeNull();
     expect(parseRefreshState("{}")).toBeNull();
     expect(parseRefreshState([])).toBeNull();
-    expect(parseRefreshState({ version: 3, last_run_at: LAST_RUN, list_ids: [] })).toBeNull();
-    expect(parseRefreshState({ version: 2, last_run_at: "nonsense", list_ids: [] })).toBeNull();
-    expect(parseRefreshState({ version: 2, last_run_at: LAST_RUN })).toBeNull();
-    expect(parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: 3 })).toBeNull();
-    expect(parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: [7] })).toBeNull();
+    expect(parseRefreshState({ version: 4, last_run_at: LAST_RUN, list_ids: [] })).toBeNull();
+    expect(parseRefreshState({ version: V, last_run_at: "nonsense", list_ids: [] })).toBeNull();
+    expect(parseRefreshState({ version: V, last_run_at: LAST_RUN })).toBeNull();
+    expect(parseRefreshState({ version: V, last_run_at: LAST_RUN, list_ids: 3 })).toBeNull();
+    expect(parseRefreshState({ version: V, last_run_at: LAST_RUN, list_ids: [7] })).toBeNull();
   });
 
   // A version-1 marker recorded a row count, which cannot answer "which
-  // readings are gone". It is rejected like any other unusable marker, and the
-  // pass that meets it sweeps and rewrites it.
-  it("rejects the version-1 marker the row-count check wrote", () => {
+  // readings are gone"; a version-2 one was the R2 document, scoped against an
+  // `index/list.json` that no longer exists. Both are rejected like any other
+  // unusable marker, and the pass that meets one sweeps and rewrites it.
+  it("rejects the markers earlier formats wrote", () => {
     expect(
       parseRefreshState({ version: 1, last_run_at: LAST_RUN, list_row_count: 553 }),
+    ).toBeNull();
+    expect(
+      parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: ["rd_a"], list_etag: "abc" }),
     ).toBeNull();
   });
 
@@ -119,25 +124,24 @@ describe("parseRefreshState", () => {
   // there, so the whole marker is unusable instead — which sweeps.
   it("rejects a marker whose retry list or invalidation is malformed", () => {
     expect(
-      parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: [], unmeasurable_ids: "rd_a" }),
+      parseRefreshState({ version: V, last_run_at: LAST_RUN, list_ids: [], unmeasurable_ids: "rd_a" }),
     ).toBeNull();
     expect(
-      parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: [], invalidated_by: 7 }),
+      parseRefreshState({ version: V, last_run_at: LAST_RUN, list_ids: [], invalidated_by: 7 }),
     ).toBeNull();
     expect(
-      parseRefreshState({ version: 2, last_run_at: LAST_RUN, list_ids: [], invalidated_by: "" }),
+      parseRefreshState({ version: V, last_run_at: LAST_RUN, list_ids: [], invalidated_by: "" }),
     ).toBeNull();
   });
 
   it("drops an unusable last_full_run_at rather than the whole marker", () => {
     const parsed = parseRefreshState({
-      version: 2,
+      version: V,
       last_run_at: LAST_RUN,
       list_ids: ["rd_b", "rd_a"],
       last_full_run_at: "not a date",
-      list_etag: "",
     });
-    expect(parsed).toEqual({ version: 2, last_run_at: LAST_RUN, list_ids: ["rd_a", "rd_b"] });
+    expect(parsed).toEqual({ version: REFRESH_STATE_VERSION, last_run_at: LAST_RUN, list_ids: ["rd_a", "rd_b"] });
   });
 });
 
@@ -219,9 +223,6 @@ describe("incrementalScope", () => {
       [row("rd_a")],
       marker({ list_ids: ["rd_a"], invalidated_by: "corpus backfill-vectors (2 vector(s) restored)" }),
       reverse({}),
-      // Even a byte-identical list index, which otherwise ends the pass in one
-      // read: the vectors moved under it.
-      "same-etag",
     );
     expect(scope).toEqual({
       kind: "full",
@@ -420,7 +421,7 @@ describe("incrementalScope", () => {
     expect(scope.kind).toBe("full");
   });
 
-  // Every match above the bound, but the page was not full: Vectorize returned
+  // Every match above the bound, but the page was not full: the scan returned
   // everything it had, so the set is complete and the scope stands.
   it("does not escalate on a short result whose matches are all above the bound", () => {
     const scope = incrementalScope(
@@ -525,29 +526,9 @@ describe("incrementalScope", () => {
     });
   });
 
-  it("scopes nothing when the list index is byte-identical to the marker's", () => {
+  it("scopes to the rows whose own timestamps moved since the marker", () => {
     const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
-    const scope = incrementalScope(
-      list,
-      marker({ list_etag: "same" }),
-      reverse({}),
-      "same",
-    );
-    expect(scope).toMatchObject({
-      kind: "incremental",
-      ids: [],
-      reason: "index/list.json unchanged since the last run",
-    });
-  });
-
-  it("ignores a differing etag and falls back to the timestamps", () => {
-    const list = [row("rd_a", { updated_at: AFTER }), row("rd_b")];
-    const scope = incrementalScope(
-      list,
-      marker({ list_etag: "old" }),
-      reverse({ rd_a: [{ id: "rd_a", score: 1 }] }),
-      "new",
-    );
+    const scope = incrementalScope(list, marker({}), reverse({ rd_a: [{ id: "rd_a", score: 1 }] }));
     expect(scope).toMatchObject({ kind: "incremental", ids: ["rd_a"] });
   });
 });
@@ -590,7 +571,7 @@ describe("scopeCostTally", () => {
     expect(tally.check(1)).toEqual({
       kind: "full",
       reason:
-        "incremental scope would cost at least 6 Vectorize queries " +
+        "incremental scope would cost at least 6 similarity queries " +
         "(1 reverse still to run, 5 reading(s) to measure) against 5 for a full sweep " +
         "— after 1 of 2 changed reading(s)",
     });
@@ -671,7 +652,6 @@ describe("changedSince", () => {
       kind: "incremental",
       since: LAST_RUN,
       changed: ["rd_a"],
-      listUnchanged: false,
     });
   });
 });

@@ -41,6 +41,7 @@ const CHILD_TABLES: ReadonlyArray<{ table: string; column: string; value: string
   { table: "auth_challenges", column: "email_canonical", value: EMAIL },
   { table: "digest_deliveries", column: "user_id", value: USER },
   { table: "relationship_refresh_jobs", column: "tenant_id", value: USER },
+  { table: "corpus_refresh_state", column: "tenant_id", value: USER },
   { table: "signup_invites", column: "email_canonical", value: EMAIL },
   { table: "wipe_progress", column: "tenant_id", value: USER },
 ];
@@ -138,6 +139,12 @@ async function seeded(options: { signupMode?: "open" | "invite_only" } = {}) {
     `INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag, result_json)
     VALUES (?, 'rd_refresh', '2026-09-03T00:00:00.000Z', 'owner', 'etag', '{}')`,
     USER,
+  );
+  await raw.run(
+    `INSERT INTO corpus_refresh_state (tenant_id, state, updated_at)
+    VALUES (?, '{"version":3,"last_run_at":"2026-09-03T00:00:00.000Z","list_ids":["rd_a"]}'::jsonb, ?)`,
+    USER,
+    toTimestamp(NOW_MS),
   );
   await beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS });
   return { raw, db };
