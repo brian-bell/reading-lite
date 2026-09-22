@@ -3,12 +3,14 @@
 // the realtime /api/readings queue.
 //
 // Plan-first: a mode-less run reads the directory, resolves by-url ownership
-// (read-only R2 reads, degrading gracefully without credentials), and prints
+// (read-only PostgreSQL reads, degrading gracefully without credentials), and prints
 // the disposition tally and what one batch would submit — no eager claims,
 // batch creation, provider calls, or sidecar writes. --execute requires
 // --sole-writer (enforced before any directory or credential work) and runs
 // the existing fresh-markdown batch pipeline.
 
+import { requireTenantRows } from "../../pg-lib/operator-corpus";
+import { withBatchCorpus } from "../../corpus-lib/batch/postgres";
 import { parseArgs } from "node:util";
 import { resolveBatchConfig, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
@@ -48,10 +50,11 @@ export interface CorpusIngestDeps extends BaseDeps, OperatorPaidFetchDeps {
   clearSidecar: (path: string) => Promise<void>;
   resolveConfig: (flags: {
     bucket?: string;
+    databaseUrlEnv?: string;
     resumeProvider?: PersistedSidecar["provider"];
     tenant: OperatorTenant;
   }) => BatchConfig;
-  // Plan-mode ownership check: read-only R2 reads + in-memory id minting.
+  // Plan-mode ownership check: read-only PostgreSQL reads + in-memory id minting.
   planOwnership: (
     eligible: MarkdownArticle[],
     cfg: BatchConfig,
@@ -75,6 +78,7 @@ interface Args {
   soleWriter: boolean;
   limit: number;
   bucket?: string;
+  databaseUrlEnv?: string;
   sidecar: string;
 }
 
@@ -91,6 +95,7 @@ function parseIngestArgs(argv: string[]): Args {
         "sole-writer": { type: "boolean", default: false },
         limit: { type: "string" },
         bucket: { type: "string" },
+        "database-url-env": { type: "string" },
         sidecar: { type: "string" },
       },
     }));
@@ -106,6 +111,7 @@ function parseIngestArgs(argv: string[]): Args {
     soleWriter: values["sole-writer"] === true,
     limit: parsePositiveInt(values.limit),
     ...(values.bucket === undefined ? {} : { bucket: values.bucket }),
+    ...(values["database-url-env"] === undefined ? {} : { databaseUrlEnv: values["database-url-env"] }),
     sidecar: values.sidecar ?? DEFAULT_SIDECAR,
   };
 }
@@ -122,6 +128,7 @@ function parsePositiveInt(raw: string | undefined): number {
 async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<number> {
   const args = parseIngestArgs(argv);
   const tenant = requireOperatorTenant(args.tenant);
+  requireTenantRows(tenant);
   const { io } = deps;
 
   // Sole-writer preflight (issue #68): refuse a real submit unless the operator
@@ -181,6 +188,7 @@ async function runCorpusIngest(argv: string[], deps: CorpusIngestDeps): Promise<
       ...(args.bucket === undefined ? {} : { bucket: args.bucket }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
+      ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
     });
   } catch (e) {
     if (args.execute) {
@@ -299,22 +307,18 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
     clearSidecar: async (p) => (await import("../../corpus-lib/batch/sidecar")).clearSidecar(p),
     resolveConfig: (flags) => resolveBatchConfig(flags),
     planOwnership: async (eligible, cfg) => {
-      const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
       const { prepareFreshMarkdown } = await import("../../corpus-lib/batch/prepare-fresh-markdown");
       const { newBatchAttemptId } = await import("../../corpus-lib/batch/run");
-      const { r2ReadDeps } = await import("../../corpus-lib/batch/r2-reads");
       const { mintReadingId } = await import("../../../src/services");
-      const r2 = withKeyRoot(makeR2Client(cfg.r2, globalThis.fetch), cfg.keyRoot);
-      return prepareFreshMarkdown(eligible, {
-        ...r2ReadDeps(r2),
-        newId: mintReadingId,
-        newAttemptId: newBatchAttemptId,
+      return withBatchCorpus(cfg.databaseUrl, requireTenantRows(cfg.tenant), (corpus) => prepareFreshMarkdown(eligible, {
+        ...corpus,
+        newId: mintReadingId, newAttemptId: newBatchAttemptId,
         now: () => new Date().toISOString(),
-      });
+      }));
     },
     executeBatch: async (eligible, cfg, opts) => {
       const { randomUUID } = await import("node:crypto");
-      const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
+      const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
       const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
         await import("../../corpus-lib/batch/clients");
       const { clearSidecar, loadInputJsonl, loadSidecar, saveInputJsonl, saveSidecar } =
@@ -323,15 +327,10 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
       const { mintReadingId } = await import("../../../src/services");
       const fetchFn = globalThis.fetch;
       const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-      return runFreshMarkdownBatch(eligible, {
-        // So write-phase composes the ADR 0002 tenant-scoped vector id, like
-        // every other writer. Undefined for --tenant global.
-        ...(cfg.vectorize.namespace === undefined
-          ? {}
-          : { vectorNamespace: cfg.vectorize.namespace }),
+      return withBatchCorpus(cfg.databaseUrl, requireTenantRows(cfg.tenant), (corpus) => runFreshMarkdownBatch(eligible, {
         ...(opts.limit === undefined ? {} : { limit: opts.limit }),
         r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
-        vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
+        corpus,
         ...(cfg.anthropicApiKey
           ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
           : {}),
@@ -360,7 +359,7 @@ function defaultDeps(io: CommandIo): CorpusIngestDeps {
         loadInputJsonl: () => loadInputJsonl(opts.sidecar),
         sidecarFilePath: opts.sidecar,
         log: (line) => io.stderr(line),
-      });
+      }));
     },
   };
 }
@@ -383,6 +382,7 @@ by source URL (largest wins) and any over ${Math.round(MARKDOWN_IMPORT_MAX_BYTES
 Options:
   --dir <path>     Directory of .md files to ingest (required).
   --execute        Actually submit + write (otherwise prints the plan).
+  --database-url-env <NAME>  Direct PostgreSQL connection variable paired with --bucket.
   --sole-writer    Required with --execute: assert the realtime writer is
                    paused/drained. Fresh ingest eagerly claims activated by-url
                    slots and releases its own failed eager claims. Run refuses
@@ -392,7 +392,7 @@ Options:
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant layout.
   ${BILLING_TENANT_FLAG_HELP}
-                   Defaults to a usr_… --tenant; required with --tenant global.
+                   Defaults to --tenant; PostgreSQL batches refuse --tenant global.
                    A resume settles against the tenant its batch was admitted under.
   --sidecar <path> In-flight batch marker. Default: ${DEFAULT_SIDECAR}.
   --help           Show this message.
@@ -409,8 +409,8 @@ before it claims anything or writes the sidecar, and settles actual usage once
 the results are in. A refusal leaves nothing to reconcile. Embedding calls are
 admitted per request.
 
-Credentials (env or .corpus.vars/.dev.vars/.prd.vars): CORPUS_R2_* +
-CORPUS_CF_API_TOKEN for R2/Vectorize and OPENAI_API_KEY for embeddings/default
+Credentials: bucket-paired direct PostgreSQL connection, CORPUS_R2_* for
+content, and OPENAI_API_KEY for embeddings/default
 OpenAI batches. ANTHROPIC_API_KEY is required only when starting or resuming an
 Anthropic batch. Plan mode uses credentials to resolve ownership but degrades
 to the local plan (no ready/pending skips shown) when they're absent.`,

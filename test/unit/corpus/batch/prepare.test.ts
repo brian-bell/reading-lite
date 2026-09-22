@@ -62,7 +62,7 @@ describe("prepareTargets", () => {
       now: () => "2026-06-22T12:00:00.000Z",
     });
     expect(targets).toHaveLength(0);
-    expect(dropped).toEqual([{ readingId: "rd_a", reason: expect.stringMatching(/manifest/i) }]);
+    expect(dropped).toEqual([{ readingId: "rd_a", reason: expect.stringMatching(/reading not found/i) }]);
   });
 
   it("carries the manifest so a ready reading's snapshot can be preserved", async () => {

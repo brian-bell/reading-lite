@@ -37,45 +37,43 @@ The mapping lives in `scripts/corpus-lib/policy.ts` (`recoveryAction`).
 
 `--limit <n>` caps **total** writes across the whole batch (reprocess + local-extract combined), not per-action.
 
-## Bulk path: `--batch` (Anthropic Message Batch API)
+## Bulk path: `--batch` (provider Batch APIs)
 
 For a backlog (backfills, recovering dozens–thousands), `--batch` summarizes
-through the **Anthropic Message Batches API** instead of the realtime queue:
+through the configured **OpenAI or Anthropic Batch API** instead of the realtime queue:
 **~50% cheaper**, no per-minute rate-limit burst, nothing to strand. Use it for
 non-latency-sensitive backfills; the realtime queue (and `--wave`) stays the
 right tool for interactive single-URL submits.
 
 What it does, end to end (`scripts/corpus-lib/batch/`):
-1. **prepare** — resolve each `reprocess` + `local-extract` row from its existing
-   manifest (created_at, url_hash, content fields, ready-snapshot).
-2. **extract** — reuse R2 `extracted.md` only for a currently **ready+captured**
-   reading (its content descriptors are trustworthy); otherwise re-extract
-   locally (browser UA). A failed manifest has zeroed content fields, so reusing
-   it would corrupt the rebuilt manifest — re-extracting also matches realtime
-   reprocess (url readings re-fetch). The batch can't fetch URLs itself.
-3. **similar** — embed the source (OpenAI array endpoint, realtime) + query
-   Vectorize for top-K, exactly like the realtime path, to ground
-   `novelty_verdict`/`connections`.
-4. **submit** — one request per reading (`custom_id` = reading id, `params` =
-   the *same* `emit_reading` body as realtime, so the prompt cache is shared),
-   write fresh content objects to R2, persist a resume sidecar.
-5. **poll → write** — poll to completion, then write manifests / pointers /
-   vectors / `index/list.json` via the **same terminal-write contract** as the
-   worker. A success writes the `index/by-url/{hash}` pointer; a failure writes a
-   retryable failed manifest with **no** by-url pointer, so a failed batch URL
-   stays re-submittable as an unclaimed URL (the batch path does not eagerly
-   claim the by-url slot the way the realtime `POST /api/readings` path does).
+1. **prepare/extract** — read tenant-scoped PostgreSQL readings and resolve their
+   captured content keys. Reuse captured ready content or extract locally.
+2. **similar** — embed source text and query exact per-tenant pgvector similarity.
+3. **activate/submit** — admit the batch's maximum spend, persist the activating
+   sidecar, write new content under immutable attempt keys in R2, and commit
+   URL ownership and the offline attempt before provider submission. Offline
+   attempts do not create realtime queue jobs.
+4. **poll/write** — settle provider results and atomically publish each reading's
+   revision, content keys, relationships and embedding in PostgreSQL. A failed
+   recovery retains the previous publication. An interrupted write resumes the
+   same batch and skips already committed attempts.
+
+R2 stores captured bytes only. Source the direct PostgreSQL connection variable
+paired with the bucket (for example `NEON_MAIN_DATABASE_URL` for `reading-lite`);
+`--database-url-env` selects an accepted variable explicitly. Batch operations
+require a tenant id and refuse the retained `global` layout. Keep realtime writers
+paused and drained for the entire offline batch and pass `--sole-writer` on resume too.
 
 ```bash
 # Dry-run the batch plan (no writes, no spend).
 npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch
 
 # Execute the batch (submit → poll → write). Embeddings stay realtime.
-npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch --execute
+npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch --execute --sole-writer
 ```
 
 - **Resume:** the in-flight batch is recorded in `<index>.batch.json`. If a poll
-  is interrupted, re-running `--batch --execute` **resumes that batch** (polls +
+  is interrupted, re-running `--batch --execute --sole-writer` **resumes that batch** (polls +
   writes) instead of re-submitting — so the summarize step is never double-billed.
   The sidecar is deleted once results are written.
 - **`--wave` is ignored** in `--batch` mode (there's no realtime queue to pace).

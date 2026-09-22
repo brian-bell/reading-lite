@@ -2384,12 +2384,16 @@ the send-time policy ignores notification requests for imports.
 `import-markdown` summarizes every file **realtime** through the Worker queue.
 For large backfills, `ops corpus ingest` runs the same directory through the
 configured provider's **Batch API**, and `ops corpus recover --tenant "$TENANT" --batch` does the same
-for readings already in the corpus. Both talk to R2 and Vectorize directly with
-`CORPUS_R2_*` credentials rather than through the HTTP API, and both need
-`CORPUS_CF_API_TOKEN` plus `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is
-needed only to start or resume an Anthropic batch. `--execute` requires the
-applicable credentials; a dry run degrades to the local plan without them. There
-is no cross-provider fallback.
+for readings already in the corpus. Both use the bucket-paired direct PostgreSQL
+connection for reading state and `CORPUS_R2_*` credentials for captured bytes.
+Source `NEON_MAIN_DATABASE_URL` (production) or `NEON_REHEARSAL_DATABASE_URL`
+(staging), or use the paired deployment variable. `--database-url-env` selects
+an accepted variable explicitly. Both need `OPENAI_API_KEY` for embeddings;
+`ANTHROPIC_API_KEY` is needed only to start or resume an Anthropic batch.
+Vectorize credentials are unnecessary. `--execute` requires the applicable
+credentials; a dry run can show a local plan without them. There is no
+cross-provider fallback. PostgreSQL batches require a tenant id and refuse
+`--tenant global`.
 
 ```sh
 # dry run (default): print the plan; with creds it also shows ownership skips
@@ -2400,14 +2404,15 @@ npm run ops -- corpus ingest --tenant "$TENANT" --dir ~/Documents/articles \
   --execute --sole-writer --bucket reading-lite
 ```
 
-The resulting `ready` manifests are contract-compatible with the realtime import
-path (`source_type: "markdown"`, captured content, correct
-`content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`, by-url and
-by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
-paths stamp a terminal `last_attempt` summary in the manifest, but they do not
-write the realtime per-attempt objects under the key prefix. A resumed
-pre-upgrade sidecar without attempt identity retains the legacy omission of
-`last_attempt`.
+The resulting readings have the same contract as realtime imports, including
+`source_type: "markdown"`, captured content and embedding usage. Activation
+writes fresh content under the attempt's immutable R2 revision prefix, then
+commits URL ownership and the offline attempt. It creates no realtime queue
+job. Terminal publication atomically commits the reading, revision, content
+references, relationships, embedding and terminal attempt summary. Failed
+recovery preserves the current publication and its content and embedding.
+Legacy sidecars without attempt identity can write only a vacant pending row;
+they never adopt a newer attempt or recreate a purged reading.
 
 **`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant "$TENANT" --execute` and
 `ops corpus recover --tenant "$TENANT" --batch --execute` refuse to submit without it. Both batch paths
@@ -2418,20 +2423,13 @@ acknowledged run prints a loud banner before any submit; dry runs submit nothing
 and never require the flag. The enforcement lives in
 `scripts/corpus-lib/sole-writer.ts`.
 
-**Idempotency** is resolved client-side from `index/by-url/{sha256(url)}` by the
-same rules as the Worker's `ReadingClaim`: a pointer counts as owner only when
-its manifest actually matches (id + url + url_hash), so ready and pending owners
-are skipped while failed owners re-ingest in place; a fresh pointer whose
-manifest hasn't landed yet is treated as still-initializing and skipped (a
-realtime submit may be in flight); unclaimed URLs mint a new reading; and
-damaged or mismatched pointers are skipped for operator repair rather than
-claimed over. With no by-url pointer at all, the tools first run the Worker's
-cold-legacy lookup (`findManifestByUrl` over `index/list.json`), so a prior
-legacy failed ingest with a by-id pointer and list row but no by-url pointer is
-re-ingested in place instead of duplicated. Pending owners are skipped even past
-`PENDING_TTL_SECONDS`: this offline path cannot safely supersede a queue worker
-that may still be running, so a stranded pending is left to heal via the
-realtime API or `ops corpus recover`.
+**Idempotency** uses tenant-scoped `reading_urls` ownership. Fresh ingest skips
+ready and pending owners, retries failed owners in place, and mints an id only
+for an unclaimed URL with no existing reading. A failed fresh ingest can release
+its URL claim; a later ingest finds that PostgreSQL reading and retries its id.
+Activation revalidates ownership transactionally. Interrupted publication retains
+the submitted sidecar, and resume skips already committed attempts before
+embedding. R2 receives no manifests, pointers or list index.
 
 **Sizing.** Before any fresh eager activation write, the batch path preflights
 the provider payload, resolves similar-reading context, then validates the final

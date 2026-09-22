@@ -1,3 +1,5 @@
+import type { R2Client } from "../../lib/cf-clients";
+import { r2KeyLayout, rawExtFromContentType } from "../../../src/modules/stores/layout";
 import {
   type Manifest,
   type ManifestError,
@@ -5,7 +7,7 @@ import {
   type SummarizationUsage,
 } from "../../../src/schemas/manifest";
 import type { ReadingSummary } from "../../../src/schemas/reading-summary";
-import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
+import type { BatchCorpus } from "./postgres";
 import {
   failedManifest,
   readyManifest,
@@ -14,66 +16,12 @@ import {
 } from "../../../src/modules/manifest-drafting";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
-import type { ListIndexItem } from "../../../src/schemas/api";
-import type { R2Client, VectorizeClient } from "../../lib/cf-clients";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
-import { mergeListIndex } from "./list-index-write";
-import { serializeReadingPointer, type ReadingPointer } from "./pointers";
-import { r2KeyLayout } from "../../../src/modules/stores/layout";
-import { tenantVectorId } from "../../../src/modules/stores/similarity-store";
-
-// Relative-key spelling only: keys built here are handed to a tenant-rooted
-// client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
-// --tenant key root. This module never sees the root (s1k.4.3).
-const layout = r2KeyLayout();
 
 export interface WriteDeps {
-  r2: R2Client;
-  vectorize: VectorizeClient;
-  /**
-   * The tenant's Vectorize namespace, or undefined for the pre-tenant layout.
-   *
-   * PRE-EXISTING BUG, fixed here (found reviewing issue #195 S3). Every other
-   * vector writer composes the ADR 0002 tenant-scoped vector id —
-   * `similarity-store.ts` in the Worker writes `{tenantId}:{readingId}` — but
-   * `makeVectorizeClient.upsert` only attaches `namespace`, so this pipeline
-   * was writing tenant vectors under the BARE reading id.
-   *
-   * That was inert while nothing addressed those vectors by id. It stops being
-   * inert with the account wipe, which composes the tenant-scoped id for both
-   * `deleteByIds` and the per-id confirmation: a bare-id vector is missed by
-   * the delete AND read as absent by the confirmation, so the wipe declares
-   * gone a vector that is still live.
-   *
-   * WHY THIS DOES NOT ALSO DELETE THE BARE ID.
-   *
-   * Composing the id writes a NEW vector rather than replacing the old one, so
-   * on a tenant that already holds bare-id vectors this leaves two live vectors
-   * for one reading: `SimilarityStore.query` strips only its own `{tenant}:`
-   * prefix, so both come back as distinct matches and the reading appears twice
-   * in its own neighbourhood. Deleting the bare id first is the obvious fix and
-   * it is WRONG here.
-   *
-   * Vectorize ids are index-unique and `deleteByIds` is namespace-blind, so
-   * `delete("rd_X")` removes whatever single vector holds that id. For a
-   * reading this pipeline has never touched, that vector is the LEGACY
-   * pre-cutover one — and those are explicitly retained pending a separate
-   * signed-off deletion, as the `TENANT_DATA_PLANE` rollback set (see the
-   * founder-cutover note in CLAUDE.md: "tenant-scoped operations do not reach
-   * that legacy data and are not meant to", and "copy, never move"). A routine
-   * `ops corpus ingest --tenant "$TENANT" --execute` would have silently and
-   * irreversibly eroded that set.
-   *
-   * Distinguishing the two is possible — a legacy vector is un-namespaced, a
-   * batch-written duplicate carries the tenant namespace, and `getByIds`
-   * reports it — but that is a destructive production behaviour that needs its
-   * own sign-off rather than riding along inside this slice.
-   *
-   * So both halves stay with the residue scan (slice S5): the wipe consequence
-   * and the search duplication.
-   */
-  vectorNamespace?: string;
+  corpus: BatchCorpus;
+  r2: Pick<R2Client, "delete">;
   embedMany(inputs: string[]): Promise<EmbedResult>;
   now(): string;
   log?: (line: string) => void;
@@ -99,14 +47,10 @@ type NormalizedBatchResult =
       result: { type: "failed"; code: string; message: string };
     };
 
-// Apply batch results to the corpus, honoring the terminal-write contract:
-//   success -> ready manifest + by-url + by-id pointers + vector + index item
-//   failure -> failed (retryable) manifest (or roll forward to the preserved
-//              ready snapshot) + by-id pointer + index item. Terminal failed
-//              manifests release their own eager by-url claim when it still
-//              points at this target.
-// index/list.json is merged once at the end (read-modify-write). The script is
-// effectively the sole writer during a backfill.
+// Normalize provider results, then publish each reading through the shared
+// PostgreSQL writer. Content keys, revision, relationships and embedding commit
+// together. A database error leaves the sidecar resumable; completed attempts
+// are skipped before embedding on replay.
 export async function writeResults(
   sidecar: Sidecar,
   results: BatchResult[],
@@ -333,11 +277,10 @@ async function writeNormalizedResults(
 ): Promise<WriteReportRow[]> {
   const byId = new Map(targets.map((t) => [t.customId, t]));
   const report: WriteReportRow[] = [];
-  const touchedItems: ListIndexItem[] = [];
 
-  // 1. Resolve every successful result into a ready manifest. Embed all TL;DRs
-  //    in one call, then upsert all vectors together.
-  const successes: Array<{ target: SidecarTarget; manifest: Manifest }> = [];
+
+  // Draft successful results and coalesce their TL;DR embeddings.
+  const successes: Array<{ target: SidecarTarget; manifest: Manifest; embedding: number[] }> = [];
   const failures: Array<{ target: SidecarTarget; error: ManifestError }> = [];
 
   const resolvedSuccess: Array<{
@@ -349,6 +292,12 @@ async function writeNormalizedResults(
     const target = byId.get(res.customId);
     if (!target) {
       report.push({ id: res.customId, status: "skipped", reason: "no sidecar target for custom_id" });
+      continue;
+    }
+    const disposition = await deps.corpus.disposition(target);
+    if (disposition !== "active") {
+      await discardResultContent(target, deps);
+      report.push({ id: target.id, status: "skipped", reason: disposition === "complete" ? "already committed" : "attempt no longer owns reading" });
       continue;
     }
     if (res.result.type === "succeeded") {
@@ -374,7 +323,12 @@ async function writeNormalizedResults(
   // the strand stays visible and re-submittable.
   const seen = new Set(results.map((r) => r.customId));
   for (const target of targets) {
-    if (!seen.has(target.customId)) {
+    if (seen.has(target.customId)) continue;
+    const disposition = await deps.corpus.disposition(target);
+    if (disposition !== "active") {
+      await discardResultContent(target, deps);
+      report.push({ id: target.id, status: "skipped", reason: disposition === "complete" ? "already committed" : "attempt no longer owns reading" });
+    } else {
       failures.push({
         target,
         error: errorBlock("BatchResultMissing", "no batch result returned for this reading", deps.now()),
@@ -386,7 +340,6 @@ async function writeNormalizedResults(
   const tldrs = resolvedSuccess.map((s) => s.reading.tldr);
   const { embeddings, tokensByInput: tldrTokens } =
     tldrs.length > 0 ? await deps.embedMany(tldrs) : { embeddings: [], tokensByInput: [] };
-  const vectors = [];
   for (let i = 0; i < resolvedSuccess.length; i++) {
     const { target, reading, usage } = resolvedSuccess[i]!;
     const embedding = embeddings[i]!;
@@ -407,43 +360,15 @@ async function writeNormalizedResults(
       },
       finishedAt,
     );
-    successes.push({ target, manifest });
-    vectors.push({
-      // The ADR 0002 tenant-scoped id, composed through the one function that
-      // spells that rule (`tenantVectorId`). Bare id when there is no
-      // namespace, exactly as before, so the pre-tenant layout is unchanged.
-      id: tenantVectorId(deps.vectorNamespace, target.id),
-      values: embedding,
-      // ...and its audit stamp, matching the Worker's tenant ownership metadata.
-      metadata:
-        deps.vectorNamespace === undefined
-          ? vectorMetadata(manifest)
-          : { ...vectorMetadata(manifest), tenant_id: deps.vectorNamespace },
-    });
+    successes.push({ target, manifest, embedding });
   }
-  if (vectors.length > 0) {
-    // DELIBERATELY NOT deleting the bare id here. See the note below.
-    await deps.vectorize.upsert(vectors);
+  for (const { target, manifest, embedding } of successes) {
+    const committed = await deps.corpus.publish(target, manifest, embedding);
+    if (!committed) await discardResultContent(target, deps);
+    report.push({ id: target.id, status: committed ? "ready" : "skipped" });
   }
 
-  // 2. Write the success manifests + pointers.
-  for (const { target, manifest } of successes) {
-    await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
-    const pointer = serializeReadingPointer(target.id, target.keyPrefix);
-    await deps.r2.put(layout.byUrlKey(target.urlHash), pointer, { contentType: "application/json" });
-    await deps.r2.put(layout.byIdKey(target.id), pointer, { contentType: "application/json" });
-    touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
-    report.push({ id: target.id, status: "ready" });
-  }
-
-  // 3. Write the failure manifests. Do not create a by-url pointer here. DO
-  //    write the by-id pointer:
-  //    a freshly-minted ingest
-  //    has no pre-existing pointer (unlike the recover path, where the reading is
-  //    already in the corpus), so without it the failed reading would be a
-  //    dangling list row — its detail/diagnostics/reprocess routes resolve
-  //    through by-id and would 404, and a resubmit could mint a duplicate. The
-  //    write is idempotent for the recover path (same id → same key_prefix).
+  // The writer retains the current publication when a recovery fails.
   for (const { target, error } of failures) {
     const finishedAt = error.failed_at ?? deps.now();
     const attempt = terminalAttempt(target, "failed", finishedAt, error);
@@ -460,22 +385,9 @@ async function writeNormalizedResults(
           },
           finishedAt,
         );
-    await deps.r2.put(layout.manifestKey(target.keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
-    await deps.r2.put(
-      layout.byIdKey(target.id),
-      serializeReadingPointer(target.id, target.keyPrefix),
-      { contentType: "application/json" },
-    );
-    if (manifest.status === "failed" && target.releaseByUrlOnFailure === true) {
-      await releaseByUrlIfOwned(target, deps);
-    }
-    touchedItems.push(manifestToIndexItem(manifest, target.keyPrefix));
-    report.push({ id: target.id, status: "failed", reason: error.message });
-  }
-
-  // 4. Merge all touched items into index/list.json in a single write.
-  if (touchedItems.length > 0) {
-    await mergeListIndex(deps, touchedItems);
+    const committed = await deps.corpus.fail(target, manifest);
+    await discardResultContent(target, deps);
+    report.push({ id: target.id, status: committed ? "failed" : "skipped", reason: error.message });
   }
 
   return report;
@@ -521,37 +433,6 @@ function contentFactsOf(target: SidecarTarget): ContentFacts {
   };
 }
 
-async function releaseByUrlIfOwned(target: SidecarTarget, deps: WriteDeps): Promise<void> {
-  const key = layout.byUrlKey(target.urlHash);
-  const raw = await deps.r2.get(key);
-  if (raw === null) return;
-
-  let pointer: ReadingPointer | null = null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      const candidate = parsed as { id?: unknown; key_prefix?: unknown };
-      if (
-        Object.keys(candidate).length === 2 &&
-        typeof candidate.id === "string" &&
-        typeof candidate.key_prefix === "string"
-      ) {
-        pointer = { id: candidate.id, key_prefix: candidate.key_prefix };
-      }
-    }
-  } catch {
-    // Leave damaged ownership pointers for explicit operator repair.
-  }
-
-  if (!pointer) {
-    deps.log?.(`[write-phase] leaving damaged by-url pointer ${key}`);
-    return;
-  }
-  if (pointer.id === target.id && pointer.key_prefix === target.keyPrefix) {
-    await deps.r2.delete(key);
-  }
-}
-
 function failureReason(res: BatchResult): [string, string] {
   switch (res.result.type) {
     case "errored":
@@ -579,15 +460,19 @@ function errorBlock(code: string, message: string, failedAt: string): ManifestEr
   return { code, message, stage: "summarize", failed_at: failedAt, retryable: true };
 }
 
-function vectorMetadata(m: Manifest): Record<string, string | number | boolean | string[]> {
-  const out: Record<string, string | number | boolean | string[]> = {
-    url: m.url,
-    created_at: m.created_at,
-  };
-  if (m.title) out.title = m.title;
-  if (m.tldr) out.tldr = m.tldr;
-  // Tags on a drafted ready manifest are already canonical (readyManifest
-  // normalizes them).
-  if (m.tags) out.tags = m.tags;
-  return out;
+// A failed published recovery or a superseded attempt no longer serves these
+// captured bytes. The shared guard retains current content, including a failed
+// first ingest's diagnostics. Retry cleanup on completed replay too: a delete
+// failure keeps the sidecar even though the SQL terminal commit succeeded.
+async function discardResultContent(target: SidecarTarget, deps: WriteDeps): Promise<void> {
+  if (!target.attemptId) return;
+  const layout = r2KeyLayout();
+  await deps.corpus.discardContent(
+    { readingId: target.id, keyPrefix: target.keyPrefix, attemptId: target.attemptId },
+    {
+      rawKey: layout.revisionRawKey(target.keyPrefix, target.attemptId, rawExtFromContentType(target.contentType)),
+      extractedKey: layout.revisionExtractedKey(target.keyPrefix, target.attemptId),
+    },
+    key => deps.r2.delete(key),
+  );
 }

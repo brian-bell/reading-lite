@@ -10,6 +10,7 @@
 // realtime or batch action path unchanged, including the --sole-writer
 // acknowledgement that --batch --execute still requires.
 
+import { withBatchCorpus } from "../../corpus-lib/batch/postgres";
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { DEFAULT_API_BASE, resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
@@ -71,6 +72,7 @@ export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
     clearSidecar: (path: string) => Promise<void>;
     resolveConfig: (flags: {
       bucket?: string;
+      databaseUrlEnv?: string;
       resumeProvider?: PersistedSidecar["provider"];
       tenant: OperatorTenant;
     }) => BatchConfig;
@@ -206,6 +208,7 @@ function describeError(out: ReadingApiOutcome): string {
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
   const tenant = requireOperatorTenant(args.tenant);
+  if (args.batch) requireTenantRows(tenant);
   // Resolved up front, not at the monitor loop: --monitor runs after every paid
   // reprocess, so a selector that cannot name rows — or an unset connection
   // variable, which is sourced from a dotfile and easy to forget — must refuse
@@ -467,6 +470,7 @@ async function runBatchMode(
       ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
+      ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
     });
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
@@ -550,7 +554,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       execute: async (rows, cfg, scPath, paid) => {
         const { randomUUID } = await import("node:crypto");
         const { runBatch } = await import("../../corpus-lib/batch/run");
-        const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
+        const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
         const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
           await import("../../corpus-lib/batch/clients");
         const { loadSidecar, saveSidecar, clearSidecar, saveInputJsonl, loadInputJsonl } =
@@ -562,14 +566,9 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const browserFetch = makeBrowserFetch(fetchFn);
         const lookup = (hostname: string) => dnsLookup(hostname, { all: true });
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-        return runBatch(rows, {
-        // So write-phase composes the ADR 0002 tenant-scoped vector id, like
-        // every other writer. Undefined for --tenant global.
-        ...(cfg.vectorize.namespace === undefined
-          ? {}
-          : { vectorNamespace: cfg.vectorize.namespace }),
+        return withBatchCorpus(cfg.databaseUrl, requireTenantRows(cfg.tenant), (corpus) => runBatch(rows, {
           r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
-          vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
+          corpus,
           ...(cfg.anthropicApiKey
             ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
             : {}),
@@ -598,7 +597,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           loadInputJsonl: () => loadInputJsonl(scPath),
           sidecarFilePath: scPath,
           log: (line) => io.stderr(line),
-        });
+        }));
       },
     },
   };
@@ -639,15 +638,14 @@ ${DATABASE_URL_ENV_FLAG_HELP}
                     configured provider's Batch API (OpenAI by default, or
                     Anthropic) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
-                    + Vectorize creds and OPENAI_API_KEY for embeddings;
+                    + a bucket-paired direct PostgreSQL connection and OPENAI_API_KEY;
                     ANTHROPIC_API_KEY only for an Anthropic start/resume.
                     Sidecars pin provider/model/effort; there is no fallback.
                     --execute admits the batch's maximum against the billing
                     tenant's and the global daily caps before claiming anything,
                     and settles actual usage from the results.
   ${BILLING_TENANT_FLAG_HELP}
-                    --batch only. Defaults to a usr_… --tenant; required with
-                    --tenant global. A resume settles against the tenant its
+                    --batch only. Defaults to --tenant; global is refused. A resume settles against the tenant its
                     batch was admitted under.
   --sole-writer     Required with --batch --execute: assert the realtime writer
                     is paused/drained. Eager by-url claims are defense-in-depth,

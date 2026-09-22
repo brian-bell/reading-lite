@@ -113,8 +113,8 @@ export class AttemptIo {
 // reading also serves its latest attempt's bytes. So: sweep only when the
 // reading is gone or points somewhere else.
 export async function discardUnreferencedContent(
-  store: PgReadingStore,
-  content: ContentStore,
+  store: Pick<PgReadingStore, "contentKeys">,
+  content: Pick<ContentStore, "deletePrefix">,
   attempt: Pick<ProcessReadingArgs, "id" | "keyPrefix" | "attemptId">,
 ): Promise<void> {
   const prefix = `${attempt.keyPrefix}/${REVISIONS_PREFIX}${resolveAttemptId(attempt)}/`;

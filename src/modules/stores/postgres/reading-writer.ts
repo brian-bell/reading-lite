@@ -58,6 +58,8 @@ export interface NewAttempt {
   summary: ProcessingAttemptSummary;
   // The queue message body, kept as durable job intent.
   payload: unknown;
+  // Offline provider batches have an attempt, but no realtime queue job.
+  offline?: boolean;
   // Present when the content is captured before processing (markdown import).
   content?: AttemptContentKeys;
 }
@@ -212,6 +214,9 @@ export class PgReadingWriter {
       if (row.active_attempt?.id !== seen.active_attempt?.id) return { kind: "conflict" };
       const current = await new PgReadingStore(tx, this.tenantId).loadReadingById(next.id);
       if (!current || JSON.stringify(current.manifest) !== JSON.stringify(seen)) return { kind: "changed" };
+      if (attempt.offline && !(await this.resolveUrlOwnership(tx, { id: next.id, urlHash: next.url_hash }, true))) {
+        return { kind: "conflict" };
+      }
       await this.updateReading(tx, next);
       await this.insertAttempt(tx, next.id, attempt);
       return { kind: "started" };
@@ -319,7 +324,7 @@ export class PgReadingWriter {
   async fail(
     ref: AttemptRef,
     failed: Manifest,
-    opts: { allowLastAttempt: boolean; now: string; jobState?: "done" | "dead" },
+    opts: { allowLastAttempt: boolean; now: string; jobState?: "done" | "dead"; releaseUrl?: boolean },
   ): Promise<CommitOutcome> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, ref.id);
@@ -333,6 +338,9 @@ export class PgReadingWriter {
       } else {
         await this.updateReading(tx, failed);
         await this.deleteEmbedding(tx, ref.id);
+      }
+      if (!isPublished(row) && opts.releaseUrl) {
+        await tx.execute("DELETE FROM reading_urls WHERE tenant_id = $1 AND reading_id = $2 AND url_hash = $3", [this.tenantId, ref.id, failed.url_hash]);
       }
       if (failed.last_attempt) await this.finishAttempt(tx, ref.id, failed.last_attempt, opts.jobState ?? "done");
       return { committed: true, published: false };
@@ -649,6 +657,7 @@ export class PgReadingWriter {
         attempt.content?.rawKey ?? null, attempt.content?.extractedKey ?? null,
       ],
     );
+    if (attempt.offline) return;
     await tx.query(
       `INSERT INTO reading_jobs (tenant_id, reading_id, attempt_id, state, payload, created_at, updated_at)
        VALUES ($1, $2, $3, 'queued', $4::jsonb, $5, $5)

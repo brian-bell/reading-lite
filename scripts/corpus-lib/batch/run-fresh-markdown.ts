@@ -5,13 +5,12 @@ import {
   type BatchRunDeps,
   type BatchRunResult,
 } from "./run";
-import { r2ReadDeps } from "./r2-reads";
 import { prepareFreshMarkdown, type FreshDisposition } from "./prepare-fresh-markdown";
 import { activateFreshTargets } from "./activation-phase";
 
 // The fresh-markdown bulk path reuses the whole batch tail (similar → submit →
-// poll → write); it only adds `newId` for minting unclaimed-URL readings (R2 read
-// helpers are derived from deps.r2) and an optional `limit` that caps how many
+// poll → write); it adds `newId` for minting unclaimed-URL readings
+// and an optional `limit` that caps how many
 // readings are actually submitted.
 export interface FreshMarkdownRunDeps extends BatchRunDeps {
   newId(): string;
@@ -41,7 +40,7 @@ export async function runFreshMarkdownBatch(
 
   const base = await runBatchPipeline(async () => {
     const plan = await prepareFreshMarkdown(articles, {
-      ...r2ReadDeps(deps.r2),
+      ...deps.corpus,
       newId: deps.newId,
       newAttemptId: deps.newAttemptId ?? newBatchAttemptId,
       now: deps.now,
@@ -55,6 +54,7 @@ export async function runFreshMarkdownBatch(
     activateExtracted: (targets, identity) =>
       activateFreshTargets(targets, {
         r2: deps.r2,
+        corpus: deps.corpus,
         identity,
         now: deps.now,
         saveSidecar: deps.saveSidecar,
