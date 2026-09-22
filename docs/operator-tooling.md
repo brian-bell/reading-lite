@@ -39,7 +39,8 @@ gh351 and the later slices read this vocabulary.
 The identity is over **inventory rows, not files on disk**:
 
 - 44 rows, one per file in `scripts/ops-lib/commands/` at the time of this slice.
-- 20 port + 0 Worker endpoint + 8 retire now + 1 retire in #351 + 15 unchanged = 44.
+- 18 port + 0 Worker endpoint + 8 retire now + 1 retire in #351 + 17 unchanged = 44.
+- Completed ports marked **ported** below still count in the port total.
 - Eight files are deleted, so `ls scripts/ops-lib/commands/` reads **36**
   afterwards. Checking 44 against the directory listing is the wrong check.
 
@@ -60,14 +61,20 @@ themselves belong to the slices named in the table.
 - `scripts/account-lib/vectors.ts`: `bareRepairAction` and `repairBareVector`,
   which were `account audit-bare-vectors`'s repair machinery and had no other
   caller. `enumerateNamespace` stays — the residue scan uses it.
-- `scripts/account-lib/residue.ts`: the `vector_ledger` and `ledger_vectors`
-  sources. The `listed_vectors` and `d1.*` sources are deliberately left as
-  they are; reading-lite-gh347.4.3 owns rewriting those.
+- `scripts/account-lib/residue.ts`: ledger sources were removed in 4.6. Slice
+  4.3 replaces the frozen list read with PostgreSQL reading/embedding observations
+  and names control-plane sources `pg.*`. Legacy namespace enumeration remains
+  independent evidence until Vectorize retirement.
 - `scripts/ops-lib/commands/staging-prepare-context.ts` and
-  `scripts/staging-lib/context-copy.ts`: the destination-occupancy guard read a
-  `vector_ledger` query. It now reads the destination list index that
-  `prepareContextCopy` already loads, and the plan artifact's `ledgerIds` field
-  is renamed `readingIds`. reading-lite-gh347.4.3 moves that read to `readings`.
+  `scripts/staging-lib/context-copy.ts`: slice 4.3 checks destination IDs and URL
+  ownership in PostgreSQL. Its v2 artifact retains `readingIds` and carries row
+  payloads, embeddings and referenced content, with no R2 metadata or Vectorize
+  dependency.
+
+The original inventory incorrectly assigned a manifest-layout read to `extract
+agent` and a D1 connection to `system lease-clear`. Both already used their API
+surfaces. Correcting those verdicts moves two rows from port to unchanged; it
+does not retire either command.
 
 The D1 migrations that created the ledger (`0010`, `0012`) and their tests are
 left in place: they are that database's schema history, and gh351 removes the
@@ -82,9 +89,9 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
 | `account audit-bare-vectors` | `account-audit-bare-vectors.ts` | `index/list.json`, R2 attempt keys, and the D1 `vector_ledger` through `scripts/account-lib/vector-ledger.ts`, hunting a vector with no reading behind it | **retire now** | A bare vector is unrepresentable. `reading_embeddings` has a foreign key to `readings`, so the condition it hunts cannot occur, and the ledger it queries is a table migration 0003 deliberately never creates. |
-| `account residue-scan` | `account-residue-scan.ts` | The teardown gate: R2 prefixes plus D1 sources, two of which (`vector_ledger`, `ledger_vectors`) hit the absent ledger while `listed_vectors` counts `index/list.json` | **port** | The gate is load-bearing for teardown and has to keep answering. reading-lite-gh347.4.3 rewrites its source set onto PostgreSQL: the ledger sources go, `listed_vectors` becomes a count of ready readings' embeddings, and the `d1.*` sources become `pg.*`. |
+| `account residue-scan` | `account-residue-scan.ts` | PostgreSQL corpus/control-plane rows, tenant R2 prefixes, retained legacy Vectorize evidence | **ported** | Slice 4.3 preserves independent findings and visibility limits. Missing ready embeddings are diagnostics; row presence is residue. It observes deletion state and never authorizes teardown. |
 | `account sweep-wipe-prefix` | `account-sweep-wipe-prefix.ts` | The `wipe/{tenantId}/progress.json` R2 prefix, plus a control-plane `wipe_progress` query offered as evidence in its pre-delete briefing | **retire in #351** | It is the tool that proves the prefix is empty before gh351 deletes it; a deletion gate that lost its in-flight-wipe evidence would be more dangerous than one that was ported. See [below](#account-sweep-wipe-prefix-1). |
-| `account wipe` | `account-wipe.ts` | `users.status` and `wipe_progress` over wrangler D1 | **port** | It already read a database rather than the R2 progress object, so this is D1 to PostgreSQL and nothing else. reading-lite-gh347.4.3 owns it; the deletion rules in `docs/operations.md` are unchanged. |
+| `account wipe` | `account-wipe.ts` | `users.status` and `wipe_progress` in PostgreSQL through `accountRemote` | **ported** | Slice 4.7 moved its handle and closes the session; 4.3 verifies the existing path. Deletion rules are unchanged. |
 
 ### corpus
 
@@ -132,14 +139,14 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `extract agent` | `extract-agent.ts` | Drives a local browser extraction, deriving the R2 content key from the manifest layout | **port** | That derivation is its only storage read, and it is one of the last two manifest-layout readers. reading-lite-gh347.4.3 takes the content key from the reading's row instead. |
+| `extract agent` | `extract-agent.ts` | Reading API list responses and local browser extraction; submits Markdown through the API | **unchanged** | Its storage seam is the reading API. There is no direct R2 content-key derivation to port. |
 | `extract probe` | `extract-probe.ts` | Fetches a URL and reports what egress sees | **unchanged** | A pure network probe, with no corpus read at all. |
 
 ### founder
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `founder bootstrap` | `founder-bootstrap.ts` | Control-plane founder rows, already through `--database-url-env` and `sqlFromConnectionString` | **unchanged** | Verified rather than assumed: it is already on a direct connection. The dead `makeWranglerD1` left behind in `scripts/lib/founder-bootstrap.ts` is removed by reading-lite-gh347.4.3, not by a change to this command. |
+| `founder bootstrap` | `founder-bootstrap.ts` | Control-plane founder rows, already through `--database-url-env` and `sqlFromConnectionString` | **unchanged** | Verified rather than assumed: it is already on a direct connection. The dead `makeWranglerD1` left behind in `scripts/lib/founder-bootstrap.ts` was removed by reading-lite-gh347.4.3, not by a change to this command. |
 
 ### import
 
@@ -162,7 +169,7 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `staging prepare-context` | `staging-prepare-context.ts` | Copies manifests, by-url pointers and `index/list.json` from production into the staging bucket | **port** | The second of the two manifest-layout readers. reading-lite-gh347.4.3 copies rows plus the R2 content they reference. |
+| `staging prepare-context` | `staging-prepare-context.ts` | PostgreSQL readings, ownership, current revision and embeddings; referenced R2 bytes and destination preconditions | **ported** | Slice 4.3 emits a private v2 packet of row payloads and content. Execution only writes local files; application is separately authorized. |
 | `staging setup` | `staging-setup.ts` | Provisions the staging bucket, queues and config | **port** | reading-lite-gh347.4.8 adds the staging database alongside them and runs `ops db migrate` against it. |
 | `staging smoke` | `staging-smoke.ts` | Drives the staging origin over HTTP and checks provider outcomes | **unchanged** | HTTP against the deployed staging Worker; reading-lite-gh347.4.8 verifies it passes rather than porting it. |
 | `staging teardown` | `staging-teardown.ts` | Removes what `staging setup` created | **port** | It is setup's mirror image, so it has to remove the staging database too or the two drift. reading-lite-gh347.4.8 owns both halves. |
@@ -172,9 +179,9 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `system lease-clear` | `system-lease-clear.ts` | Clears a paid-work lease, resolving its handle through `scripts/system-lib/policy.ts` and so through `controlPlaneDbForBucket` on wrangler D1 | **port** | It writes control-plane state the Worker no longer reads from D1. It follows `policy.ts` onto the direct connection in reading-lite-gh347.4.3. |
-| `system policy` | `system-policy.ts` | Writes spend caps through `scripts/system-lib/policy.ts` on wrangler D1 | **port** | The most dangerous kind of failure, because it succeeds: a cap the operator believes is set is written to a database no Worker binding reads. reading-lite-gh347.4.3. |
-| `system status` | `system-status.ts` | Reads policy and spend status through the same D1 handle | **port** | It reports a frozen policy today. Ported in reading-lite-gh347.4.3 alongside `system policy`, since both resolve through `policy.ts`. |
+| `system lease-clear` | `system-lease-clear.ts` | Private Worker service binding for lease observation and fenced clearing | **unchanged** | It holds no control-plane SQL. Importing environment validation from policy.ts does not make it a D1 consumer. |
+| `system policy` | `system-policy.ts` | Live PostgreSQL policy through `policyDb` and the operator database pairing | **ported** | Slice 4.7 moved the shared handle and session lifetime. Slice 4.3 verifies it rather than repeating the port. |
+| `system status` | `system-status.ts` | Live PostgreSQL policy plus private Worker spend status | **ported** | Uses the same connection pairing and close discipline as system policy. |
 
 ## Skills
 

@@ -1,4 +1,4 @@
-/** Strict operator REST adapter. Bucket fixes D1, Vectorize and queue pairing;
+/** Strict operator REST adapter. Bucket fixes PostgreSQL, legacy Vectorize and queue pairing;
  * no environment-variable index override can silently redirect an audit.
  * No Worker HTTP/admin surface and no production dependency is added.
  */

@@ -53,4 +53,13 @@ describe("sqlFromConnectionString transactions", () => {
     await after;
     expect(await sql.query("SELECT v FROM queued_tx")).toEqual([{ v: "after" }]);
   });
+  it("holds a read-only repeatable snapshot for context export", async () => {
+    sql = sqlFromConnectionString(testDatabaseUrl());
+    await sql.transaction(async tx => {
+      expect(await tx.query("SHOW transaction_isolation")).toEqual([{ transaction_isolation: "repeatable read" }]);
+      expect(await tx.query("SHOW transaction_read_only")).toEqual([{ transaction_read_only: "on" }]);
+    }, { readOnly: true, repeatableRead: true });
+    await expect(sql.transaction(tx => tx.execute("DELETE FROM readings WHERE false"), { readOnly: true, repeatableRead: true })).rejects.toThrow("read-only");
+  });
+
 });

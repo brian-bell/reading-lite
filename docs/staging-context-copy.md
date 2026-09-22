@@ -2,103 +2,126 @@
 
 `staging prepare-context` prepares production reading fixtures for a staging
 measurement. It reads production/staging state and materializes local payloads;
-**it never writes Cloudflare data, calls a provider, enqueues, or deploys**.
-Source bucket/index are fixed to `reading-lite`; destination bucket/index are
-fixed to `reading-lite-staging`. Source/destination tenants must be explicit and
-distinct. The selected staging tenant must be active and paid work disabled.
+**it never writes remote data, calls a provider, enqueues, or deploys**.
+The source bucket/database pairing is production (`reading-lite`); destination
+is staging (`reading-lite-staging`). Tenants must be explicit and distinct.
+The staging tenant must be active and paid work disabled.
 
-This is artifact preparation, not an automated remote copier. Applying the
-artifact's writes requires separate authorization and the revalidation/ordering
-below. No production dependency or public administration endpoint is added.
+This prepares a packet, not an automated remote copier. Applying its writes
+requires separate authorization and the revalidation/ordering below.
 
 ## Prepare and inspect
 
 Input JSON contains `ids` (1–200 unique reading IDs to seed) and `targets`
-(up to 200 `{id, contentSha256, markdownSha256?}` measurement inputs). Pin
-`markdownSha256` when reproducing a frozen cohort. Seed/target overlap becomes
+(up to 200 unique `{id, contentSha256, markdownSha256?}` measurement inputs).
+Pin `markdownSha256` to reproduce a frozen cohort. Seed/target overlap becomes
 `reprocess` under the same ID; other targets become `import`, preserving their
 canonical URLs. New import IDs are recorded at execution, not invented here.
 
 ```sh
-# Plan only: reads and prints counts/preconditions; writes no output files.
+# Direct PostgreSQL connections; never print these values or pass them as flags.
+source ~/.config/reading-lite/neon.env
+# Uses NEON_MAIN_DATABASE_URL / NEON_REHEARSAL_DATABASE_URL, or the paired
+# PRODUCTION_DATABASE_URL / STAGING_DATABASE_URL variables.
+
+# Plan only: read and print counts/preconditions, without writing files.
 npm run ops -- staging prepare-context \
   --source-tenant usr_SOURCE --tenant usr_STAGING \
   --input /private/path/selection.json --corpus-vars /private/path/.corpus.vars
 
-# Authorized LOCAL materialization only; output directory must not exist.
+# Local materialization only; output directory must not exist.
 npm run ops -- staging prepare-context \
   --source-tenant usr_SOURCE --tenant usr_STAGING \
   --input /private/path/selection.json --corpus-vars /private/path/.corpus.vars \
   --output-dir /private/path/context-packet --execute
 ```
 
+The existing operator bucket/connection-variable pairing selects the databases.
+Both sessions close on success or failure, including local-save errors. Source
+and destination each supply a read-only repeatable snapshot, released before
+R2 reads. The snapshots are independent observations, not a cross-database lock.
+
 Wrangler supplies Cloudflare read authorization. Matching-account S3 inventory
 credentials from the selected `.corpus.vars` (or environment) provide complete
-prefix checks. The observed REST empty-list response omits pagination metadata;
-this command does not reinterpret that missing metadata as an empty prefix.
-Read transports reject remote mutation methods, apart from Vectorize's explicit
-read-only `get_by_ids` POST. No secret values are included in the packet.
+destination prefix checks. Read transports reject remote mutation methods.
+The packet contains no database connection strings or authorization material.
 
-The planner checks source ownership pointers, ready manifests, raw hashes/sizes,
-extracted sizes, vector identity/dimensions/namespace and canonical URL. Title/TLDR differences
-between indexed metadata and manifests are listed in `metadataDrift`; the packet
-preserves indexed metadata because that is what the hosted summarizer reads. It
-does not repair production drift or substitute manifest text into the vectors. It
-rejects destination list, pointer, prefix, ledger-ID, or vector collisions. Ready
-manifests with historical expired attempt markers use the existing read-time
-staleness projection at 900 seconds; fresh active attempts are refused. Old
-attempt journals, checkpoints, and last-attempt references are not copied.
-Source hashes always identify original stored bytes, including projected
-manifests. This affects only the local staging fixture payload, never production.
+## Source and destination checks
 
-## Packet contents
+The planner uses `PgReadingStore` for the same reading projection, URL owner
+and current content keys as the runtime. It refuses non-ready readings, a
+mismatched URL owner, fresh active attempts, invalid hashes/sizes, unsafe keys,
+and missing or malformed seed embeddings (1536 finite dimensions). Historical
+expired ready attempts use the existing `applyStaleness/900s` projection;
+active/last attempt references and old checkpoints are omitted from the packet.
+Source row fingerprints identify the original observation before that projection.
 
-- `plan.json`: exact rooted destination keys; content types; payload SHA256s;
-  source keys/hashes; destination-absence preconditions; tenant-rewritten vectors;
-  ledger IDs; expected staging list ETag and SHA256; merged-list blob; and target
-  import/reprocess mapping with frozen Markdown blobs.
-- `blobs/<sha256>`: binary-faithful raw captures, Markdown, pointer/manifest/list
-  payloads, and target Markdown. Identical bytes share a blob.
+Content keys resolve from the current revision, then the latest capturing
+attempt, then the legacy spelling under the stored prefix. Imported prefixes
+are preserved, not reconstructed from creation time. Every key must be a safe
+relative key under that reading's prefix. Historical revisions and attempts are
+not copied. `contentKeysFor`, the deletion helper that enumerates all historical
+content, is deliberately not used here.
+
+Seed embeddings come from `reading_embeddings`. Their values are preserved;
+the hosted similarity query gets title/TLDR/URL from `readings`, so there is no
+separate Vectorize metadata to copy or reconcile. Destination seed and target
+IDs, URLs, ownership slots and content prefixes must all be unoccupied. Existing
+unrelated staging rows remain untouched.
+
+## Version-2 packet contents
+
+- `plan.json`: fixed source/destination identities; `readingIds`; destination
+  `rows` in the shared `ReadingRows` mapping (reading, ownership flag, selected
+  revision, ordered relationships and embedding); rooted content `objects`;
+  `sourceRowChecks`; source content hashes; destination absence checks; target
+  import/reprocess mapping; and the application order.
+- `blobs/<sha256>`: binary-faithful raw captures, extracted content and target
+  Markdown. Identical bytes share a blob.
 - `SHA256SUMS`: plan and every blob checksum. Verify all before application.
 
-**This packet contains private article content, URLs, summaries, and vectors.**
-Keep it outside git (for issue 193, under `.summarizer-comparisons/`). New packet
-folders are mode 0700 and files 0600. Existing output folders are refused. An
-interrupted local save is incomplete unless `plan.json`, all referenced blobs,
-and the complete checksum file validate; use a new output directory on retry.
+The format is `reading-lite-staging-context-v2`. It replaces v1's vectors,
+metadataDrift, list CAS payload and R2 manifest/pointer objects. A v1 application
+procedure cannot consume it. Old packets and the dated evidence below remain
+historical; do not reinterpret or reapply them as v2.
+
+`sourceRowChecks` binds each selected ID to `contextFingerprint` of its parsed
+`SourceContext`: the original manifest projection, stored prefix, URL owner,
+revision ID, resolved content keys and seed embedding. JSON object keys are
+sorted recursively before hashing; arrays retain their order. `includesEmbedding`
+is false for import-only targets, whose embedding is not used. Recompute with
+`readContextRows` and `contextFingerprint` using the same seed/target selection.
+`sourceChecks` hashes original R2 bytes, including target-only Markdown/raw
+checks; every copied content object has its original source key and hash.
+
+**This packet contains private article content, URLs, summaries and embeddings.**
+Keep it outside git. New packet folders are mode 0700 and files 0600. Existing
+output folders are refused. An interrupted local save is incomplete unless
+`plan.json`, all referenced blobs and the full checksum file validate; use a new
+output directory on retry.
 
 ## Application contract after separate approval
 
-1. Verify packet checksums, exact tenant/environment, current active tenant and
+1. Verify checksums, exact tenants/environments, current active staging tenant,
    disabled paid-work policy, queue/lease state, and an exclusive staging writer
-   window. Re-read every source hash and all destination-absence preconditions,
-   including target pointers/prefixes and ledger rows. Re-read the source vectors
-   and compare values/metadata with the planned vectors after reversing only
-   the explicit tenant-ID/namespace rewrite. Abort on any drift. A
-   prepared artifact is not an isolation lock or a source snapshot guarantee.
-2. Insert the seed IDs into the destination tenant's vector ledger before any
-   vector upsert. Refuse conflicting or delete-submitted rows. Never change
-   production ledger state or resurrect a deleting tenant.
-3. Create raw/Markdown/manifests using conditional absent-only writes. Do not
-   overwrite destination objects. Preserve bytes and the planned content types.
-4. Upsert the planned existing vector values with staging namespace, composed
-   staging vector IDs, and staging `tenant_id` metadata. Verify values, namespace,
-   metadata, and query visibility. Compare each object with its planned payload;
-   declared title/TLDR drift mirrors production and is not silently repaired. An asynchronous mutation acknowledgement alone
-   is not completion. Never delete bare IDs or touch retained legacy vectors.
-5. Create by-ID/by-URL pointers conditionally. CAS the merged list against the
-   recorded ETag and body hash using the existing R2 conditional-write adapter.
-   If the list changed, stop and prepare/review a new merge; never blindly replace
-   it. All original list rows remain in the planned merged list.
-6. Verify final fixture content/pointers/list/vector consistency. Only then
-   enable any separately approved paid run. On partial failure, retain evidence
-   and report exact created state; this command has no automatic rollback,
-   cleanup, or resumable remote application engine.
+   window. Re-read all source row/embedding fingerprints, content hashes and
+   destination absence preconditions, including import-only targets. Abort on
+   drift. The preparation snapshot does not reserve rows or lock either system.
+2. Create the planned destination content with conditional absent-only writes.
+   Preserve bytes and content types. Do not overwrite existing objects.
+3. In one PostgreSQL transaction, recheck and lock the active tenant and disabled
+   policy; recheck destination ID/URL absence; insert the reading, URL ownership,
+   selected revision, ordered relationships and embedding rows. Keep the deferred
+   current-revision FK intact. Preserve relationship presence flags and dangling
+   targets as the runtime does. Use insert primitives, not `writeReadingRows`'s
+   whole-reading replacement: application must never delete an existing row.
+4. Verify fixture content, runtime reading projections, URL ownership and exact
+   similarity. Only then start any separately approved paid run. On partial
+   failure, retain evidence and report the exact created state; there is no
+   automatic cleanup, rollback across R2/PostgreSQL, or resumable apply engine.
 
-The artifact does not include executable SQL or an automatic apply command.
-Its ordered mutation manifest is reviewable and can be applied through existing
-operator adapters after approval. This separation keeps a local preparation
-request from becoming a remote write authorization.
+The artifact does not contain executable SQL or an automatic apply command.
+There are no vector-ledger, Vectorize upsert, pointer or list-index steps.
 
 ## Current issue 193 status
 

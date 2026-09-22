@@ -57,6 +57,8 @@ export interface SqlQuery {
 export interface TransactionOptions {
   // SET TRANSACTION READ ONLY: any write inside fails closed.
   readOnly?: boolean;
+  // Multi-query exports must observe one revision/ownership/embedding snapshot.
+  repeatableRead?: boolean;
 }
 
 export interface Sql extends SqlQuery {
@@ -105,7 +107,7 @@ export function sqlFromConnectionString(connectionString: string): Sql {
     execute,
     transaction(run, opts = {}) {
       return serialized(async () => {
-        await query(opts.readOnly ? "BEGIN READ ONLY" : "BEGIN");
+        await query("BEGIN" + (opts.repeatableRead ? " ISOLATION LEVEL REPEATABLE READ" : "") + (opts.readOnly ? " READ ONLY" : ""));
         try {
           const out = await run({ query, execute });
           await query("COMMIT");
