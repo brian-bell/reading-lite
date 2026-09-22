@@ -141,10 +141,12 @@ describe("cloud-agent-install", () => {
     }
     const [args, deps] = founderBootstrap.mock.calls[0] as [
       { env: string; databaseUrlEnv?: string },
-      { envVars: Record<string, string | undefined> },
+      { envVars: Record<string, string | undefined>; stagingBootstrapOpen?: boolean },
     ];
-    // The bootstrap resolves the database through the pairing itself.
+    // The bootstrap resolves the database through the pairing itself, and
+    // enforces the #349 gate itself, so the installer hands the gate over.
     expect(args).toEqual({ execute: true, env: "staging", confirmProduction: false });
+    expect(deps.stagingBootstrapOpen).toBe(true);
     expect(deps.envVars.FOUNDER_EMAIL).toBe(resolveFounderEmail({}));
   });
 

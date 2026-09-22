@@ -42,6 +42,8 @@ export interface FounderBootstrapDeps {
   nowMs: number;
   write: (line: string) => void;
   openDb: (databaseUrl: string) => Promise<OpenedControlPlane>;
+  /** Defaults to STAGING_FOUNDER_BOOTSTRAP_OPEN. */
+  stagingBootstrapOpen?: boolean;
 }
 
 // A direct connection, never Hyperdrive: the bootstrap's advisory lock and
@@ -69,11 +71,15 @@ export function founderDatabaseUrl(
 
 // Staging's database is the #349 rehearsal target. The #348 importer refuses a
 // target holding any application row, and a bootstrapped founder would
-// conflict with the imported one. There is no code gate; the rule is stated
-// wherever staging bootstrap comes up.
+// conflict with the imported one.
 export const STAGING_BOOTSTRAP_PROHIBITION =
   "Do not run founder bootstrap against staging before the #349 import: the #348 importer " +
   "refuses a database that already holds application rows.";
+
+// Closed until the #349 import: runFounderBootstrap refuses a staging write
+// (a plan only reads, and is allowed), and the cloud-agent installer skips
+// CLOUD_AGENT_FOUNDER_BOOTSTRAP=1. #349 flips this after the import.
+export const STAGING_FOUNDER_BOOTSTRAP_OPEN = false;
 
 const ENV_NAMES = new Set<BootstrapEnvName>(["local", "staging", "production"]);
 
@@ -150,6 +156,11 @@ export async function runFounderBootstrap(
   } catch (error) {
     if (!(error instanceof UsageError)) throw error;
     deps.write(`${error.message}\n`);
+    return { exitCode: 2 };
+  }
+
+  if (args.env === "staging" && args.execute && !(deps.stagingBootstrapOpen ?? STAGING_FOUNDER_BOOTSTRAP_OPEN)) {
+    deps.write(`refusing staging write: ${STAGING_BOOTSTRAP_PROHIBITION} #349 lifts this gate.\n`);
     return { exitCode: 2 };
   }
 

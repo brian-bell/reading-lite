@@ -82,7 +82,8 @@ or .dev.vars / .stg.vars / .prd.vars. The control plane is PostgreSQL
 (ADR 0005); apply its migrations first with \`npm run ops -- db migrate\`
 (staging: \`npm run ops -- staging setup\` migrates it).
 
-${STAGING_BOOTSTRAP_PROHIBITION}`,
+${STAGING_BOOTSTRAP_PROHIBITION} Until #349 lifts the gate, a staging
+--execute exits 2 before opening the database; a staging plan still runs.`,
   defaultDeps: (io: CommandIo): FounderBootstrapCommandDeps => ({
     io,
     resolveEnvVars,

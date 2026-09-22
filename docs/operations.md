@@ -1133,10 +1133,12 @@ Do not run `ops founder bootstrap --env staging`, set
 `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`, or run `ops staging smoke --execute`
 against PostgreSQL-backed staging before the #349 import. The importer refuses
 a target database holding any application row, and a bootstrapped founder
-would conflict with the imported one. The cloud-agent installer enforces this:
-`STAGING_FOUNDER_BOOTSTRAP_OPEN` in `scripts/cloud-agent-install.ts` stays
-`false` until #349 flips it, so `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` is skipped
-with a log line. Cloud agents supply the database as the `STAGING_DATABASE_URL`
+would conflict with the imported one. Founder bootstrap enforces this:
+`STAGING_FOUNDER_BOOTSTRAP_OPEN` in `scripts/lib/founder-bootstrap.ts` stays
+`false` until #349 flips it, so a staging `--execute` exits 2 before opening
+the database (a plan still runs), and the cloud-agent installer skips
+`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` with a log line. The staging smoke rule is
+not enforced in code. Cloud agents supply the database as the `STAGING_DATABASE_URL`
 Cursor secret, which is never written to `.stg.vars`. `ops founder bootstrap`
 resolves staging's and production's databases through the same pairing as the
 other operator commands, so `--database-url-env` naming another environment's
