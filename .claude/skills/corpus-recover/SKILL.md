@@ -82,9 +82,12 @@ npm run ops -- corpus recover --tenant "$TENANT" --index .../index.json --batch 
   `corpus-audit` may label the readings "stranded" if they outlive
   `PENDING_TTL_SECONDS` — benign; the sidecar is the source of truth and the
   terminal writes land on completion.
-- **Credentials:** needs R2 (S3) + Vectorize creds from `.corpus.vars`
-  (`CORPUS_*`) plus `ANTHROPIC_API_KEY` /
-  `OPENAI_API_KEY` / `ANTHROPIC_MODEL` from `.dev.vars`/`.prd.vars`.
+- **Credentials:** needs the R2 (S3) keys from `.corpus.vars`
+  (`CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`, `CORPUS_R2_SECRET_KEY`),
+  the bucket-paired direct PostgreSQL variable from
+  `~/.config/reading-lite/neon.env`, and `OPENAI_API_KEY` (plus
+  `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` for an Anthropic batch) from
+  `.dev.vars`/`.prd.vars`. No Vectorize credential is needed.
 
 ## Prerequisites
 
