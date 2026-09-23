@@ -179,7 +179,7 @@ describe("processReading — content sweep on early return", () => {
         claimMissingUrl: true,
       },
     );
-    expect(published).toEqual({ committed: true, published: true });
+    expect(published).toEqual({ committed: true, published: true, superseded: null });
 
     // The queue redelivers the message (the consumer crashed before its ack).
     await processReading(args(), env(), services(), readings.tenant);

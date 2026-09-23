@@ -68,6 +68,11 @@ export interface Env {
   AUTH_RATE_IP_MAX?: string;
   AUTH_RATE_GLOBAL_WINDOW_MS?: string;
   AUTH_RATE_GLOBAL_MAX?: string;
+  // How long a usage guard instance may reuse a tenant_limits or
+  // system_policy concurrency row (src/control-plane/policy-cache.ts). Unset
+  // or invalid means every RPC reads it afresh, which the test environment
+  // relies on.
+  GUARD_POLICY_CACHE_MS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
   X_API_BEARER_TOKEN?: string;

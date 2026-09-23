@@ -1,5 +1,5 @@
 import { retryDepsFromEnv } from "./modules/http-retry";
-import { buildKeyPrefix } from "./modules/stores/layout";
+import { buildKeyPrefix, rawExtFromContentType } from "./modules/stores/layout";
 import {
   SIMILAR_TOP_K,
   SIMILARITY_FLOOR,
@@ -153,7 +153,7 @@ async function runAttempt(
 
     await runStage(attempt, io, services, "write_raw", async () => {
       if (!(await readingCanWriteAttemptArtifacts(io, args))) return;
-      await io.writeRaw(extToken(extracted.content_type), extracted.raw, extracted.content_type);
+      await io.writeRaw(rawExtFromContentType(extracted.content_type), extracted.raw, extracted.content_type);
     });
     if (extracted.markdown) {
       await runStage(attempt, io, services, "write_extracted", async () => {
@@ -162,7 +162,7 @@ async function runAttempt(
       });
     }
 
-    const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
+    const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${rawExtFromContentType(extracted.content_type)})`;
 
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
@@ -910,6 +910,11 @@ async function publishReady(
     // Purged, or another attempt owns the reading: nothing references what
     // this one captured.
     await io.discardUnreferencedContent().catch((err) => console.error(err));
+  } else if (out.superseded) {
+    // The previous revision's row went with the commit; its bytes go now.
+    // Best effort: the reading is published either way, and a leftover
+    // object is unreachable until the account wipe sweeps the prefix.
+    await io.discardSupersededContent(out.superseded).catch((err) => console.error(err));
   }
   return out;
 }
@@ -1096,16 +1101,6 @@ function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const n = Number(value);
   return Number.isFinite(n) && Number.isInteger(n) ? n : fallback;
-}
-
-function extToken(contentType: string): string {
-  const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
-  if (major === "text/html" || major === "application/xhtml+xml") return "html";
-  if (major === "text/markdown") return "md";
-  if (major === "application/pdf") return "pdf";
-  if (major === "application/json") return "json";
-  if (major.startsWith("text/")) return "txt";
-  return "bin";
 }
 
 export const EMBED_MAX_CHARS = 8000;

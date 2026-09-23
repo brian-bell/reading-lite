@@ -69,9 +69,18 @@ export async function purgeReading(
   if (purged.kind === "not_found") return { kind: "not_found" };
   if (purged.kind === "conflict") return { kind: "conflict", reason: "active_attempt" };
 
-  let objectsDeleted = await deps.content.deletePrefix(purged.keyPrefix);
-  // Second pass: an attempt that was mid-put during the first.
-  objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
+  // The rows are gone, so the reading is purged whatever happens to its
+  // objects: a retry of the DELETE would only find a 404. An R2 failure here
+  // is logged with the prefix for an operator sweep and never fails the
+  // request (invariant 1 above).
+  let objectsDeleted = 0;
+  try {
+    objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
+    // Second pass: an attempt that was mid-put during the first.
+    objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
+  } catch (err) {
+    console.error(`purge ${id}: rows deleted, object sweep failed under ${purged.keyPrefix}/`, err);
+  }
 
   return {
     kind: "purged",

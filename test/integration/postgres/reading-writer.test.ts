@@ -9,7 +9,7 @@ import type { Sql } from "../../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../../src/modules/manifest-drafting";
 import { buildKeyPrefix, r2KeyLayout } from "../../../src/modules/stores/layout";
 import { deleteTenantReadings } from "../../../src/modules/stores/postgres/manifest-rows";
-import { pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
+import { pgReadingStoreFor, type ReadingSnapshot } from "../../../src/modules/stores/postgres/reading-store";
 import { pgReadingWriterFor, type NewAttempt } from "../../../src/modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "../../../src/modules/stores/postgres/similarity-store";
 import type { Manifest, ProcessingAttemptSummary } from "../../../src/schemas/manifest";
@@ -70,9 +70,18 @@ async function publishNew(s: Sql, tenant: TenantContext, id: string, url: string
   return p;
 }
 
-// The reading as intake loads it before deciding on an attempt.
-async function loaded(s: Sql, tenant: TenantContext, id: string): Promise<Manifest> {
-  return (await pgReadingStoreFor(s, tenant).loadReadingById(id))!.manifest;
+// The reading as intake loads it before deciding on an attempt: the manifest
+// and the row version startAttempt checks.
+async function loaded(s: Sql, tenant: TenantContext, id: string): Promise<ReadingSnapshot> {
+  return (await pgReadingStoreFor(s, tenant).loadReadingById(id))!;
+}
+
+async function revisionIds(s: Sql, tenant: TenantContext, id: string): Promise<string[]> {
+  const rows = await s.query<{ id: string }>(
+    "SELECT id FROM reading_revisions WHERE tenant_id = $1 AND reading_id = $2 ORDER BY id",
+    [String(tenant.tenantId), id],
+  );
+  return rows.map((row) => row.id);
 }
 
 async function jobState(s: Sql, tenant: TenantContext, id: string, attemptId: string): Promise<string | undefined> {
@@ -142,33 +151,11 @@ describe("queue-send failure", () => {
       last_attempt: failed,
       error: { code: "QueueSendError", message: "queue down", retryable: true },
     };
-    expect(await writer.failActivation({ id: "rd_send", attemptId: "at_1" }, rolledBack, failed, { contentCaptured: true })).toBe(true);
+    expect(await writer.failActivation({ id: "rd_send", attemptId: "at_1" }, rolledBack, failed)).toBe(true);
 
     // Still the URL's owner, so a resubmit reprocesses this reading in place.
     expect(await pgReadingStoreFor(s, tenant).findOwnerByUrl(p.manifest.url)).toEqual({ id: "rd_send", status: "failed" });
     expect(await jobState(s, tenant, "rd_send", "at_1")).toBe("send_failed");
-  });
-
-  // A re-import whose content put failed must not leave the reading pointing
-  // at objects that never landed: its content stays the previous import's.
-  it("drops the keys of content that never reached R2", async () => {
-    const s = sql();
-    const tenant = await mintTenant();
-    const p = await pendingFor("rd_reimport", "https://example.com/reimport", "at_1");
-    const writer = pgReadingWriterFor(s, tenant);
-    await writer.claimUrl(p.manifest, p.keyPrefix, { ...p.attempt, content: contentFor(p.keyPrefix, "at_1") });
-    const firstFailed = finished(p.attempt.summary, "failed");
-    const failedManifest: Manifest = { ...p.manifest, status: "failed", content_status: "failed", active_attempt: undefined, last_attempt: firstFailed };
-    await writer.fail({ id: "rd_reimport", attemptId: "at_1" }, failedManifest, { allowLastAttempt: true, now: LATER });
-
-    const seen = await loaded(s, tenant, "rd_reimport");
-    const second = { id: "at_2", trigger: "import" as const, status: "running" as const, started_at: LATER };
-    const next: Manifest = { ...seen, status: "pending", active_attempt: second };
-    await writer.startAttempt(next, { summary: second, payload: {}, content: contentFor(p.keyPrefix, "at_2") }, seen);
-    const secondFailed = finished(second, "failed");
-    await writer.failActivation({ id: "rd_reimport", attemptId: "at_2" }, { ...next, status: "failed", active_attempt: undefined, last_attempt: secondFailed }, secondFailed, { contentCaptured: false });
-
-    expect(await pgReadingStoreFor(s, tenant).contentKeys("rd_reimport")).toMatchObject(contentFor(p.keyPrefix, "at_1"));
   });
 
   it("only records the failed attempt on a published reading, keeping a write made since the start", async () => {
@@ -177,16 +164,16 @@ describe("queue-send failure", () => {
     await seedManifest(s, tenant, await readyManifest("rd_judged"), { embedding: axisVector(1) });
     const writer = pgReadingWriterFor(s, tenant);
     const seen = await loaded(s, tenant, "rd_judged");
-    const draft = reprocessPending(seen, { attemptId: "at_re", startedAt: LATER }, LATER);
+    const draft = reprocessPending(seen.manifest, { attemptId: "at_re", startedAt: LATER }, LATER);
     await writer.startAttempt(draft.manifest, { summary: draft.attempt, payload: {} }, seen);
     // The relationship judge rewrites the reading while the send is in flight.
-    const judged = { ...(await loaded(s, tenant, "rd_judged")), novelty_verdict: "duplicate" as const };
+    const judged = { ...(await loaded(s, tenant, "rd_judged")).manifest, novelty_verdict: "duplicate" as const };
     expect(await writer.replacePublishedIf("rd_judged", () => true, judged)).toBe(true);
 
     const failed = finished(draft.attempt, "failed");
-    await writer.failActivation({ id: "rd_judged", attemptId: "at_re" }, { ...seen, last_attempt: failed, updated_at: LATER }, failed, { contentCaptured: true });
+    await writer.failActivation({ id: "rd_judged", attemptId: "at_re" }, { ...seen.manifest, last_attempt: failed, updated_at: LATER }, failed);
 
-    expect(await loaded(s, tenant, "rd_judged")).toEqual({ ...judged, active_attempt: undefined, last_attempt: failed, updated_at: LATER });
+    expect((await loaded(s, tenant, "rd_judged")).manifest).toEqual({ ...judged, active_attempt: undefined, last_attempt: failed, updated_at: LATER });
   });
 });
 
@@ -207,7 +194,7 @@ describe("publish", () => {
       claimMissingUrl: true,
     });
 
-    expect(outcome).toEqual({ committed: true, published: true });
+    expect(outcome).toEqual({ committed: true, published: true, superseded: null });
     const store = pgReadingStoreFor(s, tenant);
     expect((await store.loadReadingById("rd_pub"))!.manifest).toEqual(ready);
     expect(await store.contentKeys("rd_pub")).toMatchObject(contentFor(p.keyPrefix, "at_1"));
@@ -233,7 +220,7 @@ describe("publish", () => {
       claimMissingUrl: true,
     });
 
-    expect(outcome).toEqual({ committed: false, published: false });
+    expect(outcome).toEqual({ committed: false, published: false, superseded: null });
     const store = pgReadingStoreFor(s, tenant);
     expect((await store.loadReadingById("rd_lost"))!.manifest).toEqual(p.manifest);
     expect(await pgSimilarityStoreFor(s, tenant).queryByVectorId("rd_lost", 5)).toBeNull();
@@ -280,7 +267,7 @@ describe("publish", () => {
       { keyPrefix: owner.keyPrefix, content: contentFor(owner.keyPrefix, "at_o"), embedding: axisVector(3), claimMissingUrl: true },
     );
 
-    expect(outcome).toEqual({ committed: true, published: false });
+    expect(outcome).toEqual({ committed: true, published: false, superseded: null });
     expect(await pgSimilarityStoreFor(s, tenant).queryByVectorId("rd_orphan", 5)).toBeNull();
     expect(await pgReadingStoreFor(s, tenant).findOwnerByUrl(owner.manifest.url)).toMatchObject({ id: "rd_owner" });
   });
@@ -321,25 +308,36 @@ describe("reprocessing", () => {
     expect((await pgSimilarityStoreFor(s, tenant).queryByVectorId("rd_keep", 5))).not.toBeNull();
   });
 
-  it("moves an imported reading onto its new revision keys when the reprocess succeeds", async () => {
+  // The reading keeps one revision. The one it replaced loses its row in the
+  // same transaction and its keys come back, so the caller can delete the
+  // objects after the commit.
+  it("moves an imported reading onto its new revision keys when the reprocess succeeds, handing back the superseded keys", async () => {
     const s = sql();
     const tenant = await mintTenant();
     const { manifest, keyPrefix } = await importedReady(s, tenant, "rd_move");
     const writer = pgReadingWriterFor(s, tenant);
+    const [previousRevision] = await revisionIds(s, tenant, "rd_move");
     const draft = reprocessPending(manifest, { attemptId: "at_re", startedAt: LATER }, LATER);
     await writer.startAttempt(draft.manifest, { summary: draft.attempt, payload: {} }, await loaded(s, tenant, "rd_move"));
 
     const ready = await readyFrom(draft.manifest, { source_type: "markdown", content_type: "text/markdown; charset=utf-8" });
-    await writer.publish({ id: "rd_move", attemptId: "at_re", urlHash: manifest.url_hash }, ready, {
+    const out = await writer.publish({ id: "rd_move", attemptId: "at_re", urlHash: manifest.url_hash }, ready, {
       keyPrefix,
       content: { rawKey: layout.revisionRawKey(keyPrefix, "at_re", "md"), extractedKey: layout.revisionExtractedKey(keyPrefix, "at_re") },
       embedding: axisVector(2),
       claimMissingUrl: false,
     });
 
+    expect(out).toEqual({
+      committed: true,
+      published: true,
+      superseded: { rawKey: `${keyPrefix}/raw.html`, extractedKey: `${keyPrefix}/extracted.md` },
+    });
     const store = pgReadingStoreFor(s, tenant);
     expect((await store.loadReadingById("rd_move"))!.manifest.source_type).toBe("markdown");
     expect((await store.contentKeys("rd_move"))!.rawKey).toBe(`${keyPrefix}/revisions/at_re/raw.md`);
+    expect(await revisionIds(s, tenant, "rd_move")).toEqual(["at_re"]);
+    expect(previousRevision).not.toBe("at_re");
   });
 
   it("refuses to start when another attempt activated since the caller looked", async () => {
@@ -351,7 +349,8 @@ describe("reprocessing", () => {
 
     const draft = reprocessPending(p.manifest, { attemptId: "at_second", startedAt: LATER }, LATER);
     // The caller decided on a snapshot with no active attempt.
-    const seen = { ...(await loaded(s, tenant, "rd_busy")), active_attempt: undefined };
+    const snapshot = await loaded(s, tenant, "rd_busy");
+    const seen = { ...snapshot, manifest: { ...snapshot.manifest, active_attempt: undefined } };
     expect(await writer.startAttempt(draft.manifest, { summary: draft.attempt, payload: {} }, seen)).toEqual({ kind: "conflict" });
     expect((await pgReadingStoreFor(s, tenant).loadReadingById("rd_busy"))!.manifest.active_attempt!.id).toBe("at_running");
   });
@@ -364,13 +363,15 @@ describe("reprocessing", () => {
     const { manifest } = await importedReady(s, tenant, "rd_stale");
     const writer = pgReadingWriterFor(s, tenant);
     const seen = await loaded(s, tenant, "rd_stale");
-    expect(await writer.replacePublishedIf("rd_stale", () => true, { ...seen, novelty_verdict: "familiar" })).toBe(true);
+    // A write that changes no manifest field the caller compares by eye
+    // still moves the row version: the check is the row, not the shape.
+    expect(await writer.replacePublishedIf("rd_stale", () => true, { ...seen.manifest, novelty_verdict: "familiar" })).toBe(true);
 
     const draft = reprocessPending(manifest, { attemptId: "at_re", startedAt: LATER }, LATER);
     const started = await writer.startAttempt(draft.manifest, { summary: draft.attempt, payload: {} }, seen);
 
     expect(started).toEqual({ kind: "changed" });
-    expect(await loaded(s, tenant, "rd_stale")).toEqual({ ...seen, novelty_verdict: "familiar" });
+    expect((await loaded(s, tenant, "rd_stale")).manifest).toEqual({ ...seen.manifest, novelty_verdict: "familiar" });
   });
 
   it("re-activates under the same attempt id without failing, keeping a paid checkpoint", async () => {
@@ -382,7 +383,7 @@ describe("reprocessing", () => {
     const ref = { id: "rd_again", attemptId: "at_1" };
     await writer.writeCheckpoint(ref, { embed_source: { tokens: 3 } });
     const failed = finished(p.attempt.summary, "failed");
-    await writer.failActivation(ref, { ...p.manifest, status: "failed", content_status: "failed", active_attempt: undefined, last_attempt: failed }, failed, { contentCaptured: true });
+    await writer.failActivation(ref, { ...p.manifest, status: "failed", content_status: "failed", active_attempt: undefined, last_attempt: failed }, failed);
 
     // The caller could not confirm its activation and tries again, same id.
     const started = await writer.startAttempt(p.manifest, p.attempt, await loaded(s, tenant, "rd_again"));
@@ -486,7 +487,7 @@ describe("purge", () => {
       claimMissingUrl: true,
     });
 
-    expect(late).toEqual({ committed: false, published: false });
+    expect(late).toEqual({ committed: false, published: false, superseded: null });
     expect(await writer.fail(ref, p.manifest, { allowLastAttempt: true, now: LATER })).toEqual({ committed: false, published: false });
     expect(
       await writer.recordAttempt({

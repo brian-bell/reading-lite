@@ -253,6 +253,80 @@ describe("ReadingIntake.importMarkdown", () => {
     });
   });
 
+  // Ordering pin: the content is in R2 before the row that points at it
+  // commits, so no reader ever resolves keys whose objects never landed.
+  it("writes the artifacts under the attempt's keys before the claim commits", async () => {
+    const { intake, reader } = await makeIntake();
+    const url = "https://example.com/import-order";
+    const seenAtClaim: string[] = [];
+    const claim = reader.writer.claimUrl.bind(reader.writer);
+    vi.spyOn(reader.writer, "claimUrl").mockImplementationOnce(async (pending, keyPrefix, attempt) => {
+      for (const key of [attempt.content!.rawKey, attempt.content!.extractedKey!]) {
+        seenAtClaim.push((await (await reader.content.get(key))?.text()) ?? "(missing)");
+      }
+      return claim(pending, keyPrefix, attempt);
+    });
+
+    const out = await intake.importMarkdown(url, MARKDOWN, { email: false });
+
+    expect(out.kind).toBe("activated");
+    expect(seenAtClaim).toEqual([MARKDOWN, MARKDOWN]);
+  });
+
+  it("reports activation_failed, claims nothing and leaves no objects when the content write throws", async () => {
+    const { intake, reader, sent } = await makeIntake();
+    const url = "https://example.com/import-put-fails";
+    const put = reader.content.put.bind(reader.content);
+    // The raw object lands; the extracted one does not.
+    vi.spyOn(reader.content, "put").mockImplementationOnce(put).mockRejectedValueOnce(new Error("R2 put failed"));
+    const claim = vi.spyOn(reader.writer, "claimUrl");
+
+    const out = await intake.importMarkdown(url, MARKDOWN, { email: false });
+
+    expect(out).toEqual({ kind: "unavailable", reason: "activation_failed" });
+    expect(claim).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(0);
+    await expect(reader.urlOwnerId(url)).resolves.toBeNull();
+    expect((await env.READINGS_BUCKET.list()).objects).toEqual([]);
+  });
+
+  it("sweeps the artifacts it wrote when the claim loses to a concurrent owner", async () => {
+    const { intake, reader, sent } = await makeIntake();
+    const url = "https://example.com/import-lost-claim";
+    const claim = reader.writer.claimUrl.bind(reader.writer);
+    // Another submission of the same URL wins between the artifact writes
+    // and this claim; the next pass finds that owner ready and returns it.
+    vi.spyOn(reader.writer, "claimUrl").mockImplementationOnce(async (pending, keyPrefix, attempt) => {
+      await writeOwnedReading(reader, url, { id: "rd_WINNER", status: "ready" });
+      return claim(pending, keyPrefix, attempt);
+    });
+
+    const out = await intake.importMarkdown(url, MARKDOWN, { email: false });
+
+    expect(out).toMatchObject({ kind: "existing", manifest: { id: "rd_WINNER" } });
+    expect(sent).toHaveLength(0);
+    expect((await env.READINGS_BUCKET.list()).objects).toEqual([]);
+  });
+
+  it("leaves a failed owner untouched when a re-import's content write throws", async () => {
+    const { intake, reader, sent } = await makeIntake();
+    const url = "https://example.com/import-over-put-fails";
+    const owner = await writeOwnedReading(reader, url, {
+      id: "rd_FAILED",
+      status: "failed",
+      content_status: "failed",
+      error: { code: "FetchTimeoutError", message: "timeout", failed_at: NOW, retryable: true },
+    });
+    vi.spyOn(reader.content, "put").mockRejectedValue(new Error("R2 put failed"));
+
+    const out = await intake.importMarkdown(url, MARKDOWN, { email: false });
+
+    expect(out).toEqual({ kind: "unavailable", reason: "activation_failed", id: owner.id });
+    expect(sent).toHaveLength(0);
+    expect(await reader.manifest(owner.id)).toEqual(owner.manifest);
+    expect(await reader.content.list(owner.keyPrefix)).toEqual([]);
+  });
+
   it("returns the existing manifest for a ready owner without re-importing", async () => {
     const { intake, reader, sent } = await makeIntake();
     const url = "https://example.com/import-ready";
