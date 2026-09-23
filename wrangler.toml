@@ -280,7 +280,7 @@ max_concurrency = 1
 #
 #   - A healthy wipe always burns one retry on the +120s first-confirmation
 #     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
-#   - A transient D1, R2 or Vectorize error retries without counting either.
+#   - A transient PostgreSQL or R2 error retries without counting either.
 #
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
@@ -541,7 +541,7 @@ max_concurrency = 1
 #
 #   - A healthy wipe always burns one retry on the +120s first-confirmation
 #     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
-#   - A transient D1, R2 or Vectorize error retries without counting either.
+#   - A transient PostgreSQL or R2 error retries without counting either.
 #
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —

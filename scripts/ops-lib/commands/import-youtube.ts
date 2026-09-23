@@ -89,7 +89,7 @@ function shellQuote(value: string): string {
 // worker reading may have been submitted under a different URL form. by-url
 // ownership hashes the stored URL, so this import won't find/upgrade those —
 // it would create a duplicate. Look the variants up and tell the operator to
-// drop any stale one (we don't auto-drop: that's a destructive R2/Vectorize
+// drop any stale one (we don't auto-drop: that's a destructive row and R2
 // operation that belongs to the corpus drop command).
 async function warnNoncanonicalOwners(
   deps: ImportYoutubeDeps,
