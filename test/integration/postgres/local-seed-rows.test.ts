@@ -45,7 +45,7 @@ describe("the local fixture pack as PostgreSQL rows", () => {
   });
 
   it.each(plan.fixtures.map((fixture) => [fixture.name, fixture]))("loads %s as its manifest", async (_name, fixture) => {
-    expect(await postgres.loadReadingById(fixture.id)).toEqual({ keyPrefix: fixture.keyPrefix, manifest: fixture.manifest });
+    expect(await postgres.loadReadingById(fixture.id)).toEqual({ keyPrefix: fixture.keyPrefix, manifest: fixture.manifest, version: expect.any(String) });
   });
 
   it.each(plan.fixtures.map((fixture) => [fixture.name, fixture]))("lists %s's attempt log, newest first", async (_name, fixture) => {

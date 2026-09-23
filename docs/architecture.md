@@ -147,7 +147,12 @@ observed case in the pre-migration corpus).
 Content a failed or superseded attempt captured is deleted once nothing
 references it. `AttemptIo.discardUnreferencedContent` checks the reading's
 current keys first, because a redelivered message for an attempt that already
-published reaches the same "may not write" exits with the live prefix.
+published reaches the same "may not write" exits with the live prefix. A
+reading keeps one revision: `publish` deletes the row of the revision it
+replaces in the same transaction and hands its keys back, and the consumer
+deletes those objects after the commit (rows first, objects second, as purge
+does). An import writes its content to R2 before the row that points at it
+commits; a content write that fails claims nothing.
 
 A never-published reading serves its latest capturing attempt's content. An
 imported reading that no attempt has touched serves the legacy spelling under
@@ -214,6 +219,11 @@ teardown.
 CSRF, recent auth, and guard RPCs. `TenantUsageGuard` uses `idFromName(tenantId)`
 for request limits, hourly/monthly reading slots, and processing leases.
 `GlobalUsageGuard` owns global leases and the shared tenant/global spend ledger.
+Both read their policy rows through a fresh PostgreSQL client per RPC; a guard
+instance may reuse a tenant's limits row or the global concurrency limit for
+`GUARD_POLICY_CACHE_MS` (`src/control-plane/policy-cache.ts`, set on staging
+and production, unset in tests). The reads that carry the account-deletion
+fence and the paid-work switch are never cached.
 Runtime auth looks up the imported founder bearer in PostgreSQL; it never falls back
 to the `READER_API_TOKEN` secret. See the [API guide](api.md).
 

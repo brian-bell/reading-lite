@@ -125,8 +125,14 @@ export function batchCorpusFor(sql: Sql, tenant: TenantContext): BatchCorpus {
         return (
           (await writer.claimUrl(pending, prefix, attempt)).kind === "claimed"
         );
+      // The writer checks the row version its caller's read carried. The
+      // batch planned from a manifest alone, so take one snapshot now, refuse
+      // if the reading no longer matches what was planned from, and hand the
+      // writer that snapshot's version.
+      const snapshot = await store.loadReadingById(pending.id);
+      if (!snapshot || JSON.stringify(snapshot.manifest) !== JSON.stringify(seen)) return false;
       return (
-        (await writer.startAttempt(pending, attempt, seen)).kind === "started"
+        (await writer.startAttempt(pending, attempt, snapshot)).kind === "started"
       );
     },
     async disposition(target) {

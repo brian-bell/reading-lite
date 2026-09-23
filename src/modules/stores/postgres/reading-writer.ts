@@ -88,6 +88,20 @@ export interface CommitOutcome {
   published: boolean;
 }
 
+export interface PublishOutcome extends CommitOutcome {
+  // The keys of the revision this publication replaced, whose row is gone:
+  // the caller deletes the objects, after the commit, as purge does. Null
+  // when the reading had no published revision, or nothing was committed.
+  superseded: AttemptContentKeys | null;
+}
+
+// The reading as a caller loaded it before deciding on a write: the manifest
+// it built `next` from, and the row version PostgreSQL gave that read.
+export interface SeenReading {
+  manifest: Manifest;
+  version: string;
+}
+
 // One reading's half of a relationship replace: the manifest to write and the
 // guard that decides, under the row lock, whether it still should be.
 export interface PublishedReplacement {
@@ -121,6 +135,8 @@ export type PurgeGuardRow = OwnershipRow & Pick<Manifest, "created_at" | "update
 
 interface LockedRow extends OwnershipRow {
   [column: string]: unknown;
+  // The row's xmin: a new value for every committed write to the row.
+  version: string;
   key_prefix: string;
   url_hash: string;
   current_revision_id: string | null;
@@ -206,15 +222,16 @@ export class PgReadingWriter {
   // up again in place. `seen` is the reading as the caller loaded it and built
   // `next` from. `next` replaces every mutable column, so it may only land on
   // that exact reading: if another attempt activated since, this one yields,
-  // and if anything else changed, the caller must rebuild `next`.
-  async startAttempt(next: Manifest, attempt: NewAttempt, seen: Manifest): Promise<StartAttemptOutcome> {
+  // and if anything else changed, the caller must rebuild `next`. "Changed"
+  // is the row version the caller's read carried against the one under the
+  // lock, so no re-read or serialization comparison is involved.
+  async startAttempt(next: Manifest, attempt: NewAttempt, seen: SeenReading): Promise<StartAttemptOutcome> {
     return this.sql.transaction(async (tx) => {
       if (!(await this.tenantIsActive(tx))) return { kind: "tenant_inactive" };
       const row = await this.lock(tx, next.id);
       if (!row) return { kind: "not_found" };
-      if (row.active_attempt?.id !== seen.active_attempt?.id) return { kind: "conflict" };
-      const current = await new PgReadingStore(tx, this.tenantId).loadReadingById(next.id);
-      if (!current || JSON.stringify(current.manifest) !== JSON.stringify(seen)) return { kind: "changed" };
+      if (row.active_attempt?.id !== seen.manifest.active_attempt?.id) return { kind: "conflict" };
+      if (row.version !== seen.version) return { kind: "changed" };
       if (attempt.offline && !(await this.resolveUrlOwnership(tx, { id: next.id, urlHash: next.url_hash }, true))) {
         return { kind: "conflict" };
       }
@@ -234,15 +251,10 @@ export class PgReadingWriter {
   //
   // A published reading only records the failed attempt, as `fail` does:
   // `rolledBack` was built before this lock, and the relationship judge may
-  // have rewritten the reading since. `contentCaptured` is false when the
-  // attempt's import content never reached R2; its keys are then cleared, so
-  // the reading's content resolves to an earlier attempt's instead.
-  async failActivation(
-    ref: AttemptRef,
-    rolledBack: Manifest,
-    failed: ProcessingAttemptSummary,
-    opts: { contentCaptured: boolean },
-  ): Promise<boolean> {
+  // have rewritten the reading since. The attempt keeps its content keys: an
+  // import's content is in R2 before the attempt row commits, so a
+  // never-published reading goes on serving it.
+  async failActivation(ref: AttemptRef, rolledBack: Manifest, failed: ProcessingAttemptSummary): Promise<boolean> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, ref.id);
       if (!row || !attemptOwnership(row, ref).isActive) return false;
@@ -252,13 +264,6 @@ export class PgReadingWriter {
         await this.updateReading(tx, rolledBack);
       }
       await this.finishAttempt(tx, ref.id, failed, "send_failed");
-      if (!opts.contentCaptured) {
-        await tx.query(
-          `UPDATE reading_attempts SET raw_key = NULL, extracted_key = NULL
-           WHERE tenant_id = $1 AND reading_id = $2 AND id = $3`,
-          [this.tenantId, ref.id, failed.id],
-        );
-      }
       return true;
     });
   }
@@ -272,6 +277,11 @@ export class PgReadingWriter {
   // lock, ownership, URL ownership, revision, reading, relationships,
   // embedding, attempt. Nothing is written before ownership is settled.
   //
+  // A reading keeps one revision: the one it points at. The revision this
+  // publication replaces loses its row here and its keys are handed back, so
+  // the caller can delete the objects once the rows are committed. Rows
+  // first, objects second, as purge orders it.
+  //
   // The tenant lock is what makes the reading searchable or not: an ineligible
   // tenant's reading is still stored — the attempt paid for it — but keeps no
   // embedding, and a deletion that arrives during this transaction waits for
@@ -280,16 +290,19 @@ export class PgReadingWriter {
     ref: AttemptRef & { urlHash: string },
     ready: Manifest,
     opts: { keyPrefix: string; content: AttemptContentKeys; embedding: readonly number[] | null; claimMissingUrl: boolean },
-  ): Promise<CommitOutcome> {
+  ): Promise<PublishOutcome> {
     if (ready.status !== "ready") throw new Error("publish: manifest is not ready");
     const attemptId = resolveAttemptId(ref);
     return this.sql.transaction(async (tx) => {
       const tenantActive = await this.tenantIsActive(tx);
       const row = await this.lock(tx, ref.id);
-      if (!row) return { committed: false, published: false };
+      if (!row) return { committed: false, published: false, superseded: null };
       const owner = attemptOwnership(row, ref);
-      if (!owner.isActive && !owner.isLegacyPending) return { committed: false, published: false };
+      if (!owner.isActive && !owner.isLegacyPending) return { committed: false, published: false, superseded: null };
       const ownsUrl = await this.resolveUrlOwnership(tx, ref, opts.claimMissingUrl);
+      const superseded = row.current_revision_id !== null && row.current_revision_id !== attemptId
+        ? await this.revisionKeys(tx, ref.id, row.current_revision_id)
+        : null;
 
       const rows = manifestToRows(ready, {
         tenantId: this.tenantId,
@@ -299,6 +312,12 @@ export class PgReadingWriter {
       });
       await insertRevision(tx, this.tenantId, ref.id, rows.revision!);
       await this.updateReading(tx, ready, attemptId);
+      if (superseded) {
+        await tx.query(
+          "DELETE FROM reading_revisions WHERE tenant_id = $1 AND reading_id = $2 AND id = $3",
+          [this.tenantId, ref.id, row.current_revision_id],
+        );
+      }
       await tx.query("DELETE FROM reading_relationships WHERE tenant_id = $1 AND source_id = $2", [this.tenantId, ref.id]);
       await insertRelationships(tx, this.tenantId, ref.id, rows.relationships);
       // Only the URL's owner is searchable, and only for an active tenant. A
@@ -311,7 +330,7 @@ export class PgReadingWriter {
         await this.deleteEmbedding(tx, ref.id);
       }
       if (ready.last_attempt) await this.finishAttempt(tx, ref.id, ready.last_attempt, "done");
-      return { committed: true, published: searchable } satisfies CommitOutcome;
+      return { committed: true, published: searchable, superseded } satisfies PublishOutcome;
     }).catch((cause: unknown) => {
       // The transaction rolled back. See PublishCommitError.
       throw new PublishCommitError(cause);
@@ -569,13 +588,22 @@ export class PgReadingWriter {
 
   private async lock(tx: SqlQuery, id: string): Promise<LockedRow | null> {
     const [row] = await tx.query<LockedRow>(
-      `SELECT status, active_attempt, last_attempt, key_prefix, url_hash, current_revision_id, created_at, updated_at
+      `SELECT xmin::text AS version, status, active_attempt, last_attempt, key_prefix, url_hash,
+              current_revision_id, created_at, updated_at
        FROM readings WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
       [this.tenantId, id],
     );
     if (!row) return null;
     // JSONB NULL arrives as null; the ownership rules read absence.
     return { ...row, active_attempt: row.active_attempt ?? undefined, last_attempt: row.last_attempt ?? undefined };
+  }
+
+  private async revisionKeys(tx: SqlQuery, readingId: string, revisionId: string): Promise<AttemptContentKeys | null> {
+    const [row] = await tx.query<{ raw_key: string; extracted_key: string | null }>(
+      "SELECT raw_key, extracted_key FROM reading_revisions WHERE tenant_id = $1 AND reading_id = $2 AND id = $3",
+      [this.tenantId, readingId, revisionId],
+    );
+    return row ? { rawKey: row.raw_key, extractedKey: row.extracted_key } : null;
   }
 
   // True when this reading owns its URL. An unowned URL is claimed when asked

@@ -32,6 +32,9 @@ function memoryStorage(
     delete: async (key: string) => {
       map.delete(key);
     },
+    deleteAll: async () => {
+      map.clear();
+    },
     list: async () => new Map(map),
     getAlarm: async () => alarm,
     setAlarm: async (expiresAt: number) => {
@@ -197,6 +200,44 @@ describe("TenantUsageGuard", () => {
       ok: false,
       reason: "missing_limits",
     });
+  });
+
+  // One limits read serves every RPC within GUARD_POLICY_CACHE_MS, a missing
+  // row is never cached, and purge_tenant forgets what the instance knew.
+  it("reuses the limits row within the configured TTL and forgets it on purge", async () => {
+    const answers: (Record<string, number> | null)[] = [null, { submissions_per_hour: 20, monthly_readings: 20, max_concurrent_work: 1 }];
+    let reads = 0;
+    const env = {
+      GUARD_POLICY_CACHE_MS: "60000",
+      HYPERDRIVE: fakeHyperdrive(() => {
+        reads += 1;
+        return answers[Math.min(reads, answers.length) - 1]!;
+      }),
+    } as Env;
+    const guard = new TenantUsageGuard(guardState(memoryStorage()), env);
+    const admit = { kind: "admit_request", tenantId: TENANT, nowMs: NOW };
+
+    expect(await post(guard, admit)).toMatchObject({ ok: false, reason: "missing_limits" });
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect((await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_1", nowMs: NOW })).ok).toBe(true);
+    expect(reads).toBe(2);
+
+    expect(await post(guard, { kind: "purge_tenant", tenantId: TENANT })).toEqual({ ok: true });
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect(reads).toBe(3);
+  });
+
+  it("reads the limits row on every RPC when no TTL is configured", async () => {
+    let reads = 0;
+    const guard = new TenantUsageGuard(
+      guardState(memoryStorage()),
+      { HYPERDRIVE: fakeHyperdrive(() => { reads += 1; return { submissions_per_hour: 20, monthly_readings: 20 }; }) } as Env,
+    );
+    const admit = { kind: "admit_request", tenantId: TENANT, nowMs: NOW };
+    await post(guard, admit);
+    await post(guard, admit);
+    expect(reads).toBe(2);
   });
 
   it("alarm expires a held reservation and restores the monthly count", async () => {

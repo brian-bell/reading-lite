@@ -99,7 +99,10 @@ describe("context PostgreSQL adapter", () => {
       f.sql,
       f.destination,
     ).loadReadingById(id);
-    expect(destination).toEqual(source);
+    // Different rows carry different row versions; everything else is the copy.
+    const { version: _sourceVersion, ...sourceRow } = source!;
+    const { version: _destinationVersion, ...destinationRow } = destination!;
+    expect(destinationRow).toEqual(sourceRow);
     expect(destination?.manifest.connections).toEqual([
       { id: "rd_missing_z", reason: "first" },
       { id: "rd_missing_a", reason: "second" },

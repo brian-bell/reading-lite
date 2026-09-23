@@ -1,9 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  activateAttempt,
-  type ActivationArtifacts,
-  type AttemptActivation,
-} from "../../../src/intake/activation";
+import { activateAttempt, type AttemptActivation } from "../../../src/intake/activation";
 import type { ProcessReadingEnvelopeV1 } from "../../../src/control-plane/envelope";
 import { createApiTokenPrincipal } from "../../../src/control-plane/principal";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
@@ -14,10 +10,10 @@ import { mintTenant } from "../../helpers/pg-fixtures";
 import { testReadingsFor, type TestReadings } from "../../helpers/test-readings";
 
 // activateAttempt runs AFTER the caller's transaction committed the attempt
-// and its job row. Its own contract is what happens next: import content is
-// written under the attempt's keys, the message is sent, and a throw at either
-// step rolls the reading back in one transaction. Each test starts from a
-// committed attempt on its own tenant.
+// and its job row (and after an import's content is in R2; intake.test.ts
+// owns that ordering). Its own contract is what happens next: the message is
+// sent, and a throw rolls the reading back in one transaction. Each test
+// starts from a committed attempt on its own tenant.
 
 const PRINCIPAL = createApiTokenPrincipal({
   tenantId: FOUNDER_TENANT_ID,
@@ -117,14 +113,6 @@ function baseActivation(overrides: Partial<AttemptActivation> = {}): AttemptActi
   };
 }
 
-const ARTIFACTS: ActivationArtifacts = {
-  rawKey: `${KEY_PREFIX}/revisions/${ATTEMPT_ID}/raw.md`,
-  rawBytes: new TextEncoder().encode("# Imported"),
-  rawContentType: "text/markdown; charset=utf-8",
-  extractedKey: `${KEY_PREFIX}/revisions/${ATTEMPT_ID}/extracted.md`,
-  extractedMarkdown: "# Imported",
-};
-
 // The state intake leaves behind before it calls activateAttempt: the reading,
 // its URL, the running attempt and a queued job, committed together.
 async function committedAttempt(manifest: Manifest = pendingManifest()): Promise<TestReadings> {
@@ -166,56 +154,6 @@ describe("activateAttempt", () => {
     expect(out).toMatchObject({ kind: "activated", status: "ready" });
   });
 
-  // Ordering pin: the content is in R2 before the consumer can be told about it.
-  it("import: writes raw and extracted under the attempt's keys before it sends", async () => {
-    const readings = await committedAttempt();
-    const seenAtSend: (string | null)[] = [];
-    const queue = {
-      send: vi.fn(async () => {
-        seenAtSend.push(await (await readings.content.get(ARTIFACTS.rawKey))?.text() ?? null);
-        seenAtSend.push(await (await readings.content.get(ARTIFACTS.extractedKey))?.text() ?? null);
-      }),
-    } as unknown as Queue<ProcessReadingEnvelopeV1>;
-
-    const out = await activate(readings, queue, baseActivation({ artifacts: ARTIFACTS }));
-
-    expect(out.kind).toBe("activated");
-    expect(seenAtSend).toEqual(["# Imported", "# Imported"]);
-    const raw = await readings.content.get(ARTIFACTS.rawKey);
-    expect(raw!.contentType).toBe("text/markdown; charset=utf-8");
-    // An unread R2 body breaks the pool's per-test storage isolation.
-    await raw!.arrayBuffer();
-  });
-
-  it("setup failure: a content write that throws reports activation_failed, never sends, and fails the reading", async () => {
-    const readings = await committedAttempt();
-    const { queue, sent } = captureQueue();
-    vi.spyOn(readings.content, "put").mockRejectedValue(new Error("R2 put failed"));
-
-    const out = await activate(readings, queue, baseActivation({ artifacts: ARTIFACTS }));
-
-    expect(out).toEqual({ kind: "unavailable", reason: "activation_failed", id: ID });
-    expect(sent).toHaveLength(0);
-    expect(queue.send).not.toHaveBeenCalled();
-    expect(await readings.manifest(ID)).toMatchObject({ status: "failed", error: { retryable: true } });
-    expect(await readings.jobState(ID, ATTEMPT_ID)).toBe("send_failed");
-  });
-
-  // No later attempt revisits this attempt's revision prefix, so what the
-  // failed activation half-wrote must go now.
-  it("setup failure: deletes a raw object whose extracted write failed", async () => {
-    const readings = await committedAttempt();
-    const put = readings.content.put.bind(readings.content);
-    vi.spyOn(readings.content, "put")
-      .mockImplementationOnce(put)
-      .mockRejectedValueOnce(new Error("R2 put failed"));
-
-    const out = await activate(readings, captureQueue().queue, baseActivation({ artifacts: ARTIFACTS }));
-
-    expect(out).toMatchObject({ kind: "unavailable", reason: "activation_failed" });
-    expect(await readings.content.list(`${KEY_PREFIX}/revisions/${ATTEMPT_ID}`)).toEqual([]);
-  });
-
   it("queue-send failure: reports queue_send_failed and leaves a failed, retryable owner with its job recorded", async () => {
     const readings = await committedAttempt();
 
@@ -239,7 +177,11 @@ describe("activateAttempt", () => {
     const ready = pendingManifest({ status: "ready", connections: [], title: "Kept", last_attempt: undefined });
     const readings = testReadingsFor(await mintTenant());
     await readings.seed({ ...ready, active_attempt: undefined }, { keyPrefix: KEY_PREFIX });
-    await readings.writer.startAttempt(ready, { summary: activeAttempt("reprocess"), payload: queueMessage() }, (await readings.manifest(ID))!);
+    await readings.writer.startAttempt(
+      ready,
+      { summary: activeAttempt("reprocess"), payload: queueMessage() },
+      (await readings.store.loadReadingById(ID))!,
+    );
 
     const out = await activate(
       readings,

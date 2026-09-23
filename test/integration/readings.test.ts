@@ -1656,7 +1656,10 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(resendCalls(fetchFn)).toHaveLength(0);
   });
 
-  it("marks a claimed Markdown import retryable when setup fails before queueing", async () => {
+  // The import's content goes to R2 before any row points at it, so a content
+  // write that fails claims nothing: no owner, no row, no objects, and the
+  // retry starts from a clean slot.
+  it("claims nothing when a Markdown import's content write fails, and the retry starts clean", async () => {
     const idCounter = { n: 0 };
     const fixedId = "rd_0123456782";
     const services = makeServices(makeStubFetch(), idCounter);
@@ -1697,15 +1700,11 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       env,
     );
     expect(first.status).toBe(503);
-    expect(await first.json()).toEqual({ error: "reading setup failed", id: fixedId });
+    expect(await first.json()).toEqual({ error: "reading setup failed" });
     expect(queuedJobs).toHaveLength(0);
-    await expect(reader.readByUrlPointer(urlHash)).resolves.toEqual({ id: fixedId, key_prefix: keyPrefix });
-    await expect(reader.readManifest(keyPrefix)).resolves.toMatchObject({
-      id: fixedId,
-      status: "failed",
-      source_type: "markdown",
-      error: { retryable: true },
-    });
+    await expect(reader.readByUrlPointer(urlHash)).resolves.toBeNull();
+    await expect(reader.readManifest(keyPrefix)).resolves.toBeNull();
+    expect((await env.READINGS_BUCKET.list({ prefix: revisionsPrefix })).objects).toEqual([]);
 
     putSpy.mockRestore();
     consoleErr.mockRestore();
@@ -2802,9 +2801,10 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     const { id } = (await submit.json()) as { id: string };
     await drainQueue(services);
     await waitOnExecutionContext(ctx1);
-    await expect(
-      rowStore().loadReadingById(id).then((f) => f!.manifest.source_type),
-    ).resolves.toBe("url");
+    const published = (await rowStore().loadReadingById(id))!;
+    expect(published.manifest.source_type).toBe("url");
+    const firstRevision = founderObjectKey(`${published.keyPrefix}/revisions/${published.manifest.last_attempt!.id}/`);
+    expect((await env.READINGS_BUCKET.list({ prefix: firstRevision })).objects).not.toEqual([]);
 
     const ctx2 = createExecutionContext();
     const retry = await app.fetch(
@@ -2819,6 +2819,7 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       ctx2,
     );
     expect(retry.status).toBe(202);
+    const secondRevision = founderObjectKey(`${published.keyPrefix}/revisions/${queuedJobs[0]!.attemptId}/`);
 
     // Asserted before the drain: the queued job carries the supplied text, and
     // the reading stays published across the attempt. Its revision holds that
@@ -2853,6 +2854,10 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
     );
     expect(content.status).toBe(200);
     expect(await content.text()).toBe(AGENT_MARKDOWN);
+    // The superseded revision's content went with its row: the reading's
+    // bytes are its current revision's, not every revision it ever had.
+    expect((await env.READINGS_BUCKET.list({ prefix: firstRevision })).objects).toEqual([]);
+    expect((await env.READINGS_BUCKET.list({ prefix: secondRevision })).objects).not.toEqual([]);
 
     // Deliberate consequence of the flip: a later reprocess with no source
     // reuses the stored markdown instead of re-fetching the degraded URL.
@@ -3642,6 +3647,48 @@ describe("GET /api/readings/lookup", () => {
 
     expect(await readings.ids()).toEqual([]);
     expect(await readings.urlOwnerId(url)).toBeNull();
+  });
+});
+
+// A content read resolves the reading's keys in PostgreSQL and then fetches
+// R2: two steps, not one. A reprocess that publishes in between commits new
+// keys and deletes the superseded object, so the read's first key can point
+// at nothing. The read resolves the keys again and serves the current
+// revision instead of a spurious 404.
+describe("GET /api/readings/:id/content(/raw) across a concurrent publish", () => {
+  it.each([
+    ["/content", "extractedKey"],
+    ["/content/raw", "rawKey"],
+  ] as const)("%s re-resolves the keys when the first object is gone", async (path, stale) => {
+    const { app, id } = await seedFounderReading(`https://example.com/content-race${path}`);
+    const store = testReadingsFor(founderTenant());
+    const live = (await store.store.contentKeys(id))!;
+    // The first resolution saw the revision a publish then superseded.
+    const gone = { ...live, [stale]: `${await store.keyPrefix(id)}/revisions/at_superseded/${stale === "rawKey" ? "raw.html" : "extracted.md"}` };
+    const real = PgReadingStore.prototype.contentKeys;
+    const spy = vi.spyOn(PgReadingStore.prototype, "contentKeys").mockImplementationOnce(async () => gone);
+
+    const res = await apiRequest(app, TOKEN, `/api/readings/${id}${path}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(path === "/content" ? "picked up by readability" : "Test Article");
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    expect(PgReadingStore.prototype.contentKeys).toBe(real);
+  });
+
+  it("still 404s when the keys resolve to a missing object both times", async () => {
+    const { app, id } = await seedFounderReading("https://example.com/content-race-gone");
+    const store = testReadingsFor(founderTenant());
+    const live = (await store.store.contentKeys(id))!;
+    const gone = { ...live, extractedKey: `${await store.keyPrefix(id)}/revisions/at_never/extracted.md` };
+    const spy = vi.spyOn(PgReadingStore.prototype, "contentKeys").mockResolvedValue(gone);
+
+    const res = await apiRequest(app, TOKEN, `/api/readings/${id}/content`);
+
+    expect(res.status).toBe(404);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
   });
 });
 

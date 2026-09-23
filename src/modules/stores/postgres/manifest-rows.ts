@@ -113,9 +113,24 @@ const PUBLISHED_FIELDS = [
   "tensions_judged",
 ] as const;
 
+// The legacy content spelling under a stored key_prefix: where the seeders and
+// the #348 importer put a reading's objects, and where a reading no attempt
+// has captured for is read from. One rule for the writer of that revision row
+// and the reader that falls back to it: an extracted object exists only when
+// the content was captured.
+export function legacyContentKeys(
+  keyPrefix: string,
+  content: Pick<Manifest, "content_type" | "content_status">,
+): { rawKey: string; extractedKey: string | null } {
+  const layout = r2KeyLayout("");
+  return {
+    rawKey: layout.rawKey(keyPrefix, rawExtFromContentType(content.content_type)),
+    extractedKey: content.content_status === "captured" ? layout.extractedKey(keyPrefix) : null,
+  };
+}
+
 export function manifestToRows(manifest: Manifest, input: ManifestRowsInput): ReadingRows {
   const notes: string[] = [];
-  const layout = r2KeyLayout("");
   const published = manifest.status === "ready";
   const revisionId = input.revision?.id ?? `rev_${manifest.id}`;
 
@@ -194,10 +209,8 @@ export function manifestToRows(manifest: Manifest, input: ManifestRowsInput): Re
       ? {
           id: revisionId,
           // Relative keys, spelled the way /content/raw finds the object today.
-          raw_key: input.revision?.rawKey ?? layout.rawKey(input.keyPrefix, rawExtFromContentType(manifest.content_type)),
-          extracted_key: input.revision
-            ? input.revision.extractedKey
-            : manifest.content_status === "captured" ? layout.extractedKey(input.keyPrefix) : null,
+          raw_key: input.revision?.rawKey ?? legacyContentKeys(input.keyPrefix, manifest).rawKey,
+          extracted_key: input.revision ? input.revision.extractedKey : legacyContentKeys(input.keyPrefix, manifest).extractedKey,
           content_type: manifest.content_type,
           content_status: manifest.content_status,
           content_bytes: manifest.content_bytes,
