@@ -34,20 +34,12 @@
 import { resolveDropTargets } from "../../corpus-lib/drop";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import type { ListItem } from "../../corpus-lib/types";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
   contentKeysFor,
   deleteReading,
-  listItems,
-  operatorReadings,
   partitionKeysByPrefix,
-  requireTenantRows,
+  withOperatorCorpus,
 } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -111,21 +103,22 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   }
 
   const selector = requireOperatorTenant(opts.tenant);
-  const tenant = requireTenantRows(selector);
-  const tenantId = String(tenant.tenantId);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: selector.keyRoot, remote: opts.remote };
-  const { url } = resolveOperatorDatabaseUrl({
-    bucket: opts.bucket,
-    ...(opts.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: opts.databaseUrlEnv }),
-    local: !opts.remote,
-    env: deps.env,
-  });
 
-  return withOperatorSql(
-    url,
-    async (sql) => {
-      const store = operatorReadings(sql, tenant);
-      const items = (await listItems(store)) as ListItem[];
+  return withOperatorCorpus(
+    { bucket: opts.bucket, tenant: selector, local: !opts.remote, databaseUrlEnv: opts.databaseUrlEnv },
+    deps.env,
+    deps.openSql,
+    async ({ sql, tenantId, store }) => {
+      // Only the readings the selectors name, not the whole corpus: an id
+      // selects that row, a URL every copy of it (the orphan duplicates too).
+      const ids = opts.selectors.filter((s) => s.startsWith("rd_"));
+      const urls = opts.selectors.filter((s) => !s.startsWith("rd_"));
+      const items = [
+        ...new Map(
+          [...(await store.relationshipTargets(ids)), ...(await store.listItemsByUrls(urls))].map((item) => [item.id, item]),
+        ).values(),
+      ] as ListItem[];
 
       const resolved = resolveDropTargets(items, opts.selectors, { allowReady: opts.allowReady });
       if (!resolved.ok) {
@@ -193,13 +186,20 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
         // whose content 404s. This way the worst case is unreferenced residue,
         // which no API path can reach and which the tenant's account wipe
         // removes with its prefix.
-        const removed = await deleteReading(sql, tenantId, t.id);
-        rowsDeleted += removed;
-        // deleteReading returns 0 when a sibling already removed the row. This
-        // line is what the operator reads back as proof, so it must not claim
-        // a delete that did not happen.
+        const removed = await deleteReading(sql, tenantId, t.id, { allowReady: opts.allowReady });
+        if (removed === "ready") {
+          // Decided under the row lock: the reading published after the plan
+          // was resolved, so the refusal the plan would have made applies now.
+          io.stderr(`    ! refusing ${t.id}: it became ready after the plan was resolved; re-run to re-plan`);
+          errored++;
+          continue;
+        }
+        if (removed === "deleted") rowsDeleted++;
+        // "gone" means a sibling already removed the row. This line is what
+        // the operator reads back as proof, so it must not claim a delete that
+        // did not happen.
         io.stdout(
-          removed > 0
+          removed === "deleted"
             ? `    deleted   row ${t.id} (and its cascade)`
             : `    row ${t.id} was already gone`,
         );
@@ -243,7 +243,6 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
       io.stdout(`Done. objects deleted: ${deleted}, absent (skipped): ${absent}`);
       return 0;
     },
-    deps.openSql,
   );
 }
 

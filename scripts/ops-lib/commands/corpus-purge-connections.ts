@@ -40,18 +40,8 @@ import { parseReadingId } from "../../../src/services";
 import { resolveBucket } from "../../corpus-lib/config";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { operatorTenantSelector } from "../../corpus-lib/tenant";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
-import {
-  deleteInboundRelationships,
-  operatorReadings,
-  requireTenantRows,
-} from "../../pg-lib/operator-corpus";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
+import { deleteInboundRelationships, withOperatorCorpus } from "../../pg-lib/operator-corpus";
 import type { SqlQuery } from "../../../src/modules/db/sql";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -205,22 +195,14 @@ async function runCorpusPurgeConnections(
     throw new UsageError("--execute requires --sole-writer");
   }
 
-  const tenant = requireTenantRows(selector);
-  const tenantId = String(tenant.tenantId);
-  const { url } = resolveOperatorDatabaseUrl({
-    bucket: args.bucket,
-    ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
-    local: args.local,
-    env: deps.env,
-  });
-
   const context: RunContext = { stage: "connect" };
   let code: number;
   try {
-    code = await withOperatorSql(
-      url,
-      async (sql) => {
-        const store = operatorReadings(sql, tenant);
+    code = await withOperatorCorpus(
+      { bucket: args.bucket, tenant: selector, local: args.local, databaseUrlEnv: args.databaseUrlEnv },
+      deps.env,
+      deps.openSql,
+      async ({ sql, tenantId, store }) => {
 
         // The target must already be gone. Purging inbound citations of a
         // reading that still exists would silently sever live connections.
@@ -267,9 +249,12 @@ async function runCorpusPurgeConnections(
         }
         return 0;
       },
-      deps.openSql,
     );
-  } catch {
+  } catch (error) {
+    // A usage error (an unset connection variable, `--tenant global`) is the
+    // operator's to fix and exits 2, as it did when it was raised before the
+    // connection; only a database failure is a storage error.
+    if (error instanceof UsageError) throw error;
     recordFailure(audit, "storage_error", context.stage);
     deps.io.stderr(`purge-connections database operation failed during ${context.stage}`);
     code = 1;

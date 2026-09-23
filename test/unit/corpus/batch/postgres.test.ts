@@ -307,7 +307,7 @@ it("reads saved revision keys and preserves publication on a failed recovery", a
   ]);
 });
 
-it("reuses a failed ingest's released URL instead of creating a duplicate", async () => {
+it("keeps a failed ingest's URL claim and reprocesses it in place instead of creating a duplicate", async () => {
   const h = harness();
   h.deps.batch!.results = vi.fn(async () =>
     h.sidecar().targets.map((t) => ({
@@ -318,7 +318,9 @@ it("reuses a failed ingest's released URL instead of creating a duplicate", asyn
   const first = await runFreshMarkdownBatch([article()], h.deps);
   const id = first.report[0]!.id;
   expect(first.report[0]!.status).toBe("failed");
-  expect(await h.corpus.getByUrl(h.sidecar().targets[0]!.urlHash)).toBeNull();
+  // The failed reading still owns its URL: intake and the batch alike find
+  // it as the owner and reprocess it in place.
+  expect(await h.corpus.getByUrl(h.sidecar().targets[0]!.urlHash)).toMatchObject({ id });
   await h.deps.clearSidecar();
   h.deps.batch!.results = vi.fn(async () => h.sidecar().targets.map(succeeded));
   const second = await runFreshMarkdownBatch([article()], h.deps);

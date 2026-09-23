@@ -26,19 +26,8 @@ import { renderIndexMarkdown } from "../../corpus-lib/render";
 import type { AuditRow, ListItem } from "../../corpus-lib/types";
 import * as wranglerR2 from "../../corpus-lib/wrangler-r2";
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
-import {
-  latestAttemptStage,
-  listItems,
-  operatorReadings,
-  requireTenantRows,
-} from "../../pg-lib/operator-corpus";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
+import { latestAttemptStage, listItems, withOperatorCorpus } from "../../pg-lib/operator-corpus";
 import type { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
@@ -143,20 +132,13 @@ async function deepenStrandedStages(
 async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<number> {
   const args = parseAuditArgs(argv);
   const selector = requireOperatorTenant(args.tenant);
-  const tenant = requireTenantRows(selector);
-  const tenantId = String(tenant.tenantId);
   const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: selector.keyRoot, remote: args.remote };
-  const { url } = resolveOperatorDatabaseUrl({
-    bucket: args.bucket,
-    ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
-    local: !args.remote,
-    env: deps.env,
-  });
 
-  return withOperatorSql(
-    url,
-    async (sql) => {
-      const store = operatorReadings(sql, tenant);
+  return withOperatorCorpus(
+    { bucket: args.bucket, tenant: selector, local: !args.remote, databaseUrlEnv: args.databaseUrlEnv },
+    deps.env,
+    deps.openSql,
+    async ({ sql, tenantId, store }) => {
       const items = (await listItems(store)) as ListItem[];
 
       const failed = buildFailedRows(items);
@@ -217,7 +199,6 @@ async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<nu
       deps.io.stdout(JSON.stringify(summary, null, 2));
       return 0;
     },
-    deps.openSql,
   );
 }
 

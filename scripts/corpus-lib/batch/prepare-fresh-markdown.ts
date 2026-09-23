@@ -13,14 +13,14 @@ export interface ByUrlPointer {
   key_prefix: string;
 }
 
-// The URL owner and its parsed reading come from PostgreSQL. A malformed
-// owner is reported conservatively; planning never repairs ownership.
-export type ByUrlLookup = ByUrlPointer | "damaged";
-
+// The URL owner and its parsed reading come from PostgreSQL; a claim whose
+// reading does not match it is reported conservatively, and planning never
+// repairs ownership.
 export interface FreshMarkdownDeps {
-  getByUrl(urlHash: string): Promise<ByUrlLookup | null>;
+  getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
   readManifest(keyPrefix: string): Promise<Manifest | null>;
-  // A failed ingest may release its URL row. Find that reading for in-place retry.
+  // A reading for this URL that holds no URL claim (a claim released before
+  // releases were retired). Find that reading for in-place retry.
   findReadingByUrl(url: string, urlHash: string): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
   // Mint a fresh reading id (rd_...) for an unclaimed URL.
   newId(): string;
@@ -63,7 +63,7 @@ export async function prepareFreshMarkdown(
 
     const urlHash = hashUrl(url);
     const owner = await deps.getByUrl(urlHash);
-    if (owner && owner !== "damaged") {
+    if (owner) {
       const manifest = await deps.readManifest(owner.key_prefix);
       // Only a manifest that genuinely owns this URL (id + url + url_hash all
       // match the pointer) counts as the owner — exactly ReadingClaim's rule.
@@ -110,17 +110,6 @@ export async function prepareFreshMarkdown(
         id: owner.id,
         article,
         reason: "by-url slot is occupied but does not match a retryable failed owner",
-      });
-      continue;
-    }
-
-    if (owner === "damaged") {
-      dispositions.push({
-        kind: "skip-occupied-needs-repair",
-        url,
-        id: null,
-        article,
-        reason: "by-url slot contains a damaged pointer",
       });
       continue;
     }

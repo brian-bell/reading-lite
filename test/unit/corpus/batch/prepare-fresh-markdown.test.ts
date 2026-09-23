@@ -31,7 +31,7 @@ function hex(url: string): string {
 // live by-url pointer exists — e.g. a prior failed fresh ingest).
 function deps(
   seed: {
-    byUrl?: Record<string, { id: string; key_prefix: string } | "damaged">;
+    byUrl?: Record<string, { id: string; key_prefix: string }>;
     manifests?: Record<string, Manifest>;
     cold?: Record<string, { id: string; key_prefix: string; manifest: Manifest }>;
   } = {},

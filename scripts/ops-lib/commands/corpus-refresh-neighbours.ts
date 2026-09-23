@@ -56,20 +56,13 @@ import {
 import { snapshotFor } from "../../corpus-lib/backfill-similarity";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
   listItems,
   neighboursOf,
-  operatorReadings,
   readRefreshState,
-  requireTenantRows,
   setSimilarity,
+  withOperatorCorpus,
   writeRefreshState,
 } from "../../pg-lib/operator-corpus";
 import type { SimilaritySnapshot } from "../../../src/schemas/manifest";
@@ -403,34 +396,20 @@ export function openStore(
   open: OpenOperatorSql,
   env: Record<string, string | undefined>,
 ): CorpusRefreshNeighboursDeps["withStore"] {
-  return (target, work) => {
-    const tenant = requireTenantRows(target.tenant);
-    const { url } = resolveOperatorDatabaseUrl({
-      bucket: target.bucket,
-      ...(target.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: target.databaseUrlEnv }),
-      local: target.local,
-      env,
-    });
-    return withOperatorSql(
-      url,
-      (sql) => {
-        const rows = operatorReadings(sql, tenant);
-        const tenantId = String(tenant.tenantId);
-        return work({
-          listItems: () => listItems(rows) as Promise<RefreshRow[]>,
-          readRefreshState: () => readRefreshState(sql, tenantId),
-          writeRefreshState: (state, now) => writeRefreshState(sql, tenantId, state, now),
-          readManifest: async (id) => {
-            const found = await rows.loadReadingById(id);
-            return found ? (found.manifest as unknown as Record<string, unknown>) : null;
-          },
-          queryByVectorId: (id, topK) => neighboursOf(sql, tenant, id, topK),
-          setSimilarity: (id, similarity) => setSimilarity(sql, tenantId, id, similarity),
-        });
-      },
-      open,
+  return (target, work) =>
+    withOperatorCorpus(target, env, open, ({ sql, tenant, tenantId, store: rows }) =>
+      work({
+        listItems: () => listItems(rows) as Promise<RefreshRow[]>,
+        readRefreshState: () => readRefreshState(sql, tenantId),
+        writeRefreshState: (state, now) => writeRefreshState(sql, tenantId, state, now),
+        readManifest: async (id) => {
+          const found = await rows.loadReadingById(id);
+          return found ? (found.manifest as unknown as Record<string, unknown>) : null;
+        },
+        queryByVectorId: (id, topK) => neighboursOf(sql, tenant, id, topK),
+        setSimilarity: (id, similarity) => setSimilarity(sql, tenantId, id, similarity),
+      }),
     );
-  };
 }
 
 async function refreshNeighbours(

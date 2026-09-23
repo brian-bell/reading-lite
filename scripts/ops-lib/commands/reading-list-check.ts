@@ -21,14 +21,8 @@ import {
   type ReadingListEntry,
 } from "../../check-corpus-lib/corpus";
 import { resolveBucket } from "../../corpus-lib/config";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
-import { operatorReadings, requireTenantRows } from "../../pg-lib/operator-corpus";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
+import { withOperatorCorpus } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
 
@@ -95,7 +89,6 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
   const args = parseCheckArgs(argv);
   const { io } = deps;
   const selector = requireOperatorTenant(args.tenant);
-  const tenant = requireTenantRows(selector);
 
   const raw = await deps.readFile(args.file);
   const parsed: unknown = JSON.parse(raw);
@@ -107,17 +100,11 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
     .map((entry) => entry.url)
     .filter((url): url is string => typeof url === "string" && url.length > 0);
 
-  const { url: databaseUrl } = resolveOperatorDatabaseUrl({
-    bucket: args.bucket,
-    ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
-    local: args.local,
-    env: deps.env,
-  });
-
-  return withOperatorSql(
-    databaseUrl,
-    async (sql) => {
-      const store = operatorReadings(sql, tenant);
+  return withOperatorCorpus(
+    { bucket: args.bucket, tenant: selector, local: args.local, databaseUrlEnv: args.databaseUrlEnv },
+    deps.env,
+    deps.openSql,
+    async ({ sql, tenantId, store }) => {
       // Only the exported URLs are looked up, not the whole corpus: an export
       // is a few hundred rows and the corpus is not.
       const owners = await store.ownersByUrls(urls);
@@ -130,7 +117,7 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
       // they are pointed at a tenant that has readings at all.
       const [{ total }] = await sql.query<{ total: number }>(
         "SELECT count(*)::int AS total FROM readings WHERE tenant_id = $1",
-        [String(tenant.tenantId)],
+        [tenantId],
       );
 
       if (args.execute) {
@@ -143,7 +130,7 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
             file: args.file,
             out: args.execute ? args.out : null,
             bucket: args.bucket,
-            tenant: String(tenant.tenantId),
+            tenant: tenantId,
             match_statuses: args.statuses,
             tenant_readings: total,
             ...summary,
@@ -156,7 +143,6 @@ async function runReadingListCheck(argv: string[], deps: ReadingListCheckDeps): 
       if (!args.execute) io.stderr("Plan only — rerun with --execute to write the annotated list.");
       return 0;
     },
-    deps.openSql,
   );
 }
 

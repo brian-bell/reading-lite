@@ -63,7 +63,7 @@ async function activateTargets(
     const isNew = policy?.kind === "create-new";
     if (
       policy?.kind === "occupied-needs-repair" ||
-      (owner && (owner === "damaged" || owner.id !== t.readingId)) ||
+      (owner && owner.id !== t.readingId) ||
       (isNew
         ? current !== null
         : !current ||

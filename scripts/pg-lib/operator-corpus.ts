@@ -26,9 +26,9 @@ import type { TenantContext } from "../../src/control-plane/ids";
 import { parseTenantId } from "../../src/control-plane/ids";
 import type { Sql, SqlQuery } from "../../src/modules/db/sql";
 import {
-  pgReadingStoreFor,
+  PgReadingStore,
+  pgTenantId,
   type ContentKeys,
-  type PgReadingStore,
 } from "../../src/modules/stores/postgres/reading-store";
 import {
   pgReadingWriterFor,
@@ -43,6 +43,7 @@ import type { ListIndexItem } from "../../src/schemas/api";
 import { sha256Hex } from "../../src/services";
 import { UsageError } from "../ops-lib/contract";
 import { operatorTenantSelector, type OperatorTenant } from "../corpus-lib/tenant";
+import { resolveOperatorDatabaseUrl, withOperatorSql, type OpenOperatorSql } from "./operator-db";
 
 /**
  * The tenant whose rows a PostgreSQL read addresses.
@@ -65,8 +66,53 @@ export function requireTenantRows(tenant: OperatorTenant): TenantContext {
   return { tenantId };
 }
 
+// A `SqlQuery` genuinely suffices here: the store only reads, so a `tx` handle
+// inside a snapshot transaction (staging-lib/context-rows.ts) is a valid seam.
 export function operatorReadings(sql: SqlQuery, tenant: TenantContext): PgReadingStore {
-  return pgReadingStoreFor(sql as Sql, tenant);
+  return new PgReadingStore(sql, pgTenantId(tenant));
+}
+
+export interface OperatorCorpusTarget {
+  /** The data bucket the command is acting on; it selects the database. */
+  bucket: string;
+  /** The --tenant selector; `global` is refused because it names no rows. */
+  tenant: OperatorTenant;
+  /** --local: this checkout's own PostgreSQL, never a deployed one. */
+  local?: boolean;
+  /** An explicit --database-url-env, when the operator passed one. */
+  databaseUrlEnv?: string | undefined;
+}
+
+export interface OperatorCorpus {
+  sql: Sql;
+  tenant: TenantContext;
+  tenantId: string;
+  store: PgReadingStore;
+}
+
+/**
+ * One session on the tenant's corpus for the length of `work`: the tenant
+ * refusal, the bucket-to-database resolution and the guaranteed close, spelled
+ * once for every command that reads rows rather than once per command.
+ */
+export function withOperatorCorpus<T>(
+  target: OperatorCorpusTarget,
+  env: Record<string, string | undefined>,
+  open: OpenOperatorSql,
+  work: (corpus: OperatorCorpus) => Promise<T>,
+): Promise<T> {
+  const tenant = requireTenantRows(target.tenant);
+  const { url } = resolveOperatorDatabaseUrl({
+    bucket: target.bucket,
+    ...(target.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: target.databaseUrlEnv }),
+    local: target.local === true,
+    env,
+  });
+  return withOperatorSql(
+    url,
+    (sql) => work({ sql, tenant, tenantId: String(tenant.tenantId), store: operatorReadings(sql, tenant) }),
+    open,
+  );
 }
 
 /** Every reading in the tenant's corpus, newest first. */
@@ -153,15 +199,41 @@ export function partitionKeysByPrefix(
   return { within, foreign };
 }
 
+export type DeleteReadingOutcome = "deleted" | "gone" | "ready" | "keeper_gone";
+
 /**
  * Deletes the reading row. `reading_urls`, `reading_revisions`,
  * `reading_attempts`, `reading_relationships` (source side) and
  * `reading_embeddings` all cascade from it (db/migrations/0001, 0002), so the
  * by-url claim, the summary, the attempts and the embedding go with it in one
- * statement. Returns the number of rows deleted: zero means a sibling won.
+ * statement.
+ *
+ * Decided under the row lock, like every writer verb: the plan was resolved
+ * from a list read minutes earlier, and the Worker keeps publishing meanwhile.
+ * A reading that reached `ready` since is refused unless `allowReady`, and a
+ * sweep's drop is refused when its `keeperId` no longer exists, so a group is
+ * never emptied. Rows are locked in sorted id order, the writer's own order.
+ * `gone` means a sibling already removed the row.
  */
-export function deleteReading(sql: SqlQuery, tenantId: string, id: string): Promise<number> {
-  return sql.execute("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
+export function deleteReading(
+  sql: Sql,
+  tenantId: string,
+  id: string,
+  guard: { allowReady: boolean; keeperId?: string },
+): Promise<DeleteReadingOutcome> {
+  return sql.transaction(async (tx) => {
+    const ids = guard.keeperId === undefined ? [id] : [id, guard.keeperId].sort();
+    const rows = await tx.query<{ id: string; status: string }>(
+      "SELECT id, status FROM readings WHERE tenant_id = $1 AND id = ANY($2::text[]) ORDER BY id FOR UPDATE",
+      [tenantId, ids],
+    );
+    const row = rows.find((r) => r.id === id);
+    if (!row) return "gone";
+    if (row.status === "ready" && !guard.allowReady) return "ready";
+    if (guard.keeperId !== undefined && !rows.some((r) => r.id === guard.keeperId)) return "keeper_gone";
+    await tx.execute("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [tenantId, id]);
+    return "deleted";
+  });
 }
 
 /**
@@ -245,12 +317,12 @@ export type { PublishedReplacement, ReplaceSetOutcome, SkippedTarget };
  * write drift nobody could reproduce.
  */
 export function neighboursOf(
-  sql: SqlQuery,
+  sql: Sql,
   tenant: TenantContext,
   id: string,
   topK: number,
 ): Promise<SimilarityMatch[] | null> {
-  return pgSimilarityStoreFor(sql as Sql, tenant).queryByVectorId(id, topK);
+  return pgSimilarityStoreFor(sql, tenant).queryByVectorId(id, topK);
 }
 
 /**
@@ -308,11 +380,11 @@ export function manifestVersion(manifest: Manifest): Promise<string> {
  * itself about a pair it judged once.
  */
 export function replaceRelationships(
-  sql: SqlQuery,
+  sql: Sql,
   tenant: TenantContext,
   entries: readonly PublishedReplacement[],
 ): Promise<ReplaceSetOutcome> {
-  return pgReadingWriterFor(sql as Sql, tenant).replacePublishedSetIf(entries);
+  return pgReadingWriterFor(sql, tenant).replacePublishedSetIf(entries);
 }
 
 /**

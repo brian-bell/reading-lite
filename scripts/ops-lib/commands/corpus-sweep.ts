@@ -20,21 +20,14 @@ import {
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
   contentKeysFor,
   deleteReading,
   hasEmbedding,
   listItems,
-  operatorReadings,
   partitionKeysByPrefix,
-  requireTenantRows,
+  withOperatorCorpus,
 } from "../../pg-lib/operator-corpus";
 import type { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
@@ -92,8 +85,6 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   const opts = parseSweepArgs(argv);
   const { io, r2 } = deps;
   const selector = requireOperatorTenant(opts.tenant);
-  const tenant = requireTenantRows(selector);
-  const tenantId = String(tenant.tenantId);
   const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: selector.keyRoot, remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same
@@ -104,17 +95,11 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
     throw new UsageError("--drop takes exactly one --keep <rd_ID> and no other selectors");
   }
 
-  const { url } = resolveOperatorDatabaseUrl({
-    bucket: opts.bucket,
-    ...(opts.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: opts.databaseUrlEnv }),
-    local: !opts.remote,
-    env: deps.env,
-  });
-
-  return withOperatorSql(
-    url,
-    async (sql) => {
-      const store = operatorReadings(sql, tenant);
+  return withOperatorCorpus(
+    { bucket: opts.bucket, tenant: selector, local: !opts.remote, databaseUrlEnv: opts.databaseUrlEnv },
+    deps.env,
+    deps.openSql,
+    async ({ sql, tenantId, store }) => {
       const items = (await listItems(store)) as SweepItem[];
 
       const plan = opts.drop !== undefined
@@ -137,7 +122,9 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
         return 0;
       }
 
-      const targets = plan.groups.flatMap((g) => g.drops);
+      // Each drop carries its keeper, so the delete can refuse under the row
+      // lock if the keeper has gone since the plan was made.
+      const targets = plan.groups.flatMap((g) => g.drops.map((d) => ({ ...d, keeperId: g.keeper.id })));
 
       // Safety: every prefix must be id-scoped under readings/. Never touch a
       // prefix that doesn't carry its own reading id.
@@ -221,14 +208,21 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
         // leave a live reading whose content 404s, and this command deletes
         // ready production readings. Unreferenced residue is the tolerated
         // failure, a dangling row is not.
-        const removed = await deleteReading(sql, tenantId, t.id);
-        rowsDeleted += removed;
+        // Sweep drops ready readings, so allowReady; what it never does is
+        // empty a group, and that is decided under the lock with the keeper.
+        const removed = await deleteReading(sql, tenantId, t.id, { allowReady: true, keeperId: t.keeperId });
+        if (removed === "keeper_gone") {
+          io.stderr(`    ! refusing ${t.id}: its keeper ${t.keeperId} is gone, so the drop would empty the group; re-run to re-plan`);
+          errored++;
+          continue;
+        }
+        if (removed === "deleted") rowsDeleted++;
         // Only a row that actually went takes its embedding with it, so the
         // invalidated-keeper report must not claim a neighbour lost a vector
         // that is still there.
-        if (embedded && removed > 0) vectoredDrops.push(vectored);
+        if (embedded && removed === "deleted") vectoredDrops.push(vectored);
         io.stdout(
-          removed > 0
+          removed === "deleted"
             ? `    deleted   row ${t.id} (and its cascade, embedding included)`
             : `    row ${t.id} was already gone`,
         );
@@ -281,7 +275,6 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
       }
       return 0;
     },
-    deps.openSql,
   );
 }
 

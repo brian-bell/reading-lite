@@ -325,7 +325,7 @@ export class PgReadingWriter {
   async fail(
     ref: AttemptRef,
     failed: Manifest,
-    opts: { allowLastAttempt: boolean; now: string; jobState?: "done" | "dead"; releaseUrl?: boolean },
+    opts: { allowLastAttempt: boolean; now: string; jobState?: "done" | "dead" },
   ): Promise<CommitOutcome> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, ref.id);
@@ -340,9 +340,8 @@ export class PgReadingWriter {
         await this.updateReading(tx, failed);
         await this.deleteEmbedding(tx, ref.id);
       }
-      if (!isPublished(row) && opts.releaseUrl) {
-        await tx.execute("DELETE FROM reading_urls WHERE tenant_id = $1 AND reading_id = $2 AND url_hash = $3", [this.tenantId, ref.id, failed.url_hash]);
-      }
+      // The URL claim stays with the failed reading: a failed owner is
+      // reprocessed in place, by intake and by the offline batch alike.
       if (failed.last_attempt) await this.finishAttempt(tx, ref.id, failed.last_attempt, opts.jobState ?? "done");
       return { committed: true, published: false };
     });

@@ -33,7 +33,7 @@ import {
   withOperatorSql,
   type OpenOperatorSql,
 } from "../../pg-lib/operator-db";
-import { listItems, operatorReadings, requireTenantRows } from "../../pg-lib/operator-corpus";
+import { operatorReadings, requireTenantRows } from "../../pg-lib/operator-corpus";
 import type { BatchRunResult } from "../../corpus-lib/batch/run";
 import type { PersistedSidecar } from "../../corpus-lib/batch/types";
 import { sidecarPath } from "../../corpus-lib/batch/sidecar";
@@ -383,7 +383,8 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
       async (sql) => {
         const store = operatorReadings(sql, monitored);
         for (let i = 0; i < 60; i++) {
-          const items = (await listItems(store)) as ListItem[];
+          // Only the touched rows, keyed: the tally is about them, not the corpus.
+          const items = (await store.relationshipTargets(touched)) as ListItem[];
           const t = tallyByIds(items, touched);
           const ts = new Date(deps.now()).toISOString().slice(11, 19);
           deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);

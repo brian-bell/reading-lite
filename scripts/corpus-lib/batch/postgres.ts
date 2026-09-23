@@ -3,7 +3,8 @@
 import { sqlSession, type Sql } from "../../../src/modules/db/sql";
 import { openOperatorSql, withOperatorSql } from "../../pg-lib/operator-db";
 import type { TenantContext } from "../../../src/control-plane/ids";
-import type { Manifest } from "../../../src/schemas/manifest";
+import type { Manifest, ManifestStatus } from "../../../src/schemas/manifest";
+import { compareUrlOwnership } from "../../../src/modules/stores/list-items";
 import { pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
 import {
   pgReadingWriterFor,
@@ -62,12 +63,15 @@ export function batchCorpusFor(sql: Sql, tenant: TenantContext): BatchCorpus {
       return row ?? null;
     },
     readManifest: async (prefix) => (await byPrefix(prefix))?.manifest ?? null,
-    // A failed offline ingest can release its URL. Reuse its reading on retry.
+    // A reading for this URL that holds no URL claim (one whose claim was
+    // released before releases were retired). Reuse its reading on retry,
+    // ranked by the one URL-ownership rule the list and the importer share.
     async findReadingByUrl(url, hash) {
-      const [row] = await sql.query<{ id: string }>(
-        "SELECT id FROM readings WHERE tenant_id = $1 AND url = $2 AND url_hash = $3 ORDER BY CASE status WHEN 'ready' THEN 3 WHEN 'pending' THEN 2 ELSE 1 END DESC, updated_at DESC, id LIMIT 1",
+      const rows = await sql.query<{ id: string; status: ManifestStatus; created_at: string; updated_at: string }>(
+        "SELECT id, status, created_at, updated_at FROM readings WHERE tenant_id = $1 AND url = $2 AND url_hash = $3",
         [tenant.tenantId, url, hash],
       );
+      const [row] = rows.sort((a, b) => compareUrlOwnership(a, b) || a.id.localeCompare(b.id));
       const found = row ? await store.loadReadingById(row.id) : null;
       return found
         ? {
@@ -180,7 +184,6 @@ export function batchCorpusFor(sql: Sql, tenant: TenantContext): BatchCorpus {
         await writer.fail(target, failed, {
           allowLastAttempt: false,
           now: failed.updated_at,
-          releaseUrl: target.releaseByUrlOnFailure === true,
         })
       ).committed;
     },

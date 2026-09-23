@@ -13,6 +13,7 @@
 // between statements. Anything session-scoped (SET, advisory locks) must be
 // SET LOCAL inside `transaction`.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
 
 const OID_INT8 = 20;
@@ -101,22 +102,35 @@ export function sqlFromConnectionString(connectionString: string): Sql {
     queued = next.catch(() => undefined);
     return next;
   };
+  // A transaction started from inside another's callback on this `Sql` would
+  // queue behind the very transaction that is waiting on it: a silent hang,
+  // and `end()` then hangs on the same queue. Inside a callback the `tx` handle
+  // is the only right choice (the control plane's `fromSql` nests through
+  // savepoints), so re-entry is refused with an error rather than a deadlock.
+  const inTransaction = new AsyncLocalStorage<true>();
 
   return {
     query,
     execute,
     transaction(run, opts = {}) {
-      return serialized(async () => {
-        await query("BEGIN" + (opts.repeatableRead ? " ISOLATION LEVEL REPEATABLE READ" : "") + (opts.readOnly ? " READ ONLY" : ""));
-        try {
-          const out = await run({ query, execute });
-          await query("COMMIT");
-          return out;
-        } catch (error) {
-          await query("ROLLBACK").catch(() => undefined);
-          throw error;
-        }
-      });
+      if (inTransaction.getStore()) {
+        return Promise.reject(
+          new Error("sql.transaction called inside its own transaction callback; use the tx handle"),
+        );
+      }
+      return serialized(() =>
+        inTransaction.run(true, async () => {
+          await query("BEGIN" + (opts.repeatableRead ? " ISOLATION LEVEL REPEATABLE READ" : "") + (opts.readOnly ? " READ ONLY" : ""));
+          try {
+            const out = await run({ query, execute });
+            await query("COMMIT");
+            return out;
+          } catch (error) {
+            await query("ROLLBACK").catch(() => undefined);
+            throw error;
+          }
+        }),
+      );
     },
     async end() {
       if (connecting === null) return;

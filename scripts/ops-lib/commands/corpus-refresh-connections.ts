@@ -29,19 +29,13 @@ import { describeReportScope } from "../../corpus-lib/refresh-neighbours";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
-import {
-  DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
-  resolveOperatorDatabaseUrl,
-  withOperatorSql,
-  type OpenOperatorSql,
-} from "../../pg-lib/operator-db";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
   listItems,
   manifestVersion,
-  operatorReadings,
   replaceRelationships,
   requireTenantRows,
+  withOperatorCorpus,
   type PublishedReplacement,
   type SkippedTarget,
 } from "../../pg-lib/operator-corpus";
@@ -854,34 +848,21 @@ export function openStore(
   open: OpenOperatorSql,
   env: Record<string, string | undefined>,
 ): CorpusRefreshConnectionsDeps["withStore"] {
-  return (target, work) => {
-    const tenant = requireTenantRows(target.tenant);
-    const { url } = resolveOperatorDatabaseUrl({
-      bucket: target.bucket,
-      ...(target.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: target.databaseUrlEnv }),
-      local: target.local,
-      env,
-    });
-    return withOperatorSql(
-      url,
-      (sql) => {
-        const rows = operatorReadings(sql, tenant);
-        return work({
-          listItems: () => listItems(rows),
-          readManifest: async (id) => {
-            const found = await rows.loadReadingById(id);
-            if (!found) return null;
-            return {
-              manifest: found.manifest as unknown as Record<string, unknown>,
-              version: await manifestVersion(found.manifest),
-            };
-          },
-          replaceRelationships: (entries) => replaceRelationships(sql, tenant, entries),
-        });
-      },
-      open,
+  return (target, work) =>
+    withOperatorCorpus(target, env, open, ({ sql, tenant, store: rows }) =>
+      work({
+        listItems: () => listItems(rows),
+        readManifest: async (id) => {
+          const found = await rows.loadReadingById(id);
+          if (!found) return null;
+          return {
+            manifest: found.manifest as unknown as Record<string, unknown>,
+            version: await manifestVersion(found.manifest),
+          };
+        },
+        replaceRelationships: (entries) => replaceRelationships(sql, tenant, entries),
+      }),
     );
-  };
 }
 
 export const corpusRefreshConnectionsCommand: CommandDefinition<CorpusRefreshConnectionsDeps> = {

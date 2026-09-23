@@ -105,6 +105,17 @@ export class PgReadingStore {
     return rows.map((row) => ListIndexItemSchema.parse(present(row)));
   }
 
+  // Every copy of these URLs, owner or not: what `corpus drop` resolves a URL
+  // selector against, without reading the corpus it is not about.
+  async listItemsByUrls(urls: readonly string[]): Promise<ListIndexItem[]> {
+    if (urls.length === 0) return [];
+    const rows = await this.sql.query(
+      `SELECT ${LIST_COLUMNS} FROM readings WHERE tenant_id = $1 AND url = ANY ($2::text[])`,
+      [this.tenantId, [...urls]],
+    );
+    return rows.map((row) => ListIndexItemSchema.parse(present(row)));
+  }
+
   async loadReadingById(id: string): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
     const [row] = await this.sql.query(
       `SELECT r.id, r.key_prefix, r.url, r.url_hash, r.source_type, r.status, r.error,

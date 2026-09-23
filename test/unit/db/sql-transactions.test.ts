@@ -62,4 +62,13 @@ describe("sqlFromConnectionString transactions", () => {
     await expect(sql.transaction(tx => tx.execute("DELETE FROM readings WHERE false"), { readOnly: true, repeatableRead: true })).rejects.toThrow("read-only");
   });
 
+  it("refuses a transaction started inside its own callback instead of hanging", async () => {
+    sql = sqlFromConnectionString(testDatabaseUrl());
+    const outer = sql;
+    await expect(
+      outer.transaction(() => outer.transaction(async () => undefined)),
+    ).rejects.toThrow("inside its own transaction callback");
+    // The outer transaction rolled back and the queue is free.
+    expect(await outer.transaction((tx) => tx.query("SELECT 1 AS one"))).toEqual([{ one: 1 }]);
+  });
 });
