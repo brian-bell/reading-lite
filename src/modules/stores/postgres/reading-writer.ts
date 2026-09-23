@@ -37,6 +37,7 @@ import {
   insertRevision,
   json,
   manifestToRows,
+  upsertAttempt,
   upsertEmbedding,
   type ReadingRow,
 } from "./manifest-rows";
@@ -499,17 +500,7 @@ export class PgReadingWriter {
   // must not get an attempt recreated, and the foreign key refuses it.
   async recordAttempt(attempt: ProcessingAttempt): Promise<boolean> {
     try {
-      await this.sql.query(
-        `INSERT INTO reading_attempts (tenant_id, reading_id, id, trigger, status, stage, started_at, finished_at, error, events)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
-         ON CONFLICT (tenant_id, reading_id, id) DO UPDATE SET
-           status = EXCLUDED.status, stage = EXCLUDED.stage, finished_at = EXCLUDED.finished_at,
-           error = EXCLUDED.error, events = EXCLUDED.events`,
-        [
-          this.tenantId, attempt.reading_id, attempt.id, attempt.trigger, attempt.status, attempt.stage ?? null,
-          attempt.started_at, attempt.finished_at ?? null, json(attempt.error ?? null), JSON.stringify(attempt.events),
-        ],
-      );
+      await upsertAttempt(this.sql, this.tenantId, attempt);
       return true;
     } catch (error) {
       if ((error as { code?: string }).code === FOREIGN_KEY_VIOLATION) return false;

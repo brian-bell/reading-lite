@@ -6,7 +6,14 @@
  * `account audit-bare-vectors` (reading-lite-gh347.4.6): a bare vector is
  * unrepresentable once `reading_embeddings` has a foreign key to `readings`.
  */
-import type { StoredVector } from "../lib/cf-clients";
+// A vector as the legacy Vectorize index returns it. `namespace` is absent for
+// a pre-tenant vector; the REST adapter normalizes the wire's null to that.
+export interface StoredVector {
+  id: string;
+  values: number[];
+  metadata?: Record<string, unknown>;
+  namespace?: string;
+}
 export interface AuditVectors {
   list(cursor?: string): Promise<{
     vectors: { id: string }[];

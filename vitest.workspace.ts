@@ -23,16 +23,10 @@ const WORKERS_RUNTIME_UNIT_TESTS = [
   "test/unit/extractor/safe-fetch.test.ts",
   "test/unit/intake/activation.test.ts",
   "test/unit/intake/intake.test.ts",
-  "test/unit/modules/processing-checkpoint.test.ts",
-  "test/unit/modules/reading-claim.test.ts",
-  "test/unit/process-reading/commit-terminal.test.ts",
   "test/unit/process-reading/mark-failed.test.ts",
   "test/unit/queue/dead-letter.test.ts",
   "test/unit/queue/dispatch.test.ts",
   "test/unit/queue/relationship-refresh.test.ts",
-  "test/unit/reading-visibility/visibility.test.ts",
-  "test/unit/stores/list-index.test.ts",
-  "test/unit/stores/reading-store.test.ts",
 ];
 
 export default [

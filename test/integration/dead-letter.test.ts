@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-reading";
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
-import { manifestToIndexItem } from "../../src/modules/stores/list-index";
+import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import { parseTenantId } from "../../src/control-plane/ids";
 import { tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
 import {

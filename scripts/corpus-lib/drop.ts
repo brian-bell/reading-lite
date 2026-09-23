@@ -1,14 +1,13 @@
 // Pure resolver for `corpus-drop`: turns a mixed list of selectors (reading ids
 // like `rd_ABC`, or URLs) into the concrete reading targets to delete, using
-// `index/list.json` as the source of truth for each id's key_prefix.
+// the tenant's reading rows as the source of truth for each id's key_prefix.
 //
-// Drop is non-ready only by default — a `ready` reading owns a Vectorize
-// embedding (and, as the live owner of its URL, the by-url pointer), so dropping
-// it through this path would dangle the embedding. (Under eager URL ownership a
-// failed/pending reading may also own its by-url pointer; the deletion plan in
-// `delete-plan.ts` deletes that pointer only when it is genuinely owned by the
-// dropped reading, so dropping an orphan-duplicate never disturbs the survivor's
-// pointer.) Hence:
+// Drop is non-ready only by default — a `ready` reading is the live owner of
+// its URL and carries the embedding its neighbours were measured against, so
+// removing it is a corpus change rather than cleanup (the command needs
+// --allow-ready for that, and refuses it on production). Dropping a failed or
+// pending orphan-duplicate never disturbs the survivor: its URL claim, content
+// and embedding cascade with its own row. Hence:
 //   - an explicitly-named ready id is a hard error (you asked for it by id),
 //   - a url selector silently keeps any ready copy and drops only the non-ready
 //     copies (the orphan-dup cleanup case), erroring only if the url has *no*
@@ -62,7 +61,7 @@ export function resolveDropTargets(
         continue;
       }
       if (it.status === "ready" && !allowReady) {
-        errors.push(`refusing ${sel}: it is ready — deleting it would dangle its by-url pointer + embedding`);
+        errors.push(`refusing ${sel}: it is ready — deleting it would drop its URL claim + embedding`);
         continue;
       }
       take(it);
@@ -77,7 +76,7 @@ export function resolveDropTargets(
     }
     const droppable = allowReady ? matches : matches.filter((i) => i.status !== "ready");
     if (droppable.length === 0) {
-      errors.push(`refusing ${sel}: url only has ready copies — would dangle by-url pointer + embedding`);
+      errors.push(`refusing ${sel}: url only has ready copies — would drop URL claim + embedding`);
       continue;
     }
     for (const it of droppable) take(it);

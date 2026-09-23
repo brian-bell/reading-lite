@@ -8,7 +8,7 @@ import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { consumeProcessReadingMessage } from "../../src/control-plane/envelope";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,

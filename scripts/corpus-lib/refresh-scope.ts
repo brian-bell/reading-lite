@@ -115,7 +115,7 @@
 // command and handed in as data, so every rule here is unit-testable without a
 // database.
 
-import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity";
 import type { RefreshRow } from "./refresh-neighbours";
 
 /** topK for a reverse-neighbour query. */

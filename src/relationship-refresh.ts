@@ -22,7 +22,7 @@ import { withControlPlane, type ControlPlaneDb } from "./control-plane/db";
 import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
 import { withSqlSession } from "./modules/db/sql";
-import { tenantKeyRoot } from "./modules/stores/reading-store";
+import { tenantKeyRoot } from "./modules/stores/tenant-root";
 import { r2KeyLayout } from "./modules/stores/layout";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";

@@ -1,12 +1,12 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { CSRF_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { mintReadingId, type Services } from "../../src/services";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import {
   FOUNDER_TENANT_ID,
@@ -147,37 +147,6 @@ async function restoreFounderSettings(): Promise<void> {
     now,
     now,
   );
-}
-
-type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): void {
-  const vectors = new Map<string, { values: number[]; namespace?: string }>();
-  const upsert = vi.fn(async (vs: VectorizeVector[]) => {
-    for (const v of vs) {
-      vectors.set(v.id, {
-        values: v.values as number[],
-        ...(v.namespace === undefined ? {} : { namespace: v.namespace }),
-      });
-    }
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  }) as AnyMock;
-  const deleteByIds = vi.fn(async (ids: string[]) => {
-    for (const id of ids) vectors.delete(id);
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  }) as AnyMock;
-  const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
-    const k = opts.topK ?? 5;
-    const matches = Array.from(vectors.entries())
-      .filter(([, v]) => v.namespace === opts.namespace)
-      .slice(0, k)
-      .map(([id, v]) => ({ id, score: 0.9, values: v.values, metadata: {} }));
-    return { count: matches.length, matches } as unknown as VectorizeMatches;
-  }) as AnyMock;
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert,
-    deleteByIds,
-    query,
-  } as unknown as VectorizeIndex;
 }
 
 async function clearBucket() {
@@ -523,9 +492,6 @@ describe("GET/POST /api/auth/settings", () => {
 });
 
 describe("processReading immediate notification recipient", () => {
-  beforeEach(() => {
-    installVectorizeStub();
-  });
   afterEach(async () => {
     await restoreFounderSettings();
     await clearBucket();

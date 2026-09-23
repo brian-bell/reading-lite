@@ -3,7 +3,7 @@ import {
   ConnectionSchema,
   NoveltyVerdictSchema,
 } from "../../src/schemas/reading-summary";
-import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../src/modules/stores/similarity";
 
 const RefreshFlagSchema = z.enum([
   "stale_connection",

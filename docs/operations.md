@@ -547,11 +547,11 @@ rename or tighten one the previous Worker still reads) so that window is safe.
 
 Before the upload, `ops deploy worker --execute` inspects the target
 environment's tenant-mode activation state. A single active version serving
-100% of traffic with `TENANT_DATA_PLANE=1` and matching `READINGS_BUCKET` and
-`READINGS_INDEX` bindings establishes the baseline for an ordinary
-redeployment. The R2 bucket and Vectorize index must also have creation
-timestamps no later than that version, so recreating either resource under its
-old name requires fresh verification. Existing production and staging cutovers
+100% of traffic with `TENANT_DATA_PLANE=1` and a matching `READINGS_BUCKET`
+binding establishes the baseline for an ordinary redeployment. The R2 bucket
+must also have a creation timestamp no later than that version, so recreating
+it under its old name requires fresh verification. A Vectorize binding on the
+active version, as pre-cutover production still has, is not compared. Existing production and staging cutovers
 use this baseline; no new migration or certification record is needed.
 
 Off→on activation, changed resources, split deployments, missing deployment
@@ -584,7 +584,7 @@ After successful activation the active version becomes the redeployment baseline
 The preflight uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI, or
 Wrangler's current authentication locally. If account selection is ambiguous,
 set `CLOUDFLARE_ACCOUNT_ID`. Credentials need Workers deployment/version read
-access, R2 bucket metadata read access, and Vectorize index read access. A permission failure requires correcting access
+access and R2 bucket metadata read access. A permission failure requires correcting access
 or manually verifying readiness before using the explicit acknowledgement.
 Plan mode prints the check it would perform and runs the existing build dry-run;
 it does not inspect remote readiness or require these read permissions.
@@ -1089,12 +1089,14 @@ it. The role needs DDL, including `CREATE EXTENSION vector`. Setup never
 creates the database and teardown never drops it.
 
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-reading, digest, wipe, and refresh Queue/DLQ pairs and the Vectorize index,
-empties the bucket via the S3-compatible R2 API, and deletes the bucket:
-exactly the Cloudflare resources setup creates. The bucket-empty step needs
-the `CORPUS_R2_*` credentials above. It retains the staging PostgreSQL
-database, and it retains staging's old D1 (`reading-lite-control-staging`)
-deliberately: that D1 is the #348 importer's source, and #351 retires it.
+reading, digest, wipe, and refresh Queue/DLQ pairs, empties the bucket via the
+S3-compatible R2 API, and deletes the bucket: exactly the Cloudflare resources
+setup creates. The bucket-empty step needs the `CORPUS_R2_*` credentials
+above. It retains the staging PostgreSQL database, and it retains staging's
+old D1 (`reading-lite-control-staging`) deliberately: that D1 is the #348
+importer's source, and #351 retires it. The old staging Vectorize index
+(`reading-lite-staging`) is in neither list, since the Worker binds none; it
+too waits for #351.
 
 Do not run `ops founder bootstrap --env staging`, set
 `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`, or run `ops staging smoke --execute`
@@ -2487,7 +2489,7 @@ markdown through the same parsers the Worker uses. Requires `yt-dlp` on PATH.
 npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to preview
 ```
 
-## Seeding local R2
+## Seeding local data
 
 To exercise the read path or the frontends against real data locally, stop
 `wrangler dev`, seed, then start `npm run dev` again.
@@ -2505,10 +2507,11 @@ npm run seed:local
 It writes both halves of each reading:
 
 - **Rows in [local Postgres](#local-postgres)**, which is what the Worker reads
-  for list, detail, lookup, `q` search and similarity. They go under the local
-  founder's tenant id with deterministic vectors, through the same
-  manifest-to-rows mapping the importer uses. The tenant's existing reading rows
-  are deleted first, so a reseed drops any other local reading.
+  for list, detail, lookup, `q` search, similarity and diagnostics. They go
+  under the local founder's tenant id with deterministic vectors and each
+  fixture's attempt log, through the same manifest-to-rows mapping the importer
+  uses. The tenant's existing reading rows are deleted first, so a reseed drops
+  any other local reading.
 - **Content objects in local R2** (`extracted.md`, `raw.{ext}`), which
   `/content` and `/content/raw` read. They are written by
   `wrangler r2 object put --local` into the same on-disk store
@@ -2516,9 +2519,9 @@ It writes both halves of each reading:
   wrangler 4.130). Local dev leaves `TENANT_DATA_PLANE` unset, so the keys are
   global-rooted; do not seed under `u/<tenantId>/`.
 
-The seeder still also writes each fixture's `manifest.json`, `index/by-id/`,
-`index/by-url/` and `index/list.json` objects. No runtime path reads them; they
-are left from the R2-manifest store.
+Content goes first, then the rows that point at it. The seeder verifies by
+counting the tenant's readings and attempts back from Postgres. It writes no
+manifests, pointers or `index/list.json`: reading state is rows.
 
 The command is idempotent. Re-run it to refresh the pending fixture once it
 passes the 15-minute pending TTL, and to restore the pack after deleting
@@ -2557,7 +2560,7 @@ docker compose down -v                 # also deletes it
 | Who | Database | How it connects |
 |---|---|---|
 | `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
-| `npm run seed:local` | `reading_lite` | After seeding R2 it migrates, then writes the fixture pack as rows for the local founder's tenant id, with deterministic vectors. Re-running replaces the pack's rows. |
+| `npm run seed:local` | `reading_lite` | After writing the content to R2 it migrates, then writes the fixture pack as rows (readings, attempts, deterministic vectors) for the local founder's tenant id. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
 | CI Worker job | `reading_lite_test` | A service container; `TEST_DATABASE_URL` points both pools at it. The ops job has no Postgres, so no test it runs may need a database. |
 

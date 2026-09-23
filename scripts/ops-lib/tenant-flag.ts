@@ -3,7 +3,7 @@
 // corpus it addresses before planning anything. The selector is resolved by
 // corpus-lib/tenant.ts; this wrapper maps a missing or malformed selector onto
 // the CLI's UsageError (exit 2) so commands fail closed before any R2 or
-// Vectorize traffic.
+// PostgreSQL traffic.
 
 import { resolveOperatorTenant, type OperatorTenant } from "../corpus-lib/tenant";
 import { UsageError } from "./contract";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity";
 import {
   SNAPSHOT_CHANGE_EPSILON,
   buildRefreshReport,

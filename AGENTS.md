@@ -201,10 +201,9 @@ describes only the live control plane that reading-lite-gh348 imports from.
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
 `WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
-`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue or Vectorize;
-integration tests inject `installQueueStub()`. Similarity is pgvector, and the
-runtime never reads `READINGS_INDEX`, so the file-local `installVectorizeStub()`
-helpers some integration files still install stand in for nothing.
+`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
+tests inject `installQueueStub()`. Similarity is pgvector, and the Worker binds
+no Vectorize index.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
 migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
 unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL

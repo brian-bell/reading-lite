@@ -9,6 +9,7 @@ import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { PgReadingWriter } from "../../src/modules/stores/postgres/reading-writer";
 import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity";
 import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
 import type { Services } from "../../src/services";
@@ -25,6 +26,8 @@ let runtime: Env;
 let services: Services;
 let provider: ReturnType<typeof vi.fn<typeof fetch>>;
 let original: Manifest;
+// The reading's neighbourhood as pgvector would answer it (see beforeEach).
+let neighbourhood: ReturnType<typeof vi.fn<(id: string, topK: number) => Promise<SimilarityMatch[] | null>>>;
 
 // The tests arrange and inspect readings by key prefix, as they did when a
 // reading was a manifest object. A reading is rows now, so these verbs resolve
@@ -48,26 +51,17 @@ function response() {
 beforeEach(async () => {
   provider = vi.fn<typeof fetch>(async () => response());
   runtime = { ...env, RELATIONSHIP_REFRESH: "1", SUMMARIZER_PROVIDER: "openai", OPENAI_SUMMARIZATION_MODEL: "gpt-5.6-terra", OPENAI_SUMMARIZATION_REASONING_EFFORT: "low", RETRY_MAX_ATTEMPTS: "2", RETRY_BASE_DELAY_MS: "0", RETRY_MAX_DELAY_MS: "0",
-    READINGS_INDEX: { getByIds: async (ids: string[]) => ids.map(id => ({ id })), queryById: async () => ({ matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] }) } as unknown as VectorizeIndex,
   } as unknown as Env;
   services = { fetch: provider, now: () => new Date().toISOString(), newId: () => crypto.randomUUID(), lookup: async () => [] };
   original = { id, url: "https://example.com/reading", url_hash: "a".repeat(64), status: "ready", title: "Reading", tldr: "Stored summary", summary_markdown: "Original summary", tags: ["test"], novelty_verdict: "novel", connections: [], content_type: "text/html", content_status: "captured", content_bytes: 100, content_sha256: "b".repeat(64), created_at: createdAt, updated_at: createdAt };
   const neighbour = { ...original, id: other, url: "https://example.com/neighbour", url_hash: "c".repeat(64) };
   const store = testStore();
   for (const m of [original, neighbour]) await store.writeManifest(buildKeyPrefix(m.id, createdAt), m);
-  // Neighbourhoods come from pgvector now. These tests are about what the judge
-  // does with a neighbourhood, so they keep scripting one through the
-  // Vectorize-shaped double on `runtime`, and this adapter feeds the judge from
-  // it. The similarity store has its own suite.
-  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation(async (readingId, topK) => {
-    const index = runtime.READINGS_INDEX as unknown as {
-      getByIds: (ids: string[]) => Promise<unknown[]>;
-      queryById: (id: string, options: { topK: number }) => Promise<{ matches: { id: string; score: number }[] }>;
-    };
-    if ((await index.getByIds([`${FOUNDER_TENANT_ID}:${readingId}`])).length === 0) return null;
-    const { matches } = await index.queryById(readingId, { topK });
-    return matches.map(match => ({ id: match.id.slice(match.id.indexOf(":") + 1), score: match.score, url: "" }));
-  });
+  // Neighbourhoods come from pgvector. These tests are about what the judge
+  // does with a neighbourhood, so `neighbourhood` scripts one. The similarity
+  // store has its own suite.
+  neighbourhood = vi.fn(async () => [{ id: other, score: 0.8, url: "" }]);
+  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation((readingId, topK) => neighbourhood(readingId, topK));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -84,13 +78,10 @@ describe("hosted relationship judge", () => {
     await store.writeManifest(keyPrefix, { ...original, novelty_verdict: "familiar",
       connections: known.map(id => ({ id, reason: "Known" })), connections_neighbourhood_ids: known,
     });
-    runtime.READINGS_INDEX = {
-      getByIds: async (ids: string[]) => ids.map(id => ({ id })),
-      queryById: async (self: string, options: { topK: number }) => ({ matches: [
-        { id: self, score: 1 }, { id: `${FOUNDER_TENANT_ID}:rd_9999999999`, score: 0.99 },
-        ...neighbours.map((id, i) => ({ id: `${FOUNDER_TENANT_ID}:${id}`, score: 0.9 - i * 0.01 })),
-      ].slice(0, options.topK) }),
-    } as unknown as VectorizeIndex;
+    neighbourhood.mockImplementation(async (self, topK) => [
+      { id: self, score: 1, url: "" }, { id: "rd_9999999999", score: 0.99, url: "" },
+      ...neighbours.map((id, i) => ({ id, score: 0.9 - i * 0.01, url: "" })),
+    ].slice(0, topK));
     await processRelationshipJudge(job, runtime, services);
     expect(provider).toHaveBeenCalledOnce();
     expect((await store.readManifest(keyPrefix))!.connections_neighbourhood_ids).toEqual(neighbours);
@@ -347,25 +338,20 @@ describe("hosted relationship judge", () => {
         return reads === 1 ? "1" : "0";
       },
     });
-    const queryById = vi.fn(async () => ({ matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] }));
-    runtime.READINGS_INDEX = { getByIds: async (ids: string[]) => ids.map(id => ({ id })), queryById } as unknown as VectorizeIndex;
     await processRelationshipJudge(job, runtime, services);
-    expect(queryById).toHaveBeenCalled();
+    expect(neighbourhood).toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
     expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);
   });
 
   it("soft-acks without taking a lease when the founder is suppressed after neighbourhood capture", async () => {
-    runtime.READINGS_INDEX = {
-      getByIds: async (ids: string[]) => ids.map(id => ({ id })),
-      queryById: async () => {
-        await testControlPlane(env).run(
-          "UPDATE users SET status = 'deleting' WHERE id = ?",
-          FOUNDER_TENANT_ID,
-        );
-        return { matches: [{ id: `${FOUNDER_TENANT_ID}:${other}`, score: 0.8, metadata: { title: "Neighbour", tldr: "Useful context" } }] };
-      },
-    } as unknown as VectorizeIndex;
+    neighbourhood.mockImplementation(async () => {
+      await testControlPlane(env).run(
+        "UPDATE users SET status = 'deleting' WHERE id = ?",
+        FOUNDER_TENANT_ID,
+      );
+      return [{ id: other, score: 0.8, url: "" }];
+    });
     await processRelationshipJudge(job, runtime, services);
     expect(provider).not.toHaveBeenCalled();
     expect((await testControlPlane(env).all("SELECT * FROM relationship_refresh_jobs"))).toEqual([]);

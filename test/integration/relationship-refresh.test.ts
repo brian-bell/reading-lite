@@ -4,6 +4,7 @@ import worker, { type Env } from "../../src/index";
 import { REFRESH_CRON, REFRESH_SCAN_SIZE, consumeRelationshipRefresh, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, founderTenant } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -14,12 +15,12 @@ const ROOT = `u/${FOUNDER_TENANT_ID}/`;
 const KEY = () => r2KeyLayout(ROOT).refreshCursorKey();
 let runtime: Env;
 let queued: RefreshEnvelope[];
-let query: ReturnType<typeof vi.fn>;
+let query: ReturnType<typeof vi.fn<(id: string, topK: number) => Promise<SimilarityMatch[] | null>>>;
 let sendBatch: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   queued = [];
-  query = vi.fn(async (id: string) => ({ matches: [{ id, score: 1 }] }));
+  query = vi.fn(async (id: string) => [{ id, score: 1, url: "" }]);
   sendBatch = vi.fn(async (batch: { body: RefreshEnvelope }[]) => {
     queued.push(...batch.map(x => x.body));
   });
@@ -29,24 +30,11 @@ beforeEach(() => {
     RELATIONSHIP_REFRESH_JOBS: {
       send: vi.fn(async (body: RefreshEnvelope) => { queued.push(body); }), sendBatch,
     } as unknown as Queue<RefreshEnvelope>,
-    READINGS_INDEX: {
-      getByIds: vi.fn(async (ids: string[]) => ids.map(id => ({ id }))), queryById: query,
-    } as unknown as VectorizeIndex,
   } as unknown as Env;
-  // Neighbourhoods come from pgvector now. These tests are about what the scan
-  // does with a neighbourhood, so they keep scripting one through the
-  // Vectorize-shaped doubles above, and this adapter feeds the scan from them:
-  // `getByIds` decides whether the reading has a vector at all, `queryById`
-  // supplies its matches. The similarity store has its own suite.
-  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation(async (id, topK) => {
-    const index = runtime.READINGS_INDEX as unknown as {
-      getByIds: (ids: string[]) => Promise<unknown[]>;
-      queryById: (id: string, options: { topK: number }) => Promise<{ matches: { id: string; score: number }[] }>;
-    };
-    if ((await index.getByIds([`${FOUNDER_TENANT_ID}:${id}`])).length === 0) return null;
-    const { matches } = await index.queryById(id, { topK });
-    return matches.map(match => ({ id: match.id.slice(match.id.indexOf(":") + 1), score: match.score, url: "" }));
-  });
+  // Neighbourhoods come from pgvector. These tests are about what the scan does
+  // with a neighbourhood, so `query` scripts one: its matches, or null for a
+  // reading with no embedding. The similarity store has its own suite.
+  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation((id, topK) => query(id, topK));
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -117,11 +105,11 @@ describe("relationship refresh scan", () => {
       ...target, connections: known.map(id => ({ id, reason: "Known" })),
       connections_neighbourhood_ids: known,
     });
-    query.mockImplementation(async (id: string, options: { topK: number }) => ({ matches: [
-      { id, score: 1 },
-      { id: `${FOUNDER_TENANT_ID}:rd_9999999999`, score: 0.99 },
-      ...manifests.slice(1).map((m, i) => ({ id: `${FOUNDER_TENANT_ID}:${m.id}`, score: 0.9 - i * 0.01 })),
-    ].slice(0, options.topK) }));
+    query.mockImplementation(async (id, topK) => [
+      { id, score: 1, url: "" },
+      { id: "rd_9999999999", score: 0.99, url: "" },
+      ...manifests.slice(1).map((m, i) => ({ id: m.id, score: 0.9 - i * 0.01, url: "" })),
+    ].slice(0, topK));
     await scheduleRelationshipRefresh(runtime, NOW);
     await drainScans();
     expect(judges()).toContainEqual(expect.objectContaining({ readingId: target.id }));
@@ -238,10 +226,10 @@ describe("relationship refresh scan", () => {
     await store.seed({
       ...running!, active_attempt: { id: "at_test", trigger: "reprocess", status: "running", stage: "queued", started_at: new Date().toISOString() },
     });
-    vi.mocked(runtime.READINGS_INDEX.getByIds).mockResolvedValue([]);
+    query.mockResolvedValue(null);
     await drainScans();
-    expect(runtime.READINGS_INDEX.getByIds).toHaveBeenCalledWith([`${FOUNDER_TENANT_ID}:${vectorless!.id}`]);
-    expect(query).not.toHaveBeenCalled();
+    // Only the reading with no embedding is asked for a neighbourhood.
+    expect(query.mock.calls.map(([id]) => id)).toEqual([vectorless!.id]);
     expect(judges()).toHaveLength(0);
   });
 

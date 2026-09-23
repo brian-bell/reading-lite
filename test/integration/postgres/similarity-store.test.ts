@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sql } from "../../../src/modules/db/sql";
 import { pgSimilarityStoreFor } from "../../../src/modules/stores/postgres/similarity-store";
-import { WrongEmbeddingDimensionError } from "../../../src/modules/stores/similarity-store";
+import { WrongEmbeddingDimensionError } from "../../../src/modules/stores/similarity";
 import { axisVector, mintTenant, readyManifest, seedManifest, testSql } from "../../helpers/pg-fixtures";
 
 let sql: Sql;

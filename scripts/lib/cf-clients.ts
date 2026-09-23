@@ -2,10 +2,10 @@ import { parseRestListPage, parseS3ListPage, nextListToken } from "./r2-list-pag
 import { AwsClient } from "aws4fetch";
 import { parseRateLimitDelayMs } from "../../src/modules/http-retry";
 
-// Shared Cloudflare clients for the Node bulk scripts (corpus-recover
-// --batch). R2 over the S3 API (SigV4 via aws4fetch); Vectorize over the REST
-// API. fetch is injected (default: global) so tests stub it — no globals reached
-// for inside the factory.
+// Shared Cloudflare R2 clients for the Node bulk scripts (corpus-recover
+// --batch, the account inventory): the S3 API (SigV4 via aws4fetch) and the
+// REST API. fetch is injected (default: global) so tests stub it — no globals
+// reached for inside the factory.
 
 export interface R2PutOptions {
   contentType?: string;
@@ -61,57 +61,6 @@ export interface R2InventoryClient extends R2Client {
   getWithEtag(key: string): Promise<R2ObjectText | null>;
 }
 
-export interface VectorizeUpsertVector {
-  id: string;
-  values: number[];
-  metadata: Record<string, string | number | boolean | string[]>;
-}
-
-export interface VectorizeMatch {
-  id: string;
-  score: number;
-  metadata?: Record<string, unknown>;
-}
-
-export interface VectorizeClient {
-  upsert(vectors: VectorizeUpsertVector[]): Promise<void>;
-  query(
-    vector: number[],
-    opts: { topK: number; returnMetadata?: boolean },
-  ): Promise<VectorizeMatch[]>;
-}
-
-export interface StoredVector {
-  id: string;
-  values: number[];
-  metadata?: Record<string, unknown>;
-  namespace?: string;
-}
-
-// Administrative operations: fetch stored vectors by id for auditing and
-// repair without a paid re-embed. get_by_ids addresses vectors by their
-// index-unique id regardless of namespace, which is exactly what lets one
-// call probe legacy (bare-id) and migrated (tenant-prefixed) vectors at once.
-export interface VectorizeAdminClient extends VectorizeClient {
-  getByIds(ids: string[]): Promise<StoredVector[]>;
-  /**
-   * Query by a vector the index already holds, addressed by id — the same
-   * single POST `wrangler vectorize query --vector-id` makes (verified against
-   * wrangler 4.101's queryIndexByVectorId). No embedding call, so no spend and
-   * no risk of a freshly-computed vector drifting from the indexed one.
-   *
-   * An id the index does not hold is NOT an error: the API answers 200 with an
-   * empty match list, and so does a namespaced query for a vector that lives in
-   * another namespace. A present vector always matches itself, so "no matches"
-   * is the missing-vector signal — the same one wrangler prints as "Could not
-   * find any relevant vectors" on a zero exit.
-   */
-  queryById(
-    id: string,
-    opts: { topK: number; returnMetadata?: boolean },
-  ): Promise<VectorizeMatch[]>;
-}
-
 export interface R2Config {
   accountId: string;
   accessKeyId: string;
@@ -123,18 +72,6 @@ export interface R2RestConfig {
   accountId: string;
   apiToken: string;
   bucket: string;
-}
-
-export interface VectorizeConfig {
-  accountId: string;
-  index: string;
-  apiToken: string;
-  /**
-   * Tenant namespace for every upsert and query (reading-lite-s1k.4.3),
-   * matching the worker's similarityStoreFor. Omit for the global,
-   * pre-tenant namespace.
-   */
-  namespace?: string;
 }
 
 // A refresh pass is thousands of sequential S3 requests, so both halves of
@@ -381,10 +318,9 @@ export interface RateLimitRetryDeps {
   now?: () => number;
 }
 
-// The Cloudflare REST API (R2 objects, Vectorize) throttles bursts with 429s
-// (code 971 / 10000): the historical founder migration read ~3 objects per row and probed
-// 2 vector ids per ready row, so a 500-row corpus is thousands of back-to-back
-// calls. Unlike the worker's fetchWithRetry (which surfaces 429 to the queue),
+// The Cloudflare REST API (R2 objects) throttles bursts with 429s
+// (code 971 / 10000): the historical founder migration read ~3 objects per
+// row, so a 500-row corpus is thousands of back-to-back calls. Unlike the worker's fetchWithRetry (which surfaces 429 to the queue),
 // an operator CLI can simply wait: honor Retry-After when present, otherwise
 // back off 1s·2^n; either way the wait is capped, for a bounded number of tries. Anything else is
 // returned as-is for the caller's own status handling.
@@ -630,93 +566,6 @@ function firstDefined(vars: Record<string, string | undefined>, names: string[])
   return undefined;
 }
 
-export function makeVectorizeClient(
-  cfg: VectorizeConfig,
-  fetchFn: typeof fetch = fetch,
-  deps: RateLimitRetryDeps = {},
-): VectorizeAdminClient {
-  const indexBase = `https://api.cloudflare.com/client/v4/accounts/${cfg.accountId}/vectorize/v2/indexes/${cfg.index}`;
-  const authHeader = `Bearer ${cfg.apiToken}`;
-  const send = withRateLimitRetry(fetchFn, deps);
-  return {
-    async upsert(vectors) {
-      if (vectors.length === 0) return;
-      const ndjson = vectors
-        .map((v) => JSON.stringify(cfg.namespace === undefined ? v : { ...v, namespace: cfg.namespace }))
-        .join("\n");
-      const res = await send(`${indexBase}/upsert`, {
-        method: "POST",
-        headers: {
-          authorization: authHeader,
-          "content-type": "application/x-ndjson",
-        },
-        body: ndjson,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Vectorize upsert failed: ${res.status} ${text}`);
-      }
-    },
-    async query(vector, opts) {
-      return runQuery({ vector }, opts);
-    },
-    async queryById(id, opts) {
-      return runQuery({ vectorId: id }, opts);
-    },
-    async getByIds(ids) {
-      if (ids.length === 0) return [];
-      const res = await send(`${indexBase}/get_by_ids`, {
-        method: "POST",
-        headers: { authorization: authHeader, "content-type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`Vectorize get_by_ids failed: ${res.status} ${text}`);
-      }
-      // The v2 result is the vector array; tolerate a {vectors: []} wrapper.
-      type WireVector = Omit<StoredVector, "namespace"> & { namespace?: string | null };
-      const json = (await res.json()) as {
-        result?: WireVector[] | { vectors?: WireVector[] };
-      };
-      const raw = json.result;
-      const vectors = Array.isArray(raw) ? raw : raw?.vectors ?? [];
-      // The API serializes an unnamespaced vector's namespace as null (or
-      // omits it); normalize here so consumers can rely on `undefined`
-      // meaning "legacy, no namespace" without null-vs-absent case analysis.
-      return vectors.map(({ namespace, ...rest }) => ({
-        ...rest,
-        ...(namespace == null ? {} : { namespace }),
-      }));
-    },
-  };
-
-  // `vector` and `vectorId` are the two spellings of the same POST; everything
-  // else about the request — topK, metadata mode, namespace filter — is shared,
-  // so neither caller can drift from the other.
-  async function runQuery(
-    subject: { vector: number[] } | { vectorId: string },
-    opts: { topK: number; returnMetadata?: boolean },
-  ): Promise<VectorizeMatch[]> {
-    const res = await send(`${indexBase}/query`, {
-      method: "POST",
-      headers: { authorization: authHeader, "content-type": "application/json" },
-      body: JSON.stringify({
-        ...subject,
-        topK: opts.topK,
-        returnMetadata: opts.returnMetadata ? "all" : "none",
-        ...(cfg.namespace === undefined ? {} : { namespace: cfg.namespace }),
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new Error(`Vectorize query failed: ${res.status} ${text}`);
-    }
-    const json = (await res.json()) as { result?: { matches?: VectorizeMatch[] } };
-    return json.result?.matches ?? [];
-  }
-}
-
 // A view of an R2Client confined to one tenant's key root (reading-lite-
 // s1k.4.3). The batch pipeline and its phase modules speak RELATIVE keys
 // (index/list.json, readings/…); wrapping the client is what maps them into a
@@ -765,19 +614,6 @@ export function dryRunR2(log: (line: string) => void = (l) => process.stderr.wri
     },
     async listKeys() {
       log("[dry-run] R2 LIST");
-      return [];
-    },
-  };
-}
-
-export function dryRunVectorize(
-  log: (line: string) => void = (l) => process.stderr.write(l + "\n"),
-): VectorizeClient {
-  return {
-    async upsert(vectors) {
-      for (const v of vectors) log(`[dry-run] Vectorize upsert ${v.id}`);
-    },
-    async query() {
       return [];
     },
   };

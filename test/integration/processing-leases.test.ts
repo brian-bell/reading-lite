@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
@@ -25,14 +25,6 @@ const HTML = `<!doctype html><html><head><title>Test Article</title></head><body
 <p>This is a second paragraph that adds more content so the article passes the readability character threshold.</p>
 </article></main></body></html>`;
 
-function installVectorizeStub(): void {
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert: vi.fn(async () => ({ mutationId: "m" })),
-    deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
-    query: vi.fn(async () => ({ count: 0, matches: [] })),
-  } as unknown as VectorizeIndex;
-}
-
 async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
   for (const obj of list.objects) {
@@ -40,9 +32,6 @@ async function clearBucket() {
   }
 }
 
-beforeEach(() => {
-  installVectorizeStub();
-});
 afterEach(clearBucket);
 
 function embeddingResponse(): Response {

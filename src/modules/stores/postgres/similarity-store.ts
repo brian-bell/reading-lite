@@ -16,7 +16,7 @@
 import type { TenantContext } from "../../../control-plane/ids";
 import { EMBEDDING_DIM } from "../../../schemas/api";
 import { vectorLiteral, type Sql } from "../../db/sql";
-import { WrongEmbeddingDimensionError, type SimilarityMatch } from "../similarity-store";
+import { WrongEmbeddingDimensionError, type SimilarityMatch } from "../similarity";
 import { pgTenantId } from "./reading-store";
 
 const MIN_TOP_K = 1;

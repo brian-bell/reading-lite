@@ -24,42 +24,6 @@ import { toTimestamp } from "../../src/control-plane/pg-time";
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
 
-type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): {
-  upsert: AnyMock;
-  query: AnyMock;
-  deleteByIds: AnyMock;
-} {
-  const vectors = new Map<string, { values: number[]; namespace?: string }>();
-  const upsert = vi.fn(async (vs: VectorizeVector[]) => {
-    for (const v of vs) {
-      vectors.set(v.id, {
-        values: v.values as number[],
-        ...(v.namespace === undefined ? {} : { namespace: v.namespace }),
-      });
-    }
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const deleteByIds = vi.fn(async (ids: string[]) => {
-    for (const id of ids) vectors.delete(id);
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
-    const k = opts.topK ?? 5;
-    const matches = Array.from(vectors.entries())
-      .filter(([, v]) => v.namespace === opts.namespace)
-      .slice(0, k)
-      .map(([id, v]) => ({ id, score: 0.9, values: v.values, metadata: {} }));
-    return { count: matches.length, matches } as unknown as VectorizeMatches;
-  });
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert,
-    deleteByIds,
-    query,
-  } as unknown as VectorizeIndex;
-  return { upsert, query, deleteByIds };
-}
-
 let queuedEnvelopes: ProcessReadingEnvelopeV1[] = [];
 let queuedJobs: ProcessReadingArgs[] = [];
 function installQueueStub(): ProcessReadingArgs[] {
@@ -167,7 +131,6 @@ async function clearBucket() {
 }
 
 beforeEach(() => {
-  installVectorizeStub();
   installQueueStub();
 });
 afterEach(clearBucket);
@@ -641,7 +604,6 @@ describe("POST /mcp", () => {
   });
 
 });
-
 
 // #198: exercise the MCP dispatch boundary itself, including content/diagnostic
 // tools and polling; HTTP-only coverage cannot catch a lost dispatch principal.

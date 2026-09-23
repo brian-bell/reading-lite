@@ -1245,18 +1245,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/11T100000Z-rd_FXPENDNG01/manifest.json",
-          "size": 587,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/11T100000Z-rd_FXPENDNG01/attempts/at_FXPENDNG01.json",
-          "size": 423,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXPENDNG01",
@@ -1364,18 +1353,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/10T141000Z-rd_FXERR00001/manifest.json",
-          "size": 1039,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/10T141000Z-rd_FXERR00001/attempts/at_FXERR00001.json",
-          "size": 1141,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -1515,18 +1493,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/09T164200Z-rd_FXERR00002/manifest.json",
-          "size": 1085,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/09T164200Z-rd_FXERR00002/attempts/at_FXERR00001.json",
-          "size": 1701,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -1699,18 +1666,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/09T090500Z-rd_FXERR00003/manifest.json",
-          "size": 1036,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/09T090500Z-rd_FXERR00003/attempts/at_FXERR00001.json",
-          "size": 1652,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -1883,18 +1839,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/08T221800Z-rd_FXERR00004/manifest.json",
-          "size": 1001,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/08T221800Z-rd_FXERR00004/attempts/at_FXERR00001.json",
-          "size": 1622,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -2067,18 +2012,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/08T115500Z-rd_FXERR00005/manifest.json",
-          "size": 983,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/08T115500Z-rd_FXERR00005/attempts/at_FXERR00001.json",
-          "size": 1599,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -2315,11 +2249,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/09/07T093000Z-rd_FXATTENT01/manifest.json",
-          "size": 3095,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/09/07T093000Z-rd_FXATTENT01/raw.html",
           "size": 1680,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -2327,11 +2256,6 @@
         {
           "key": "readings/2026/09/07T093000Z-rd_FXATTENT01/extracted.md",
           "size": 1461,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/07T093000Z-rd_FXATTENT01/attempts/at_FXATTENT01.json",
-          "size": 2465,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -2597,11 +2521,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/09/06T182500Z-rd_FXSPARSE01/manifest.json",
-          "size": 1667,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/09/06T182500Z-rd_FXSPARSE01/raw.html",
           "size": 395,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -2609,11 +2528,6 @@
         {
           "key": "readings/2026/09/06T182500Z-rd_FXSPARSE01/extracted.md",
           "size": 226,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/06T182500Z-rd_FXSPARSE01/attempts/at_FXSPARSE01.json",
-          "size": 2468,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -2852,18 +2766,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/05T213000Z-rd_FXERR00006/manifest.json",
-          "size": 962,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/05T213000Z-rd_FXERR00006/attempts/at_FXERR00001.json",
-          "size": 1578,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -3089,11 +2992,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/manifest.json",
-          "size": 2123,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/raw.html",
           "size": 746,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -3101,16 +2999,6 @@
         {
           "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/extracted.md",
           "size": 566,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/attempts/at_FXREPROC01.json",
-          "size": 2467,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/05T084000Z-rd_FXREPROC01/attempts/at_FXREPROC02.json",
-          "size": 1073,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -3452,11 +3340,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/09/04T100000Z-rd_FXGARDEN01/manifest.json",
-          "size": 2461,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/09/04T100000Z-rd_FXGARDEN01/raw.html",
           "size": 815,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -3464,11 +3347,6 @@
         {
           "key": "readings/2026/09/04T100000Z-rd_FXGARDEN01/extracted.md",
           "size": 623,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/04T100000Z-rd_FXGARDEN01/attempts/at_FXGARDEN01.json",
-          "size": 2464,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -3707,18 +3585,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/09/04T071200Z-rd_FXERR00007/manifest.json",
-          "size": 1018,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/04T071200Z-rd_FXERR00007/attempts/at_FXERR00001.json",
-          "size": 661,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -3883,11 +3750,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/09/02T134500Z-rd_FXFRICTN01/manifest.json",
-          "size": 2303,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/09/02T134500Z-rd_FXFRICTN01/raw.html",
           "size": 729,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -3895,11 +3757,6 @@
         {
           "key": "readings/2026/09/02T134500Z-rd_FXFRICTN01/extracted.md",
           "size": 544,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/09/02T134500Z-rd_FXFRICTN01/attempts/at_FXFRICTN01.json",
-          "size": 2470,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -4134,18 +3991,7 @@
           "matches_manifest": true
         }
       },
-      "objects": [
-        {
-          "key": "readings/2026/08/30T194700Z-rd_FXERR00008/manifest.json",
-          "size": 947,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/08/30T194700Z-rd_FXERR00008/attempts/at_FXERR00001.json",
-          "size": 1743,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        }
-      ],
+      "objects": [],
       "attempts": [
         {
           "id": "at_FXERR00001",
@@ -4364,11 +4210,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/08/29T152000Z-rd_FXMAXNAME1/manifest.json",
-          "size": 1852,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/08/29T152000Z-rd_FXMAXNAME1/raw.html",
           "size": 611,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -4376,11 +4217,6 @@
         {
           "key": "readings/2026/08/29T152000Z-rd_FXMAXNAME1/extracted.md",
           "size": 337,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/08/29T152000Z-rd_FXMAXNAME1/attempts/at_FXMAXNAME1.json",
-          "size": 2463,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -4658,11 +4494,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/08/28T083000Z-rd_FXMDPAGE01/manifest.json",
-          "size": 1820,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/08/28T083000Z-rd_FXMDPAGE01/raw.md",
           "size": 1538,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -4670,11 +4501,6 @@
         {
           "key": "readings/2026/08/28T083000Z-rd_FXMDPAGE01/extracted.md",
           "size": 1538,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/08/28T083000Z-rd_FXMDPAGE01/attempts/at_FXMDPAGE01.json",
-          "size": 2115,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -4929,18 +4755,8 @@
       },
       "objects": [
         {
-          "key": "readings/2026/08/25T110500Z-rd_FXRAWSRC01/manifest.json",
-          "size": 1877,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/08/25T110500Z-rd_FXRAWSRC01/raw.html",
           "size": 378,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/08/25T110500Z-rd_FXRAWSRC01/attempts/at_FXRAWSRC01.json",
-          "size": 2291,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -5215,11 +5031,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1/manifest.json",
-          "size": 1900,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1/raw.html",
           "size": 531,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -5227,11 +5038,6 @@
         {
           "key": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1/extracted.md",
           "size": 447,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1/attempts/at_FXYTDEGRD1.json",
-          "size": 2458,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],
@@ -5476,11 +5282,6 @@
       },
       "objects": [
         {
-          "key": "readings/2026/04/14T091500Z-rd_FXPAST0001/manifest.json",
-          "size": 1335,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
           "key": "readings/2026/04/14T091500Z-rd_FXPAST0001/raw.html",
           "size": 348,
           "uploaded": "2026-09-11T10:00:00.000Z"
@@ -5488,11 +5289,6 @@
         {
           "key": "readings/2026/04/14T091500Z-rd_FXPAST0001/extracted.md",
           "size": 186,
-          "uploaded": "2026-09-11T10:00:00.000Z"
-        },
-        {
-          "key": "readings/2026/04/14T091500Z-rd_FXPAST0001/attempts/at_FXPAST0001.json",
-          "size": 2458,
           "uploaded": "2026-09-11T10:00:00.000Z"
         }
       ],

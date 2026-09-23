@@ -149,7 +149,7 @@ export type ProcessingAttempt = z.infer<typeof ProcessingAttemptSchema>;
 
 // Measured closeness to the nearest neighbours at summarize time. Optional
 // because it postdates the corpus: readings written before it exist without
-// one, and must keep parsing. See SimilaritySnapshot in similarity-store.ts
+// one, and must keep parsing. See SimilaritySnapshot in stores/similarity.ts
 // for why this is a number and why computed_at matters.
 export const SimilaritySnapshotSchema = z
   .object({
