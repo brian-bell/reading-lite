@@ -157,6 +157,16 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | `import reddit` | `import-reddit.ts` | A Reddit thread `.json` fetched locally; submits over the reading API | **unchanged** | The same. |
 | `import youtube` | `import-youtube.ts` | oEmbed, the watch page and a `yt-dlp` transcript; submits over the reading API | **unchanged** | The same. |
 
+### migrate
+
+Added by reading-lite-gh348, after this inventory was taken. The two commands
+are not among the 44 rows the counts below reconcile.
+
+| Command | File | Reads today | Verdict | Why |
+| --- | --- | --- | --- | --- |
+| `migrate export` | `migrate-export.ts` | The legacy stores, read-only: a tenant's R2 manifests, attempt logs, pointers, tombstones and raw content; the D1 control plane by `SELECT`; Vectorize `get_by_ids` by composed id | **retire in #351** | It reads the stores gh351 deletes. It has to keep working through the final export at cutover (#350). |
+| `migrate import` | `migrate-import.ts` | A snapshot directory from `migrate export`; writes an empty PostgreSQL target named by `--target-env` | **retire in #351** | A one-time load that has no job left once the cutover import is done and the legacy stores are gone. |
+
 ### reading and reading-list
 
 | Command | File | Reads today | Verdict | Why |

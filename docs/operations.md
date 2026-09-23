@@ -2227,6 +2227,123 @@ remains. Retiring this command does not delete retained legacy data, remove the
 repair/vector-backfill tools. A future migration needs its own scoped design,
 tests and rehearsal, not a recurring founder-cutover release check.
 
+### Library export and import (reading-lite-gh348)
+
+The storage migration ([ADR 0005](decisions/0005-postgresql-storage.md)) moves
+a tenant's library and the whole control plane from the legacy stores (R2
+manifests and pointers, the D1 control plane, Vectorize) into PostgreSQL. It
+takes two commands and a snapshot directory between them:
+
+```sh
+# 1. Freeze writers, then plan: reads the source, writes nothing.
+npm run ops -- migrate export --source staging --tenant usr_… [--json]
+
+# 2. Write the snapshot. Re-embeds get_by_ids misses (the only paid call).
+npm run ops -- migrate export --source staging --tenant usr_… --out ~/rl-snapshots/staging-2026-09-24 --execute
+
+# 3. Plan the import against the target, named by an environment variable.
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- migrate import --snapshot ~/rl-snapshots/staging-2026-09-24 --target-env NEON_REHEARSAL_DATABASE_URL
+
+# 4. Import, verify, commit.
+npm run ops -- migrate import --snapshot … --target-env NEON_REHEARSAL_DATABASE_URL --execute --json > import-report.json
+```
+
+**Export** reads the source read-only. It lists every object under
+`u/{tenant}/` in the environment's bucket and takes the inventory from the
+manifests found there, not from `index/list.json`: the list is only compared
+against them. It fetches vectors from Vectorize by their composed
+`{tenant}:{id}` ids with `get_by_ids`. Retained pre-tenant global data is
+never read, and the retired founder migration is not involved. It reads the D1
+control plane with `SELECT`s through `scripts/migrate-lib/wrangler-d1-source.toml`,
+which pins main's D1 ids because the candidate's `wrangler.toml` no longer
+binds D1. Every account's control-plane rows are exported, but only the named
+tenant's library. The report lists any other accounts as `other_accounts`.
+Freeze writers first. The export reads R2, D1 and Vectorize at different
+moments and assumes nothing changes in between.
+
+Only the reading that owns its URL keeps a vector, as `PgReadingWriter.publish`
+stores them: a duplicate is neither embedded nor re-embedded, and a vector
+Vectorize still holds for one is reported (`vector_for_non_owner`) and left
+behind. A ready owner whose vector `get_by_ids` does not return is asked for again on
+its own; the founder cutover saw batched `get_by_ids` drop prefixed ids that a
+query had just found. If it is still missing, `--execute` embeds the manifest's
+`tldr` with `text-embedding-3-small`, spend-admitted against `--billing-tenant`
+(default: `--tenant`), and the report lists it under `vectors.reembedded`. It
+embeds the `tldr`, not `extracted.md`, because the published vector has always
+been the tldr embedding (`embed_summary` in `process-reading.ts`, as the retired
+`corpus backfill-vectors` also restored it). A vector of the source text would
+be a different kind of vector in the same index. No summarization provider is
+called. R2 content is not moved or renamed: each ready reading imports one
+initial revision addressing its legacy `raw.{ext}` and `extracted.md` keys.
+When a ready reading's raw object sits under a different extension from the
+one `content_type` implies, and it is the only raw object there, the revision
+addresses the object that was found (`content_key_mismatch`).
+
+**The snapshot** holds `snapshot.json` (format, source, tenant, the sha256 of
+every other file), `library.json`, `control-plane.json` (D1 rows as D1 returned
+them) and `report.json`, all canonical JSON. Import refuses a snapshot whose
+files do not match their digests. `--out` must be new or empty, because a snapshot
+is never overwritten.
+
+**Import** loads only an **empty** target: every `db/migrations` file applied
+(run `ops db migrate` first), pgvector installed, and no row in any application
+table. Anything else is refused, and this is deliberately not a resumable
+migration. There is no default target. `--target-env` names the variable
+holding a direct connection string and is never the string itself. A variable
+the operator seam pairs with a deployed environment (`NEON_MAIN_DATABASE_URL`,
+`NEON_REHEARSAL_DATABASE_URL`, ...) must match the snapshot's source. For a
+temporary Neon branch, such as the production-snapshot reconciliation, export
+a new variable name. Everything loads in one transaction. Before the commit,
+import reads back every reading through the reading store, every embedding and
+every control-plane row, and compares them with what the snapshot predicts. It
+also compares per-field totals and hashes. Any mismatch rolls the whole import
+back and exits 1. Active tokens, sessions, challenges, limits, policy, digest
+deliveries, refresh checkpoints, completed wipes and deletion records import
+unchanged, converted per ADR 0005's column table. The `auth_challenges` and
+`dev_mail_outbox` identities restart above the imported ids. Durable Object
+guards are not touched. The vector ledger is read only for reconciliation.
+
+**Blocking findings** refuse `--execute` until each code is accepted
+explicitly with `--accept <code>`:
+
+| Code | What `--accept` does |
+| --- | --- |
+| `malformed_manifest` | Skips the reading; it is listed in the report. |
+| `identity_mismatch` | Imports the reading under the key prefix it was found at, whose name does not end in its id. |
+| `tombstoned_manifest` | Skips a reading whose purge left a tombstone but not its manifest. |
+| `unresolved_pending` | Imports a pending reading, or one with an active attempt, with its attempt summary and log but **no `reading_jobs` row**, so nothing runs it. Drain the queues before the final freeze so this list is empty. |
+| `unusable_vector` | Imports a ready reading without an embedding, which leaves it unsearchable. |
+
+`duplicate_reading_id`, `tenant_account_missing` (the library would import
+with no account behind it, outside every deletion path), `unfinished_wipe` (only completed wipes import; the
+deploy gate refuses unfinished ones anyway) and `invalid_control_plane_row` (a
+D1 column with no mapping is never dropped silently) cannot be accepted. Fix
+the source and export again.
+
+Purge tombstones (`index/deleted/`) are not imported as fences, because the
+cutover drains every queue. The snapshot keeps them, and the report lists them
+for audit. Processing checkpoints, `index/refresh-state.json` (the next refresh
+pass sweeps instead) and fields `ManifestSchema` does not know are not
+imported. The report names each one. Timestamps stored in `timestamptz` columns
+are respelled to ISO-8601 with milliseconds, and the report lists every
+reading whose spelling changes.
+
+**The reports.** `report.json` (export) is the source-side reconciliation:
+counts, per-field presence and hashes over the projection PostgreSQL must
+return, every reading id and manifest hash, duplicate URL owners (the by-url
+pointer decides unless it names a tombstoned copy, in which case a surviving
+copy owns the URL; the others import unowned and, as the runtime stores them,
+without an embedding), dangling relationships (imported,
+because detail reads tolerate a missing target), missing content, size and
+hash mismatches of the raw object, list-index and pointer disagreements, and
+found, retried, re-embedded, invalid and non-ready vectors. `--json` on either
+command puts the report alone on stdout, with the human lines on stderr, so it
+redirects to a file cleanly. On import it is the target-side report: rows and a hash per table, skipped readings,
+findings and the verification result. It contains no timestamps or connection
+details, so importing the same snapshot into another empty database produces
+the same report. That is how #349 checks the rehearsal.
+
 ### The extract-agent
 
 The Worker enforces per-hop scheme, DNS-vs-private, redirect, size, and time
