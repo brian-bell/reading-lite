@@ -44,7 +44,7 @@ describe("the bucket-to-database pairing", () => {
         databaseUrlEnv: "STAGING_DATABASE_URL",
         env: ENV,
       }),
-    ).toThrow(/names the staging database, but --bucket reading-lite is production/);
+    ).toThrow(/names the staging database, but bucket reading-lite is production/);
   });
 
   it("refuses a variable that names no database at all", () => {

@@ -10,6 +10,8 @@ import { redactEmail } from "../../src/control-plane/email";
 import { fromSql, type ControlPlaneDb } from "../../src/control-plane/db";
 import { sqlFromConnectionString } from "../../src/modules/db/sql";
 import { localDatabase } from "../pg-lib/local-postgres";
+import { bucketForDeployEnv, resolveOperatorDatabaseUrl } from "../pg-lib/operator-db";
+import { UsageError } from "../ops-lib/contract";
 import { loadDotVars } from "./dotvars";
 
 export type BootstrapEnvName = "local" | "staging" | "production";
@@ -20,8 +22,10 @@ export interface FounderBootstrapCliArgs {
   env: BootstrapEnvName;
   confirmProduction: boolean;
   // Staging and production: the environment variable holding a DIRECT
-  // PostgreSQL connection string. Local uses the dev database.
-  databaseUrlEnv: string;
+  // PostgreSQL connection string, checked against the operator-db pairing.
+  // Omitted, the pairing picks whichever accepted name is set. Local uses the
+  // dev database.
+  databaseUrlEnv?: string | undefined;
 }
 
 export interface FounderBootstrapRunResult {
@@ -38,6 +42,8 @@ export interface FounderBootstrapDeps {
   nowMs: number;
   write: (line: string) => void;
   openDb: (databaseUrl: string) => Promise<OpenedControlPlane>;
+  /** Defaults to STAGING_FOUNDER_BOOTSTRAP_OPEN. */
+  stagingBootstrapOpen?: boolean;
 }
 
 // A direct connection, never Hyperdrive: the bootstrap's advisory lock and
@@ -47,15 +53,33 @@ export async function openPostgresControlPlane(databaseUrl: string): Promise<Ope
   return { db: fromSql(sql), close: () => sql.end() };
 }
 
-// Where the founder goes: the local dev database, or the direct connection
-// string the operator named for staging and production.
+// Where the founder goes: the local dev database, or the environment's paired
+// database for staging and production. The pairing is what stops a staging
+// bootstrap writing its founder and token into production (or a local
+// DATABASE_URL); it throws UsageError on an unset or mis-paired variable.
 export function founderDatabaseUrl(
   args: Pick<FounderBootstrapCliArgs, "env" | "databaseUrlEnv">,
   envVars: Record<string, string | undefined>,
-): string | null {
+): string {
   if (args.env === "local") return localDatabase(envVars).url;
-  return envVars[args.databaseUrlEnv]?.trim() || null;
+  return resolveOperatorDatabaseUrl({
+    bucket: bucketForDeployEnv(args.env),
+    databaseUrlEnv: args.databaseUrlEnv,
+    env: envVars,
+  }).url;
 }
+
+// Staging's database is the #349 rehearsal target. The #348 importer refuses a
+// target holding any application row, and a bootstrapped founder would
+// conflict with the imported one.
+export const STAGING_BOOTSTRAP_PROHIBITION =
+  "Do not run founder bootstrap against staging before the #349 import: the #348 importer " +
+  "refuses a database that already holds application rows.";
+
+// Closed until the #349 import: runFounderBootstrap refuses a staging write
+// (a plan only reads, and is allowed), and the cloud-agent installer skips
+// CLOUD_AGENT_FOUNDER_BOOTSTRAP=1. #349 flips this after the import.
+export const STAGING_FOUNDER_BOOTSTRAP_OPEN = false;
 
 const ENV_NAMES = new Set<BootstrapEnvName>(["local", "staging", "production"]);
 
@@ -75,7 +99,7 @@ export function parseFounderBootstrapArgs(
       email: { type: "string" },
       env: { type: "string", default: "local" },
       "confirm-production": { type: "boolean", default: false },
-      "database-url-env": { type: "string", default: "DATABASE_URL" },
+      "database-url-env": { type: "string" },
       help: { type: "boolean", default: false },
     },
   });
@@ -91,7 +115,7 @@ export function parseFounderBootstrapArgs(
     ...(values.email ? { email: values.email } : {}),
     env: env as BootstrapEnvName,
     confirmProduction: values["confirm-production"] === true,
-    databaseUrlEnv: values["database-url-env"] ?? "DATABASE_URL",
+    ...(values["database-url-env"] ? { databaseUrlEnv: values["database-url-env"] } : {}),
   };
 }
 
@@ -126,9 +150,17 @@ export async function runFounderBootstrap(
     return { exitCode: 2 };
   }
 
-  const databaseUrl = founderDatabaseUrl(args, deps.envVars);
-  if (!databaseUrl) {
-    deps.write(`missing ${args.databaseUrlEnv} (a direct PostgreSQL connection string for ${args.env})\n`);
+  let databaseUrl: string;
+  try {
+    databaseUrl = founderDatabaseUrl(args, deps.envVars);
+  } catch (error) {
+    if (!(error instanceof UsageError)) throw error;
+    deps.write(`${error.message}\n`);
+    return { exitCode: 2 };
+  }
+
+  if (args.env === "staging" && args.execute && !(deps.stagingBootstrapOpen ?? STAGING_FOUNDER_BOOTSTRAP_OPEN)) {
+    deps.write(`refusing staging write: ${STAGING_BOOTSTRAP_PROHIBITION} #349 lifts this gate.\n`);
     return { exitCode: 2 };
   }
 

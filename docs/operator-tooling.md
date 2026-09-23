@@ -146,7 +146,7 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `founder bootstrap` | `founder-bootstrap.ts` | Control-plane founder rows, already through `--database-url-env` and `sqlFromConnectionString` | **unchanged** | Verified rather than assumed: it is already on a direct connection. The dead `makeWranglerD1` left behind in `scripts/lib/founder-bootstrap.ts` was removed by reading-lite-gh347.4.3, not by a change to this command. |
+| `founder bootstrap` | `founder-bootstrap.ts` | Control-plane founder rows, already through `--database-url-env` and `sqlFromConnectionString` | **unchanged** | Verified rather than assumed: it is already on a direct connection. The dead `makeWranglerD1` left behind in `scripts/lib/founder-bootstrap.ts` was removed by reading-lite-gh347.4.3, not by a change to this command. reading-lite-gh347.4.8 checks staging's and production's `--database-url-env` against the operator-db pairing, so a staging bootstrap cannot write into production. |
 
 ### import
 
@@ -170,9 +170,9 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
 | `staging prepare-context` | `staging-prepare-context.ts` | PostgreSQL readings, ownership, current revision and embeddings; referenced R2 bytes and destination preconditions | **ported** | Slice 4.3 emits a private v2 packet of row payloads and content. Execution only writes local files; application is separately authorized. |
-| `staging setup` | `staging-setup.ts` | Provisions the staging bucket, queues and config | **port** | reading-lite-gh347.4.8 adds the staging database alongside them and runs `ops db migrate` against it. |
-| `staging smoke` | `staging-smoke.ts` | Drives the staging origin over HTTP and checks provider outcomes | **unchanged** | HTTP against the deployed staging Worker; reading-lite-gh347.4.8 verifies it passes rather than porting it. |
-| `staging teardown` | `staging-teardown.ts` | Removes what `staging setup` created | **port** | It is setup's mirror image, so it has to remove the staging database too or the two drift. reading-lite-gh347.4.8 owns both halves. |
+| `staging setup` | `staging-setup.ts` | The paired staging PostgreSQL database (the Neon rehearsal branch), then provisions the staging bucket, Vectorize index and queues | **ported** | reading-lite-gh347.4.8 resolves the database through the operator-db pairing before any Cloudflare mutation and migrates it with `ops db migrate`'s runner. It never creates the database; D1 left both lists. |
+| `staging smoke` | `staging-smoke.ts` | Drives the staging origin over HTTP and checks provider outcomes | **unchanged** | HTTP against the deployed staging Worker, with the bearer token founder bootstrap imports. Its `--execute` writes readings, so against PostgreSQL staging it runs only after the #349 import; live evidence there is #349's. |
+| `staging teardown` | `staging-teardown.ts` | Removes the Cloudflare resources `staging setup` creates | **ported** | reading-lite-gh347.4.8: Cloudflare only. The staging database is retained (setup never creates it), and so is staging's D1, the #348 importer's source, until #351. A test holds the create and delete lists equal. |
 | `staging token-revocation` | `staging-token-revocation.ts` | The staging origin over HTTP, plus release evidence on disk | **unchanged** | Confirmed against reading-lite-gh347.4.3's open question: it holds no control-plane SQL, so it does not move into that slice. |
 
 ### system

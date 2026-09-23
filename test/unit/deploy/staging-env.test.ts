@@ -64,10 +64,6 @@ describe("staging environment scripts", () => {
         label: "Create staging refresh dead-letter queue",
         args: ["queues", "create", "reading-lite-staging-refresh-dlq"],
       },
-      {
-        label: "Create staging D1 control plane",
-        args: ["d1", "create", "reading-lite-control-staging"],
-      },
     ]);
   });
 
@@ -146,14 +142,28 @@ describe("staging environment scripts", () => {
         args: ["vectorize", "delete", "reading-lite-staging", "--force"],
       },
       {
-        label: "Delete staging D1 control plane",
-        args: ["d1", "delete", "reading-lite-control-staging", "--skip-confirmation"],
-      },
-      {
         label: "Delete staging R2 bucket",
         args: ["r2", "bucket", "delete", "reading-lite-staging"],
       },
     ]);
+  });
+
+  // Setup and teardown stay mirror images: every Cloudflare resource setup
+  // creates, teardown deletes, and nothing else. The staging database is in
+  // neither list — setup migrates it and teardown retains it.
+  it("tears down exactly the Cloudflare resources setup creates", () => {
+    const created = buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES).map(({ args }) => {
+      const at = args.indexOf("create");
+      return `${args.slice(0, at).join(" ")} ${args[at + 1]}`;
+    });
+    const deleted = buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES)
+      .filter(({ args }) => args.includes("delete") && args[0] !== "delete")
+      .map(({ args }) => {
+        const at = args.indexOf("delete");
+        return `${args.slice(0, at).join(" ")} ${args[at + 1]}`;
+      });
+    expect(created).toHaveLength(new Set(created).size);
+    expect(new Set(deleted)).toEqual(new Set(created));
   });
 
   it("marks setup and teardown commands as idempotent", () => {

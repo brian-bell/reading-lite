@@ -13,7 +13,7 @@
 
 import { parseArgs } from "node:util";
 import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
-import { runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
+import { connectMigrationClient, runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 
 export interface DbMigrateDeps extends BaseDeps {
@@ -47,12 +47,7 @@ Options:
     io,
     env: process.env,
     readMigrations: () => readMigrations(),
-    async connect(databaseUrl) {
-      const { default: pg } = await import("pg");
-      const client = new pg.Client({ connectionString: databaseUrl });
-      await client.connect();
-      return client;
-    },
+    connect: connectMigrationClient,
   }),
   async run(argv, deps) {
     let values;

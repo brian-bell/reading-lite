@@ -16,7 +16,7 @@ import { parseArgs } from "node:util";
 import { assertCleanCandidate, ShaSchema } from "../../lib/release-evidence";
 import { CONTROL_PLANE_REQUIRED_SECRETS } from "../../control-plane-env";
 import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
-import { runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
+import { connectMigrationClient, runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
 import { assertDatabaseUrlEnvMatches } from "../../pg-lib/operator-db";
 import { validateTenantActivation } from "../tenant-activation-preflight";
 import { checkPostgresCutover } from "../postgres-cutover";
@@ -225,12 +225,7 @@ refuses a placeholder Hyperdrive id.`,
     checkPostgresCutover,
     env: process.env,
     readMigrations: () => readMigrations(),
-    async connect(databaseUrl) {
-      const { default: pg } = await import("pg");
-      const client = new pg.Client({ connectionString: databaseUrl });
-      await client.connect();
-      return client;
-    },
+    connect: connectMigrationClient,
   }),
   run: runDeployWorker,
 };

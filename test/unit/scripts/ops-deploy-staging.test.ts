@@ -141,21 +141,124 @@ describe("ops deploy web", () => {
 });
 
 describe("ops staging setup / teardown", () => {
-  it("setup plans without running wrangler and executes with it", async () => {
-    const runs: unknown[] = [];
-    const { io: cio, err } = io();
+  // A staging database with one pending migration. Records every step, so a
+  // test can read the order in which the database and Cloudflare are touched.
+  function setupDeps(overrides: Partial<StagingSetupDeps> & { dbState?: "ok" | "unreachable" | "fails" | "drift" } = {}) {
+    const { dbState = "ok", ...rest } = overrides;
+    const order: string[] = [];
+    const { io: cio, out, err } = io();
     const deps: StagingSetupDeps = {
       io: cio,
+      env: { STAGING_DATABASE_URL: "postgres://staging-secret@host/db" },
+      readMigrations: () => [{ version: "0001", name: "init", sql: "CREATE EXTENSION vector", checksum: "c1" }],
+      connect: async (url) => {
+        order.push(`connect:${url}`);
+        if (dbState === "unreachable") throw new Error("connection refused");
+        return {
+          query: async (text: string) => {
+            if (text === "CREATE EXTENSION vector") {
+              if (dbState === "fails") throw new Error("permission denied to create extension");
+              order.push("db:migrated");
+            }
+            // Drift: an applied migration with no file behind it.
+            if (dbState === "drift") return { rows: [{ present: true, version: "0009", name: "gone", checksum: "x" }] };
+            return { rows: [{ present: false }] };
+          },
+          end: async () => {
+            order.push("db:end");
+          },
+        };
+      },
       runWranglerCommands: async (commands) => {
-        runs.push(commands);
+        order.push(`wrangler:${commands.length}`);
         return 0;
       },
+      ...rest,
     };
+    return { deps, order, out, err };
+  }
+
+  it("plan reads the staging database read-only and never runs wrangler", async () => {
+    const { deps, order, out, err } = setupDeps();
     expect(await stagingSetupCommand.run([], deps)).toBe(0);
-    expect(runs).toHaveLength(0);
-    expect(err.join("\n")).toContain("wrangler");
+    expect(order).toEqual(["connect:postgres://staging-secret@host/db", "db:end"]);
+    expect(out.join("\n")).toContain("[PLAN] database from STAGING_DATABASE_URL");
+    expect(out.join("\n")).toContain("pending 0001_init");
+    expect(`${out.join("\n")}\n${err.join("\n")}`).not.toContain("staging-secret");
+  });
+
+  it("execute migrates the paired staging database before any Cloudflare mutation", async () => {
+    const { deps, order, out, err } = setupDeps();
     expect(await stagingSetupCommand.run(["--execute"], deps)).toBe(0);
-    expect(runs).toHaveLength(1);
+    const firstWrangler = order.findIndex((step) => step.startsWith("wrangler"));
+    expect(order.slice(0, firstWrangler)).toEqual(["connect:postgres://staging-secret@host/db", "db:migrated", "db:end"]);
+    expect(firstWrangler).toBe(3);
+    expect(out.join("\n")).toContain("[EXECUTE] applied 0001_init");
+    expect(err.join("\n")).toMatch(/do not run founder bootstrap against staging before the #349 import/i);
+    expect(`${out.join("\n")}\n${err.join("\n")}`).not.toContain("staging-secret");
+  });
+
+  it("uses the laptop alias when only NEON_REHEARSAL_DATABASE_URL is set", async () => {
+    const { deps, order } = setupDeps({ env: { NEON_REHEARSAL_DATABASE_URL: "postgres://rehearsal" } });
+    expect(await stagingSetupCommand.run(["--execute"], deps)).toBe(0);
+    expect(order[0]).toBe("connect:postgres://rehearsal");
+  });
+
+  it.each<[string, string[], Record<string, string> | undefined]>([
+    ["--database-url-env names the production database", ["--database-url-env", "NEON_MAIN_DATABASE_URL"], undefined],
+    ["--database-url-env is bare DATABASE_URL", ["--database-url-env", "DATABASE_URL"], { DATABASE_URL: "postgres://x" }],
+  ])("refuses before touching anything when %s", async (_name, argv, env) => {
+    const { deps, order } = setupDeps(env ? { env } : {});
+    for (const mode of [[], ["--execute"]]) {
+      await expect(stagingSetupCommand.run([...argv, ...mode], deps)).rejects.toBeInstanceOf(UsageError);
+    }
+    expect(order).toEqual([]);
+  });
+
+  it("execute refuses before touching anything when no staging database is set", async () => {
+    const { deps, order } = setupDeps({ env: { DATABASE_URL: "postgres://x" } });
+    await expect(stagingSetupCommand.run(["--execute"], deps)).rejects.toBeInstanceOf(UsageError);
+    expect(order).toEqual([]);
+  });
+
+  // A plan still prints the Cloudflare plan when the migrations cannot be
+  // inspected; only a history it did read and cannot act on fails it.
+  it.each<[string, Partial<Parameters<typeof setupDeps>[0]>, number, RegExp]>([
+    ["no staging database is set", { env: {} }, 0, /no staging database variable is set; migrations uninspected/],
+    ["the database is unreachable", { dbState: "unreachable" }, 0, /could not reach the staging database/],
+    ["the migration history has drifted", { dbState: "drift" }, 1, /not something setup can act on/],
+  ])("plan when %s", async (_name, overrides, code, message) => {
+    const { deps, order, err } = setupDeps(overrides);
+    expect(await stagingSetupCommand.run([], deps)).toBe(code);
+    expect(order.some((step) => step.startsWith("wrangler"))).toBe(false);
+    expect(err.join("\n")).toMatch(message);
+    expect(err.join("\n")).toContain("[PLAN] $ wrangler r2 bucket create reading-lite-staging");
+  });
+
+  it.each([
+    ["unreachable", "unreachable" as const],
+    ["failing a migration", "fails" as const],
+    ["drifted", "drift" as const],
+  ])("execute with the database %s creates no Cloudflare resources", async (_name, dbState) => {
+    const { deps, order } = setupDeps({ dbState });
+    expect(await stagingSetupCommand.run(["--execute"], deps)).toBe(1);
+    expect(order.some((step) => step.startsWith("wrangler"))).toBe(false);
+  });
+
+  it("teardown has no database step and its plan says the database is retained", async () => {
+    const { io: cio, err } = io();
+    const ran: string[][] = [];
+    const deps: StagingTeardownDeps = {
+      io: cio,
+      runWranglerCommands: async (commands) => {
+        ran.push(...commands.map((command) => command.args));
+        return 0;
+      },
+      resolveBucketEmptier: async () => ({ empty: async () => {} }),
+    };
+    expect(await stagingTeardownCommand.run(["--execute"], deps)).toBe(0);
+    expect(ran.flat().join(" ")).not.toMatch(/\bd1\b|database|postgres|neon/i);
+    expect(err.join("\n")).toMatch(/staging PostgreSQL database is retained/i);
   });
 
   it("teardown plans without acting, then executes preflight → commands → empty bucket → bucket delete", async () => {

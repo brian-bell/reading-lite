@@ -46,21 +46,76 @@ describe("founder-bootstrap CLI", () => {
     expect(logs.join("")).toMatch(/confirm-production/);
   });
 
-  it("refuses staging without a direct connection string, before opening anything", async () => {
+  // Staging and production resolve their database through the operator-db
+  // pairing, so a variable naming another environment's database, or none,
+  // is refused before anything is opened.
+  it.each<[string, string[], Record<string, string>, RegExp]>([
+    ["staging with no staging database set", ["--env", "staging"], { DATABASE_URL: "postgres://local" }, /none of STAGING_DATABASE_URL, NEON_REHEARSAL_DATABASE_URL is set/],
+    ["staging pointed at production", ["--env", "staging", "--database-url-env", "NEON_MAIN_DATABASE_URL"], { NEON_MAIN_DATABASE_URL: "postgres://main" }, /names the production database/],
+    ["staging pointed at bare DATABASE_URL", ["--env", "staging", "--database-url-env", "DATABASE_URL"], { DATABASE_URL: "postgres://local" }, /does not name the staging database/],
+    ["production pointed at staging", ["--env", "production", "--confirm-production", "--database-url-env", "NEON_REHEARSAL_DATABASE_URL"], { NEON_REHEARSAL_DATABASE_URL: "postgres://rehearsal" }, /names the staging database/],
+  ])("refuses %s before opening anything", async (_name, argv, dbEnv, message) => {
     const logs: string[] = [];
-    const result = await runFounderBootstrap(
-      parseFounderBootstrapArgs(["--execute", "--env", "staging", "--email", "a@b.com", "--database-url-env", "STAGING_PG"]),
-      {
-        envVars: { AUTH_ROOT_SECRET: ROOT_HEX, READER_API_TOKEN: "test-token" },
-        nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
-        write: (line) => logs.push(line),
-        openDb: async () => {
-          throw new Error("should not open db");
-        },
+    const result = await runFounderBootstrap(parseFounderBootstrapArgs(["--execute", "--email", "a@b.com", ...argv]), {
+      envVars: { AUTH_ROOT_SECRET: ROOT_HEX, READER_API_TOKEN: "test-token", ...dbEnv },
+      nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
+      write: (line) => logs.push(line),
+      openDb: async () => {
+        throw new Error("should not open db");
       },
-    );
+    });
     expect(result.exitCode).toBe(2);
-    expect(logs.join("")).toMatch(/missing STAGING_PG/);
+    expect(logs.join("")).toMatch(message);
+  });
+
+  it("opens staging's paired database when no --database-url-env is given", async () => {
+    const opened: string[] = [];
+    await expect(
+      runFounderBootstrap(parseFounderBootstrapArgs(["--execute", "--env", "staging", "--email", "a@b.com"]), {
+        envVars: {
+          AUTH_ROOT_SECRET: ROOT_HEX,
+          READER_API_TOKEN: "test-token",
+          DATABASE_URL: "postgres://local",
+          NEON_REHEARSAL_DATABASE_URL: "postgres://rehearsal",
+        },
+        nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
+        write: () => {},
+        openDb: async (url) => {
+          opened.push(url);
+          throw new Error("stop after open");
+        },
+        stagingBootstrapOpen: true,
+      }),
+    ).rejects.toThrow("stop after open");
+    expect(opened).toEqual(["postgres://rehearsal"]);
+  });
+
+  // The #349 gate: staging's database is the rehearsal target the #348
+  // importer needs free of application rows, so a staging write is refused
+  // until #349 opens it. A plan only reads, and stays allowed.
+  it.each<[string, string[], boolean]>([
+    ["refuses a staging --execute before opening anything", ["--execute"], false],
+    ["still allows a staging plan", [], true],
+  ])("while the #349 gate is closed, %s", async (_name, mode, opens) => {
+    const logs: string[] = [];
+    const opened: string[] = [];
+    const run = runFounderBootstrap(parseFounderBootstrapArgs([...mode, "--env", "staging", "--email", "a@b.com"]), {
+      envVars: { AUTH_ROOT_SECRET: ROOT_HEX, READER_API_TOKEN: "test-token", STAGING_DATABASE_URL: "postgres://staging" },
+      nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
+      write: (line) => logs.push(line),
+      openDb: async (url) => {
+        opened.push(url);
+        throw new Error("stop after open");
+      },
+    });
+    if (opens) {
+      await expect(run).rejects.toThrow("stop after open");
+      expect(opened).toEqual(["postgres://staging"]);
+    } else {
+      expect((await run).exitCode).toBe(2);
+      expect(opened).toEqual([]);
+      expect(logs.join("")).toMatch(/before the #349 import/);
+    }
   });
 
   it("prints a dry-run plan and does not write", async () => {
