@@ -29,18 +29,23 @@ async function freshDatabase(): Promise<pg.Client> {
   return client;
 }
 
+// CREATE and DROP DATABASE are cluster-wide and queue behind the workers
+// pool's per-file template clones, which run concurrently against the same
+// server; on CI that wait outlasts Vitest's 5s test and 10s hook defaults.
+const DATABASE_DDL_TIMEOUT_MS = 60_000;
+
 beforeAll(async () => {
   admin = new pg.Client({ connectionString: testDatabaseUrl() });
   await admin.connect();
-});
+}, DATABASE_DDL_TIMEOUT_MS);
 
 afterAll(async () => {
   const found = await admin.query("SELECT datname FROM pg_database WHERE datname LIKE $1", [`${scratch}%`]);
   for (const row of found.rows) await admin.query(`DROP DATABASE ${row.datname} WITH (FORCE)`);
   await admin.end();
-});
+}, DATABASE_DDL_TIMEOUT_MS);
 
-describe("PostgreSQL migration runner", () => {
+describe("PostgreSQL migration runner", { timeout: DATABASE_DDL_TIMEOUT_MS }, () => {
   it("applies pending files in order, records them, and is idempotent", async () => {
     const client = await freshDatabase();
     const files = [

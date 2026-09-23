@@ -49,7 +49,13 @@ export default [
       // it. 60s sits clear of the observed tail. Raise it again only for a
       // measured shift like this one; a single test that suddenly needs more
       // is a bug in the test, not a slow runner.
+      //
+      // Hooks make the same round-trips: test/apply-control-plane.ts truncates
+      // the control plane and re-bootstraps the founder before every test, and
+      // Vitest's 10s hook default is inside that spread (run 35856362237 timed
+      // it out in auth-sessions.test.ts).
       testTimeout: 60_000,
+      hookTimeout: 60_000,
       include: ["test/integration/**/*.test.ts", ...WORKERS_RUNTIME_UNIT_TESTS],
       exclude: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
@@ -86,6 +92,7 @@ export default [
       name: "workers-do-storage",
       // Same runner arithmetic as the `workers` project above.
       testTimeout: 60_000,
+      hookTimeout: 60_000,
       include: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
