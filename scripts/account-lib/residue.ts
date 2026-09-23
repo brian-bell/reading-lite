@@ -4,14 +4,15 @@
  * survive teardown intentionally; they are history, not a fresh clean bill.
  */
 import type { ControlPlaneDb } from "../../src/control-plane/db";
-import { ListIndexSchema } from "../../src/schemas/api";
 import type { AuditVectors } from "./vectors";
 import { enumerateNamespace } from "./vectors";
 export interface ScanRemote {
   db: ControlPlaneDb;
+  /** Closes the control-plane connection. The CLI sets an exit code rather
+   *  than calling process.exit, so an open socket would hang the command. */
+  closeDb?: () => Promise<void>;
   storage: {
     listObjects(prefix: string): Promise<{ key: string }[]>;
-    get(key: string): Promise<string | null>;
   };
   vectors: AuditVectors;
   probe(namespace: string): Promise<{ id: string }[]>;
@@ -62,16 +63,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   await observe("legacy_wipe_record", async () =>
     counted(await remote.storage.listObjects(`wipe/${tenant}/`)),
   );
-  let ledger: { reading_id: string; state: string }[] = [];
-  let ledgerLoaded = false;
-  await observe("vector_ledger", async () => {
-    ledger = await remote.db.all(
-      "SELECT * FROM vector_ledger WHERE tenant_id = ? ORDER BY reading_id",
-      tenant,
-    );
-    ledgerLoaded = true;
-    return counted(ledger);
-  });
+  // Retained pre-cutover Vectorize evidence, independent of the live PG corpus.
   await observe("namespace_probe", async () =>
     counted(await remote.probe(tenant)),
   );
@@ -91,60 +83,24 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
       },
     };
   });
-  async function presence(ids: string[]) {
-    const result = [];
-    for (let i = 0; i < ids.length; i += 10) {
-      const group = ids.slice(i, i + 10);
-      const requested = group.flatMap((id) => [id, `${tenant}:${id}`]);
-      const got = await remote.vectors.get(requested);
-      if (got.some((v) => !requested.includes(v.id)))
-        throw new Error("unexpected vector id");
-      for (const id of group) {
-        const composed = got.find((v) => v.id === `${tenant}:${id}`);
-        const bare = got.find((v) => v.id === id);
-        result.push({
-          id,
-          composed: composed
-            ? composed.namespace === tenant
-              ? "present"
-              : "wrong_namespace"
-            : "candidate_absent",
-          bare: bare
-            ? bare.namespace === tenant
-              ? "tenant_present"
-              : "outside_tenant"
-            : "candidate_absent",
-        });
-      }
-    }
-    return result;
-  }
-  await observe("ledger_vectors", async () => {
-    if (!ledgerLoaded)
-      throw new Error("ledger source unavailable; per-id coverage unknown");
-    const detail = await presence(ledger.map((v) => v.reading_id));
-    return {
-      state: detail.some(
-        (v) => v.composed !== "candidate_absent" || v.bare === "tenant_present",
-      )
-        ? "residue"
-        : "clear",
-      detail,
-    };
-  });
-  await observe("listed_vectors", async () => {
-    const raw = await remote.storage.get(`u/${tenant}/index/list.json`);
-    const list =
-      raw === null ? [] : ListIndexSchema.parse(JSON.parse(raw)).items;
-    const detail = await presence(
-      list.filter((v) => v.status === "ready").map((v) => v.id),
+  await observe("ready_reading_embeddings", async () => {
+    // Ready does not imply searchable: non-owning duplicates and inactive
+    // tenants can deliberately have no embedding. These are diagnostics, not
+    // deletion residue; the independent pg.readings observation owns that.
+    const detail = await remote.db.all<{ id: string }>(
+      `SELECT r.id FROM readings r
+       LEFT JOIN reading_embeddings e ON (e.tenant_id, e.reading_id) = (r.tenant_id, r.id)
+       WHERE r.tenant_id = ? AND r.status = 'ready' AND e.reading_id IS NULL
+       ORDER BY r.id`,
+      tenant,
     );
-    return {
-      state: detail.some((v) => v.composed !== "present") ? "residue" : "clear",
-      detail,
-    };
+    return { state: detail.length ? "unknown" : "clear", detail };
   });
   for (const [table, predicate, params] of [
+    ["readings", "tenant_id = ?", [tenant]],
+    ["reading_embeddings", "tenant_id = ?", [tenant]],
+    ["corpus_refresh_state", "tenant_id = ?", [tenant]],
+    ["relationship_refresh_jobs", "tenant_id = ?", [tenant]],
     ["users", "id = ?", [tenant]],
     ["sessions", "user_id = ?", [tenant]],
     ["api_tokens", "user_id = ?", [tenant]],
@@ -164,16 +120,16 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     ],
     [
       "signup_invites",
-      "email_canonical IN (SELECT email_canonical FROM users WHERE id = ?) OR (consumed_at_ms IS NOT NULL AND email_canonical IN (SELECT email_canonical FROM auth_challenges WHERE user_id = ? OR completed_user_id = ?))",
+      "email_canonical IN (SELECT email_canonical FROM users WHERE id = ?) OR (consumed_at IS NOT NULL AND email_canonical IN (SELECT email_canonical FROM auth_challenges WHERE user_id = ? OR completed_user_id = ?))",
       [tenant, tenant, tenant],
     ],
   ] as const) {
-    await observe(`d1.${table}`, async () => {
+    await observe(`pg.${table}`, async () => {
       const rows = await remote.db.all<{ n: number }>(
         `SELECT COUNT(*) AS n FROM ${table} WHERE ${predicate}`,
         ...params,
       );
-      if (!rows[0] || !Number.isInteger(rows[0].n))
+      if (!rows[0] || !Number.isSafeInteger(rows[0].n) || rows[0].n < 0)
         throw new Error("count unavailable");
       return {
         state: rows[0].n ? "residue" : "clear",
@@ -191,7 +147,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     source: "visibility_limits",
     state: "unknown",
     detail:
-      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. A ready listed reading with a missing composed vector is a possible purge markDeleteSubmitted failure or propagation/other drift; scan cannot infer intent or safely repair it.",
+      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. Legacy Vectorize observations do not describe the live PostgreSQL corpus. Missing ready embeddings may be intentional; the scanner neither infers damage nor repairs them.",
   });
   return {
     tenant,

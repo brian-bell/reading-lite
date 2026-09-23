@@ -12,7 +12,7 @@ import { ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
 import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
-import type { ListManifestsParams, ListManifestsResult } from "../list-index";
+import type { ListManifestsParams, ListManifestsResult } from "../list-items";
 import { legacyContentKeys } from "./manifest-rows";
 
 export function pgTenantId(tenant: TenantContext): string {
@@ -119,6 +119,17 @@ export class PgReadingStore {
     return rows.map((row) => ListIndexItemSchema.parse(present(row)));
   }
 
+  // Every copy of these URLs, owner or not: what `corpus drop` resolves a URL
+  // selector against, without reading the corpus it is not about.
+  async listItemsByUrls(urls: readonly string[]): Promise<ListIndexItem[]> {
+    if (urls.length === 0) return [];
+    const rows = await this.sql.query(
+      `SELECT ${LIST_COLUMNS} FROM readings WHERE tenant_id = $1 AND url = ANY ($2::text[])`,
+      [this.tenantId, [...urls]],
+    );
+    return rows.map((row) => ListIndexItemSchema.parse(present(row)));
+  }
+
   // `version` is the row's xmin: it changes with every committed write to the
   // reading, so a writer that took `next` from this read can tell under its
   // lock whether the row is still the one it saw (PgReadingWriter.startAttempt).
@@ -174,6 +185,30 @@ export class PgReadingStore {
       [this.tenantId, await sha256Hex(url), url],
     );
     return row ? { id: row.id, status: row.status } : null;
+  }
+
+  // The keyed, batched form of findOwnerByUrl: the operator's reading-list
+  // check asks "which of these URLs does this tenant already own?" about a few
+  // hundred exported URLs at a time. Same join, same ownership meaning — a row
+  // is owned, an absent one is unclaimed — so the two cannot drift.
+  async ownersByUrls(urls: readonly string[]): Promise<Map<string, UrlOwner>> {
+    const owners = new Map<string, UrlOwner>();
+    if (urls.length === 0) return owners;
+    const unique = [...new Set(urls)];
+    const hashes = await Promise.all(unique.map((url) => sha256Hex(url)));
+    const rows = await this.sql.query<{ url: string; id: string; status: ManifestStatus }>(
+      `SELECT r.url, r.id, r.status FROM reading_urls u
+       JOIN readings r ON (r.tenant_id, r.id) = (u.tenant_id, u.reading_id)
+       WHERE u.tenant_id = $1 AND u.url_hash = ANY ($2::text[])`,
+      [this.tenantId, hashes],
+    );
+    // Match on the URL itself, not only its hash, exactly as findOwnerByUrl
+    // does: the hash selects the slot, the string proves it is this URL.
+    const wanted = new Set(unique);
+    for (const row of rows) {
+      if (wanted.has(row.url)) owners.set(row.url, { id: row.id, status: row.status });
+    }
+    return owners;
   }
 
   // The current revision's keys are authoritative. A reading that was never

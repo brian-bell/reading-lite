@@ -122,6 +122,7 @@ describes only the live control plane that reading-lite-gh348 imports from.
 | Reading storage ([ADR 0005](docs/decisions/0005-postgresql-storage.md)) | `src/modules/db/`, `src/modules/stores/postgres/`, `db/migrations/`, `scripts/pg-lib/` |
 | R2 content and keys | `src/modules/stores/content-store.ts`, `layout.ts` |
 | Operator commands | `scripts/ops.ts`, `scripts/ops-lib/registry.ts`, `scripts/ops-lib/commands/`, shared `scripts/*-lib/` |
+| Operator PostgreSQL seam | `scripts/pg-lib/operator-db.ts` (bucket/database pairing, session lifetime), `scripts/pg-lib/operator-corpus.ts` |
 | Contracts and SPA | `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, `web/` |
 | New frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
 
@@ -170,8 +171,8 @@ describes only the live control plane that reading-lite-gh348 imports from.
   into a fresh index. Provider selection and model/effort validation fail closed;
   preserve Anthropic's cached system/tool prefix and its snapshot tests.
 - Hosted provider fetches must retain lease checks and budget admission inside
-  the HTTP retry loop. Synchronous operator clients (backfill-vectors, refresh
-  judgements, evals, comparisons) take the same wrapper through `OperatorSpend`
+  the HTTP retry loop. Synchronous operator clients (refresh judgements,
+  evals, comparisons) take the same wrapper through `OperatorSpend`
   and `scripts/ops-lib/operator-spend.ts`, billed to `--billing-tenant`. Operator
   batches (`corpus ingest`, `corpus recover --batch`) admit their summed maximum
   before the first pending sidecar and settle from results; the sidecar carries
@@ -200,8 +201,9 @@ describes only the live control plane that reading-lite-gh348 imports from.
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
 `WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
-`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue/Vectorize;
-integration tests inject `installQueueStub()` and `installVectorizeStub()`.
+`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
+tests inject `installQueueStub()`. Similarity is pgvector, and the Worker binds
+no Vectorize index.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
 migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
 unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL
@@ -248,7 +250,9 @@ loopback. Never enable `LOCAL_MAIL_SINK` in deployed environments.
 All supported operator workflows use `npm run ops -- <group> <command>`.
 Durable changes plan by default and require `--execute`. Every `corpus` command
 requires `--tenant`; production uses `/api/whoami`'s `tenant_id`.
-`--tenant global` addresses retained pre-tenant data, not the live corpus.
+`--tenant global` addresses retained pre-tenant R2 data, not the live corpus,
+and it is R2-only: the commands that read or delete rows refuse it, because no
+`readings` row can carry the pre-tenant empty key root.
 
 Production and staging pin `TENANT_DATA_PLANE=1`. Removing the pin after tenant
 writes resume requires a freeze and reverse reconciliation, or explicit
@@ -259,8 +263,10 @@ rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cu
 
 Offline batch ingest/recover require `--sole-writer`, asserting that realtime
 writers are paused and drained. Preserve sidecars and their resume rules; never
-recreate an ambiguous batch. Restore missing vectors with `corpus backfill-vectors`,
-not a paid reprocess. See [batch operations](docs/operations.md#provider-batch-apis).
+recreate an ambiguous batch. See [batch operations](docs/operations.md#provider-batch-apis).
+An embedding now commits and cascades inside its reading's transaction, so there
+is no vector to restore and `corpus backfill-vectors` is retired; see the
+[operator tooling inventory](docs/operator-tooling.md#why-backfill-vectors-is-safe-to-retire).
 
 Use [compare-summary-effort](.agents/skills/compare-summary-effort/SKILL.md) for
 local comparisons on existing production readings. Plan first; only `--execute`
@@ -270,18 +276,25 @@ seven days fail the recent-search path. See [source recovery](docs/operations.md
 
 Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
 (`readinglite.ai`, `readinglite.app`, and `next.readinglite.ai`) under a shared
-release lock with stale-commit checks. Worker deployment no longer deploys
-schema: apply PostgreSQL migrations with `ops db migrate` against the target
-database first (`ops deploy worker` folds that in at reading-lite-gh347.4). The
-workflow checks unfinished wipes and wipe queues, reading `wipe_progress` from
-PostgreSQL over the `PRODUCTION_DATABASE_URL` secret; a direct
+release lock with stale-commit checks. Worker deployment applies pending
+PostgreSQL migrations before upload, fail-closed, over the DIRECT connection
+string named by the required `--database-url-env`; that name is checked against
+`--env` first, so a production deploy cannot migrate staging. The workflow
+checks unfinished wipes and wipe queues, reading `wipe_progress` from
+PostgreSQL over the same `PRODUCTION_DATABASE_URL` secret; a direct
 `ops deploy worker` invocation does not run that separate wipe check.
 See [deploying](docs/operations.md#deploying) for secrets, guards, and exceptions.
 
 `.cursor/environment.json` installs both npm projects and runs
 `scripts/cloud-agent-install.ts`. Cursor environment secrets are
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
-`READER_API_TOKEN`, and `FOUNDER_EMAIL`; the installer writes `.stg.vars`.
-Staging founder state persists in PostgreSQL (the bootstrap needs `DATABASE_URL`,
-a direct connection string). Bootstrap again after credential rotation,
-or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for idempotent bootstrap on each install.
+`READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL` (a direct
+connection string to the Neon rehearsal branch; founder bootstrap resolves it
+through the operator-db pairing); the installer writes `.stg.vars`.
+Staging founder state persists in PostgreSQL. Do not bootstrap staging before
+the #349 import: the importer refuses a database holding application rows.
+Until then `ops founder bootstrap --env staging --execute` refuses and the
+installer skips `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` (`STAGING_FOUNDER_BOOTSTRAP_OPEN`
+in `scripts/lib/founder-bootstrap.ts`, which #349 flips). After it, bootstrap again
+after credential rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for
+idempotent bootstrap on each install.

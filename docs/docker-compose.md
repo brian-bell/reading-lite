@@ -20,7 +20,7 @@ docker compose up --build
 The first run needs `.dev.vars` at the repository root; copy it from
 `.dev.vars.example` if you have not already (the backend container does this
 itself on first boot if the file is missing, since it is bind-mounted from the
-host and gitignored). Local D1 data, R2 objects, PostgreSQL data, and
+host and gitignored). Local R2 objects, PostgreSQL data, and
 Wrangler's dev registry persist in named volumes across `docker compose down` / `up`; `docker compose
 down -v` clears them.
 
@@ -80,8 +80,9 @@ curl -s 'http://127.0.0.1:8787/api/dev/mailbox?email=founder%40localhost' | jq
 
 ## Limits
 
-Same as native local dev: no Queue or Vectorize, so submit/import/reprocess
-return 503 and vector similarity is empty. Editing `package.json` in either
+Same as native local dev: no Queue, so submit/import/reprocess return 503.
+List, detail, content, lookup, search and similarity work against the seeded
+PostgreSQL rows. Editing `package.json` in either
 project needs `docker compose build` (dependencies are baked into the image,
 not reinstalled on every `up`); editing application source does not, since the
 repository is bind-mounted and both dev servers hot-reload.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity";
 import { diffNeighbourhood } from "../../../scripts/corpus-lib/refresh-neighbours";
 import {
   buildRelationshipJudgementInput,

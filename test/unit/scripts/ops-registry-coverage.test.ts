@@ -27,17 +27,10 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "ingest",
     "drop",
     "sweep",
-    "delete-orphans",
-    "backfill-similarity",
     "refresh-neighbours",
     "refresh-connections",
     "refresh-tensions",
-    "backfill-vectors",
-    "backfill-source-date",
-    "normalize-tags",
     "purge-connections",
-    "rebuild-list",
-    "seed-vector-ledger",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],
@@ -48,7 +41,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   founder: ["bootstrap"],
   extract: ["agent", "probe"],
   eval: ["summarizer"],
-  account: ["sweep-wipe-prefix", "wipe", "residue-scan", "audit-bare-vectors"],
+  account: ["sweep-wipe-prefix", "wipe", "residue-scan"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");

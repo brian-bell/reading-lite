@@ -77,12 +77,9 @@ describe("wrangler CLI launcher", () => {
   it("is imported by every default wrangler spawner the ops CLI uses", () => {
     const spawners = [
       "scripts/corpus-lib/wrangler-r2.ts",
-      "scripts/corpus-lib/wrangler-put.ts",
-      "scripts/check-corpus-lib/fetch-index.ts",
       "scripts/ops-lib/commands/deploy-worker.ts",
       "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",
-      "scripts/lib/founder-bootstrap.ts",
     ];
     for (const file of spawners) {
       const src = readFileSync(path.join(process.cwd(), file), "utf8");

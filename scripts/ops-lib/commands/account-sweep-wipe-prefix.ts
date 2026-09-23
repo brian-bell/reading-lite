@@ -28,7 +28,7 @@ import {
   wipeKeyTenantId,
   WIPE_PREFIX,
 } from "../../account-lib/wipe-prefix";
-import { controlPlaneForBucket } from "../../account-lib/control-plane";
+import { OPERATOR_DATABASES } from "../../pg-lib/operator-db";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export interface WipeSweepStorage {
@@ -79,19 +79,20 @@ const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
 // lease" claim is only true of the window `wipeLeaseHeld` actually uses.
 const WIPE_IN_FLIGHT_MINUTES = ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000;
 
-// The bucket → control-plane pairing moved to scripts/account-lib/control-plane.ts
-// when `ops corpus seed-vector-ledger` needed to WRITE through it rather than
-// only print a query. Re-exported so this module's existing consumers and tests
-// keep one import.
-export { CONTROL_PLANE_BY_BUCKET } from "../../account-lib/control-plane";
+// The bucket → database pairing lives in scripts/pg-lib/operator-db.ts
+// (reading-lite-gh347.4.7). Re-exported so this module's existing consumers
+// and tests keep one import. This command's own job is unchanged — it still
+// sweeps the wipe/{tenantId}/progress.json R2 prefix; only the handle under
+// its control-plane evidence query moved off wrangler D1.
+export { OPERATOR_DATABASES } from "../../pg-lib/operator-db";
 
 function scopedProgressQuery(bucket: string, tenantIds: string[]): string | null {
-  const target = controlPlaneForBucket(bucket);
+  const target = OPERATOR_DATABASES[bucket];
   if (target === undefined) return null;
   const list = tenantIds.map((id) => `'${id}'`).join(", ");
   return (
-    `npx wrangler d1 execute ${target.database} --env ${target.env} --remote \\\n` +
-    "  --command \"select tenant_id, phase, updated_at_ms, completed_at_ms " +
+    `psql "$${target.databaseUrlEnvs[0]}" \\\n` +
+    "  -c \"select tenant_id, phase, updated_at, completed_at " +
     `from wipe_progress where tenant_id in (${list})"`
   );
 }

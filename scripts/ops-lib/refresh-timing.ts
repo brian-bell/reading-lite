@@ -21,16 +21,16 @@
 // time — the sum is larger than the wall time, and the `total` line is the one
 // to compare between runs.
 
-import type { CorpusRefreshNeighboursR2 } from "./commands/corpus-refresh-neighbours";
+import type { CorpusRefreshNeighboursStore } from "./commands/corpus-refresh-neighbours";
 import type { RefreshConnectionsStorage } from "./commands/corpus-refresh-connections";
+import { REVERSE_TOP_K } from "../corpus-lib/refresh-scope";
 
 export const PHASE_LIST_READ = "list read";
 export const PHASE_PLANNING_READS = "planning reads";
-export const PHASE_MANIFEST_READ = "manifest read";
-export const PHASE_MANIFEST_WRITE = "manifest write";
-export const PHASE_LIST_WRITE = "list write";
+export const PHASE_MANIFEST_READ = "reading read";
+export const PHASE_MANIFEST_WRITE = "reading write";
 export const PHASE_PROVIDER = "provider";
-export const PHASE_VECTORIZE_QUERY = "vectorize query";
+export const PHASE_SIMILARITY_QUERY = "similarity query";
 export const PHASE_REVERSE_QUERY = "reverse query";
 export const PHASE_RUN_MARKER = "run marker";
 
@@ -133,45 +133,39 @@ function callCount(calls: number): string {
 }
 
 /**
- * Times tier-1's storage surface. Manifest reads are one phase here because
+ * Times tier-1's storage surface. Reading reads are one phase here because
  * tier 1 measures and writes in a single loop; there is no separate planning
  * pass to attribute them to.
  */
-export function timedNeighboursR2(
-  r2: CorpusRefreshNeighboursR2,
+export function timedNeighboursStore(
+  store: CorpusRefreshNeighboursStore,
   timer: RefreshTimer,
-): CorpusRefreshNeighboursR2 {
+): CorpusRefreshNeighboursStore {
   return {
-    readListIndex: (deps) => timer.measure(PHASE_LIST_READ, () => r2.readListIndex(deps)),
-    readRefreshState: (deps) => timer.measure(PHASE_RUN_MARKER, () => r2.readRefreshState(deps)),
-    writeRefreshState: (state, deps) =>
-      timer.measure(PHASE_RUN_MARKER, () => r2.writeRefreshState(state, deps)),
-    readManifest: (keyPrefix, deps) =>
-      timer.measure(PHASE_MANIFEST_READ, () => r2.readManifest(keyPrefix, deps)),
+    listItems: () => timer.measure(PHASE_LIST_READ, () => store.listItems()),
+    readRefreshState: () => timer.measure(PHASE_RUN_MARKER, () => store.readRefreshState()),
+    writeRefreshState: (state, now) =>
+      timer.measure(PHASE_RUN_MARKER, () => store.writeRefreshState(state, now)),
+    readManifest: (id) => timer.measure(PHASE_MANIFEST_READ, () => store.readManifest(id)),
     // Two phases for one call, because the incremental scope is exactly the
-    // trade of one against the other: a metadata-less query is a reverse
-    // neighbourhood being scoped, and the measurement pass always wants the
-    // metadata it puts in the report.
-    queryByVectorId: (index, id, topK, namespace, opts) =>
+    // trade of one against the other: the scoping topK is the reverse
+    // neighbourhood, and any other is the measurement pass.
+    queryByVectorId: (id, topK) =>
       timer.measure(
-        opts?.metadata === false ? PHASE_REVERSE_QUERY : PHASE_VECTORIZE_QUERY,
-        () => r2.queryByVectorId(index, id, topK, namespace, opts),
+        topK === REVERSE_TOP_K ? PHASE_REVERSE_QUERY : PHASE_SIMILARITY_QUERY,
+        () => store.queryByVectorId(id, topK),
       ),
-    putManifest: (keyPrefix, body, deps) =>
-      timer.measure(PHASE_MANIFEST_WRITE, () => r2.putManifest(keyPrefix, body, deps)),
-    // One phase, whatever the flush costs internally: a CAS retry is part of
-    // the list write, not a separate kind of call.
-    mergeListRows: (patches, deps) =>
-      timer.measure(PHASE_LIST_WRITE, () => r2.mergeListRows(patches, deps)),
+    setSimilarity: (id, similarity) =>
+      timer.measure(PHASE_MANIFEST_WRITE, () => store.setSimilarity(id, similarity)),
   };
 }
 
 /**
- * Times the tier-2/3 storage surface. `manifestReadPhase` is what a command
- * uses to say which reads are the fixed planning cost every invocation repays
- * and which are not: tier 3 flips it when it stops planning, since it re-reads
- * a side it has already written, while tier 2 reads nothing after planning and
- * passes the planning phase throughout.
+ * Times the tier-2/3 store. `manifestReadPhase` is what a command uses to say
+ * which reads are the fixed planning cost every invocation repays and which
+ * are not: tier 3 flips it when it stops planning, since it re-reads a side it
+ * has already written, while tier 2 reads nothing after planning and passes
+ * the planning phase throughout.
  */
 export function timedRefreshStorage(
   storage: RefreshConnectionsStorage,
@@ -179,12 +173,11 @@ export function timedRefreshStorage(
   manifestReadPhase: () => string,
 ): RefreshConnectionsStorage {
   return {
-    readListIndex: () => timer.measure(PHASE_LIST_READ, () => storage.readListIndex()),
-    readManifest: (keyPrefix) =>
-      timer.measure(manifestReadPhase(), () => storage.readManifest(keyPrefix)),
-    putManifestIfMatch: (keyPrefix, manifest, etag) =>
-      timer.measure(PHASE_MANIFEST_WRITE, () => storage.putManifestIfMatch(keyPrefix, manifest, etag)),
-    mergeListRows: (patches) =>
-      timer.measure(PHASE_LIST_WRITE, () => storage.mergeListRows(patches)),
+    listItems: () => timer.measure(PHASE_LIST_READ, () => storage.listItems()),
+    readManifest: (id) => timer.measure(manifestReadPhase(), () => storage.readManifest(id)),
+    // One phase, whatever the write does internally: a pair written in one
+    // transaction is one write, not two.
+    replaceRelationships: (entries) =>
+      timer.measure(PHASE_MANIFEST_WRITE, () => storage.replaceRelationships(entries)),
   };
 }

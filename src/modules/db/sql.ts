@@ -5,12 +5,15 @@
 // closed by the caller (`ctx.waitUntil(sql.end())`).
 //
 // A `Sql` wraps one client: run queries on it sequentially. A transaction
-// holds the client until its callback settles.
+// holds the client until its callback settles, and concurrent transactions on
+// one `Sql` queue rather than interleave — enforced here, not left to callers,
+// because interleaving them silently commits half-written work.
 //
 // Hyperdrive pools in transaction mode, so session state does not survive
 // between statements. Anything session-scoped (SET, advisory locks) must be
 // SET LOCAL inside `transaction`.
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import pg from "pg";
 
 const OID_INT8 = 20;
@@ -55,6 +58,8 @@ export interface SqlQuery {
 export interface TransactionOptions {
   // SET TRANSACTION READ ONLY: any write inside fails closed.
   readOnly?: boolean;
+  // Multi-query exports must observe one revision/ownership/embedding snapshot.
+  repeatableRead?: boolean;
 }
 
 export interface Sql extends SqlQuery {
@@ -78,23 +83,59 @@ export function sqlFromConnectionString(connectionString: string): Sql {
     return result.rowCount ?? 0;
   };
 
+  // Transactions on one client are serialized, because BEGIN/COMMIT are
+  // connection state rather than per-statement. Two overlapping callbacks would
+  // share one transaction: the second BEGIN is ignored with a warning, the
+  // first COMMIT commits both halves, and a ROLLBACK in either discards the
+  // other's writes. Nothing in pg's statement queue prevents that — it only
+  // guarantees the statements themselves do not interleave.
+  //
+  // Callers do run them concurrently: the operator's refresh passes judge
+  // through a worker pool and end each action in its own transaction. They wait
+  // here rather than corrupt each other, and the wait is cheap next to the
+  // provider call each one follows.
+  let queued: Promise<unknown> = Promise.resolve();
+  // `work` runs on both settle paths: a failed transaction must not strand the
+  // ones queued behind it.
+  const serialized = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = queued.then(work, work);
+    queued = next.catch(() => undefined);
+    return next;
+  };
+  // A transaction started from inside another's callback on this `Sql` would
+  // queue behind the very transaction that is waiting on it: a silent hang,
+  // and `end()` then hangs on the same queue. Inside a callback the `tx` handle
+  // is the only right choice (the control plane's `fromSql` nests through
+  // savepoints), so re-entry is refused with an error rather than a deadlock.
+  const inTransaction = new AsyncLocalStorage<true>();
+
   return {
     query,
     execute,
-    async transaction(run, opts = {}) {
-      await query(opts.readOnly ? "BEGIN READ ONLY" : "BEGIN");
-      try {
-        const out = await run({ query, execute });
-        await query("COMMIT");
-        return out;
-      } catch (error) {
-        await query("ROLLBACK").catch(() => undefined);
-        throw error;
+    transaction(run, opts = {}) {
+      if (inTransaction.getStore()) {
+        return Promise.reject(
+          new Error("sql.transaction called inside its own transaction callback; use the tx handle"),
+        );
       }
+      return serialized(() =>
+        inTransaction.run(true, async () => {
+          await query("BEGIN" + (opts.repeatableRead ? " ISOLATION LEVEL REPEATABLE READ" : "") + (opts.readOnly ? " READ ONLY" : ""));
+          try {
+            const out = await run({ query, execute });
+            await query("COMMIT");
+            return out;
+          } catch (error) {
+            await query("ROLLBACK").catch(() => undefined);
+            throw error;
+          }
+        }),
+      );
     },
     async end() {
       if (connecting === null) return;
       await connecting.catch(() => undefined);
+      await queued;
       await client.end();
     },
   };

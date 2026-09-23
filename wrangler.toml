@@ -7,24 +7,23 @@
 #                         prod). Binds to a local Miniflare-emulated R2 bucket;
 #                         no remote resources are touched.
 #   * staging           — deployed Cloudflare resources isolated from prod,
-#                         used for end-to-end manual smoke tests that need Queue,
-#                         R2, and Vectorize.
+#                         used for end-to-end manual smoke tests that need Queue
+#                         and R2.
 #   * production        — used by `npm run ops -- deploy worker --env production`,
 #                         canonical host readinglite.ai; also readinglite.app.
 #                         reading-lite.bbell.dev is retired (S9).
 #
 # Local dev:
 #   1. Copy `.dev.vars.example` → `.dev.vars` and fill in API keys.
-#   2. `npm run dev` (applies local D1 migrations and founder bootstrap, then starts wrangler).
+#   2. `npm run dev` (sets up local PostgreSQL and founder bootstrap, then starts wrangler).
 # Note: `wrangler dev` runs against a local emulated R2 bucket (initially empty)
-# and has no Vectorize binding, so search returns no results locally. POST
+# and local PostgreSQL; `npm run seed:local` fills both with the fixture pack. POST
 # /api/readings and /api/readings/:id/reprocess also fail under `wrangler dev` (no queue
 # binding). Read-only list/detail routes work against whatever you write locally.
 # Most submission/search behavior is covered by the integration tests instead.
 #
 # Staging setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite-staging`
-#   `npx wrangler vectorize create reading-lite-staging --dimensions=1536 --metric=cosine`
 #   `npx wrangler queues create reading-lite-staging`
 #   `npx wrangler queues create reading-lite-staging-dlq`  (dead-letter queue; not auto-created)
 #   `npx wrangler queues create reading-lite-staging-digest`
@@ -39,7 +38,6 @@
 #
 # Production setup (one-time):
 #   `npx wrangler r2 bucket create reading-lite`
-#   `npx wrangler vectorize create reading-lite --dimensions=1536 --metric=cosine`
 #   `npx wrangler queues create reading-lite`
 #   `npx wrangler queues create reading-lite-dlq`  (dead-letter queue; not auto-created)
 #   `npx wrangler queues create reading-lite-digest`
@@ -120,8 +118,7 @@ WEB_BASE_URL = "http://127.0.0.1:5173"
 # Local-only magic-link outbox. Never set on staging or production.
 LOCAL_MAIL_SINK = "1"
 # Tenant-prefixed R2 keys (u/{tenantId}/…). Local stays unset: "1" would hide
-# the global readings/ and index/ objects a local bucket is seeded with, and
-# `wrangler dev` has no Vectorize binding to namespace anyway. Staging and
+# the global-rooted content a local bucket is seeded with. Staging and
 # production both pin it under their own [vars] — staging since the deletion
 # staging gate (issue #203 / #195 S6), production since the founder cutover
 # (2026-08-31).
@@ -134,10 +131,7 @@ RETRY_BASE_DELAY_MS = "500"
 RETRY_MAX_DELAY_MS = "8000"
 
 # No `remote`, so `wrangler dev` binds to Miniflare's local R2 emulator
-# (a local, initially-empty namespace) rather than any deployed bucket. There is
-# deliberately no Vectorize binding here: Vectorize has no local emulator, and a
-# remote binding would point dev at production data. Search therefore returns no
-# results under `wrangler dev`; exercise it against the deployed worker instead.
+# (a local, initially-empty namespace) rather than any deployed bucket.
 [[r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite"
@@ -290,7 +284,7 @@ max_concurrency = 1
 #
 #   - A healthy wipe always burns one retry on the +120s first-confirmation
 #     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
-#   - A transient D1, R2 or Vectorize error retries without counting either.
+#   - A transient PostgreSQL or R2 error retries without counting either.
 #
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
@@ -332,10 +326,6 @@ crons = ["*/15 * * * *", "7 3 * * *"]
 [[env.staging.r2_buckets]]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-staging"
-
-[[env.staging.vectorize]]
-binding = "READINGS_INDEX"
-index_name = "reading-lite-staging"
 
 # Placeholder until #349 creates the staging config against the Neon rehearsal
 # branch. Create every Hyperdrive config with query caching DISABLED: cached
@@ -557,7 +547,7 @@ max_concurrency = 1
 #
 #   - A healthy wipe always burns one retry on the +120s first-confirmation
 #     deferral, which deliberately does NOT count as an attempt (S6 defect D2).
-#   - A transient D1, R2 or Vectorize error retries without counting either.
+#   - A transient PostgreSQL or R2 error retries without counting either.
 #
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
@@ -600,10 +590,6 @@ crons = ["*/15 * * * *", "7 3 * * *"]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite"
 
-[[env.production.vectorize]]
-binding = "READINGS_INDEX"
-index_name = "reading-lite"
-
 # Placeholder until #350 creates the production config against the Neon main
 # branch, with query caching DISABLED (ADR 0005).
 [[env.production.hyperdrive]]
@@ -628,8 +614,8 @@ class_name = "GlobalUsageGuard"
 # routes win over it. Pages stays attached to the same custom domain as the
 # rollback target and serves the SPA again if the frontend routes are deleted.
 #
-# Production dual-serves the two public hosts on the same Worker script, bucket,
-# D1 and Vectorize index. The data plane does not branch on hostname, so /api/*
+# Production dual-serves the two public hosts on the same Worker script, bucket
+# and database. The data plane does not branch on hostname, so /api/*
 # and /health behave the same on either. /mcp* accepts both
 # (MCP_ALLOWED_ORIGINS above lists them), and WEB_BASE_URL names
 # readinglite.ai, so emitted links point there. Sessions remain host-scoped

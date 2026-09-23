@@ -51,9 +51,9 @@ When the user wants sample readings, read `docs/design/connected/fixture-pack.md
 npm run seed:local
 ```
 
-The pack writes 18 authored sample readings into local R2, with ready, pending, and failed states, then writes the same pack into local Postgres for the local founder's tenant (so run `npm run dev` once first). It replaces the local list index with fixture rows: do not reseed automatically on every startup or overwrite a populated custom library without accounting for the user's intent. Wait for the seeder's read-back verification and verify a ready reading through the running backend. The baseline detail link is `http://127.0.0.1:5174/readings/rd_FXATTENT01`. Refresh the browser after seeding; restart the backend only if necessary. The pending fixture ages out after 15 minutes.
+The pack writes 18 authored sample readings into local R2, with ready, pending, and failed states, then writes the same pack into local Postgres for the local founder's tenant (so run `npm run dev` once first). It replaces the local founder's reading rows with the pack: do not reseed automatically on every startup or overwrite a populated custom library without accounting for the user's intent. Wait for the seeder's read-back verification and verify a ready reading through the running backend. The baseline detail link is `http://127.0.0.1:5174/readings/rd_FXATTENT01`. Refresh the browser after seeding; restart the backend only if necessary. The pending fixture ages out after 15 minutes.
 
-Local dev has no Queue or Vectorize: submit/import/reprocess return 503 and vector similarity is empty. Seeding supplies UI data without provider calls. Keep all operations local; no production reads, writes, or deployment are needed.
+Local dev has no Queue: submit/import/reprocess return 503. List, search and similarity read the seeded Postgres rows. Seeding supplies UI data without provider calls. Keep all operations local; no production reads, writes, or deployment are needed.
 
 ## Postgres troubleshooting
 

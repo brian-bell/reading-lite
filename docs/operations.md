@@ -29,12 +29,12 @@ via `predev`.
 
 Every `corpus` command additionally requires `--tenant <selector>` before it
 plans anything. There is no default. A missing or malformed selector is a
-usage error (exit 2) before any R2 or Vectorize traffic, so an operator can
+usage error (exit 2) before any database or R2 traffic, so an operator can
 never act on the wrong corpus by omission.
 
-A `usr_…` tenant id addresses that tenant's `u/{tenantId}/` key namespace plus
-its Vectorize namespace (the same roots the worker derives from a validated
-`TenantContext`). `global` is the pre-tenant layout selector: local (where
+A `usr_…` tenant id addresses that tenant's rows in PostgreSQL plus its
+`u/{tenantId}/` R2 content root (the same scope the worker derives from a
+validated `TenantContext`). `global` is the pre-tenant layout selector: local (where
 `TENANT_DATA_PLANE` is still unset), and the leftover global objects both
 deployed environments retain, production's pending signed-off deletion,
 staging's kept by its own copy-only migration.
@@ -110,13 +110,12 @@ tenant. A finished wipe whose prefix gains objects again is reopened from
 `rows` with a fresh continuation count.
 
 Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
-namespace probe or unbound-index gate on this path; the ledger module itself is
-operator-only now (`scripts/account-lib/vector-ledger.ts`, still on wrangler
-D1 for the Vectorize-era `corpus` and `account` commands, which
-reading-lite-gh347.4 ports or retires). Vectors written to Vectorize
-before cutover are left to its retirement at cutover. A PostgreSQL wipe always
-completes with
-`residue=false`; the column keeps the history imported from D1.
+namespace probe or unbound-index gate on this path, and no operator command
+keeps one: the ledger and the commands that maintained it were retired in
+reading-lite-gh347.4.6 ([inventory](operator-tooling.md)). Vectors written to
+Vectorize before cutover are left to its retirement at cutover. A PostgreSQL
+wipe always completes with `residue=false`; the column keeps the history
+imported from D1.
 
 `completed_at` and `residue` describe current completion and clear on reopen.
 `first_completed_at` and `first_residue` are written once and pinned in SQL.
@@ -159,6 +158,11 @@ rows are not exposed to it: the count in step 4 is taken after the `users` lock,
 and the only path that inserts one takes the same row FOR SHARE alongside its
 insert, so it either commits before the count or finds no active account.
 
+The operator's `corpus_refresh_state` marker follows the same rule: its upsert
+holds an active user's row `FOR SHARE` until commit. Teardown removes the
+marker under its user-row lock, so a late refresh cannot recreate reading IDs
+for an account that has been deleted.
+
 The current address remains unavailable until the users row is gone. Under
 `invite_only`, returning users need a fresh invite after teardown. Check directly:
 
@@ -193,46 +197,50 @@ verified behavior; they did not exercise an invite inserted during deletion.
 
 ### Legacy data and bare vectors
 
-Wipe seeding cannot recover an ID from R2 after all its objects are gone.
-The operator audit can discover namespaced orphans through a full vector-ID
-inventory; that capability does not make the wipe's own ledger complete.
+The live corpus has no vector to orphan: an embedding is a `reading_embeddings`
+row with a foreign key to `readings`, so the wipe's row deletes take it too.
+What remains in Vectorize is the pre-cutover index, retained untouched until
+its retirement at cutover. Older tenant batch writers used bare IDs there and
+Vectorize deletion is namespace-blind, so nothing on the tenant path deletes
+from it. Legacy global deletion still needs separate sign-off under #285.
 
-Older tenant batch writers used bare IDs. Those vectors can survive a composed-ID
-wipe or duplicate a live reading's match alongside its composed vector. Do not
-fix them by deleting every bare ID: IDs are index-unique, deletion is namespace-
-blind, and an unnamespaced bare vector may be part of the protected legacy copy.
-Use the audit/repair rules below. Legacy global deletion still needs separate
-sign-off under #285; routine tenant operations must not erode that copy.
+`account audit-bare-vectors` and its repair were retired in
+reading-lite-gh347.4.6: a bare vector cannot exist in the PostgreSQL corpus,
+and the D1 ledger it consulted is a table the PostgreSQL schema never creates
+([inventory](operator-tooling.md#account)).
 
 The [2026-09-05 production audit](evidence/195-production-audit-2026-09-05.md)
 found no tenant bare-vector repair candidates and all 557 then-ready readings
-had composed vectors. That is dated evidence, not a current inventory. Accepted
-[staging evidence and limits](staging-evidence-contract.md) do not require a new
-deletion drill for an unrelated release.
+had composed vectors. That is dated evidence about the retained index, not a
+current inventory. Accepted [staging evidence and limits](staging-evidence-contract.md)
+do not require a new deletion drill for an unrelated release.
 
-### Account residue scan and bare-vector repair (S5)
+### Account residue scan (S5)
 
-These commands implement the local operator surface for [#195](https://github.com/brian-bell/reading-lite/issues/195)
+This command implements the local operator surface for [#195](https://github.com/brian-bell/reading-lite/issues/195)
 and design [#263](https://github.com/brian-bell/reading-lite/issues/263).
 The dated staging and production evidence linked below records the approved
-operator work and its accepted limits. Fresh repairs require a reviewed plan.
+operator work and its accepted limits.
 
 ```sh
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite-staging
 npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
 ```
 
 The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
-records, ledger rows (including `delete_submitted` rows from individual purges),
-a namespace query, a full vector ID inventory, per-reading vector observations,
-and every D1 table touched by teardown. `account_deletions` is expected retained
-audit evidence. Its `first_completed_at_ms` / `first_residue` describe history;
-`residue = 1` in that record is not a measurement of today's namespace. An audit
-row is written *before* teardown and does not itself prove teardown completed.
-Remaining users/child/progress rows mean control-plane cleanup is still pending
-or incomplete; they are reported even during the normal interval before cron.
-On a live tenant the ordinary corpus and D1 rows naturally report as present.
+records, retained legacy Vectorize namespace observations, and PostgreSQL rows.
+The `pg.*` sources cover readings, embeddings, corpus refresh state, relationship
+refresh jobs, users, sessions, tokens/scopes, settings, limits, digests, wipe
+progress, challenges and attributable invites. Reading children cascade from
+`readings`; embeddings also have their own observation. A failed source stays
+`unknown` without hiding residue found by any other source.
+
+`account_deletions` is expected retained audit evidence. Its `first_completed_at`
+and `first_residue` describe history; a true historical residue flag is not a
+measurement of today's storage. An audit row is written before teardown and
+does not prove completion. Remaining corpus/control-plane rows report residue,
+including during the normal interval before cron. Live tenant data naturally
+reports as present. The scan is observation, not the runtime teardown gate.
 
 Exit status is **1 for residue or incomplete visibility**, 2 for invalid usage,
 and 0 only when all scanned sources are clear or expected. The residue-scan command
@@ -248,61 +256,29 @@ spent-invite residual may be inert. Queues and concurrent work are not inspected
 These limitations must accompany any closeout report; do not relabel exit 1 as
 an unconditional clean certification.
 
-A ready list entry whose composed vector is absent is reported by reading ID
-under `listed_vectors`, even without a ledger row. This catches the observable
-shape of a purge whose vector delete succeeded and `markDeleteSubmitted` failed.
-The scan cannot distinguish that intent from propagation delay or other vector
-drift. Its single reads are candidate absences, not S3's two spaced successful
-confirmations. It neither retires ledger rows nor repairs listed readings.
+`ready_reading_embeddings` lists ready readings without embedding rows. This
+is an `unknown` diagnostic, not deletion residue: inactive tenants or readings
+that do not own their URL may deliberately have no embedding. `pg.readings`
+and `pg.reading_embeddings` independently report actual row presence. The scan
+neither infers damage nor repairs a reading. No frozen R2 list or manifest is
+read.
 
-Cloudflare now supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/).
-The audit enumerates the **whole index snapshot**, retrieves vectors through
-`get_by_ids` in chunks of at most 20, and selects their actual namespace. There
-is no namespace filter on the list endpoint. Discovery does not depend on ledger
-rows, which a prior wipe may have cleared, or a bounded similarity query.
-Snapshot pagination excludes subsequent inserts; a listed ID missing during
-hydration is unknown and blocks repair. HTTP/schema/cursor errors fail closed.
-A fresh invocation captures a fresh snapshot. This can find previously orphaned
-namespaced vectors even when R2 and the ledger are empty. Unnamespaced ownership
-remains outside the tenant scan and belongs to S7.
+An empty observable corpus can therefore report `residue:false` and still
+report `incomplete:true` with exit 1. The storage port preserves that established
+visibility contract; it does not manufacture a clean certification from missing
+DO/address-history observations.
 
-The audit reports bare/composed pairs, including a composed tenant vector paired
-with a protected global vector. A bare vector is repairable only when its actual
-namespace matches the requested tenant and its reading ID is absent from the
-retained global R2 list/by-id/reading-key inventory. Any protected candidate
-blocks execution of that plan. Malformed global inventory also blocks execution.
-This conservatively preserves the pre-cutover set, including readings whose bare
-vector was subsequently moved into a tenant namespace. S7 approval is required
-for those; this command has no override for legacy deletion.
+The `namespace_probe` and `namespace_inventory` sources observe the retained
+pre-cutover index, not the live corpus. Cloudflare supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/)
+but no namespace filter on it, so the scan enumerates the **whole index
+snapshot**, hydrates vectors through `get_by_ids` in chunks of at most 20, and
+keeps those whose actual namespace is the tenant. Snapshot pagination excludes
+later inserts; a listed ID missing during hydration is unknown, and
+HTTP/schema/cursor errors fail closed. Unnamespaced ownership remains outside the
+tenant scan and belongs to S7. The scan never deletes a vector.
 
-For an approved staging repair, first pause and drain **all** realtime and
-offline writers and wipe/teardown jobs. Hold that pause across all passes:
-
-```sh
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite-staging --execute --confirm "$TENANT" --sole-writer
-```
-
-`--sole-writer` asserts that pause; the CLI cannot acquire a distributed lock.
-Vectorize IDs are globally unique, deletion has no namespace argument or CAS,
-and a read-before-delete alone cannot protect against another writer moving an
-ID. Without the pause, do not execute. The command rechecks the payload,
-namespace, tenant status and legacy membership before each mutation.
-
-For an active tenant, repair requires a ready list entry and refuses a
-`delete_submitted` ledger row, so it cannot resurrect a purged reading or reset
-its confirmation state. It writes the ledger before upserting the composed copy. It retains the bare vector and exits 1 with `upsert_submitted`. After
-propagation, re-run the plan and approved execution: only an identical composed
-vector (values and metadata) permits deletion of the bare copy. A conflicting
-copy is refused for review. For deleting tenants, or tenants absent from users
-but present in `account_deletions`, repair deletes only the confirmed tenant bare
-vector and never recreates a composed vector. It does not clear ledger rows.
-`delete_submitted` is an async request, not proof of absence: repeat the audit
-after propagation and record that evidence before resuming writers. A crash is
-recoverable by re-planning; there is no blind delete based on an old plan file.
-
-The forced wipe command queues the existing consumer, preserving its S1 fence,
-S2 completion record and S3 seed/confirmation rules:
+The forced wipe command queues the existing consumer, preserving its S1 fence
+and S2 completion record:
 
 ```sh
 npm run ops -- account wipe --tenant "$TENANT" --bucket reading-lite-staging --force
@@ -317,37 +293,37 @@ completion; cron runs teardown after the consumer completes.
 
 After deletion: scan once after the data-plane completion, then scan again after
 cron teardown. Confirm that users/child/progress rows disappeared and that the
-first-completion pair survived in `account_deletions`. Resolve vector residue
-and record DO/visibility limitations separately. For production preparation,
-use the same commands with `--bucket reading-lite`, beginning with these reads:
+first-completion pair survived in `account_deletions`. Record legacy-index
+observations and DO/visibility limitations separately. For production
+preparation, use the same commands with `--bucket reading-lite`:
 
 ```sh
-npm run ops -- account audit-bare-vectors --namespace "$TENANT" --bucket reading-lite
 npm run ops -- account residue-scan --tenant "$TENANT" --bucket reading-lite
 npm run ops -- account residue-scan --all-deleted --bucket reading-lite
 ```
 
-Use production-scoped credentials supplied by the operator; the checkout's
-`.corpus.vars` may be staging-scoped. R2 uses the existing corpus credential
-resolver; Vectorize/queue REST use `CORPUS_VECTORIZE_ACCOUNT_ID`, then
-`CORPUS_R2_ACCOUNT_ID`, then `CLOUDFLARE_ACCOUNT_ID`, and `CORPUS_CF_API_TOKEN`
-or `CLOUDFLARE_API_TOKEN`. D1 uses the existing Wrangler environment mapping.
-The bucket fixes the Vectorize index and queue name; no index override is
-accepted. Ensure all credentials identify the same account/environment.
-Run the production repair only after separate approval, using the same explicit
-execute/confirm/sole-writer controls. Resolve protected legacy candidates under
-S7's separate approval; a refused plan is not a repaired corpus.
+The bucket selects the database through the operator pairing
+(`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` for `reading-lite`,
+`STAGING_DATABASE_URL` or `NEON_REHEARSAL_DATABASE_URL` for staging; see
+[step 0](#step-0-the-connection-strings)). R2 uses the existing
+corpus credential resolver; Vectorize/queue REST use
+`CORPUS_VECTORIZE_ACCOUNT_ID`, then `CORPUS_R2_ACCOUNT_ID`, then
+`CLOUDFLARE_ACCOUNT_ID`, and `CORPUS_CF_API_TOKEN` or `CLOUDFLARE_API_TOKEN`.
+Use production-scoped Cloudflare credentials supplied by the operator; the
+checkout's `.corpus.vars` may be staging-scoped. The bucket fixes the Vectorize
+index and queue name; no index override is accepted. Ensure all credentials
+identify the same account/environment.
 
 The separately executed
 [2026-09-05 production read-only audit](evidence/195-production-audit-2026-09-05.md)
 found no tenant bare-vector repair candidates and all 557 ready readings had
 composed vectors. It records protected legacy pairs, the empty all-deleted
-selection, the live ledger follow-up, and the scanner's certification limits.
+selection, the then-live ledger follow-up, and the scanner's certification limits.
 
 ### Sweeping old R2 wipe records
 
-Wipe progress moved from `wipe/{tenantId}/progress.json` to D1. The current
-Worker neither reads nor writes those R2 records. Before sweeping, confirm that
+Wipe progress moved from `wipe/{tenantId}/progress.json` to the control plane
+(now the PostgreSQL `wipe_progress` table). The current Worker neither reads nor writes those R2 records. Before sweeping, confirm that
 version is deployed and no older wipe invocation can still write the prefix.
 Never sweep records used by an older Worker, even if their heartbeat is stale;
 a stale record can be due for resume.
@@ -358,7 +334,8 @@ npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging \
   --execute --acknowledge-no-active-wipe
 ```
 
-Plan lists keys, sizes, modification times, and a matching D1 progress query.
+Plan lists keys, sizes, modification times, and a matching `psql` query against
+`wipe_progress` in the bucket's paired database.
 The acknowledgement asserts the deployment and absence of an active old wipe;
 the command does not establish those facts. A users-status count is insufficient:
 completed wipes can still have deleting users, and queued/delayed work can remain.
@@ -377,7 +354,8 @@ listing aborts before deletion; there is no override for a refused key. Inspect
 and separately authorize any manual deletion. The command takes no `--tenant`
 and defaults to production bucket `reading-lite`; specify staging for rehearsals.
 
-A rollback to the old R2-progress Worker shares no lease with D1 progress.
+A rollback to the old R2-progress Worker shares no lease with PostgreSQL
+progress.
 Drain queues and stop in-flight work before such a rollback. Switching the tenant
 gate off prevents new wipe entry but cannot cancel an invocation already running;
 it also has the corpus-visibility costs described under [environments](#environments).
@@ -403,7 +381,7 @@ the s1k.6 sequencing, where the flip comes well after.)
 
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
-| local | `reading-lite-dev` | Miniflare-emulated R2 only | no Queue, no Vectorize |
+| local | `reading-lite-dev` | Miniflare-emulated R2; local PostgreSQL through Hyperdrive | no Queue, no Vectorize |
 | staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
 | production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
 
@@ -415,10 +393,12 @@ accidental bare `wrangler deploy` clobbering production.
 pins it in `[env.production.vars]` since the founder cutover (2026-08-31,
 `docs/founder-cutover.md`); staging pins it too, so the destructive
 account-wipe path can be rehearsed there ("Rehearsing account deletion on
-staging"). Only local stays unset. After either pin, new writes land only
-under tenant R2/Vectorize, rolling the gate back is a complete rollback only
-before those writes resume; after them, freeze + reverse reconciliation or
-explicit acceptance of loss. Workers-pool tests
+staging"). Only local stays unset. Rows are tenant-scoped whatever the gate
+says; the gate decides only the R2 content root and arms the account wipe
+(off, the wipe refuses with `no_tenant_prefix`). Rolling it back after
+tenant-rooted content has been written leaves those readings' rows pointing at
+keys the Worker no longer resolves, so it needs a freeze and reverse
+reconciliation of the content objects, or explicit acceptance of the loss. Workers-pool tests
 turn it on so two tenants can share a URL without colliding. Operator corpus
 scripts address whichever root their required `--tenant` selector names: the
 tenant id from whoami for production and staging (gate on), and `global` for
@@ -492,21 +472,86 @@ through the Worker, and read `CORPUS_R2_ACCOUNT_ID`, `CORPUS_R2_ACCESS_KEY`,
 ### Deploying
 
 Bring the control plane up before deploying a Worker that authenticates
-against it. `ops deploy worker` does not create the database, import the
-founder token, or deploy schema: apply pending PostgreSQL migrations with
-`npm run ops -- db migrate --execute` against the target database first
-(reading-lite-gh347.4 folds that into the deploy command). `--execute`
-uploads.
+against it. `ops deploy worker` does not create the database or import the
+founder token, but it does deploy schema: `--execute` applies the pending
+PostgreSQL migrations in `db/migrations/` and then uploads.
+
+Migrations are the last gate before the upload, after the cutover guard and
+the tenant-activation preflight, and they are fail-closed. Drift or a failing
+file exits 1 with nothing uploaded, so a release whose code expects a new
+column cannot reach a database that lacks it.
+
+A plan lists the pending files and applies none. It still exits 1 on drift,
+after running the build dry-run: the history was read and is not something to
+act on, and the dry-run passing does not make the deploy safe. The one
+tolerated failure is an unreachable database — the history simply went unread,
+which is a gap in the plan rather than evidence against it, so the plan warns,
+dry-runs and exits 0.
+
+#### Step 0: the connection strings
+
+`--database-url-env` is **required**. It names the environment variable holding
+the target database's DIRECT connection string — never a Hyperdrive string,
+because the migration runner's advisory lock is session state. The name is
+checked against `--env` before anything remote happens, so a production deploy
+cannot migrate staging:
+
+| `--env` | Accepted `--database-url-env` |
+|---|---|
+| `production` | `PRODUCTION_DATABASE_URL`, `NEON_MAIN_DATABASE_URL` |
+| `staging` | `STAGING_DATABASE_URL`, `NEON_REHEARSAL_DATABASE_URL` |
+
+Anything else is refused, including bare `DATABASE_URL` and
+`NEON_DEV_DATABASE_URL`: neither names a deploy target.
+
+Operators keep the Neon strings in `~/.config/reading-lite/neon.env`, mode
+`600`, outside the repository and never committed. It holds exactly three
+variables:
+
+| Variable | Neon branch |
+|---|---|
+| `NEON_MAIN_DATABASE_URL` | `main` — production. |
+| `NEON_REHEARSAL_DATABASE_URL` | `rehearsal` — staging's target for the #349 cutover rehearsal. |
+| `NEON_DEV_DATABASE_URL` | `dev` — never a deploy target; `ops db migrate` takes it. |
+
+Source it per command rather than exporting it from a shell profile, so the
+string is never in ordinary shell history or the process list:
+
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+npm run ops -- deploy worker --env production --execute \
+  --database-url-env NEON_MAIN_DATABASE_URL
+```
+
+`PRODUCTION_DATABASE_URL` and `STAGING_DATABASE_URL` are the **Actions** names:
+the deploy workflow supplies the first from a repository secret. Nothing sets
+them on a laptop, so the examples below that use them are the CI spelling. When
+running the same commands by hand, pass the `NEON_*` name for that environment
+instead — except `ops deploy release`, which hardcodes
+`PRODUCTION_DATABASE_URL` for both its wipe check and its deploy, so an
+operator running it exports that one:
+
+```sh
+set -a; . ~/.config/reading-lite/neon.env; set +a
+export PRODUCTION_DATABASE_URL="$NEON_MAIN_DATABASE_URL"
+```
+
+Migrations commit before the upload, and `db/migrations/` is forward-only with
+no down migration. A failure *after* the migrations — most realistically the
+route-publish failure documented under "Captain-only DNS / Pages / token" —
+therefore leaves the new schema live under the old Worker. Keep each migration
+compatible with the release it replaces (add columns and tables; do not drop,
+rename or tighten one the previous Worker still reads) so that window is safe.
 
 #### Tenant-mode activation guard
 
 Before the upload, `ops deploy worker --execute` inspects the target
 environment's tenant-mode activation state. A single active version serving
-100% of traffic with `TENANT_DATA_PLANE=1` and matching `READINGS_BUCKET` and
-`READINGS_INDEX` bindings establishes the baseline for an ordinary
-redeployment. The R2 bucket and Vectorize index must also have creation
-timestamps no later than that version, so recreating either resource under its
-old name requires fresh verification. Existing production and staging cutovers
+100% of traffic with `TENANT_DATA_PLANE=1` and a matching `READINGS_BUCKET`
+binding establishes the baseline for an ordinary redeployment. The R2 bucket
+must also have a creation timestamp no later than that version, so recreating
+it under its old name requires fresh verification. A Vectorize binding on the
+active version, as pre-cutover production still has, is not compared. Existing production and staging cutovers
 use this baseline; no new migration or certification record is needed.
 
 Off→on activation, changed resources, split deployments, missing deployment
@@ -516,8 +561,8 @@ PostgreSQL control plane for deletion eligibility: it holds only Cloudflare API
 credentials, so it no longer reads tenant rows itself. This is an activation
 warning; ongoing active-wipe deployment policy belongs to #269.
 
-To proceed after a refusal, verify the intended corpus in the target tenant R2
-root and Vectorize namespace, and review deletion eligibility in the target
+To proceed after a refusal, verify the intended corpus in the target
+PostgreSQL database and tenant R2 content root, and review deletion eligibility in the target
 PostgreSQL control plane (tenants in `status='deleting'` whose `deleting_at` is
 at or past the seven-day grace window). For a rebuilt environment, verify its restored tenant corpus before
 activation. The completed founder cutover is historical evidence, not a step to
@@ -527,7 +572,8 @@ An intentionally empty new environment needs verification that no corpus is
 expected. Record the evidence with the operational work, then explicitly use:
 
 ```sh
-npm run ops -- deploy worker --env staging --execute --acknowledge-tenant-migration
+npm run ops -- deploy worker --env staging --execute \
+  --database-url-env NEON_REHEARSAL_DATABASE_URL --acknowledge-tenant-migration
 ```
 
 Use `--env production` for a reviewed production activation. The acknowledgement
@@ -538,7 +584,7 @@ After successful activation the active version becomes the redeployment baseline
 The preflight uses `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI, or
 Wrangler's current authentication locally. If account selection is ambiguous,
 set `CLOUDFLARE_ACCOUNT_ID`. Credentials need Workers deployment/version read
-access, R2 bucket metadata read access, and Vectorize index read access. A permission failure requires correcting access
+access and R2 bucket metadata read access. A permission failure requires correcting access
 or manually verifying readiness before using the explicit acknowledgement.
 Plan mode prints the check it would perform and runs the existing build dry-run;
 it does not inspect remote readiness or require these read permissions.
@@ -558,10 +604,11 @@ Staging:
 ```sh
 cp .stg.vars.example .stg.vars   # AUTH_ROOT_SECRET, READER_API_TOKEN, FOUNDER_EMAIL, …
 wrangler secret put AUTH_ROOT_SECRET --env staging   # same hex as .stg.vars
-# DATABASE_URL is a direct connection string for the staging database.
-npm run ops -- db migrate --execute
+# After `set -a; . ~/.config/reading-lite/neon.env; set +a` (step 0).
+npm run ops -- db migrate --database-url-env NEON_REHEARSAL_DATABASE_URL --execute
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
-npm run ops -- deploy worker --env staging --execute
+npm run ops -- deploy worker --env staging --execute \
+  --database-url-env NEON_REHEARSAL_DATABASE_URL
 npm run ops -- deploy web --branch staging --execute
 ```
 
@@ -577,7 +624,8 @@ Production is the same sequence with `reading-lite-control`, `--env production`,
 ```sh
 npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
-npm run ops -- deploy worker --env production --execute
+npm run ops -- deploy worker --env production --execute \
+  --database-url-env NEON_MAIN_DATABASE_URL
 npm run ops -- deploy web --branch main --execute
 ```
 
@@ -585,9 +633,9 @@ Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
 succeeds, `.github/workflows/deploy-worker.yml` checks out that exact CI commit
-and runs `ops deploy worker --env production --execute` (upload only; apply
-PostgreSQL migrations with `ops db migrate` beforehand). It does not pass
-`--var`. `TENANT_DATA_PLANE` is
+and runs `ops deploy worker --env production --execute --database-url-env
+PRODUCTION_DATABASE_URL`, which applies the pending PostgreSQL migrations and
+then uploads. It does not pass `--var`. `TENANT_DATA_PLANE` is
 pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
@@ -655,7 +703,7 @@ GitHub repository secrets (or the `production` environment):
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
-| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production control plane. The wipe gate reads `wipe_progress` through it; the workflow fails fast when it is missing. |
+| `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production database. The wipe gate reads `wipe_progress` through it and `ops deploy worker` applies the pending migrations through it, so the role behind it needs DDL as well as that read. The workflow fails fast with a named error when it is missing. |
 
 The imported founder token expires after 90 days; re-running the same
 bootstrap command refreshes `expires_at_ms` and clears a revoked row.
@@ -704,7 +752,7 @@ is an additional public host. Staging is the same shape on
 `[env.production.routes]` in `wrangler.toml` carries the same `/api/*`,
 `/health`, `/mcp*` trio on both public hostnames (`zone_name` is
 `readinglite.ai` and `readinglite.app`). Both hit the same Worker
-script, R2 bucket, D1 database and Vectorize index. Staging's six routes
+script, R2 bucket and PostgreSQL database (through Hyperdrive). Staging's six routes
 do the same on `staging.readinglite.ai` and `staging.readinglite.app`.
 Nothing in the data plane depends on the hostname, so the `/api/*` read and
 write paths and `/health` are interchangeable between the hosts in one
@@ -792,7 +840,7 @@ removes routes.
 2. **Token scope.** `CLOUDFLARE_API_TOKEN` (GitHub secret and any local ops
    token) must include zone Workers Routes on **both** `readinglite.ai` and
    `readinglite.app`, keeping `bbell.dev`. **Until it does, `ops deploy worker
-   --env production` applies the remote D1 migrations, uploads the script, and
+   --env production` applies the pending PostgreSQL migrations, uploads the script, and
    then fails on the route publish**, the same route-publication failure described under "MCP
    connector" below, now on two additional zones. It surfaces two ways
    depending on what the token holds: with Zone Read but no Workers Routes
@@ -952,7 +1000,8 @@ Deploying the frontend:
   SPA, which keeps deploying to Pages so the rollback target stays current.
   Rerun that job to redeploy.
 - **Staging.** Deploy the staging backend first
-  (`npm run ops -- deploy worker --env staging --execute`), then run the
+  (`npm run ops -- deploy worker --env staging --execute --database-url-env
+  NEON_REHEARSAL_DATABASE_URL`), then run the
   **Deploy staging frontend** workflow by manual dispatch from the same ref.
 - **Build check.** Both workflows run `app/scripts/check-build.ts` between
   build and deploy. It refuses a build whose environment, name, routes, or
@@ -1016,22 +1065,53 @@ curl -sS https://reading-lite-staging.bellbm.workers.dev/mcp \
 
 ### Staging lifecycle
 
-Staging exists for real end-to-end smoke tests that need Queue, R2, and
-Vectorize without mutating the production corpus. Both lifecycle scripts are
+Staging exists for real end-to-end smoke tests that need Queue, R2, and a
+deployed PostgreSQL database without mutating the production corpus. Both lifecycle scripts are
 hard-coded to staging resource names, refuse production-looking names, and are
 idempotent, "already exists" on setup and "already gone" on teardown are
 treated as success, while unexpected Wrangler or R2 API failures stop the run.
 
 ```sh
+# STAGING_DATABASE_URL, or on a laptop NEON_REHEARSAL_DATABASE_URL from
+# `set -a; . ~/.config/reading-lite/neon.env; set +a`.
 npm run ops -- staging setup --execute
 npm run ops -- staging teardown --execute
 ```
 
+Staging's database is the Neon rehearsal branch, reached through the
+[operator database pairing](#step-0-the-connection-strings) for `reading-lite-staging`.
+Setup resolves it before any Cloudflare change and migrates it with the same
+run as `ops db migrate`; an unset, mis-paired, unreachable, or failing database
+stops setup with nothing created. Its plan connects read-only to list pending
+migrations; with no staging variable set, or the database unreachable, the plan
+notes that and still prints the Cloudflare plan, while migration drift fails
+it. The role needs DDL, including `CREATE EXTENSION vector`. Setup never
+creates the database and teardown never drops it.
+
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-reading, digest, and wipe Queue/DLQ pairs and Vectorize index, deletes staging D1, empties the bucket via
-the S3-compatible R2 API, and deletes the bucket. The bucket-empty step needs
-the `CORPUS_R2_*` credentials above. Setup creates the same three queue families. See the command help for the
-complete resource plan.
+reading, digest, wipe, and refresh Queue/DLQ pairs, empties the bucket via the
+S3-compatible R2 API, and deletes the bucket: exactly the Cloudflare resources
+setup creates. The bucket-empty step needs the `CORPUS_R2_*` credentials
+above. It retains the staging PostgreSQL database, and it retains staging's
+old D1 (`reading-lite-control-staging`) deliberately: that D1 is the #348
+importer's source, and #351 retires it. The old staging Vectorize index
+(`reading-lite-staging`) is in neither list, since the Worker binds none; it
+too waits for #351.
+
+Do not run `ops founder bootstrap --env staging`, set
+`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`, or run `ops staging smoke --execute`
+against PostgreSQL-backed staging before the #349 import. The importer refuses
+a target database holding any application row, and a bootstrapped founder
+would conflict with the imported one. Founder bootstrap enforces this:
+`STAGING_FOUNDER_BOOTSTRAP_OPEN` in `scripts/lib/founder-bootstrap.ts` stays
+`false` until #349 flips it, so a staging `--execute` exits 2 before opening
+the database (a plan still runs), and the cloud-agent installer skips
+`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` with a log line. The staging smoke rule is
+not enforced in code. Cloud agents supply the database as the `STAGING_DATABASE_URL`
+Cursor secret, which is never written to `.stg.vars`. `ops founder bootstrap`
+resolves staging's and production's databases through the same pairing as the
+other operator commands, so `--database-url-env` naming another environment's
+database (or a bare `DATABASE_URL`) is refused.
 
 Smoke-test idempotent submits against staging:
 
@@ -1048,12 +1128,18 @@ staging founder tenant, not `global`. Resolve `$STG_TENANT` from staging's
 ```sh
 npm run ops -- corpus audit --tenant "$STG_TENANT" --bucket reading-lite-staging --execute
 npm run ops -- corpus drop --tenant "$STG_TENANT" "https://example.com/reading-lite-staging-123" \
-  --bucket reading-lite-staging --allow-ready \
-  --vectorize reading-lite-staging --execute
+  --bucket reading-lite-staging --allow-ready --execute
 ```
 
-`--tenant global` still addresses staging's retained pre-tenant copy, which the
-gate makes invisible to the Worker. Use it only when you mean that copy.
+`--allow-ready` no longer takes `--vectorize`: the embedding is a row that
+cascades with the reading (ADR 0005).
+
+`--tenant global` still addresses staging's retained pre-tenant R2 copy, which
+the gate makes invisible to the Worker. It is **R2-only**: the commands that
+read or delete rows (`corpus audit`, `drop`, `sweep`, `purge-connections`,
+`recover --monitor`, `reading-list check`) refuse it, because no `readings` row
+can carry the pre-tenant empty key root and a resolvable `global` would report
+an empty corpus rather than a wrong question.
 
 ### Rehearsing account deletion on staging
 
@@ -1061,9 +1147,7 @@ S5 proof step (run only in the separately approved live drill): capture
 `ops account residue-scan --tenant "$DRILL" --bucket reading-lite-staging`
 after wipe completion and again after cron teardown. Check per-source JSON,
 first-completion history, and the explicit unknown section; exit 1 is expected
-while DO/address-history visibility remains incomplete. Before arming the wipe,
-audit/repair synthetic bare/composed pairs using the S5 sequence above, including
-a protected unnamespaced control. Keep that control intact. The separately executed
+while DO/address-history visibility remains incomplete. The separately executed
 [2026-09-05 staging drill](evidence/195-staging-drill-2026-09-05.md) records
 the live repair, deletion, and automatic teardown evidence, including the
 final `residue:false, incomplete:true` scan and remaining acceptance limits.
@@ -1083,14 +1167,12 @@ pre-tenant corpus was migrated under `u/{founderTenantId}/` by
 the now-retired founder migration command. It copied rather than moved, so
 the legacy `readings/` and `index/` objects remain in the bucket.
 Removing the pin is a **complete rollback only before post-pin writes resume**.
-After the pin, every new staging reading is written only under its tenant R2
-root and Vectorize namespace. Rolling the gate back then makes the Worker read
-the retained global snapshot: the copy-not-move pre-tenant corpus is visible
-again, and only post-pin writes are hidden (their bytes still exist under
-`u/{tenantId}/`). After writes have landed, rollback requires a freeze plus
-reverse reconciliation (copy tenant-rooted objects and namespaced vectors back
-to the global layout) or an explicit captain-accepted loss of the post-pin
-corpus.
+After the pin, every new staging reading's content is written only under its
+tenant R2 root. Rolling the gate back leaves the rows in place but resolves
+their content at the global root, where post-pin bytes do not exist. After
+writes have landed, rollback requires a freeze plus reverse reconciliation
+(copy tenant-rooted content back to the global layout) or an explicit
+captain-accepted loss of the post-pin content.
 
 One consequence of that to keep in view if the drill is ever pointed at the
 staging *founder* rather than a throwaway tenant: the wipe never touches the
@@ -1100,68 +1182,83 @@ left under `u/{tenantId}/`" would then not mean the data is gone from staging.
 It is the same hole production carries until the legacy objects are deleted
 under sign-off.
 
-**Preflight, before the deploy that turns the gate on.** While the gate is off,
-fan-out short-circuits with `no_tenant_prefix`, so any account left in
-`status='deleting'` by earlier testing has been accumulating harmlessly. The
-moment the pin ships, the next `*/15` cron enqueues a *real* wipe for every one
-of them whose 7-day grace has elapsed. Look before you deploy:
+**Where the SQL below runs.** Staging's control plane is the PostgreSQL database
+paired with `reading-lite-staging`: `STAGING_DATABASE_URL`, or on a laptop
+`NEON_REHEARSAL_DATABASE_URL` from [step 0](#step-0-the-connection-strings):
 
 ```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT u.id, u.email_canonical, u.status, u.deleting_at_ms FROM users u \
-             LEFT JOIN wipe_progress w ON w.tenant_id = u.id \
-             WHERE u.status <> 'active' AND w.completed_at_ms IS NULL"
+# Cloud agents and CI already have STAGING_DATABASE_URL; a laptop sources the alias.
+[ -n "${STAGING_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
+STAGING_DB="${STAGING_DATABASE_URL:-${NEON_REHEARSAL_DATABASE_URL:-}}"
+: "${STAGING_DB:?set STAGING_DATABASE_URL or NEON_REHEARSAL_DATABASE_URL}"
+```
+
+The last line stops the drill when neither variable is set. Without it, every
+`psql "$STAGING_DB"` below would get an empty string and connect to whatever
+libpq's defaults name instead.
+
+Staging's old D1 is retained only as the #348 importer's source; nothing in this
+runbook reads or writes it. Until #349 points staging's Worker at this
+database, a drill exercises the D1-era Worker and proves nothing about the
+candidate, so run it after that cutover.
+
+**Preflight, before any deploy that could start wipes.** Any account left in
+`status='deleting'` by earlier testing becomes a real wipe on the next `*/15`
+tick once its 7-day grace has elapsed. Look first:
+
+```sh
+psql "$STAGING_DB" -c "SELECT u.id, u.email_canonical, u.status, u.deleting_at FROM users u
+  LEFT JOIN wipe_progress w ON w.tenant_id = u.id
+  WHERE u.status <> 'active' AND w.completed_at IS NULL"
 ```
 
 The join is what makes this list *actionable* rather than just true. A tenant
-whose `wipe_progress` row carries a `completed_at_ms` has already been wiped.
-Before S4 that meant fan-out skipped it; **after S4 it means the next tick
-will hard-delete the account**, every such tenant, with no exemption. The
-`IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at_ms`),
-which is still live and does belong in the list. Completed empty-prefix tenants
-are a separate question:
+whose `wipe_progress` row carries a `completed_at` has already been wiped, and
+**the next tick will hard-delete the account** (S4), with no exemption. The
+`IS NULL` still covers a *reopened* wipe (a reopen clears `completed_at`),
+which is still live and does belong in the list. Completed tenants are a
+separate question:
 
 ```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT u.id, u.email_canonical, w.completed_at_ms, w.force \
-             FROM users u JOIN wipe_progress w ON w.tenant_id = u.id \
-             WHERE u.status = 'deleting' AND w.completed_at_ms IS NOT NULL"
+psql "$STAGING_DB" -c "SELECT u.id, u.email_canonical, w.completed_at, w.force
+  FROM users u JOIN wipe_progress w ON w.tenant_id = u.id
+  WHERE u.status = 'deleting' AND w.completed_at IS NOT NULL"
 ```
 
 Completed fixtures follow the same teardown path; do not assume an old
 fixture still exists. The dated evidence below records the original S6 fixture.
 
-Any account in either preflight result that is not meant to be destroyed, the staging founder above all, needs an operator recovery decision before
-the deploy. The reset below is only for a deletion that has not destroyed data.
-Restoring `status='active'` alone
-is not enough: leave `deleting_at_ms` set and a later `DELETE /api/account`
-reuses it via `COALESCE(deleting_at_ms, ?)` in `beginAccountDeletion`, so the
-next cron can wipe immediately and skip the 7-day grace. An unfinished or
-reopened `wipe_progress` row (`completed_at_ms` NULL) is worse: fan-out treats
-it as a **resume**, and resume ignores grace. After a later delete the next
-`*/15` tick enqueues immediately.
+Any account in either preflight result that is not meant to be destroyed, the
+staging founder above all, needs an operator recovery decision first. The reset
+below is only for a deletion that has not destroyed data. Restoring
+`status='active'` alone is not enough: leave `deleting_at` set and a later
+`DELETE /api/account` reuses it through `COALESCE` in `beginAccountDeletion`,
+so the next cron can wipe immediately and skip the 7-day grace. An unfinished
+or reopened `wipe_progress` row (`completed_at` NULL) is worse: fan-out treats
+it as a **resume**, and resume ignores grace.
 
 A delivery that already passed the status check can continue deleting after
-reactivation. **The heartbeat is advisory**: a recent `updated_at_ms` is a
-reason to stop, but an old value or waiting 15 minutes does not prove that no
-job is active. Delayed retries can outlive that window.
+reactivation. **The heartbeat is advisory**: a recent `updated_at` is a reason
+to stop, but an old value or waiting 15 minutes does not prove that no job is
+active. Delayed retries can outlive that window.
 
 Before any reset:
 
 1. Pause cron fan-out and teardown, new wipe submissions, and queue delivery
-   for staging. Confirm previously started wipe/teardown invocations have ended
-   and any submitted Vectorize mutations have settled. Turning the tenant gate
-   off does not cancel an invocation that already passed it.
+   for staging. Confirm previously started wipe/teardown invocations have
+   ended. Turning the tenant gate off does not cancel an invocation that
+   already passed it.
 2. Account for queued messages, delayed retries, and DLQ redrives for this
    tenant. They must not survive the reset and a later deletion request: an old
    `force: true` envelope would bypass the new grace period. Do not drain them
    by running the destructive consumer against an account being rescued.
-3. Inspect and save the progress record, audit record, ledger, and remaining
-   R2/Vectorize state. If deletion has begun, the account was previously wiped,
+3. Inspect and save the progress record, audit record, `readings` count and
+   remaining R2 state. The `rows` phase runs first and deletes every reading
+   row in one transaction, so a progress row past `rows` means the corpus is
+   already gone. If deletion has begun, the account was previously wiped,
    teardown was attempted, or any of those facts cannot be established, stop
-   this reset and prepare a data-recovery plan. Zero counters alone do not
-   prove nothing was deleted. This SQL cannot restore deleted data or preserve
-   the confirmation state of a partially completed wipe.
+   this reset and prepare a data-recovery plan. This SQL cannot restore
+   deleted data.
 
 There is no atomic cancel-and-rescue command. If the pause and pending-message
 conditions cannot be verified, do not run the writes below. With them verified,
@@ -1170,34 +1267,30 @@ reopened wipe's first-completion history must remain intact; the guards refuse
 that case rather than erasing it.
 
 ```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT * FROM wipe_progress WHERE tenant_id='<tenant>'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT * FROM account_deletions WHERE tenant_id='<tenant>'"
+psql "$STAGING_DB" -c "SELECT * FROM wipe_progress WHERE tenant_id='<tenant>'"
+psql "$STAGING_DB" -c "SELECT * FROM account_deletions WHERE tenant_id='<tenant>'"
 # Only after the pause, pending-message, and data checks above:
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE users SET status='active', deleting_at_ms=NULL, updated_at_ms=<now> \
-             WHERE id='<tenant>' AND status='deleting' \
-             AND NOT EXISTS (SELECT 1 FROM account_deletions WHERE tenant_id='<tenant>') \
-             AND NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id='<tenant>' \
-               AND (completed_at_ms IS NOT NULL OR first_completed_at_ms IS NOT NULL))"
-# Stop unless the UPDATE reports changes: 1. Then remove the stale resume state:
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "DELETE FROM wipe_progress WHERE tenant_id='<tenant>' \
-             AND completed_at_ms IS NULL AND first_completed_at_ms IS NULL \
-             AND EXISTS (SELECT 1 FROM users WHERE id='<tenant>' \
-               AND status='active' AND deleting_at_ms IS NULL)"
+psql "$STAGING_DB" -c "UPDATE users SET status='active', deleting_at=NULL, updated_at=now()
+  WHERE id='<tenant>' AND status='deleting'
+  AND NOT EXISTS (SELECT 1 FROM account_deletions WHERE tenant_id='<tenant>')
+  AND NOT EXISTS (SELECT 1 FROM wipe_progress WHERE tenant_id='<tenant>'
+    AND (completed_at IS NOT NULL OR first_completed_at IS NOT NULL))"
+# Stop unless psql reports UPDATE 1. Then remove the stale resume state:
+psql "$STAGING_DB" -c "DELETE FROM wipe_progress WHERE tenant_id='<tenant>'
+  AND completed_at IS NULL AND first_completed_at IS NULL
+  AND EXISTS (SELECT 1 FROM users WHERE id='<tenant>'
+    AND status='active' AND deleting_at IS NULL)"
 ```
 
 Re-read the user and progress rows before resuming: the user must be active,
-`deleting_at_ms` NULL, and the unfinished progress row absent. Keep the ledger;
-this reset does not authorize changing its deletion or confirmation records.
+`deleting_at` NULL, and the unfinished progress row absent.
 
 That still is **not** a full rescue: `beginAccountDeletion` stamped
-`revoked_at_ms` on every session and API token and nothing reverses that, so
-the account is `active` but cannot authenticate. Re-run
-`ops founder bootstrap --env staging --execute` for the founder, or issue a
-fresh magic link, before assuming staging works again.
+`revoked_at` on every session and API token and nothing reverses that, so the
+account is `active` but cannot authenticate. Re-run
+`ops founder bootstrap --env staging --execute` for the founder (it refuses
+until #349 opens `STAGING_FOUNDER_BOOTSTRAP_OPEN`, which this drill already
+waits for), or issue a fresh magic link, before assuming staging works again.
 
 Staging already has tenant mode enabled and its founder cutover is complete.
 Do not rerun that migration to rehearse deletion. For a rebuilt environment,
@@ -1206,65 +1299,47 @@ and follow the [tenant-mode activation guard](#tenant-mode-activation-guard).
 The historical migration procedure and evidence remain in
 [the completed cutover record](founder-cutover.md).
 
-The drill itself. Seed a throwaway tenant, fence it, let cron wipe it, then
-prove the residue is gone.
-
-Two id rules, both of which produce a rehearsal that looks perfect and proves
-nothing if you get them wrong:
+The drill itself. Create a throwaway tenant, give it readings, fence it, let
+cron wipe it, then prove the residue is gone.
 
 - **`$DRILL` is a fresh `usr_<uuid4>`, and it must be lowercase.**
   `parseTenantId` canonicalizes to lowercase (`src/control-plane/ids.ts`), but
   macOS `uuidgen` emits uppercase. An uppercase id still fans out, and then the
   wipe addresses `u/{lowercased}/` and writes `wipe_progress.tenant_id`
-  lowercase, so the objects you seeded and every `WHERE tenant_id='$DRILL'`
-  query below quietly miss.
-- **Reading ids must use the Crockford alphabet `parseReadingId` accepts**
-  (`src/services.ts` `ID_ALPHABET`, no `I`, `L`, `O`, `U`). An id outside it is
-  skipped by `ops corpus seed-vector-ledger`'s walk, so the objects phase still
-  deletes the reading's R2 objects but no ledger row and no `deleteByIds` ever
-  exist for it. The vector is stranded, and surfaces at the end as residue, a
-  synthetic reproduction of the issue #261 gap rather than a wipe bug.
-- **You do not need to seed the drill ledger.** The wipe seeds its own ledger
-  from the objects you write, before it deletes anything, so a drill that skips
-  seeding is testing the real path rather than a rigged one. Watch for
-  `account_wipe_ledger_seeded` with `rows_created` equal to the number of
-  readings you seeded, that line is the wipe proving it found them.
-- **Expect two wipe passes for a healthy tenant.** The first seeds and submits
-  the deletes; the confirmation is not allowed to count an absence until 120s
-  after `deleteByIds` returned, because propagation was measured at 30-90s and
-  a probe inside that window carries no information. If no delayed confirmation was needed, inspect ledger state and delete
-  submissions before treating that as evidence of a nonempty wipe.
+  lowercase, so every `WHERE tenant_id='$DRILL'` query below quietly misses.
+- **Seed through the API, not by hand.** A reading is a `readings` row with its
+  URL, revision, embedding and attempt rows, plus immutable content objects
+  under `u/$DRILL/` in R2. Sign up for real, create an API token, and import a
+  few small Markdown files with `ops import markdown`: that writes both halves
+  the way production does, for a few cents of summarization. Hand-inserted rows
+  without their R2 objects, or objects without rows, test a shape the Worker
+  never produces.
+- **One wipe pass is normal.** There is no vector ledger and no confirmation
+  wait: `rows` deletes the corpus in one transaction, `objects` empties the
+  prefix, and `done` completes once no rows remain, one delivery per 20,000
+  objects (see [progress and phases](#progress-and-phases)).
 
 ```sh
-# 1. Create the account. Either sign up on staging for real, or insert the row
-#    directly. The wipe is driven off this row: without it the UPDATE below
-#    matches nothing, listDeletingUsers never returns the tenant, and the whole
-#    drill silently exercises nothing while every residue check passes.
-#
-#    Use a per-run address. `users.email_canonical` is NOT NULL UNIQUE, and the
-#    original S6 fixture below already holds `s6-drill@test.example` until its
-#    teardown removes the row — reusing it fails this INSERT on the constraint,
-#    which is exactly the "creates nothing, passes everything" outcome the
-#    warning above is about.
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "INSERT INTO users (id, email_canonical, email_display, status, \
-             email_verified_at_ms, created_at_ms, updated_at_ms) \
-             VALUES ('$DRILL','s6-drill-$DRILL@test.example', \
-             's6-drill-$DRILL@test.example','active',<now>,<now>,<now>)"
+# 1. Create the account. Prefer a real staging signup (the seeding above needs
+#    a token). Inserting the row directly only suits a drill of an empty
+#    tenant. Either way the wipe is driven off this row: without it the UPDATE
+#    below matches nothing, listDeletingUsers never returns the tenant, and the
+#    drill silently exercises nothing while every residue check passes. Use a
+#    per-run address: users.email_canonical is NOT NULL UNIQUE.
+psql "$STAGING_DB" -c "INSERT INTO users (id, email_canonical, email_display, status,
+  email_verified_at, created_at, updated_at)
+  VALUES ('$DRILL','s6-drill-$DRILL@test.example','s6-drill-$DRILL@test.example',
+  'active',now(),now(),now())"
 
-# 2. Seed. Objects under u/$DRILL/ (manifest.json, index/by-id/, index/by-url/,
-#    index/list.json) plus one namespaced vector {$DRILL}:{readingId} per ready
-#    reading. Copying manifests and embeddings out of the staging founder corpus
-#    keeps the shapes real and spends nothing on providers.
-# 3. Confirm the vectors are live in the namespace before deleting anything —
-#    an upsert takes up to ~45s to become visible.
-# 4. Fence the account so the ordinary */15 cron starts the wipe.
-#
-# Direct-insert path (step 1): this tenant has no sessions or tokens, so the
-# users-row UPDATE is the whole fence:
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE users SET status='deleting', deleting_at_ms=<now - 8 days>, \
-             updated_at_ms=<now> WHERE id='$DRILL' AND status='active'"
+# 2. Confirm the seeded readings:
+psql "$STAGING_DB" -c "SELECT count(*) FROM readings WHERE tenant_id='$DRILL'"
+
+# 3. Fence the account so the ordinary */15 cron starts the wipe.
+#    Direct-insert path only: that tenant has no sessions or tokens, so the
+#    users-row UPDATE is the whole fence.
+psql "$STAGING_DB" -c "UPDATE users SET status='deleting',
+  deleting_at=now() - interval '8 days', updated_at=now()
+  WHERE id='$DRILL' AND status='active'"
 ```
 
 **Do not use that users-only UPDATE for a tenant that signed up for real.** It
@@ -1273,132 +1348,81 @@ revokes every session and API token. Skip the revoke and the later
 `live_sessions = 0` / `live_tokens = 0` check fails, and the drill never
 exercises the credential fence.
 
-Prefer the real API (session cookie, `X-CSRF-Token`, recent-auth window, the SPA Security page is the same path), then backdate grace so cron, not a
+Use the real API instead (session cookie, `X-CSRF-Token`, recent-auth window;
+the Security page is the same path), then backdate grace so cron, not a
 hand-injected queue message, starts the wipe:
 
 ```sh
 # After DELETE /api/account with body { "confirm": "delete" }:
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE users SET deleting_at_ms=<now - 8 days>, updated_at_ms=<now> \
-             WHERE id='$DRILL' AND status='deleting'"
+psql "$STAGING_DB" -c "UPDATE users SET deleting_at=now() - interval '8 days', updated_at=now()
+  WHERE id='$DRILL' AND status='deleting'"
 ```
 
-If you cannot call the API, this is the SQL that mirrors `beginAccountDeletion`
-(status write, then the two revokes, `ACCOUNT_DELETE_REVOCATION_REASON` is
-`account_delete`). Use it **instead of** the users-only UPDATE, not after it:
+**Check that the users-row fence UPDATE reported `UPDATE 1`.** Zero means the
+row is missing or not in the expected status, and everything downstream will
+look like a clean, successful wipe of nothing.
 
-```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE users SET status='deleting', deleting_at_ms=<now - 8 days>, \
-             updated_at_ms=<now> WHERE id='$DRILL' AND status='active'"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE sessions SET revoked_at_ms=<now>, revocation_reason='account_delete' \
-             WHERE user_id='$DRILL' AND revoked_at_ms IS NULL"
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "UPDATE api_tokens SET revoked_at_ms=<now> \
-             WHERE user_id='$DRILL' AND revoked_at_ms IS NULL"
-```
-
-**Check that the users-row fence UPDATE reported `changes: 1`.** That is the
-status/backdate write (`SET status='deleting'` on the direct-insert path, or
-`SET deleting_at_ms=…` after `DELETE /api/account`). Zero there means the row
-is missing or not in the expected status, and everything downstream will look
-like a clean, successful wipe of nothing. The sessions and `api_tokens`
-revokes may report `changes: 0` (direct-insert, no credentials) or `N`
-(signed-up); that is not the fence check.
-
-Backdating `deleting_at_ms` past the 7-day grace is what lets the ordinary
-`*/15` cron fan-out start the wipe, so the drill exercises the real entry point
+Backdating `deleting_at` past the 7-day grace is what lets the ordinary `*/15`
+cron fan-out start the wipe, so the drill exercises the real entry point
 instead of a hand-injected queue message. Then watch it finish:
 
 ```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
+psql "$STAGING_DB" -c "SELECT * FROM wipe_progress WHERE tenant_id='$DRILL'"
 ```
 
-On the PostgreSQL candidate a wipe has no confirmation wait: it completes in
-the delivery that empties the prefix, one delivery per 20,000 objects (see
-[progress and phases](#progress-and-phases)). The query above reads D1 until
-the operator commands move in slice 1d; on the candidate, read `wipe_progress`
-from PostgreSQL instead.
-
-`probe_saw_residue=1` can record normal propagation even when the final wipe is
-clean. `residue=1` means the bounded wipe completed without confirmation and
-needs investigation. Read both fields and retain actual probe errors; a failed
-read is not proof that vectors are present or absent.
+A PostgreSQL wipe always completes with `residue=false`: completion is written
+only after the tenant's `readings` count is zero.
 
 Residue checks afterwards.
 
-**1. R2 under the tenant root, expect zero objects.** Do **not** use
-`corpus audit` for this: it reads `index/list.json` first and hard-errors
-("could not read index/list.json") when the object is missing, which is exactly
-the state a successful wipe leaves behind. List the prefix directly instead,
-with the repo's own R2 client rather than a hand-rolled `aws` invocation, `r2InventoryClientFromVars` (`scripts/lib/cf-clients.ts`) is what
-`ops account sweep-wipe-prefix` already uses, and it reads the same
-`CORPUS_R2_*` / `CLOUDFLARE_API_TOKEN` values from the environment or
-`.corpus.vars` that the rest of this runbook assumes:
+**1. The residue scan.** `ops account residue-scan --tenant "$DRILL"
+--bucket reading-lite-staging` observes rows, the tenant R2 root and the legacy
+wipe prefix independently (see [the scan](#account-residue-scan-s5)). Expect
+every `pg.*` corpus source and the R2 root clear; exit 1 remains expected for
+the DO/address-history visibility limits. Do **not** use `corpus audit` for R2:
+it inventories `readings` rows, so after a successful wipe it reports an empty
+corpus and says nothing about objects left in the bucket.
 
-```ts
-// r2ls.ts, run from the repo root with `DRILL=usr_… npx tsx ./r2ls.ts`
-import { loadDotVars } from "./scripts/lib/dotvars";
-import { r2InventoryClientFromVars } from "./scripts/lib/cf-clients";
-
-const vars = { ...loadDotVars(".corpus.vars"), ...process.env };
-const client = r2InventoryClientFromVars(vars, "reading-lite-staging");
-const objects = await client.listObjects(`u/${process.env.DRILL}/`);
-for (const o of objects) console.log(o.key, o.size);
-console.log("objects:", objects.length);
-```
-
-**2. Orphaned R2 wipe progress** (superseded by D1 in slice S2), expect
-0 objects:
+**2. Orphaned R2 wipe progress** (superseded by the control plane in slice S2),
+expect 0 objects:
 
 ```sh
 npm run ops -- account sweep-wipe-prefix --bucket reading-lite-staging
 ```
 
-3. **Vectorize**, a namespaced query against the tenant namespace must return
-   no matches. That is the same signal `SimilarityStore.probeNamespace()` uses.
-   Do not use whole-index `describe()` counts as evidence: they are served from
-   replicas at different processing frontiers and go backwards, so `vectorCount`
-   and `processedUpToMutation` both flap between values while the underlying
-   per-id reads are correct.
-
-4. **D1 after the wipe, before teardown**, the wipe still removes the
-   **data plane only**. Until control-plane teardown runs, the `users` row,
-   the `wipe_progress` completion record, and the tenant's `sessions`,
-   `api_tokens`, `user_settings` and `digest_deliveries` rows all survive:
-   `beginAccountDeletion` *revokes* sessions and tokens by stamping
-   `revoked_at_ms` in place rather than deleting them, and `user_settings` is
-   never touched by the wipe. Check that credentials are **revoked**, not
-   that rows are absent:
+**3. The control plane after the wipe, before teardown.** The wipe removes the
+**data plane only**. Until control-plane teardown runs, the `users` row, the
+`wipe_progress` completion record, and the tenant's `sessions`, `api_tokens`,
+`user_settings` and `digest_deliveries` rows all survive:
+`beginAccountDeletion` *revokes* sessions and tokens by stamping `revoked_at`
+in place rather than deleting them. Check that credentials are **revoked**,
+not that rows are absent:
 
 ```sh
-npx wrangler d1 execute CONTROL_PLANE --env staging --remote \
-  --command "SELECT (SELECT COUNT(*) FROM sessions WHERE user_id='$DRILL' AND revoked_at_ms IS NULL) live_sessions, \
-             (SELECT COUNT(*) FROM api_tokens WHERE user_id='$DRILL' AND revoked_at_ms IS NULL) live_tokens, \
-             (SELECT completed_at_ms FROM wipe_progress WHERE tenant_id='$DRILL') completed_at_ms, \
-             (SELECT residue FROM wipe_progress WHERE tenant_id='$DRILL') residue"
+psql "$STAGING_DB" -c "SELECT
+  (SELECT count(*) FROM sessions WHERE user_id='$DRILL' AND revoked_at IS NULL) live_sessions,
+  (SELECT count(*) FROM api_tokens WHERE user_id='$DRILL' AND revoked_at IS NULL) live_tokens,
+  (SELECT count(*) FROM readings WHERE tenant_id='$DRILL') readings,
+  (SELECT completed_at FROM wipe_progress WHERE tenant_id='$DRILL') completed_at"
 ```
 
-Expect `live_sessions = 0`, `live_tokens = 0`, a non-NULL `completed_at_ms`, and
-`residue = 0`. A tenant seeded directly (rather than signed up for) will simply
-have no rows in those tables at all, which is not evidence either way.
+Expect `live_sessions = 0`, `live_tokens = 0`, `readings = 0` and a non-NULL
+`completed_at`. A tenant inserted directly has no credential rows at all, which
+is not evidence either way.
 
 **Control-plane teardown is automatic (S4).** Once the wipe has completed and
 the prefix is empty, the next `*/15` cron tick runs
 `src/control-plane/account-teardown.ts`: audit row first, Durable Object guards
 fail-closed, address-history lookup, R2 prefix recheck immediately before the
-batch, then one ordered D1 delete ending at `users`. Do **not** manually
-`DELETE FROM wipe_progress` / `DELETE FROM users`, that bypasses the audit
-row, the guard purge, and the prefix recheck, and it is exactly the sequence
-teardown already performs. After teardown the same queries should show the
-`users` and `wipe_progress` rows gone and a single `account_deletions` row for
-the tenant. The address is then free; under `invite_only` it still needs a
-fresh invite. Signup challenges are associated through `completed_user_id`
-when `user_id` is NULL; the automatic teardown handles both ownership columns.
-D1 enforces foreign keys by default, so child-before-parent ordering matters;
-do not restore the old manual SQL based on the opposite assumption.
+transaction, then one ordered delete ending at `users` (see
+[teardown](#control-plane-teardown-and-email-reuse)). Do **not** manually
+`DELETE FROM wipe_progress` / `DELETE FROM users`: that bypasses the audit row,
+the guard purge, and the prefix recheck. After teardown the same queries should
+show the `users` and `wipe_progress` rows gone and a single `account_deletions`
+row for the tenant. The address is then free; under `invite_only` it still
+needs a fresh invite. PostgreSQL always enforces the foreign keys and none of
+them cascades, so child-before-parent ordering matters; do not restore manual
+SQL that assumes otherwise.
 
 A new throwaway drill tenant is torn down on the tick after its wipe
 completes. Watch `account_teardown_complete` for it, then confirm the audit
@@ -1417,19 +1441,21 @@ never a tenant-ID exception in the deletion code.
 
 ## Diagnosing a single reading
 
-`GET /api/readings/:id/diagnostics` shows whether the by-id and by-url pointers
-line up, which R2 objects exist, the list-index row, and the recent attempt
-records, including which stage failed (`fetch_source`, `embed_source`,
-`summarize`, `upsert_vector`, `write_indexes`, …). Each background run stages an
-attempt record under `readings/.../attempts/{attempt_id}.json` with the trigger,
-stage, timings, and sanitized error details, so failures are inspectable without
+`GET /api/readings/:id/diagnostics` reads the reading's row and shows whether
+its URL's owner row is this reading, which R2 content objects exist under its
+key prefix, its list projection, and the 20 most recent `reading_attempts` rows,
+including which stage failed (`fetch_source`, `embed_source`, `summarize`,
+`upsert_vector`, `write_indexes`, …). The response keeps the old `pointers` /
+`index_item` vocabulary its consumers parse; the by-id "pointer" is the row
+itself. Each background run records its trigger, stage events, timings and
+sanitized error details on its attempt row, so failures are inspectable without
 `wrangler tail`.
 
 `POST /api/readings/:id/reprocess` retries that exact id. A failed reading
-becomes `pending` while the attempt runs. A ready reading keeps its current
-manifest as the fallback: a successful attempt replaces the manifest and vector,
-and a failed one preserves the ready manifest with
-`last_attempt.status = "failed"`.
+becomes `pending` while the attempt runs. A ready reading keeps its published
+revision as the fallback: a successful attempt publishes a new revision,
+summary and embedding in one transaction, and a failed one preserves the ready
+revision with `last_attempt.status = "failed"`.
 
 ## Corpus tools
 
@@ -1440,20 +1466,14 @@ first complete calibration run, its costs, and the retained thresholds.
 
 | Script | What it does |
 |---|---|
-| `npm run ops -- corpus audit` | inventory of every non-ready reading, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
+| `npm run ops -- corpus audit` | inventory of every non-ready reading from the tenant's rows, classified by failure reason (plans by default; `--execute` writes `index.json` + `INDEX.md`) |
 | `npm run ops -- corpus recover` | acts on an audit: reprocess or re-extract per a per-reason policy table (plans by default; `--execute` submits) |
-| `npm run ops -- corpus drop` | remove readings by URL or id (`--allow-ready` also clears the vector) |
-| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest with their vectors) |
-| `npm run ops -- corpus backfill-similarity` | fill in `manifest.similarity` for readings written before the field existed (no embedding calls; writes only that field) |
-| `npm run ops -- corpus refresh-neighbours` | re-measure readings against Vectorize, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted snapshots and flushes `index/list.json`) |
+| `npm run ops -- corpus drop` | remove readings by URL or id: deletes the row (the URL claim, revisions, attempts, its own outbound relationships and the embedding cascade) plus the reading's captured R2 content; inbound citations do **not** cascade — follow with `corpus purge-connections`; `--allow-ready` permits a ready one, off production |
+| `npm run ops -- corpus sweep` | reconcile duplicate copies of one resource across URL spellings (keeps the best, drops the rest, embeddings included; inbound citations do **not** cascade — follow with `corpus purge-connections` per dropped id) |
+| `npm run ops -- corpus refresh-neighbours` | re-measure readings against the tenant's stored vectors, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted `similarity` snapshots) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
-| `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both manifests (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus backfill-vectors` | restore missing Vectorize vectors by re-embedding stored TL;DRs (writes Vectorize, plus the tier-1 run marker it invalidates; R2 is otherwise read-only) |
-| `npm run ops -- corpus backfill-source-date` | fill missing `manifest.source_date` by re-running `readabilityFromHtml` over stored `raw.html` (no refetch; writes only that field; `--via` / `CORPUS_R2_*` like refresh-neighbours — S3 keys alone are enough) |
-| `npm run ops -- corpus normalize-tags` | rewrite stored tags into canonical hyphenated form (writes only `manifest.tags`) |
-| `npm run ops -- corpus purge-connections` | remove dangling inbound `connections[]` entries for one already-deleted reading id (full scan; plan-first; ETag CAS writes) |
-| `npm run ops -- corpus rebuild-list` | rewrite `index/list.json` from live manifests (backfill list-row fields) |
-| `npm run ops -- corpus delete-orphans` | remove orphan-duplicate pending readings consistently |
+| `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
+| `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
@@ -1471,92 +1491,57 @@ production founder id is also recorded in the cutover log in
 `docs/founder-cutover.md`, but that file lists a **staging** founder id as
 well, do not copy the wrong one.
 
-Never run a production refresh with `--tenant global`. That selector still
-resolves to the legacy pre-cutover layout, which no longer receives readings;
-refreshing it spends judgements on a copy nobody reads.
+`--tenant global` is refused outright by all three passes. It names the
+pre-tenant R2 layout, which has no rows, and a refusal is the honest answer:
+resolving it would report an empty corpus rather than a wrong question. The
+refusal comes before the spend session opens, so no paid session is admitted
+for work that cannot happen.
 
-Production credentials do not live in the repo either. All three refresh
-commands read them the same way, and that is where the trap is: `.corpus.vars`
-S3 keys are commonly scoped to the staging bucket and then 403 against the
-production bucket, and every one of them prefers S3 keys over a Cloudflare API
-token whenever both are present, so stale staging keys silently win over an
-otherwise correct token. Source production keys from outside the repo; the
-credentials row of the cutover log in `docs/founder-cutover.md` records what an
-actual production run needed.
+The connection string does not live in the repo. Each pass resolves its
+database from `--bucket` through `scripts/pg-lib/operator-db.ts` — an allowlist
+of variable names per environment, not a pattern — so `reading-lite` means
+`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` and nothing else, and an
+unrecognised bucket gets no database rather than a production-shaped guess.
+`--database-url-env` names a different accepted variable; `--local` uses this
+checkout's own PostgreSQL and refuses to accept a deployed variable at all.
+Operators source the Neon strings from `~/.config/reading-lite/neon.env`, so no
+connection string enters the repository or the process list. The provider
+credentials the two paid passes need are still read from `.corpus.vars` and the
+environment.
 
-`refresh-neighbours` used to be the exception, running every call through a
-`wrangler` subprocess and ignoring `CORPUS_R2_*` entirely. It now picks its
-storage path automatically: direct when `CORPUS_R2_*` keys or a Cloudflare API
-token are present, wrangler otherwise, and it prints which one it took in the
-header (`Storage: direct (S3/REST) — CORPUS_R2_* keys`). Direct needs both
-halves, an R2 credential for the manifests and a Cloudflare API token for
-Vectorize, which has no S3 access-key path, so R2 keys alone stay on wrangler.
-`--via wrangler` forces the old path, `--via direct` forces the new one (and
-fails with the missing credential rather than falling back), and `--local`
-always uses wrangler because nothing else can reach the miniflare bucket. A
-direct run also prints the Cloudflare account it resolved (`Account: …`) under
-that line: the bucket name alone does not say whose bucket, and the trap above
-is precisely a shell that loaded the wrong credential file.
-Direct is the reason to prefer it: it removes the ~0.8s of Node start-up the
-wrangler path paid on every Vectorize query and every manifest read. Measured on
-staging (29 ready readings, plan mode): 46.6s over wrangler against 10.0s
-direct, with manifest reads 25.7s → 3.4s and Vectorize queries 19.5s → 6.5s.
-Both paths write a byte-identical `refresh-report.json`, and each flushes
-`index/list.json` through its own client, so a direct run needs no wrangler auth
-at all.
-
-`corpus backfill-source-date` uses the same `--via` flag, credential auto-select,
-and `Storage:` header, but it is R2-only: `CORPUS_R2_*` S3 keys alone take the
-direct path. It does not query Vectorize, so a `CORPUS_CF_API_TOKEN` that 403s
-on the wrangler Workers R2 route is not required. `--via direct` forces that
-path (and fails on missing S3/REST credentials rather than falling back).
-`--local` still uses wrangler.
+There is one storage path now, so the `--via` flag, its credential
+auto-selection and the `Storage:`/`Account:` header lines are gone with the two
+backends they chose between. Each pass opens one direct PostgreSQL session for
+its whole run and closes it on every exit path, success and failure alike.
 
 All three refresh commands end every pass, plan or execute, with a `Timing:`
 block: one row per phase the pass used (`list read`, `planning reads`, the
-manifests read while planning, `manifest read` for reads outside a planning
-pass, `vectorize query`, `reverse query`, the scoping queries an incremental
-tier-1 pass makes, kept apart from the measurement ones because the scope
-trades one for the other, `run marker`, `provider`, `manifest write`,
-`list write`),
-each with its call count and total wall time, then the run total. The block is
-printed even when the pass ends in an error, and failed calls are counted, since
-a stalled read is exactly the wall time worth seeing. Execute mode also prints
-`ms=` per judgement beside its token usage. Two things the counts do not say:
-they count storage calls, not HTTP requests (a `refresh-neighbours` manifest
-read is one request on the direct path but a whole wrangler process around one
-on the wrangler path, which is most of why the same row times so differently
-between them), and a time includes any retry and its backoff, so one unusually
-slow call may be a call that quietly retried. Record the block: it is the baseline a later run or a
-performance change is compared against, and it is what tells a slow pass apart
-from a hung one.
+readings read while planning, `reading read` for reads outside a planning pass,
+`similarity query`, `reverse query`, the scoping queries an incremental tier-1
+pass makes, kept apart from the measurement ones because the scope trades one
+for the other, `run marker`, `provider`, `reading write`), each with its call
+count and total wall time, then the run total. The block is printed even when
+the pass ends in an error, and failed calls are counted, since a stalled read
+is exactly the wall time worth seeing. Execute mode also prints `ms=` per
+judgement beside its token usage. One thing the counts do not say: a time
+includes any retry and its backoff, so one unusually slow call may be a call
+that quietly retried. A judged pair is one `reading write`, not two, because
+tier 3 writes both sides in one transaction. Record the block: it is the
+baseline a later run or a performance change is compared against, and it is
+what tells a slow pass apart from a hung one.
 
-Two robustness limits sit behind those numbers. `refresh-connections` and
-`refresh-tensions` reach R2 over the S3 API when `CORPUS_R2_*` keys are set,
-and every request on that path carries a 30-second deadline and gets up to
-three attempts on a timeout, a network fault, a 5xx, or a 429 (honouring
-`Retry-After`), so one transient read no longer ends the run. Conditional
-writes are the exception: they get the deadline but are never repeated, because
-a retry can see its own landed write and report a lost race that did not
-happen. Both commands' judgement calls retry 5xx the same way, and a 429
-surfaces as a `RateLimitedError` naming the retry-after the provider asked for, that one is what the execute pass's global backoff reacts to (below).
+The provider calls keep their own robustness policy. `refresh-connections` and
+`refresh-tensions` retry 5xx, and a 429 surfaces as a `RateLimitedError` naming
+the retry-after the provider asked for; that one is what the execute pass's
+global backoff reacts to (below). The judgement calls carry no deadline of
+their own, so a stall there still looks like a silent pass, and the `Timing:`
+block is what makes it visible.
 
-Those limits are these two commands' policy and nothing else's. The other ops
-commands that talk to R2 over the S3 API, `corpus ingest`, `corpus recover`,
-`corpus purge-connections`, `staging teardown`, keep
-the single attempt and the absent deadline they were written and run against.
-
-`refresh-neighbours` is the one exception, and only in part: it gets the same
-deadline and retry for its manifest reads and writes whenever it runs direct
-over S3 keys. Everything else is still uncovered. The Cloudflare REST client, the R2 fallback used when only `CLOUDFLARE_API_TOKEN` is set, and every
-Vectorize query on the direct path, backs off on 429 but has no deadline and
-no 5xx retry; the wrangler subprocesses have neither; and the judgement calls
-retry but carry no deadline of their own. A stall on any of them still looks
-like a silent pass, the `Timing:` block is what makes it visible.
-
-`ops corpus refresh-neighbours` re-queries Vectorize by the stored vector id of
-each ready reading in scope, by default the readings that moved since the run
-marker, and under `--full` every one of them, per **Scope** below, with no
+`ops corpus refresh-neighbours` measures each ready reading in scope against
+the tenant's stored vectors — the exact pgvector cosine scan the Worker serves
+`/api/readings/similar` from, so an operator pass and the product cannot
+disagree about a neighbourhood — by default the readings that moved since the
+run marker, and under `--full` every one of them, per **Scope** below, with no
 embedding calls and no LLM. It prints the staleness inventory,
 and always writes its report (`--out`, default `./refresh-report.json`; give
 each writer its own path, see below), the input contract for later
@@ -1575,20 +1560,19 @@ the same candidate set remains. A newly present older candidate receives
 `uncited_neighbour`; so does a previously considered uncited candidate that
 later falls below the floor or becomes non-ready. This baseline tracks ID
 membership; reprocessing the same candidate ID is not a membership change. The
-producer preserves live ingestion's selection order: raw
-Vectorize top five, similarity floor, then ready-ID intersection. It does not
-fill vacated slots with lower-ranked ready readings. Plan mode does not mutate
-R2. `--execute` rewrites only
-drifted `manifest.similarity` snapshots (count change or `|Δmax|`/`|Δmean|`
-≥ 0.02) and then flushes `index/list.json` by merging only the `similarity`
-field of the rows it measured onto the live index, so a row added or rewritten
-while the pass ran is no longer reverted. On the direct path that merge is an
-`If-Match` compare-and-set retried with jittered backoff; on the wrangler
-fallback, which has no conditional put, the read→put window is unguarded. So
-`--execute` is refused without `--sole-writer`: do not run it while
-submissions are in flight. Leaves status, vectors, title, tldr, tags, keywords,
-entities, and `summary_markdown` untouched. A second immediate `--execute`
-writes nothing.
+producer preserves live ingestion's selection order: the raw
+top five, similarity floor, then ready-ID intersection. It does not
+fill vacated slots with lower-ranked ready readings. Plan mode writes nothing.
+`--execute` rewrites only drifted `similarity` snapshots (count change or
+`|Δmax|`/`|Δmean|` ≥ 0.02), one column of one row — the list row IS the reading
+row, so there is no second document to keep in lockstep and no closing flush.
+It touches nothing else, `updated_at` included: bumping it would misreport the
+reading as freshly written and put it back in the next incremental scope every
+night. `--execute` is still refused without `--sole-writer`, because a pass
+that measures the corpus while other writers change it reports a corpus that
+never existed. Leaves status, vectors, title, tldr, tags, keywords, entities,
+and `summary_markdown` untouched. A second immediate `--execute` writes
+nothing.
 
 ```sh
 # The corpus-wide staleness inventory this section describes needs --full: a
@@ -1607,27 +1591,26 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 **Scope.** By default the pass measures only what moved (`--since-last-run`,
 which is now the default and stays accepted as a way of saying so out loud).
 `--full` is the explicit sweep: every ready reading, O(N) whatever changed, the immediate rerun in run A measured 553 readings in 16 minutes and wrote none
-of them. (That 16 minutes is the wrangler path; the same sweep on the now-default
-direct path models at ~3.5–4 min, see the staging proof below. The argument for
-the narrowed scope does not rest on the slower figure.) The default measures only the
-readings whose neighbourhood could have moved since the run marker stored at
-`index/refresh-state.json` (per tenant): those created or reprocessed since it,
-and the reverse neighbourhood of each changed vector (one topK-100
-metadata-less query per changed reading, keeping matches
+of them. (That figure is from the R2-and-Vectorize era; it is the shape of the
+argument that matters, not the number.) The default measures only the
+readings whose neighbourhood could have moved since the run marker, a
+`corpus_refresh_state` row per tenant (db/migrations/0006): those created or
+reprocessed since it, and the reverse neighbourhood of each changed vector (one
+topK-100 query per changed reading, keeping matches
 at or above the similarity floor less 0.1, so a reading that far away cannot
 gain or lose a floored neighbour because that one vector changed). The reverse
-query is the only source of strangers: `index/list.json` rows carry no
+query is the only source of strangers: a list row carries no
 citations, so a reading that cites a changed one is found because it still
 scores above the bound, which holds for every change except a vector that
 moves. The scope and its reason are printed
 (`Scope: incremental (12 reading(s)) — …`) and recorded in the report header.
 
 It escalates to a full sweep whenever that reasoning runs out: no marker (the
-first run, a deleted one, or one written before this check existed, the marker
-is version 2 and a version-1 marker is rejected with a message that says so), a
-marker invalidated by `corpus backfill-vectors`, a reading the marker recorded
-that has since left the list (a purge names nothing a timestamp can find), a
-failed reverse query, a changed *ready*
+first run, a deleted one, or one in an older format, the marker is version 3
+and an older one is rejected with a message that says so, which is also how the
+R2-era version-2 markers retire), a marker carrying an invalidation, a reading
+the marker recorded that has since left the corpus (a purge names nothing a
+timestamp can find), a failed reverse query, a changed *ready*
 reading with no vector to scope from, or a reverse neighbourhood that came back
 full at topK with no match below the bound, meaning the query was truncated and
 the real set is unknown, never a narrower pass. A short result is a complete
@@ -1639,7 +1622,7 @@ every night should be run as `--full` outright rather than paying the reverse
 queries first.
 
 It also sweeps once narrowing stops paying. Every reverse query and every
-measurement is one Vectorize query, and a sweep is one per ready reading. Before
+measurement is one similarity query, and a sweep is one per ready reading. Before
 each reverse query, the first included, the pass compares the reverse queries
 it has still to make plus the ready readings already known to be in scope
 (changed, carried forward, or brought in by a reverse answer, each counted
@@ -1649,9 +1632,9 @@ which keeps a quiet night whose only scope is the carried unmeasurable readings
 out of the zero-measured-sweep check below. A bulk ingest or mass reprocess
 that already outweighs the corpus therefore sweeps without any reverse query,
 and the reason names both costs (`Scope: full — incremental scope would cost
-at least 812 Vectorize queries (412 reverse still to run, 400 reading(s) to
+at least 812 similarity queries (412 reverse still to run, 400 reading(s) to
 measure) against 553 for a full sweep — after 0 of 412 changed reading(s)`).
-Manifest reads are not counted, which tips close calls toward the sweep.
+Reading reads are not counted, which tips close calls toward the sweep.
 `--limit` takes no part in the comparison and caps whichever plan results.
 
 An incremental report is a statement about its scope, not about the corpus: a
@@ -1666,14 +1649,15 @@ nothing sweeps, those persistent flags never resurface and the served
 `similarity` numbers drift indefinitely.
 
 A reading the scope does bring in is measured like any other target, so its
-`similarity` snapshot and its list row are brought current in the same pass, nothing about being in scope defers a measurement to the sweep.
+`similarity` snapshot is brought current in the same pass, nothing about being
+in scope defers a measurement to the sweep.
 
 **What an incremental pass keeps exact, and what it only keeps approximate.**
 Flags are exact: the bound is derived so that a reading further away than it
 cannot gain or lose a *floored* neighbour because one vector changed. The
 stored `similarity` snapshot is not, and this is broader than the moved-vector
-case above. That snapshot, and the `index/list.json` row the API and the SPA
-serve, summarises the **raw** topK, sub-floor scores included, so a vector
+case above. That snapshot, which the API and the SPA serve straight off the
+reading's row, summarises the **raw** topK, sub-floor scores included, so a vector
 merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
 at any score, far below the bound. Between sweeps those numbers are therefore
 approximate on every reading the scope left out. The drift is deterministic and
@@ -1684,23 +1668,28 @@ than a number: a reprocess that moves a vector far enough to leave a stranger's
 floored neighbourhood is invisible to the reverse query, which runs against the
 vector's new position.
 
-A purge and a Vectorize-only write used to be on that list and are not any more.
-The marker records the list ids it saw, not a row count, so a day that purges
+A purge and an embedding-only write used to be on that list and are not any more.
+The marker records the reading ids it saw, not a row count, so a day that purges
 two readings and ingests three still escalates and names the first missing id.
-(Every id, not just the ready ones: a non-ready row can still own an indexed
-vector, so its removal moves neighbourhoods too.) And `corpus backfill-vectors`
-stamps `invalidated_by` on the marker before its first upsert, and again, with
-a different value, after its last, so the next pass sweeps on its own. That
-marker is the only R2 object it writes, and it needs an R2 write credential for
-it; a stamp it cannot write before upserting stops the run before it spends
-anything. A refresh pass that finds a stamp it did not start with leaves the
-marker alone rather than clearing a sweep it did not perform, which is what the
-second stamp is for: a pass that swept while vectors were still arriving must
-not report the corpus as covered.
+(Every id, not just the ready ones: a non-ready row can still own a stored
+vector, so its removal moves neighbourhoods too.) The marker also carries
+`invalidated_by`, stamped by a writer that moves embeddings without touching
+the readings rows, so the next pass sweeps on its own. A refresh pass that
+finds a stamp it did not start with leaves the marker alone rather than
+clearing a sweep it did not perform: a pass that swept while vectors were still
+arriving must not report the corpus as covered. Nothing stamps it today —
+`corpus backfill-vectors`, which did, was retired in reading-lite-gh347.4.6
+because an embedding now commits and cascades inside its reading's own
+transaction — and the field stays because a marker written before that must
+keep being read.
 
 **Staging proof, 2026-09-02**, the measurement the default flip rests on
-(`reading-lite-staging`, 39→47 readings, direct S3/REST path, `--tenant
-global`; eight `--execute --sole-writer` passes, all exit 0). Passes 1–5 are the
+(`reading-lite-staging`, 39→47 readings, over the R2 and Vectorize storage of
+the time, `--tenant global`; eight `--execute --sole-writer` passes, all exit
+0). The wall-clock figures belong to that storage and are kept as the record of
+why the narrowed scope is the default; the *shape* of the result — what the
+scope covers and what it defers — is a property of the rules, not of the
+store. Passes 1–5 are the
 protocol proper, full → incremental (quiet) → ingest 8 URLs → incremental →
 full → full; 6–8 were added to price a second quiet night and to exercise the
 escalation path deliberately. All eight, in order:
@@ -1735,18 +1724,13 @@ denominator for the escalation rate below.
   `Snapshot drift: 0`, so it is deferred, not lost. That is the
   exact-versus-approximate paragraph above, measured.
 - **12–14x cheaper, and flat in N on a quiet night** (0.98 s against 11.80 s):
-  the pass resolves an empty scope and returns before it opens Vectorize or
-  reads a manifest, provided the marker carries no still-ready
-  `unmeasurable_ids`, each of which costs a query and a manifest read on even
-  the quietest night, by design. The measured runs took the ETag short-circuit (an unchanged
-  `index/list.json` ETag ends the scope immediately), but the win does not
-  depend on it, where no ETag is available, which is every wrangler-path run
-  and any pass whose predecessor wrote a snapshot, `changedSince` falls back to
-  the row timestamps and reaches the same empty scope. Modelled onto production (N=553 ready,
-  unit costs 0.206 s per Vectorize query + 0.140 s per manifest read, plus the
-  4 req/s Cloudflare cap): a sweep is ~3.5–4 min and an incremental night with
-  ~10 changed readings ~15 s; at 10x corpus that is ~35–40 min against the same
-  ~15 s.
+  the pass resolves an empty scope and returns before it makes a similarity
+  query or reads a reading, provided the marker carries no still-ready
+  `unmeasurable_ids`, each of which costs a query and a read on even the
+  quietest night, by design. The list-ETag short-circuit those runs took is
+  gone with the document that had one; every pass now dates the rows it read,
+  which reaches the same empty scope by the route the ETag-less runs already
+  took.
 - **Tier 1 spends no LLM or embedding tokens at all**, 0 across all eight
   passes. The scope buys wall clock and Cloudflare API calls, not provider
   spend. What it does change is how many readings tiers 2/3 are handed.
@@ -1761,32 +1745,34 @@ returned zero strangers, because that corpus is sparse and clustered, so
 saturation there says nothing about production) and the natural production
 purge rate. Both change the size of the win, not its sign.
 
-A reading with no indexed vector, or a manifest that fails `ManifestSchema`, is
-unmeasurable rather than unfinished. The pass records its id under
+A reading with no stored vector, or whose rows no longer satisfy
+`ManifestSchema`, is unmeasurable rather than unfinished. The pass records its id under
 `unmeasurable_ids` on the marker, measures it again on every later pass until it
 is repaired, and exits 3 so it stays visible, the marker advances past it
-rather than pinning the whole scope on an ever-older timestamp. A failed query,
-an unparseable manifest, a failed manifest write or a failed `index/list.json`
-flush is different: that pass left work undone, so the marker stays where it was
-and the exit is 1. Note what a frozen marker does and does not buy: the next
-incremental pass re-covers everything changed since that older timestamp, which
-is more than it would otherwise have looked at, but a reading that failed
-without its list row moving is not named anywhere (unlike `unmeasurable_ids`),
+rather than pinning the whole scope on an ever-older timestamp. A failed query
+or a failed snapshot write is different: that pass left work undone, so the
+marker stays where it was and the exit is 1. (A reading purged between the
+corpus read and its own read is neither: there is nothing to measure and
+nothing to repair, the pass says so and carries on, and the next pass sees the
+id missing and sweeps.) Note what a frozen marker does and does not buy: the
+next incremental pass re-covers everything changed since that older timestamp,
+which is more than it would otherwise have looked at, but a reading that failed
+without its row moving is not named anywhere (unlike `unmeasurable_ids`),
 so the weekly `--full` sweep is what actually finds it again.
 
 **A whole sweep of unmeasurable readings is a different thing again.** A sweep
 that measured *none* of its ready readings is not a corpus with a lot of broken
-readings; it is a pass that could not read the corpus. A wrong `--vectorize`
-index, a wrong `--tenant` namespace, an expired Vectorize credential and an
-upstream failing every query all present this way. Advancing the marker there
+readings; it is a pass that could not read the corpus. A connection string for
+the wrong environment, a `--tenant` with no rows, and a database failing every
+query all present this way. Advancing the marker there
 would declare the whole corpus refreshed on the strength of zero measurements
 and never look at it again, so the pass instead leaves both `last_run_at` and
 `last_full_run_at` where they were, prints `Configuration failure: this pass
 swept the corpus and measured 0 of N ready reading(s)` with the `no vector` /
-`failed` / `schema-invalid` breakdown, and exits 1.
+`failed` / `unparseable` breakdown, and exits 1.
 
 **Only a sweep reports one**, because only a sweep's scope is large enough to
-say so, and because a sweep's scope comes from `index/list.json` rather than
+say so, and because a sweep's scope comes from the rows rather than
 from the marker, so it reaches the same verdict on the first pass as on the
 hundredth, with no marker to bootstrap from. An incremental scope is routinely
 one or two readings, often exactly the ones carried under `unmeasurable_ids` for
@@ -1811,13 +1797,13 @@ exit 1 on every sweep, marker frozen. That is the intended
 reading of the evidence (a corpus in which nothing is measurable is not a corpus
 you can refresh), and on a corpus that small a permanent sweep costs nothing.
 The production corpus is in no danger of it by size: a sweep there measures
-hundreds of readings, so the condition cannot fire unless the index really is
-unreachable. It can fire by state, though, a Vectorize namespace cutover that
-has migrated R2 but not yet re-upserted the vectors leaves every ready reading
-vectorless, which is what this condition is built to notice. Every sweep will
-exit 1 for the length of such a window, while the nightly `--since-last-run`
-may well go quiet, since a cutover moves no list rows, so pause the schedule or
-finish the re-upsert (`corpus backfill-vectors`) before relying on either.
+hundreds of readings, so the condition cannot fire unless the corpus really is
+unreadable. It can fire by state, though — a migration that has moved the
+readings but not yet their embeddings leaves every ready reading vectorless,
+which is what this condition is built to notice. Every sweep will exit 1 for
+the length of such a window, while the nightly `--since-last-run` may well go
+quiet, since a migration like that moves no row timestamps, so pause the
+schedule or finish the embedding backfill before relying on either.
 
 `--only <id>` overrides the scope: a named reading is measured whether or not
 the scope would have selected it, and the pass resolves no scope at all rather
@@ -1855,10 +1841,8 @@ npm run ops -- corpus refresh-neighbours --tenant "$TENANT" \
 Scoped refreshes (invocations without `--full`) print a stderr warning when
 `last_full_run_at` is missing, unusable, or **older than seven days**. Exactly
 seven days is still within the threshold. The warning shows the timestamp and
-age (or `age unknown`) and a full-sweep command for the selected tenant,
-bucket, Vectorize index, and storage path (`--via`). On the direct path the
-warning also names the Cloudflare account stdout would have printed, so a
-stderr-only log is enough to check before `--execute`. Check the external
+age (or `age unknown`) and a full-sweep command for the selected tenant and
+bucket, so a stderr-only log is enough to check before `--execute`. Check the external
 weekly schedule and run that command after pausing/draining concurrent
 writers for `--sole-writer`.
 
@@ -1901,9 +1885,9 @@ a *reading* owns, so a nightly schedule can alert on one and file the other:
 | Code | Meaning | Who acts |
 |---|---|---|
 | 0 | Nothing outstanding. | nobody |
-| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed Vectorize query, an unparseable manifest, a failed manifest write, or a failed `index/list.json` flush. | operator, re-run, or fix the index/credentials first |
-| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--via direct` with `--local`, a non-integer `--limit`. | operator, fix the invocation |
-| 3 | The pass itself completed, but specific readings need a human: no indexed vector, or a manifest that fails `ManifestSchema`. | someone, repair those readings (`corpus backfill-vectors`, `corpus recover`); re-running changes nothing |
+| 1 | Real work left undone, and the marker did not move past it: a configuration failure (above), a failed similarity query, or a failed snapshot write. | operator, re-run, or fix the connection first |
+| 2 | Usage error: an unknown flag or a missing `--tenant` (the dispatcher), or a refusal of the same shape from the command itself, `--execute` without `--sole-writer`, `--since-last-run` with `--full`, `--tenant global`, a non-integer `--limit`. | operator, fix the invocation |
+| 3 | The pass itself completed, but specific readings need a human: no stored vector, or rows that fail `ManifestSchema`. | someone, repair those readings (`corpus recover`); re-running changes nothing |
 
 The line between 1 and 3 is whether re-running the same command could help. It
 can after a 1 and cannot after a 3, which is why a 3 is not a page: on a pass
@@ -1915,9 +1899,9 @@ truncating `--limit`, an invalidation arriving mid-pass, can all exit 3 too.
 The codes apply in plan mode as well as under `--execute`; a dry run reports
 what it found. Two existing behaviours change, in opposite directions, so a
 scheduled run wants the `case` below rather than a bare `if`: a pass that finds
-a reading with no indexed vector used to exit 0 in plan mode and now exits 3
+a reading with no stored vector used to exit 0 in plan mode and now exits 3
 (or 1 if the sweep measured nothing at all), while a pass whose only complaint
-is an unmeasurable reading, no vector, or a manifest failing `ManifestSchema`, used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
+is an unmeasurable reading, no vector, or rows failing `ManifestSchema`, used to exit 1 and now exits 3. A wrapper that pages on 1 stops paging for
 that second case, which is the point: it is a ticket, not a page.
 
 There is no cron wrapper script in this repository, and nothing in git schedules
@@ -1937,13 +1921,12 @@ esac
 
 `refresh-connections` and `refresh-tensions` keep the plain 0/1 contract. Every
 non-zero cause they have, a planning read that failed, a judgement that failed,
-a lost manifest CAS, a `--max-backoff` ceiling, and for `refresh-connections`
-the `index/list.json` flush it alone performs, is a re-run-or-fix case, which
-is code 1 under the same rule. Code 3 stays reserved
-in those two commands rather than mapped onto their nearest analogue (a live
-manifest that is invalid at plan time), because that condition currently shares
-one `planningFailed` flag with transient read errors, and splitting it is a
-separate change.
+a write refused because the reading changed since it was planned, and a
+`--max-backoff` ceiling, is a re-run-or-fix case, which is code 1 under the
+same rule. Code 3 stays reserved in those two commands rather than mapped onto
+their nearest analogue (a live reading that is invalid at plan time), because
+that condition currently shares one `planningFailed` flag with transient read
+errors, and splitting it is a separate change.
 
 `ops corpus refresh-connections` consumes that report and rejudges only the
 flagged readings. Plan mode validates the report tenant and every live target,
@@ -1970,22 +1953,24 @@ Execute mode reads the target's stored summary and judges it only against live,
 ready neighbours carried by the report. It drops provider ids outside that
 set, preserves an existing connection object when the provider reaffirms its
 id, and replaces `connections`, `novelty_verdict`,
-`connections_computed_at`, and `connections_neighbourhood_ids`. Manifest writes use ETag CAS against the ETag the
-planning read returned, execute re-reads nothing, so a manifest that changed
-between the plan and the write loses that conditional write and is reported as
-a CAS loss. The judgement is made before that write, so a CAS loss is a
-judgement already paid for and thrown away, a run of them is a run of wasted
-spend, not just wasted writes. Under `--sole-writer` nothing should change in
-that window. The list index is written after successful manifest updates so its
-verdict matches the manifest: that flush is itself an `If-Match`
-read-merge-write, retried with jittered backoff, and it writes only the
-`novelty_verdict` of the rows this run judged or healed.
+`connections_computed_at`, and `connections_neighbourhood_ids`. Each write is
+one transaction that locks the reading's row and re-reads it under that lock,
+comparing it against the version the planning read returned; execute re-reads
+nothing itself, so a reading that changed between the plan and the write is
+refused rather than overwritten. The judgement is made before that write, so a
+refusal is a judgement already paid for and thrown away, a run of them is a run
+of wasted spend, not just wasted writes. Under `--sole-writer` nothing should
+change in that window. The novelty verdict is a column of the same row, so it
+lands inside that transaction with the relationships it was judged beside:
+there is no second document to flush and nothing that can disagree with it.
 
-The manifest timestamp is the resume marker. If a manifest write succeeds but
-the list write fails, rerun with the same report: the command heals the list row
-without another paid judgement. `--limit` caps judgement and healing actions.
-Provider errors and lost CAS races leave the reading ready and never blind-write
-over newer state. The price estimate uses a four-UTF-8-bytes-per-token
+A judged reading is its own resume marker: a rerun with the same report costs
+nothing for the readings a previous pass finished. `--limit` caps judgement
+actions. Provider errors and refused writes leave the reading ready and never
+blind-write over newer state. A connection naming a reading deleted while the
+judgement ran is dropped inside the transaction and reported
+(`skipped connection target rd_… : no longer exists`), so no refresh needs
+`corpus purge-connections` run behind it. The price estimate uses a four-UTF-8-bytes-per-token
 approximation, a 256-output-token assumption, and the dated price table printed
 by the command; it is a planning estimate, not a bill. Execute mode admits
 each judgement against the spend caps, billed to `--billing-tenant` (default a
@@ -2075,23 +2060,23 @@ ceiling. A pass that still cannot finish inside that is one to split with
 `--limit` and resume when the provider is quieter, not one to park on the
 sole-writer window for hours.
 
-The ceiling bounds the paid work only, on the same rule as `--limit`: a list
-heal or an integrity repair makes no provider call and cannot be rate limited,
-so the pass still runs the free work behind the ceiling before it exits.
+The ceiling bounds the paid work only, on the same rule as `--limit`: an
+integrity repair makes no provider call and cannot be rate limited, so the pass
+still runs the free work behind the ceiling before it exits.
 
-Ctrl-C is safe at any point: every manifest write is a completed CAS, and a
-rerun resumes from the manifests as it always does.
+Ctrl-C is safe at any point: every write is a committed transaction, and a
+rerun resumes from the readings as it always did from the manifests.
 
-Because the calls overlap, every `Timing:` row a concurrent action produces, `provider`, `manifest write`, and for `refresh-tensions` `manifest read`, sums
+Because the calls overlap, every `Timing:` row a concurrent action produces, `provider`, `reading write`, and for `refresh-tensions` `reading read`, sums
 the call durations rather than the wall time they occupied, the same way
 `planning reads` already did, so under `--concurrency` a row can exceed the
 run's own total. The `total` row is the one to compare between runs.
 
 Run a fresh neighbour refresh immediately before this command. The report must
 name the same `--tenant`; a mismatched selector is refused. The sole-writer
-window must cover provider calls, manifest CAS writes, and the final conditional
-`index/list.json` merge. The command also refuses the report if a target or
-candidate neighbour was reprocessed after the report was generated.
+window must cover the provider calls and the writes that follow them. The
+command also refuses the report if a target or candidate neighbour was
+reprocessed after the report was generated.
 
 `ops corpus refresh-tensions` is the pairwise sibling. It reads the same
 report, pairs every flagged reading with each live ready neighbour, collapses
@@ -2117,12 +2102,16 @@ Execute mode makes one pairwise provider call per selected pair and writes
 each side's directional entry, `contradicts` (symmetric), `supersedes` /
 `superseded_by`, `qualifies` / `qualified_by`, always from that reading's point
 of view with one shared reason, plus a `tensions_judged` record to BOTH
-manifests with ETag CAS, against the ETags the planning reads returned; only a
-side an earlier action in the same pass already wrote is read again. A `none`
-verdict removes any prior entry for the pair
-and is remembered so the pair is not re-judged nightly. Only `tensions` and
-`tensions_judged` change; `updated_at`, connections, and every summary field
-stay byte-identical, and `index/list.json` is never written. `--pair` bypasses
+readings — in ONE transaction, which locks the two rows in sorted id order
+before reading either and is guarded on the versions the planning reads
+returned; only a side an earlier action in the same pass already wrote is read
+again. A pair therefore never lands half-written, and two passes judging the
+same pair from opposite ends cannot deadlock. (The one-sided repairs remain,
+for pairs left half-written before that was true and for entries naming a
+deleted partner; they cost no paid call.) A `none` verdict removes any prior
+entry for the pair and is remembered so the pair is not re-judged nightly. Only
+`tensions` and `tensions_judged` change; `updated_at`, connections, and every
+summary field stay untouched. `--pair` bypasses
 the overlap filter and the judged skip but both sides must still be live ready
 manifests. `--limit` caps paid judgements only; free repairs always run.
 `--concurrency` and `--max-backoff` work as they do for `refresh-connections`
@@ -2161,70 +2150,55 @@ production `--execute`: the Worker parses every manifest it reads with
 `.strip()`, so an older Worker rewriting a manifest (a reprocess or a
 preserve-and-roll-forward) would silently drop the field.
 
-`ops corpus rebuild-list` re-projects every indexed manifest through
-`manifestToIndexItem` and writes `index/list.json`. Use it after deploying a
-Worker that added list-row fields (keywords, for `q` search) so existing
-readings become searchable without a paid reprocess. Dry-run by default;
-`--execute` requires `--sole-writer` because the rewrite is a plain put.
-
-```sh
-npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite
-npm run ops -- corpus rebuild-list --tenant "$TENANT" --bucket reading-lite --execute --sole-writer
-```
-
-Deploy the new Worker **before** the production rewrite. An old Worker that
-later commits a terminal manifest would strip the new fields off that row.
-
 ### Purging connections to a deleted reading
 
 `ops corpus purge-connections` is the explicit offline cleanup for inbound
-`connections[]` entries that still name one deleted reading. `DELETE
-/api/readings/:id` deliberately does not scan the corpus, enqueue cleanup, or
-write a tombstone, so a reading-detail link may return 404 until an operator
-runs this sweep. Cleanup is not automatic.
+relationship rows that still name one deleted reading. `reading_relationships`
+has a foreign key on the source only, so deleting a reading cascades away the
+rows it cites but leaves every row that cites IT. `DELETE /api/readings/:id`
+deliberately does not clean those up, so a reading-detail link may return 404
+until an operator runs this. Cleanup is not automatic.
 
 ```sh
 # Production founder namespace. Resolve $TENANT from whoami first.
 npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted
 
-# Apply after establishing the sole-writer window.
-npm run ops -- corpus purge-connections \
-  --tenant "$TENANT" --id rd_deleted --execute --sole-writer
-
-# Pre-tenant leftover copy, or a gate-off env (local).
-npm run ops -- corpus purge-connections --tenant global --id rd_deleted
+# Apply. Pause and drain the realtime writer first.
+npm run ops -- corpus purge-connections --tenant "$TENANT" --id rd_deleted --execute --sole-writer
 ```
 
-The target id must be absent from the selected namespace before the scan and
-again immediately before mutation. The command refuses a present target or any
-malformed canonical manifest, with no preflight writes. Only exact
-`readings/{year}/{month}/{timestamp}-{id}/manifest.json` objects enter the
-scan; nested attempt or backup objects and other manifest-shaped JSON are
-ignored. Each selected key must also round-trip from the parsed manifest's
-`id` and `created_at`. The command compares the bare `id` inside each
-connection even when R2 object keys are tenant-prefixed, removes every exact
-match, preserves unrelated connection order and manifest fields, and is
-idempotent when rerun.
+`--execute` requires `--sole-writer`. A publish already in flight can commit a
+relationship naming the deleted target after the `DELETE` takes its snapshot,
+and no single statement can exclude it — a publisher whose transaction opened
+before the `DELETE` and commits after any verification read is invisible to
+both. Only a paused, drained writer makes the purge verifiable. After deleting,
+the command re-reads the inbound count as a check on that assertion: leftovers
+are reported with `failure_code: "concurrent_writer"` and the command exits 1.
 
-`--execute` is accepted only with `--sole-writer`. For this command,
-`--sole-writer` is the operator assertion that no ingestion, reprocessing,
-deletion, or recreation can mutate the selected corpus for the command's full
-duration. Each manifest update still uses its listed ETag as an `If-Match` CAS.
-On conflict the command boundedly re-lists, validates, proves the target is
-still absent, recomputes against the newest manifest, and retries; it never
-blind-writes. Exhaustion or target recreation exits nonzero and reports whether
-earlier manifests were already changed.
+The target id must be absent from the selected tenant's readings: the command
+refuses a target that still exists, and refuses a malformed reading id before
+it connects. `--tenant global` is refused too — it names the pre-tenant R2
+layout, which has no rows.
 
-The single-line JSON audit reports `mode`, the explicit tenant/global selector
-(and `tenant_audit_stamp.tenant_id` for tenant mode), `target_id`, manifests
-scanned and matched, matching entries, manifests written or that would be
-written, unchanged manifests, conflicts, retries, failures, and
-`partial_execution`. Failures also include a bounded `failure_code` and
-`failure_stage`; provider response bodies and credentials are never copied
-into the audit or error stream. The command emits exactly one final audit even
-when a later storage operation fails after earlier writes. R2 listing
-pagination is completed by the shared client and canonical manifest keys are
-processed in deterministic lexical order.
+`--sole-writer` is gone, and so is the compare-and-set machinery it protected.
+The manifest-era command had to list and parse every manifest in the bucket and
+rewrite the matches under ETag `If-Match` retries, because the relationship
+lived inside a document other writers also owned. It is a row keyed by
+`target_id` now, so the whole operation is one `DELETE`, and a concurrent
+writer cannot lose it.
+
+**It deletes judged tensions as well as connections.** Both dangle the same way
+when their target is deleted, and both live in `reading_relationships`. The
+audit reports `tensions_matched` separately, and the command warns on stderr
+when that count is non-zero, because tensions cost provider spend to produce.
+
+The single-line JSON audit reports `mode`, the tenant selector (and
+`tenant_audit_stamp.tenant_id`), `target_id`, `relationships_matched`,
+`sources_matched`, `tensions_matched`, `relationships_would_delete`,
+`relationships_deleted`, and `failures`. Failures also include a bounded
+`failure_code` (`invalid_target`, `target_present`, `storage_error`) and
+`failure_stage`; credentials and driver messages are never copied into the
+audit or error stream.
 
 `ops corpus recover` has two execution paths: `--wave` paces realtime
 submissions through `POST /api/readings/:id/reprocess`, and `--batch` routes the
@@ -2320,7 +2294,7 @@ That URL becomes the canonical reading URL and the body is sent to
 `POST /api/readings/import-markdown`. Duplicate files sharing a source URL are
 collapsed before submit, the largest file wins. Imported readings store the
 markdown as both raw content and `extracted.md`, then reuse the normal
-embedding, similarity, summary, Vectorize, manifest, and list-index pipeline.
+embedding, similarity, summary and publication pipeline.
 
 ```sh
 npm run ops -- import markdown --dir ~/Documents/articles           # plan, no token needed
@@ -2341,12 +2315,16 @@ the send-time policy ignores notification requests for imports.
 `import-markdown` summarizes every file **realtime** through the Worker queue.
 For large backfills, `ops corpus ingest` runs the same directory through the
 configured provider's **Batch API**, and `ops corpus recover --tenant "$TENANT" --batch` does the same
-for readings already in the corpus. Both talk to R2 and Vectorize directly with
-`CORPUS_R2_*` credentials rather than through the HTTP API, and both need
-`CORPUS_CF_API_TOKEN` plus `OPENAI_API_KEY` (embeddings); `ANTHROPIC_API_KEY` is
-needed only to start or resume an Anthropic batch. `--execute` requires the
-applicable credentials; a dry run degrades to the local plan without them. There
-is no cross-provider fallback.
+for readings already in the corpus. Both use the bucket-paired direct PostgreSQL
+connection for reading state and `CORPUS_R2_*` credentials for captured bytes.
+Source `NEON_MAIN_DATABASE_URL` (production) or `NEON_REHEARSAL_DATABASE_URL`
+(staging), or use the paired deployment variable. `--database-url-env` selects
+an accepted variable explicitly. Both need `OPENAI_API_KEY` for embeddings;
+`ANTHROPIC_API_KEY` is needed only to start or resume an Anthropic batch.
+Vectorize credentials are unnecessary. `--execute` requires the applicable
+credentials; a dry run can show a local plan without them. There is no
+cross-provider fallback. PostgreSQL batches require a tenant id and refuse
+`--tenant global`.
 
 ```sh
 # dry run (default): print the plan; with creds it also shows ownership skips
@@ -2357,14 +2335,15 @@ npm run ops -- corpus ingest --tenant "$TENANT" --dir ~/Documents/articles \
   --execute --sole-writer --bucket reading-lite
 ```
 
-The resulting `ready` manifests are contract-compatible with the realtime import
-path (`source_type: "markdown"`, captured content, correct
-`content_bytes`/`content_sha256`, `usage.openai_embedding_tokens`, by-url and
-by-id pointers, a Vectorize vector, and an `index/list.json` row). Both batch
-paths stamp a terminal `last_attempt` summary in the manifest, but they do not
-write the realtime per-attempt objects under the key prefix. A resumed
-pre-upgrade sidecar without attempt identity retains the legacy omission of
-`last_attempt`.
+The resulting readings have the same contract as realtime imports, including
+`source_type: "markdown"`, captured content and embedding usage. Activation
+writes fresh content under the attempt's immutable R2 revision prefix, then
+commits URL ownership and the offline attempt. It creates no realtime queue
+job. Terminal publication atomically commits the reading, revision, content
+references, relationships, embedding and terminal attempt summary. Failed
+recovery preserves the current publication and its content and embedding.
+Legacy sidecars without attempt identity can write only a vacant pending row;
+they never adopt a newer attempt or recreate a purged reading.
 
 **`--sole-writer` is enforced, not assumed.** `ops corpus ingest --tenant "$TENANT" --execute` and
 `ops corpus recover --tenant "$TENANT" --batch --execute` refuse to submit without it. Both batch paths
@@ -2375,20 +2354,13 @@ acknowledged run prints a loud banner before any submit; dry runs submit nothing
 and never require the flag. The enforcement lives in
 `scripts/corpus-lib/sole-writer.ts`.
 
-**Idempotency** is resolved client-side from `index/by-url/{sha256(url)}` by the
-same rules as the Worker's `ReadingClaim`: a pointer counts as owner only when
-its manifest actually matches (id + url + url_hash), so ready and pending owners
-are skipped while failed owners re-ingest in place; a fresh pointer whose
-manifest hasn't landed yet is treated as still-initializing and skipped (a
-realtime submit may be in flight); unclaimed URLs mint a new reading; and
-damaged or mismatched pointers are skipped for operator repair rather than
-claimed over. With no by-url pointer at all, the tools first run the Worker's
-cold-legacy lookup (`findManifestByUrl` over `index/list.json`), so a prior
-legacy failed ingest with a by-id pointer and list row but no by-url pointer is
-re-ingested in place instead of duplicated. Pending owners are skipped even past
-`PENDING_TTL_SECONDS`: this offline path cannot safely supersede a queue worker
-that may still be running, so a stranded pending is left to heal via the
-realtime API or `ops corpus recover`.
+**Idempotency** uses tenant-scoped `reading_urls` ownership. Fresh ingest skips
+ready and pending owners, retries failed owners in place, and mints an id only
+for an unclaimed URL with no existing reading. A failed fresh ingest can release
+its URL claim; a later ingest finds that PostgreSQL reading and retries its id.
+Activation revalidates ownership transactionally. Interrupted publication retains
+the submitted sidecar, and resume skips already committed attempts before
+embedding. R2 receives no manifests, pointers or list index.
 
 **Sizing.** Before any fresh eager activation write, the batch path preflights
 the provider payload, resolves similar-reading context, then validates the final
@@ -2517,12 +2489,9 @@ markdown through the same parsers the Worker uses. Requires `yt-dlp` on PATH.
 npm run ops -- import youtube "<youtubeUrl>" --execute   # omit --execute to preview
 ```
 
-## Seeding local R2
+## Seeding local data
 
-`npm run seed:local` also seeds [local Postgres](#local-postgres) with the same
-pack; the R2 steps below are unchanged.
-
-To exercise the read path or the SPA against real data locally, stop
+To exercise the read path or the frontends against real data locally, stop
 `wrangler dev`, seed, then start `npm run dev` again.
 
 The fixture pack from [issue #366](https://github.com/brian-bell/reading-lite/issues/366)
@@ -2535,16 +2504,28 @@ category) with one command, in the state names Phase 3 slices cite:
 npm run seed:local
 ```
 
-Objects are written by `wrangler r2 object put --local` into the same
-on-disk store `.wrangler/state/v3/r2` that the dev server binds (verified
-against wrangler 4.130 — the older "different local store" caveat for
-`--local` no longer holds). The command is idempotent and **overwrites**
-`index/list.json` with the pack's 19 rows: any other local reading keeps its
-objects but drops out of the list and `q` search. Re-run the command to
-refresh the pending fixture once it passes the 15-minute pending TTL, and to
-restore the pack after deleting readings while testing.
+It writes both halves of each reading:
 
-To reset local R2 to a pristine pack, stop the dev server and run:
+- **Rows in [local Postgres](#local-postgres)**, which is what the Worker reads
+  for list, detail, lookup, `q` search, similarity and diagnostics. They go
+  under the local founder's tenant id with deterministic vectors and each
+  fixture's attempt log, through the same manifest-to-rows mapping the importer
+  uses. The tenant's existing reading rows are deleted first, so a reseed drops
+  any other local reading.
+- **Content objects in local R2** (`extracted.md`, `raw.{ext}`), which
+  `/content` and `/content/raw` read. They are written by
+  `wrangler r2 object put --local` into the same on-disk store
+  `.wrangler/state/v3/r2` that the dev server binds (verified against
+  wrangler 4.130). Local dev leaves `TENANT_DATA_PLANE` unset, so the keys are
+  global-rooted; do not seed under `u/<tenantId>/`.
+
+Content goes first, then the rows that point at it. The seeder verifies by
+counting the tenant's readings and attempts back from Postgres. It writes no
+manifests, pointers or `index/list.json`: reading state is rows.
+
+The command is idempotent. Re-run it to refresh the pending fixture once it
+passes the 15-minute pending TTL, and to restore the pack after deleting
+readings while testing. To reset local R2 too, stop the dev server and run:
 
 ```sh
 rm -rf .wrangler/state/v3/r2 && npm run seed:local
@@ -2553,35 +2534,18 @@ rm -rf .wrangler/state/v3/r2 && npm run seed:local
 Then start `npm run dev` again. Accounts and sessions live in local Postgres
 and are untouched.
 
-Local dev leaves `TENANT_DATA_PLANE` unset, so the local founder account reads
-global-rooted keys — which is exactly what the seeder writes. Do not seed under
-`u/<tenantId>/` for local dev.
-
-To hand-write additional data, seed via **Miniflare** (persist path
-`.wrangler/state/v3/r2`, bucket `reading-lite`) or the wrangler CLI's
-`r2 object put --local`; the two share the store with wrangler 4.130. Add
-hand-written rows to `index/list.json` after running the seed command, since
-re-seeding replaces them. A minimal `ready` reading needs:
-
-- `<key_prefix>/manifest.json`, a valid `ManifestSchema` with
-  `content_status: "captured"`
-- `index/by-id/<id>`
-- `index/by-url/<url_hash>`, matching the manifest's `url_hash`
-- a row in `index/list.json`
-- `<key_prefix>/extracted.md`, for `/content`
-- `<key_prefix>/raw.{ext}` matching the manifest's `content_type`, for
-  `/content/raw`
-
-`key_prefix` already begins with `readings/`; do not prepend it again.
-`/lookup` requires the by-url pointer and does not discover pointerless readings.
+To add a reading, add it to the fixture pack (`test/fixtures/local-seed.ts`
+and [the fixture-pack design](design/connected/fixture-pack.md)) rather than
+writing objects by hand: a hand-written manifest or list row is invisible to
+the Worker, and a hand-inserted row needs its content objects at the row's
+`key_prefix` for `/content` to serve anything.
 
 ## Local Postgres
 
 The storage migration ([ADR 0005](decisions/0005-postgresql-storage.md)) adds
-PostgreSQL 18 with pgvector 0.8.x beside R2. On the `epic/postgres-storage`
-candidate branch no runtime path reads it yet, but the Worker test suite,
-`npm run dev`, and `npm run seed:local` all need one. Tests never connect to
-Neon.
+PostgreSQL 18 with pgvector 0.8.x beside R2. It holds every reading and
+control-plane row, so the Worker test suite, `npm run dev`, and
+`npm run seed:local` all need one. Tests never connect to Neon.
 
 The supported local server is the docker-compose `postgres` service
 (`pgvector/pgvector:0.8.1-pg18`), published on host port **54329** so it cannot
@@ -2596,7 +2560,7 @@ docker compose down -v                 # also deletes it
 | Who | Database | How it connects |
 |---|---|---|
 | `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
-| `npm run seed:local` | `reading_lite` | After seeding R2 it migrates, then writes the fixture pack as rows for the local founder's tenant id, with deterministic vectors. Re-running replaces the pack's rows. |
+| `npm run seed:local` | `reading_lite` | After writing the content to R2 it migrates, then writes the fixture pack as rows (readings, attempts, deterministic vectors) for the local founder's tenant id. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
 | CI Worker job | `reading_lite_test` | A service container; `TEST_DATABASE_URL` points both pools at it. The ops job has no Postgres, so no test it runs may need a database. |
 
@@ -2720,8 +2684,11 @@ Cursor writes use CAS. `REFRESH_MAX_JUDGEMENTS` defaults to `100` and accepts
 integers 1–1000. The cap counts distinct reserved judge jobs per nightly budget,
 not delivery attempts. Remaining candidates carry into later nights without
 rescanning; a fresh full scan begins on a later night after dispatch completes.
-The scan does not read or update the offline `index/refresh-state.json` marker,
-or rewrite similarity snapshots, manifests, list rows or vectors.
+The scan does not read or update the offline refresh pass's run marker (the
+`corpus_refresh_state` row), or rewrite similarity snapshots, readings or
+vectors. The two markers are deliberately separate: this cursor is the hosted
+scan's, still an R2 object with its own CAS, and the operator's marker moved
+onto the rows it describes.
 
 A pending batch reserves allowance before sending. Failed/uncertain sends retain
 that reservation; the next scheduled invocation recovers a lost continuation.

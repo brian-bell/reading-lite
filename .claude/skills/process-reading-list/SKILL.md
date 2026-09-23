@@ -59,7 +59,7 @@ Prints a JSON summary to stdout (`selected`, `confirmed`, `queued`, `errors`,
 ## Typical loop
 
 ```bash
-npm run ops -- reading-list check --file list.json --execute   # mark processed true/false
+npm run ops -- reading-list check --tenant "$TENANT" --file list.json --execute   # mark processed true/false
 npm run ops -- reading-list process --file list.json --execute # submit the false ones
 # …wait for the queue to drain…
 npm run ops -- reading-list check --file list.json --execute   # promote freshly-ready ones
@@ -77,7 +77,9 @@ npm run ops -- reading-list check --file list.json --execute   # promote freshly
 ## Notes / gotchas
 
 - The default endpoint is **production**, matching `check-reading-list`'s
-  default production bucket. Use `--url` for a local worker, and make
-  sure `--token` matches whichever environment you target.
+  default production database. Use `--url` for a local worker, and make sure
+  `--token` matches whichever environment you target — and that
+  `check-reading-list` ran against the same tenant, or its marks describe a
+  different corpus than the one you are submitting to.
 - Submitting triggers paid summarization on the server. Plan first (omit `--execute`);
   the default per-URL prompt is the safety rail — `--quick` removes it.

@@ -3,7 +3,7 @@
 // Tier 1 of the nightly corpus refresh: re-measure the ready readings the
 // command's scope selects — by default those that moved since the run marker,
 // and every one of them under `--full` (see refresh-scope.ts) — against
-// Vectorize (no embedding calls, no LLM) and flag those whose stored
+// the similarity index (no embedding calls, no LLM) and flag those whose stored
 // connections/verdict no longer match the current floored neighbourhood. The
 // command writes drifted `manifest.similarity` snapshots with the same
 // one-field discipline as backfill-similarity (`withSimilarity` /
@@ -13,13 +13,7 @@
 // measures and diffs. It never rewrites title, tldr, tags, keywords, entities,
 // or summary_markdown.
 
-import {
-  SIMILAR_TOP_K,
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  excludeSelf,
-  type SimilaritySnapshot,
-} from "./stores/similarity-store";
+import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, type SimilaritySnapshot } from "./stores/similarity";
 
 // Bounded over-fetch leaves room for self and stale vectors before ready filtering.
 // This matches the similarity store query cap; it does not guarantee five live

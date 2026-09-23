@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Manifest } from "../../../src/schemas/manifest";
 import type { ExtractedContent } from "../../../src/modules/extractor";
-import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
-import { isFreshMissingManifestPointer, ownedManifestMatches } from "./r2-ownership";
+import { buildKeyPrefix } from "../../../src/modules/stores/layout";
 import { urlHash as hashUrl } from "../url-hash";
 import type { MarkdownArticle } from "../../import-markdown-lib/parse";
 import type { BatchActivationPolicy, ExtractedTarget, ExpectedExistingFailed } from "./types";
@@ -14,35 +13,15 @@ export interface ByUrlPointer {
   key_prefix: string;
 }
 
-// A by-url read can be: a usable pointer, `null` (object absent → unclaimed), or
-// "damaged" (object present but non-JSON or missing id/key_prefix). "damaged" is
-// kept distinct from null so this fresh-ingest slice can skip occupied slots
-// instead of silently treating a corrupt claim as unclaimed. The Worker's strict
-// ByUrlPointerSchema.parse throws rather than read it as absent.
-export type ByUrlLookup = ByUrlPointer | "damaged";
-
-// The bulk fresh-markdown front-end's view of the corpus: it replaces the
-// worker's eager ReadingClaim (which we can't run offline) with client-side
-// by-url ownership reads.
+// The URL owner and its parsed reading come from PostgreSQL; a claim whose
+// reading does not match it is reported conservatively, and planning never
+// repairs ownership.
 export interface FreshMarkdownDeps {
-  // index/by-url/{sha256(url)} read: a pointer, null when absent, or "damaged".
-  getByUrl(urlHash: string): Promise<ByUrlLookup | null>;
-  // The manifest behind a pointer, or null if absent.
+  getByUrl(urlHash: string): Promise<ByUrlPointer | null>;
   readManifest(keyPrefix: string): Promise<Manifest | null>;
-  // The cold-legacy lookup: resolve a URL's owner through index/list.json when
-  // no live by-url pointer exists, mirroring the Worker's findManifestByUrl.
-  // Returns the ranked owner (ready > pending > failed, then recency) or null.
-  // Load-bearing for legacy retry-after-failure: a prior failed ingest may have
-  // left a by-id pointer + list row but no by-url pointer, so a rerun finds the
-  // failed reading here and re-ingests it in place instead of minting a duplicate.
-  // `forceScan` remains in the lower-level helper for Worker-parity repair
-  // callers, but this fresh-ingest slice calls the cold lookup only for absent
-  // by-url pointers and skips occupied/damaged slots for later reconciliation.
-  findByUrlInList(
-    url: string,
-    urlHash: string,
-    opts?: { forceScan?: boolean },
-  ): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
+  // A reading for this URL that holds no URL claim (a claim released before
+  // releases were retired). Find that reading for in-place retry.
+  findReadingByUrl(url: string, urlHash: string): Promise<{ id: string; key_prefix: string; manifest: Manifest } | null>;
   // Mint a fresh reading id (rd_...) for an unclaimed URL.
   newId(): string;
   newAttemptId(): string;
@@ -56,10 +35,6 @@ export type FreshDisposition =
   | { kind: "skip-ready"; url: string; id: string; article: MarkdownArticle }
   | { kind: "skip-pending"; url: string; id: string; article: MarkdownArticle }
   | { kind: "skip-occupied-needs-repair"; url: string; id: string | null; article: MarkdownArticle; reason: string }
-  // A by-url pointer whose manifest hasn't landed yet, inside the grace window —
-  // a realtime submit/import is in flight; do not touch it (mirrors ReadingClaim's
-  // `initializing`).
-  | { kind: "skip-initializing"; url: string; id: string; article: MarkdownArticle }
   | { kind: "skip-no-source"; url: null; id: null; article: MarkdownArticle };
 
 export interface FreshMarkdownPlan {
@@ -88,13 +63,13 @@ export async function prepareFreshMarkdown(
 
     const urlHash = hashUrl(url);
     const owner = await deps.getByUrl(urlHash);
-    if (owner && owner !== "damaged") {
+    if (owner) {
       const manifest = await deps.readManifest(owner.key_prefix);
       // Only a manifest that genuinely owns this URL (id + url + url_hash all
       // match the pointer) counts as the owner — exactly ReadingClaim's rule.
       // A pointer cross-wired to an unrelated manifest must NOT make this URL
       // skip, nor re-ingest atop that other reading.
-      if (manifest && ownedManifestMatches(owner, manifest, url, urlHash)) {
+      if (manifest && (manifest.id === owner.id && manifest.url === url && manifest.url_hash === urlHash)) {
         if (manifest.status === "ready") {
           dispositions.push({ kind: "skip-ready", url, id: owner.id, article });
           continue;
@@ -129,13 +104,6 @@ export async function prepareFreshMarkdown(
         dispositions.push({ kind: "ingest-failed", url, id: owner.id, article, target });
         continue;
       }
-      // A fresh pointer whose manifest hasn't landed is a still-initializing
-      // owner (a realtime submit wrote by-url before its pending manifest) — skip
-      // it so the backfill never clobbers an in-flight claim.
-      if (!manifest && isFreshMissingManifestPointer(owner, deps.now())) {
-        dispositions.push({ kind: "skip-initializing", url, id: owner.id, article });
-        continue;
-      }
       dispositions.push({
         kind: "skip-occupied-needs-repair",
         url,
@@ -146,25 +114,8 @@ export async function prepareFreshMarkdown(
       continue;
     }
 
-    if (owner === "damaged") {
-      dispositions.push({
-        kind: "skip-occupied-needs-repair",
-        url,
-        id: null,
-        article,
-        reason: "by-url slot contains a damaged pointer",
-      });
-      continue;
-    }
-
-    // No live by-url owner.
-    // Run the cold-legacy lookup before minting (mirrors the Worker's
-    // resolveOwner cold path): a prior legacy failed ingest may have a by-id
-    // pointer + list row but no by-url pointer, so a retry must re-ingest THAT
-    // failed reading in place rather than mint a second one.
-    // Resolve through index/list.json by the same ready>pending>failed
-    // ownership rank the Worker uses.
-    const cold = await deps.findByUrlInList(url, urlHash, { forceScan: false });
+    // Reuse a prior failed reading whose URL was released on failure.
+    const cold = await deps.findReadingByUrl(url, urlHash);
     if (cold) {
       if (cold.manifest.status === "ready") {
         dispositions.push({ kind: "skip-ready", url, id: cold.id, article });
@@ -245,7 +196,6 @@ export function tallyDispositions(dispositions: FreshDisposition[]): Disposition
     else if (d.kind === "ingest-failed") t.ingestFailed++;
     else if (d.kind === "skip-ready") t.skipReady++;
     else if (d.kind === "skip-pending") t.skipPending++;
-    else if (d.kind === "skip-initializing") t.skipInitializing++;
     else if (d.kind === "skip-occupied-needs-repair") t.skipOccupiedNeedsRepair++;
     else if (d.kind === "skip-no-source") t.skipNoSource++;
   }

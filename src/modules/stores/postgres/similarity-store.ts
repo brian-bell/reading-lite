@@ -16,11 +16,27 @@
 import type { TenantContext } from "../../../control-plane/ids";
 import { EMBEDDING_DIM } from "../../../schemas/api";
 import { vectorLiteral, type Sql } from "../../db/sql";
-import { WrongEmbeddingDimensionError, type SimilarityMatch } from "../similarity-store";
+import { WrongEmbeddingDimensionError, type SimilarityMatch } from "../similarity";
 import { pgTenantId } from "./reading-store";
 
 const MIN_TOP_K = 1;
-const MAX_TOP_K = 50;
+
+/**
+ * A sanity ceiling on one similarity query, not the user-facing limit.
+ *
+ * `POST /api/readings/similar` bounds its own `k` at 50 in
+ * `PostReadingsSimilarBodySchema`, which rejects a larger request rather than
+ * quietly trimming it, so nothing a caller sends reaches this.
+ *
+ * It is 100 because that is the widest any internal caller asks for: the
+ * offline refresh's reverse-neighbour query (`REVERSE_TOP_K`). That query
+ * decides whether to escalate to a full sweep by comparing the rows it got
+ * against the topK it asked for, so a cap BELOW the ask would clamp every
+ * answer to the cap, make "came back full" unreachable, and silently kill the
+ * escalation that keeps a narrowed scope honest. Raising a caller past this
+ * must raise this too.
+ */
+export const MAX_SIMILARITY_TOP_K = 100;
 
 export function pgSimilarityStoreFor(sql: Sql, tenant: TenantContext): PgSimilarityStore {
   return new PgSimilarityStore(sql, pgTenantId(tenant));
@@ -61,7 +77,7 @@ export class PgSimilarityStore {
   }
 
   private async nearest(vector: string, topK: number): Promise<SimilarityMatch[]> {
-    const limit = Math.min(MAX_TOP_K, Math.max(MIN_TOP_K, Math.trunc(topK)));
+    const limit = Math.min(MAX_SIMILARITY_TOP_K, Math.max(MIN_TOP_K, Math.trunc(topK)));
     const rows = await this.sql.query<MatchRow>(
       `SELECT r.id, 1 - (e.embedding <=> $2::vector) AS score, r.url, r.title, r.tldr, r.tags, r.created_at
        FROM reading_embeddings e

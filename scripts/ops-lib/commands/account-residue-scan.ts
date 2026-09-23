@@ -18,7 +18,8 @@ Prints JSON per tenant, per-source findings and durable first-completion history
 Exit 1 for residue OR incomplete visibility, 0 only for all sources clear/expected,
 2 for usage errors. DO/address-history blind spots currently prevent a full clean
 certification. Live tenant data counts as present; inspect per-source findings.
-Reads only: never clears ledger rows or repairs listed readings. --help shows help.`,
+Reads PostgreSQL rows, tenant content, and retained legacy Vectorize evidence.
+Never repairs or deletes data. --help shows help.`,
   defaultDeps: (io) => ({ io, connect: accountRemote }),
   async run(argv, deps) {
     let values;
@@ -39,6 +40,22 @@ Reads only: never clears ledger rows or repairs listed readings. --help shows he
     if (values.tenant && !parseTenantId(values.tenant))
       throw new UsageError("invalid tenant");
     const remote = deps.connect(values.bucket!);
+    try {
+      return await scan(remote, values, deps);
+    } finally {
+      // ops.ts sets process.exitCode rather than calling process.exit, so an
+      // open control-plane socket would keep the event loop alive forever.
+      await remote.closeDb?.();
+    }
+  },
+};
+
+async function scan(
+  remote: ScanRemote,
+  values: { tenant?: string | undefined; bucket?: string | undefined },
+  deps: Deps,
+): Promise<number> {
+  {
     const tenants = values.tenant
       ? [values.tenant]
       : (
@@ -59,5 +76,5 @@ Reads only: never clears ledger rows or repairs listed readings. --help shows he
     if (!tenants.length)
       deps.io.stdout("No account_deletions rows; no tenants scanned.");
     return code;
-  },
-};
+  }
+}

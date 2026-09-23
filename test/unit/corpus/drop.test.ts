@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveDropTargets, shouldRewriteIndex, type DropListItem } from "../../../scripts/corpus-lib/drop";
+import { resolveDropTargets, type DropListItem } from "../../../scripts/corpus-lib/drop";
 
 const item = (o: Partial<DropListItem>): DropListItem => ({
   id: "rd_a",
@@ -40,7 +40,7 @@ describe("resolveDropTargets", () => {
     if (!r.ok) expect(r.errors[0]).toMatch(/nope\.com/);
   });
 
-  it("refuses an explicitly-named ready id (would dangle by-url pointer)", () => {
+  it("refuses an explicitly-named ready id (would drop its URL claim)", () => {
     const r = resolveDropTargets([item({ id: "rd_a", status: "ready" })], ["rd_a"]);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors[0]).toMatch(/ready/);
@@ -102,13 +102,3 @@ describe("resolveDropTargets", () => {
   });
 });
 
-describe("shouldRewriteIndex", () => {
-  it("rewrites index/list.json only when no object delete errored", () => {
-    expect(shouldRewriteIndex(0)).toBe(true);
-  });
-
-  it("refuses the rewrite when any delete errored (avoids hiding a half-deleted reading)", () => {
-    expect(shouldRewriteIndex(1)).toBe(false);
-    expect(shouldRewriteIndex(5)).toBe(false);
-  });
-});

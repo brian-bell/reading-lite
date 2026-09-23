@@ -3,7 +3,7 @@ import type { AuditRow } from "../types";
 import type { BatchTarget, DroppedTarget } from "./types";
 
 export interface PrepareDeps {
-  // Reads the current manifest for a key prefix (R2 via S3), or null if absent.
+  // Reads the current manifest for a key prefix (PostgreSQL), or null if absent.
   readManifest(keyPrefix: string): Promise<Manifest | null>;
   newAttemptId(): string;
   now(): string;
@@ -26,7 +26,7 @@ export async function prepareTargets(
   for (const row of rows) {
     const manifest = await deps.readManifest(row.key_prefix);
     if (!manifest) {
-      dropped.push({ readingId: row.reading_id, reason: "manifest not found in bucket" });
+      dropped.push({ readingId: row.reading_id, reason: "reading not found in PostgreSQL" });
       continue;
     }
     targets.push({

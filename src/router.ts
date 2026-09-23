@@ -23,8 +23,7 @@ import {
 import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
 import { sqlScope } from "./modules/db/request-sql";
 import type { Sql } from "./modules/db/sql";
-import { contentStoreFor, type ContentStore } from "./modules/stores/content-store";
-import type { RawObject } from "./modules/stores/reading-store";
+import { contentStoreFor, type ContentStore, type RawObject } from "./modules/stores/content-store";
 import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";

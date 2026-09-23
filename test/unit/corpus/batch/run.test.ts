@@ -1,3 +1,4 @@
+import { stubBatchCorpus } from "../../../helpers/batch-corpus";
 import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,10 +6,8 @@ import { join } from "node:path";
 import {
   newBatchAttemptId,
   runBatch,
-  runBatchPipeline,
   type BatchRunDeps,
 } from "../../../../scripts/corpus-lib/batch/run";
-import { activateRecoverTargets } from "../../../../scripts/corpus-lib/batch/activation-phase";
 import { loadSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { isBatchOwnedPending } from "../../../../src/modules/staleness";
@@ -80,7 +79,7 @@ const reading = {
   summary_markdown: "body",
 };
 
-// A fake harness: in-memory R2, recording vectorize, scripted batch lifecycle.
+// Orchestration harness; PostgreSQL behavior is owned by postgres.test.ts.
 function harness(seedManifests: Record<string, Manifest>) {
   const store = new Map<string, string>();
   for (const [id, m] of Object.entries(seedManifests)) {
@@ -102,19 +101,6 @@ function harness(seedManifests: Record<string, Manifest>) {
       store.delete(k);
     }),
     listKeys: vi.fn(async () => [...store.keys()]),
-  };
-  const vectorize = {
-    upsert: vi.fn(async () => {}),
-    query: vi.fn(async () => []),
-  };
-  // The vector ledger (issue #195 S3), recording the upsert count at the moment
-  // each row was written so the "before the upsert" ordering is assertable.
-  const ledgered: string[] = [];
-  const ledger = {
-    markLive: async (ids: readonly string[]) => {
-      for (const id of ids) ledgered.push(`live:${id}:${vectorize.upsert.mock.calls.length}`);
-    },
-    markDeleteSubmitted: async () => {},
   };
   let sidecar: PersistedSidecar | null = null;
   let inputJsonl: string | null = null;
@@ -153,8 +139,7 @@ function harness(seedManifests: Record<string, Manifest>) {
   const authority = batchSpendAuthority();
   const deps: BatchRunDeps = {
     r2: r2 as any,
-    vectorize: vectorize as any,
-    ledger,
+    corpus: stubBatchCorpus(store),
     spend: authority.spend,
     batch: batch as any,
     embed: {
@@ -186,7 +171,7 @@ function harness(seedManifests: Record<string, Manifest>) {
     }),
     poll: { intervalMs: 1, maxPolls: 5 },
   };
-  return { store, r2, vectorize, ledgered, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
+  return { store, r2, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
 }
 
 // A minimal OpenAI batch client with sensible defaults so tests don't have to
@@ -287,15 +272,12 @@ h.deps.openaiBatch = fakeOpenAIClient({
   return { upload, create };
 }
 
-const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 
 describe("runBatch — fresh run", () => {
   it("fresh-extracts a failed recovery target before OpenAI upload and publishes it at the same owner", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     h.store.delete("readings/kp-rd_a/extracted.md");
-    const ownerKey = `index/by-url/${manifest("rd_a").url_hash}`;
     let stateAtUpload: {
-      owner: string | undefined;
       raw: string | undefined;
       extracted: string | undefined;
       manifest: Manifest;
@@ -303,9 +285,8 @@ describe("runBatch — fresh run", () => {
     installCompletedOpenAIBatch(h, {
       onUpload: () => {
         stateAtUpload = {
-          owner: h.store.get(ownerKey),
-          raw: h.store.get("readings/kp-rd_a/raw.html"),
-          extracted: h.store.get("readings/kp-rd_a/extracted.md"),
+          raw: h.store.get("readings/kp-rd_a/revisions/at_recover_1/raw.html"),
+          extracted: h.store.get("readings/kp-rd_a/revisions/at_recover_1/extracted.md"),
           manifest: ManifestSchema.parse(
             JSON.parse(
               h.store.get("readings/kp-rd_a/manifest.json")!,
@@ -319,10 +300,6 @@ describe("runBatch — fresh run", () => {
 
     expect(h.extract).toHaveBeenCalledOnce();
     expect(stateAtUpload).toMatchObject({
-      owner: JSON.stringify({
-        id: "rd_a",
-        key_prefix: "readings/kp-rd_a",
-      }),
       raw: "x",
       extracted: "fresh https://example.com/rd_a",
       manifest: { status: "pending", content_status: "captured" },
@@ -343,50 +320,7 @@ describe("runBatch — fresh run", () => {
         },
       },
     });
-    expect(JSON.parse(h.store.get(ownerKey)!)).toEqual({
-      id: "rd_a",
-      key_prefix: "readings/kp-rd_a",
-    });
-    expect(h.vectorize.upsert).toHaveBeenCalledOnce();
-    // The ledger reaches write-phase through BatchRunDeps, and the row lands
-    // BEFORE the upsert. `ops corpus ingest` and `corpus recover --batch` are
-    // vector writers with no `users.status` check, so an un-ledgered upsert
-    // here is a vector the account wipe will never even ask Vectorize to
-    // delete — and will then report a clean completion around.
-    expect(h.ledgered).toEqual(["live:rd_a:0"]);
-  });
-
-  it("returns neighbours under bare reading ids when writing into a tenant namespace", async () => {
-    // `SimilarityStore.query` in the Worker strips its own `{tenant}:` prefix so
-    // callers only ever see reading ids; `makeVectorizeClient.query` does not,
-    // and this pipeline consumes matches directly. That divergence was
-    // invisible while the pipeline wrote bare ids, and stopped being invisible
-    // the moment write-phase started composing them — the pipeline now reads
-    // back its own prefixed writes.
-    //
-    // Two things go wrong without the strip, and neither is loud: `excludeSelf`
-    // compares the bare reading id against a prefixed match, so a re-ingested
-    // reading spends a neighbour slot on ITSELF at ~1.0; and the ids flow into
-    // `similarity`/`connections` on the manifest this pipeline writes, where
-    // the read path and the SPA expect bare reading ids.
-    const h = harness({ rd_a: manifest("rd_a") });
-    h.deps.vectorNamespace = TENANT;
-    h.deps.vectorize.query = vi.fn(async () => [
-      // The reading's own vector, as Vectorize returns it: prefixed.
-      { id: `${TENANT}:rd_a`, score: 0.99, metadata: { url: "https://a", title: "A" } },
-      { id: `${TENANT}:rd_neighbour`, score: 0.8, metadata: { url: "https://n", title: "N" } },
-    ]);
-
-    const result = await runBatch([row("rd_a")], h.deps);
-    expect(result.report[0]?.status).toBe("ready");
-
-    const written = ManifestSchema.parse(
-      JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
-    );
-    // Self excluded despite the prefix, so the slot was not wasted...
-    expect(JSON.stringify(written)).not.toContain(`${TENANT}:rd_a`);
-    // ...and no prefixed id reached the manifest at all.
-    expect(JSON.stringify(written)).not.toContain(`${TENANT}:rd_neighbour`);
+    expect(h.deps.corpus.publish).toHaveBeenCalledOnce();
   });
 
   it("runs an OpenAI batch to ready with one stable run id and the realtime response parser", async () => {
@@ -496,11 +430,7 @@ describe("runBatch — fresh run", () => {
     expect(mA.status).toBe("ready");
     expect(mA.title).toBe("Title rd_a");
 
-    const index = JSON.parse(h.store.get("index/list.json")!);
-    expect(index.items.map((i: any) => i.id).sort()).toEqual(["rd_a", "rd_b"]);
-
-    // by-url pointers written for both
-    expect(h.store.has(`index/by-url/${mA.url_hash}`)).toBe(true);
+    expect(h.deps.corpus.publish).toHaveBeenCalledTimes(2);
   });
 
   it("reuses saved markdown rather than re-extracting (ready+captured reading)", async () => {
@@ -524,7 +454,7 @@ describe("runBatch — fresh run", () => {
     const dropLine = lines.find((l) => l.includes("rd_missing"));
     expect(dropLine).toBeDefined();
     expect(dropLine).toMatch(/drop/i);
-    expect(dropLine).toMatch(/manifest/i); // the reason from prepare
+    expect(dropLine).toMatch(/reading not found/i); // the reason from prepare
   });
 });
 
@@ -532,10 +462,6 @@ describe("runBatch — resume", () => {
   it("terminal-writes a completed OpenAI batch whose only results are in the error file", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     const urlHash = manifest("rd_a").url_hash;
-    h.store.set(
-      `index/by-url/${urlHash}`,
-      JSON.stringify({ id: "rd_a", key_prefix: "readings/kp-rd_a" }),
-    );
     const sc: PersistedSidecar = {
       version: 2,
       provider: "openai",
@@ -599,8 +525,8 @@ describe("runBatch — resume", () => {
       JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!),
     );
     expect(failed.error?.code).toBe("OpenAIBatchRequestError");
-    expect(h.store.has(`index/by-url/${urlHash}`)).toBe(false);
-    expect(h.store.has("index/by-id/rd_a")).toBe(true);
+    expect(h.deps.corpus.fail).toHaveBeenCalled();
+    expect(h.deps.corpus.fail).toHaveBeenCalled();
   });
 
   it.each(["failed", "expired", "cancelled"] as const)(
@@ -608,11 +534,6 @@ describe("runBatch — resume", () => {
     async (status) => {
       const h = harness({ rd_a: manifest("rd_a") });
       const urlHash = manifest("rd_a").url_hash;
-      const ownerKey = `index/by-url/${urlHash}`;
-      h.store.set(
-        ownerKey,
-        JSON.stringify({ id: "rd_a", key_prefix: "readings/kp-rd_a" }),
-      );
       const sc: PersistedSidecar = {
         version: 2,
         provider: "openai",
@@ -671,9 +592,7 @@ describe("runBatch — resume", () => {
       expect(failed.error?.code).toBe(
         `OpenAIBatch${status[0]!.toUpperCase()}${status.slice(1)}`,
       );
-      expect(h.store.has("index/by-id/rd_a")).toBe(true);
-      // Recover targets retain their existing owner on failure.
-      expect(h.store.has(ownerKey)).toBe(true);
+      expect(h.deps.corpus.fail).toHaveBeenCalled();
     },
   );
 
@@ -803,7 +722,7 @@ describe("runBatch — resume", () => {
       "file_errors",
     ]);
     expect(h.r2.put).not.toHaveBeenCalled();
-    expect(h.vectorize.upsert).not.toHaveBeenCalled();
+    expect(h.deps.corpus.publish).not.toHaveBeenCalled();
     expect(h.deps.clearSidecar).not.toHaveBeenCalled();
   });
 
@@ -1052,388 +971,24 @@ describe("runBatch — resume", () => {
     expect(h.batch.create).not.toHaveBeenCalled();
     expect(h.r2.put).not.toHaveBeenCalled();
     expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
-    expect(h.vectorize.upsert).not.toHaveBeenCalled();
+    expect(h.deps.corpus.publish).not.toHaveBeenCalled();
   });
 });
 
-describe("runBatch — eager recover claim", () => {
-  it("keeps a ready recovery owner and preserved snapshot through a successful OpenAI replacement", async () => {
-    const h = harness({});
-    const kp = "readings/kp-rd_a";
-    const ready = manifest("rd_a", {
-      status: "ready",
-      title: "Prior ready title",
-      tldr: "prior ready summary",
-      tags: ["prior"],
-      keywords: ["prior ready state", "recovery ownership", "batch replacement"],
-      people: [],
-      orgs: [],
-      novelty_verdict: "familiar",
-      connections: [],
-      summary_markdown: "Prior body.",
-    });
-    const ownerKey = `index/by-url/${ready.url_hash}`;
-    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
-    h.store.set(`${kp}/extracted.md`, "# Saved\n\nrecovery markdown");
-    h.store.set(
-      ownerKey,
-      JSON.stringify({ id: "rd_a", key_prefix: kp }),
-    );
-    installCompletedOpenAIBatch(h);
-    const injected: ExtractedTarget = {
-      target: {
-        readingId: "rd_a",
-        url: ready.url,
-        urlHash: ready.url_hash,
-        keyPrefix: kp,
-        createdAt: ready.created_at,
-        attemptId: "at_ready_success",
-        attemptStartedAt: NOW,
-        trigger: "reprocess",
-        manifest: ready,
-      },
-      markdown: "# Saved\n\nrecovery markdown",
-    };
-
-    const result = await runBatchPipeline(
-      async () => ({ extracted: [injected], dropped: [] }),
-      {
-        ...h.deps,
-        activateExtracted: (targets, identity) =>
-          activateRecoverTargets(targets, {
-            r2: h.deps.r2,
-            identity,
-            now: h.deps.now,
-            saveSidecar: h.deps.saveSidecar,
-          }),
-      },
-    );
-
-    expect(result.report).toContainEqual({ id: "rd_a", status: "ready" });
-    const submitted = h.getSidecar();
-    expect(submitted).toMatchObject({
-      provider: "openai",
-      phase: "submitted",
-      targets: [
-        {
-          id: "rd_a",
-          keyPrefix: kp,
-          preserveReadyManifest: {
-            status: "ready",
-            title: "Prior ready title",
-          },
-        },
-      ],
-    });
-    expect(JSON.parse(h.store.get(ownerKey)!)).toEqual({
-      id: "rd_a",
-      key_prefix: kp,
-    });
-    expect(h.r2.delete).not.toHaveBeenCalledWith(ownerKey);
-    const final = ManifestSchema.parse(
-      JSON.parse(h.store.get(`${kp}/manifest.json`)!),
-    );
-    expect(final.status).toBe("ready");
-    expect(final.title).toBe("Title rd_a");
-    expect(final.usage).toMatchObject({
-      summarization: { provider: "openai", model: "gpt-5.6-terra" },
-    });
-  });
-
-  it("claims by-url and writes the pending manifest before creating the batch", async () => {
-    const h = harness({ rd_a: manifest("rd_a") }); // failed, no by-url
-    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
-
-    let atCreate: { byUrl?: string; manifest?: string } = {};
-    const origCreate = h.batch.create;
-    h.batch.create = vi.fn(async (r: any) => {
-      atCreate = {
-        byUrl: h.store.get(byUrlKey),
-        manifest: h.store.get("readings/kp-rd_a/manifest.json"),
-      };
-      return origCreate(r);
-    });
-
-    const result = await runBatch([row("rd_a")], h.deps);
-
-    // by-url claimed == {id, key_prefix} and the pending manifest exists BEFORE create
-    expect(atCreate.byUrl).toBeDefined();
-    expect(JSON.parse(atCreate.byUrl!)).toEqual({ id: "rd_a", key_prefix: "readings/kp-rd_a" });
-    expect(JSON.parse(atCreate.manifest!).status).toBe("pending");
-
-    // final manifest lands ready
-    expect(result.report.filter((r) => r.status === "ready")).toHaveLength(1);
-    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!)).status).toBe("ready");
-  });
-
-  it("keeps the by-url claim on batch failure so the failed recover URL stays re-submittable", async () => {
-    const h = harness({ rd_a: manifest("rd_a") });
-    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
-    h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
-        custom_id: t.customId,
-        result: { type: "errored" as const, error: { message: "boom" } },
-      })),
-    ) as any;
-
-    const result = await runBatch([row("rd_a")], h.deps);
-    expect(result.report.filter((r) => r.status === "failed")).toHaveLength(1);
-
-    const final = ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!));
-    expect(final.status).toBe("failed");
-    // by-id present (no dangling row); by-url kept (contrast fresh ingest's release)
-    expect(h.store.has("index/by-id/rd_a")).toBe(true);
-    expect(h.store.has(byUrlKey)).toBe(true);
-    expect(h.r2.delete).not.toHaveBeenCalledWith(byUrlKey);
-    // the kept pointer still resolves the failed reading as owner
-    expect(JSON.parse(h.store.get(byUrlKey)!)).toEqual({ id: "rd_a", key_prefix: "readings/kp-rd_a" });
-    // failed list row present
-    const index = JSON.parse(h.store.get("index/list.json")!);
-    expect(index.items.find((i: any) => i.id === "rd_a").status).toBe("failed");
-  });
-
-  it("rolls a ready reading forward on failure (defensive: stale in-memory manifest invariant)", async () => {
-    // corpus-audit never routes ready rows into recover, so this injects a ready
-    // target.manifest straight at the runBatch/activateRecoverTargets seam. The
-    // invariant: activation must flip only the live R2 manifest, never the
-    // in-memory snapshot submit-phase reads to compute preserveReadyManifest.
-    const h = harness({});
-    const kp = "readings/kp-rd_a";
-    const ready = manifest("rd_a", { status: "ready", title: "Ready", tldr: "keep me" });
-    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
-    h.store.set(`index/by-url/${ready.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
-
-    const injected: ExtractedTarget = {
-      target: {
-        readingId: "rd_a",
-        url: ready.url,
-        urlHash: ready.url_hash,
-        keyPrefix: kp,
-        createdAt: ready.created_at,
-        attemptId: "at_ready_failure",
-        attemptStartedAt: NOW,
-        trigger: "reprocess",
-        manifest: ready,
-      },
-      markdown: "# rd_a\n\nbody",
-      fresh: {
-        raw: new TextEncoder().encode("<html>new body</html>"),
-        content_type: "text/html",
-        content_status: "captured",
-        content_bytes: 999,
-        content_sha256: "c".repeat(64),
-        markdown: "# rd_a\n\nbody",
-      },
-    };
-
-    h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
-        custom_id: t.customId,
-        result: { type: "errored" as const, error: { message: "boom" } },
-      })),
-    ) as any;
-
-    await runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
-      ...h.deps,
-      activateExtracted: (targets) =>
-        activateRecoverTargets(targets, {
-          r2: h.deps.r2,
-          model: h.deps.model,
-          now: h.deps.now,
-          saveSidecar: h.deps.saveSidecar,
-        }),
-    });
-
-    // rolled FORWARD to ready (preserveReadyManifest), not down to failed
-    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
-    expect(final.status).toBe("ready");
-    expect(final.tldr).toBe("keep me");
-    expect(final.active_attempt).toBeUndefined();
-  });
-
-  it("rolls forward when the live manifest becomes ready before activation", async () => {
-    const h = harness({});
-    const kp = "readings/kp-rd_a";
-    const failedAtPrepare = manifest("rd_a", { status: "failed" });
-    const liveReady = manifest("rd_a", {
-      status: "ready",
-      title: "Ready before activation",
-      tldr: "keep live ready",
-      tags: ["saved"],
-      keywords: ["live manifest", "recovery state", "ownership check"],
-      people: [],
-      orgs: [],
-      novelty_verdict: "novel",
-      connections: [],
-      summary_markdown: "live summary",
-    });
-    h.store.set(`${kp}/manifest.json`, JSON.stringify(liveReady));
-    h.store.set(`${kp}/extracted.md`, "# rd_a\n\nsaved markdown");
-    h.store.set(`index/by-url/${liveReady.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
-
-    const injected: ExtractedTarget = {
-      target: {
-        readingId: "rd_a",
-        url: failedAtPrepare.url,
-        urlHash: failedAtPrepare.url_hash,
-        keyPrefix: kp,
-        createdAt: failedAtPrepare.created_at,
-        attemptId: "at_failed_recover",
-        attemptStartedAt: NOW,
-        trigger: "reprocess",
-        manifest: failedAtPrepare,
-      },
-      markdown: "# rd_a\n\nbody",
-    };
-
-    h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
-        custom_id: t.customId,
-        result: { type: "errored" as const, error: { message: "boom" } },
-      })),
-    ) as any;
-
-    await runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
-      ...h.deps,
-      activateExtracted: (targets) =>
-        activateRecoverTargets(targets, {
-          r2: h.deps.r2,
-          model: h.deps.model,
-          now: h.deps.now,
-          saveSidecar: h.deps.saveSidecar,
-        }),
-    });
-
-    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
-    expect(final.status).toBe("ready");
-    expect(final.tldr).toBe("keep live ready");
-    expect(final.title).toBe("Ready before activation");
-    expect(final.active_attempt).toBeUndefined();
-  });
-
-  it("preserves a ready snapshot across an activation-window crash and rerun", async () => {
-    const h = harness({});
-    const kp = "readings/kp-rd_a";
-    const ready = manifest("rd_a", {
-      status: "ready",
-      title: "Ready before batch",
-      tldr: "keep me",
-      tags: ["saved"],
-      keywords: ["ready snapshot", "rollback state", "recovery batch"],
-      people: [],
-      orgs: [],
-      novelty_verdict: "novel",
-      connections: [],
-      summary_markdown: "previous summary",
-    });
-    h.store.set(`${kp}/manifest.json`, JSON.stringify(ready));
-    h.store.set(`${kp}/extracted.md`, "# rd_a\n\nsaved markdown");
-    h.store.set(`index/by-url/${ready.url_hash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
-
-    const injected: ExtractedTarget = {
-      target: {
-        readingId: "rd_a",
-        url: ready.url,
-        urlHash: ready.url_hash,
-        keyPrefix: kp,
-        createdAt: ready.created_at,
-        attemptId: "at_ready_anthropic",
-        attemptStartedAt: NOW,
-        trigger: "reprocess",
-        manifest: ready,
-      },
-      markdown: "# rd_a\n\nbody",
-    };
-
-    await expect(
-      runBatchPipeline(async () => ({ extracted: [injected], dropped: [] }), {
-        ...h.deps,
-        activateExtracted: async (targets) => {
-          await activateRecoverTargets(targets, {
-            r2: h.deps.r2,
-            model: h.deps.model,
-            now: h.deps.now,
-            saveSidecar: h.deps.saveSidecar,
-          });
-          throw new Error("simulated crash after activation");
-        },
-      }),
-    ).rejects.toThrow(/simulated crash/);
-
-    expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("pending");
-    h.setSidecar(null);
-
-    await expect(
-      runBatch([row("rd_a")], {
-        ...h.deps,
-        activateExtracted: async (targets) => {
-          await activateRecoverTargets(targets, {
-            r2: h.deps.r2,
-            model: h.deps.model,
-            now: h.deps.now,
-            saveSidecar: h.deps.saveSidecar,
-          });
-          throw new Error("simulated second crash after activation");
-        },
-      }),
-    ).rejects.toThrow(/simulated second crash/);
-
-    expect(ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!)).status).toBe("pending");
-    h.setSidecar(null);
-    h.batch.results = vi.fn(async () =>
-      (h.getSidecar()?.targets ?? []).map((t) => ({
-        custom_id: t.customId,
-        result: { type: "errored" as const, error: { message: "boom" } },
-      })),
-    ) as any;
-
-    await runBatch([row("rd_a")], h.deps);
-
-    const final = ManifestSchema.parse(JSON.parse(h.store.get(`${kp}/manifest.json`)!));
-    expect(final.status).toBe("ready");
-    expect(final.tldr).toBe("keep me");
-    expect(final.title).toBe("Ready before batch");
-    expect(final.content_bytes).toBe(ready.content_bytes);
-    expect(final.content_sha256).toBe(ready.content_sha256);
-    expect(final.active_attempt).toBeUndefined();
-  });
-
-  it("activates one target and skips another (foreign-owned) in the same run", async () => {
-    const h = harness({ rd_a: manifest("rd_a"), rd_b: manifest("rd_b") });
-    // rd_b's by-url slot is owned by a different reading → activation skips it,
-    // and only rd_a is summarized + flipped to ready.
-    h.store.set(`index/by-url/${manifest("rd_b").url_hash}`, JSON.stringify({ id: "rd_other", key_prefix: "readings/kp-other" }));
-
-    const result = await runBatch([row("rd_a"), row("rd_b")], h.deps);
-
-    expect(result.report.find((r) => r.id === "rd_b")).toMatchObject({
-      status: "skipped",
-      reason: "by-url owned by a different reading",
-    });
-    expect(result.report.filter((r) => r.status === "ready").map((r) => r.id)).toEqual(["rd_a"]);
-    // only the activated target was submitted, and rd_b stays untouched (still failed)
-    expect(h.batch.create.mock.calls[0]![0]).toHaveLength(1);
-    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_a/manifest.json")!)).status).toBe("ready");
-    expect(ManifestSchema.parse(JSON.parse(h.store.get("readings/kp-rd_b/manifest.json")!)).status).toBe("failed");
-    // rd_b never clobbered rd_other's by-url slot
-    expect(JSON.parse(h.store.get(`index/by-url/${manifest("rd_b").url_hash}`)!).id).toBe("rd_other");
-  });
-
+describe("runBatch — payload admission", () => {
   it("rejects an oversized payload before any by-url claim or batch create", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
-    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
 
     await expect(runBatch([row("rd_a")], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(/re-run with --limit/);
 
     expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
-    expect(h.store.has(byUrlKey)).toBe(false);
+    expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.batch.create).not.toHaveBeenCalled();
   });
 
   it("rejects an oversized OpenAI payload before embedding or any by-url claim", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
     installCompletedOpenAIBatch(h);
-    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
 
     await expect(runBatch([row("rd_a")], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(/re-run with --limit/);
 
@@ -1441,7 +996,7 @@ describe("runBatch — eager recover claim", () => {
     // embedding quota, and before any eager by-url claim or remote object.
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
     expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
-    expect(h.store.has(byUrlKey)).toBe(false);
+    expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.deps.openaiBatch!.upload).not.toHaveBeenCalled();
     expect(h.deps.openaiBatch!.create).not.toHaveBeenCalled();
   });
@@ -1478,7 +1033,7 @@ describe("runBatch — recover resume", () => {
       status: "pending",
       active_attempt: { id: "at_recover_1", trigger: "reprocess" },
     });
-    expect(h.store.get("readings/kp-rd_a/extracted.md")).toBe(
+    expect(h.store.get("readings/kp-rd_a/revisions/at_recover_1/extracted.md")).toBe(
       "fresh https://example.com/rd_a",
     );
     // Companion JSONL was persisted before the upload checkpoint, so a
@@ -1500,11 +1055,7 @@ describe("runBatch — recover resume", () => {
     expect(h.extract).toHaveBeenCalledOnce();
     // The reconcile lock prevents a double-create; the by-url claim stays
     // owned so a manual reconciliation can resolve.
-    expect(
-      [...h.store.keys()].filter((key) =>
-        key.startsWith("index/by-url/"),
-      ),
-    ).toHaveLength(1);
+    expect(h.deps.corpus.activate).toHaveBeenCalledOnce();
   });
 
   it("adopts an OpenAI batch that was created after the sidecar said 'creating'", async () => {
@@ -1709,8 +1260,6 @@ describe("runBatch — recover resume", () => {
       updated_at: NOW,
     });
     h.store.set(`${kp}/manifest.json`, JSON.stringify(pending));
-    h.store.set(`index/by-url/${urlHash}`, JSON.stringify({ id: "rd_a", key_prefix: kp }));
-    h.store.set("index/by-id/rd_a", JSON.stringify({ id: "rd_a", key_prefix: kp }));
 
     // A second eager-claim pending that is NOT in this batch's sidecar. Resume must
     // key off the sidecar's targets, not blindly sweep every pending manifest — so
@@ -1724,16 +1273,6 @@ describe("runBatch — recover resume", () => {
       active_attempt: { id: "batch_rd_other", trigger: "reprocess", status: "running", stage: "summarize", started_at: NOW },
     });
     h.store.set(`${otherKp}/manifest.json`, JSON.stringify(otherPending));
-    h.store.set(
-      "index/list.json",
-      JSON.stringify({
-        version: 1,
-        items: [
-          { id: "rd_a", key_prefix: kp, url: pending.url, status: "pending", created_at: pending.created_at, updated_at: NOW },
-          { id: "rd_other", key_prefix: otherKp, url: otherPending.url, status: "pending", created_at: pending.created_at, updated_at: NOW },
-        ],
-      }),
-    );
 
     const sc: Sidecar = {
       version: 2,
@@ -1775,14 +1314,11 @@ describe("runBatch — recover resume", () => {
     const other = ManifestSchema.parse(JSON.parse(h.store.get(`${otherKp}/manifest.json`)!));
     expect(other.status).toBe("pending");
     expect(other.active_attempt?.id).toBe("batch_rd_other");
-    // by-url / by-id stay consistent for the flipped reading
-    expect(JSON.parse(h.store.get(`index/by-url/${urlHash}`)!)).toEqual({ id: "rd_a", key_prefix: kp });
-    expect(JSON.parse(h.store.get("index/by-id/rd_a")!)).toEqual({ id: "rd_a", key_prefix: kp });
+    expect(h.deps.corpus.publish).toHaveBeenCalledOnce();
   });
 
   it("aborts on an activating-window sidecar, then re-runs cleanly to a single claim", async () => {
     const h = harness({ rd_a: manifest("rd_a") });
-    const byUrlKey = `index/by-url/${manifest("rd_a").url_hash}`;
 
     // activating-window crash: a sidecar with no batch id
     h.deps.loadSidecar = vi.fn(async (): Promise<PersistedSidecar> => ({
@@ -1802,10 +1338,8 @@ describe("runBatch — recover resume", () => {
     h.deps.loadSidecar = vi.fn(async () => null);
     await runBatch([row("rd_a")], h.deps);
 
-    expect([...h.store.keys()].filter((k) => k.startsWith("index/by-url/"))).toHaveLength(1);
-    expect(h.store.has(byUrlKey)).toBe(true);
-    const index = JSON.parse(h.store.get("index/list.json")!);
-    expect(index.items.filter((i: any) => i.id === "rd_a")).toHaveLength(1);
+    expect(h.deps.corpus.activate).toHaveBeenCalledOnce();
+    expect(h.deps.corpus.publish).toHaveBeenCalledOnce();
   });
 });
 

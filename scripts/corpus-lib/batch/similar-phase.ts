@@ -1,14 +1,7 @@
 import { truncateForEmbed } from "../../../src/process-reading";
 import type { SimilarContext } from "../../../src/modules/anthropic";
-import type { VectorizeMatch } from "../../lib/cf-clients";
 import type { EmbedResult } from "./clients";
-import {
-  SIMILAR_TOP_K,
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  excludeSelf,
-  summarizeSimilarity,
-} from "../../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimilarity } from "../../../src/modules/stores/similarity";
 import type { ExtractedTarget, SummarizeTarget } from "./types";
 
 // Mirror the realtime pipeline: embed the source text, query the index for the
@@ -16,12 +9,20 @@ import type { ExtractedTarget, SummarizeTarget } from "./types";
 // prompt to ground novelty_verdict + connections.
 const TOP_K = SIMILAR_TOP_K;
 
+// One neighbour from the similarity query: the reading id, its cosine score,
+// and the metadata the summarize prompt reads (url, title) when asked for.
+export interface SimilarityMatch {
+  id: string;
+  score: number;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SimilarDeps {
   embedMany(inputs: string[]): Promise<EmbedResult>;
   query(
     vector: number[],
     opts: { topK: number; returnMetadata?: boolean },
-  ): Promise<VectorizeMatch[]>;
+  ): Promise<SimilarityMatch[]>;
   now(): string;
   topK?: number;
 }

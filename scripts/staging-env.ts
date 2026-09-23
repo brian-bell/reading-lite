@@ -8,7 +8,6 @@ export interface StagingResources {
   env: "staging";
   worker: string;
   bucket: string;
-  vectorizeIndex: string;
   queue: string;
   dlq: string;
   digestQueue: string;
@@ -17,7 +16,6 @@ export interface StagingResources {
   wipeDlq: string;
   refreshQueue: string;
   refreshDlq: string;
-  d1: string;
 }
 
 export interface WranglerCommand {
@@ -43,7 +41,6 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   env: "staging",
   worker: "reading-lite-staging",
   bucket: "reading-lite-staging",
-  vectorizeIndex: "reading-lite-staging",
   queue: "reading-lite-staging",
   dlq: "reading-lite-staging-dlq",
   digestQueue: "reading-lite-staging-digest",
@@ -52,11 +49,21 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   wipeDlq: "reading-lite-staging-wipe-dlq",
   refreshQueue: "reading-lite-staging-refresh",
   refreshDlq: "reading-lite-staging-refresh-dlq",
-  d1: "reading-lite-control-staging",
 };
 
+// Staging's control plane and corpus live in PostgreSQL: the Neon rehearsal
+// branch, paired with this bucket in scripts/pg-lib/operator-db.ts. Setup
+// migrates it and teardown retains it; neither creates nor drops it, so it
+// has no entry here. The old D1 control plane (reading-lite-control-staging)
+// is deliberately absent from both lists too: it is the #348 importer's
+// source, so teardown must not delete it, and staying orphaned after the
+// cutover is expected until #351 retires it.
+//
+// The Worker binds no Vectorize index (embeddings are rows), so neither list
+// names one. The index earlier setups created, reading-lite-staging, is left
+// like the D1 database above, for #351 to retire.
+
 const ALREADY_EXISTS = [
-  /vectorize\.index\.duplicate_name/i,
   /Queue name .+ is already taken/i,
   /already exists/i,
   /exists, and you own it/i,
@@ -67,7 +74,6 @@ const MISSING_RESOURCE = [
   /does not exist/i,
   /not found/i,
   /NoSuchBucket/i,
-  /vectorize\.index\.deleted/i,
 ];
 
 const MISSING_CONSUMER = [
@@ -100,17 +106,6 @@ export function buildStagingSetupCommands(
     {
       label: "Create staging R2 bucket",
       args: ["r2", "bucket", "create", resources.bucket],
-      idempotentOk: ALREADY_EXISTS,
-    },
-    {
-      label: "Create staging Vectorize index",
-      args: [
-        "vectorize",
-        "create",
-        resources.vectorizeIndex,
-        "--dimensions=1536",
-        "--metric=cosine",
-      ],
       idempotentOk: ALREADY_EXISTS,
     },
     {
@@ -151,11 +146,6 @@ export function buildStagingSetupCommands(
     {
       label: "Create staging refresh dead-letter queue",
       args: ["queues", "create", resources.refreshDlq],
-      idempotentOk: ALREADY_EXISTS,
-    },
-    {
-      label: "Create staging D1 control plane",
-      args: ["d1", "create", resources.d1],
       idempotentOk: ALREADY_EXISTS,
     },
   ];
@@ -249,16 +239,6 @@ export function buildStagingTeardownCommands(
     {
       label: "Delete staging refresh dead-letter queue",
       args: ["queues", "delete", resources.refreshDlq],
-      idempotentOk: MISSING_RESOURCE,
-    },
-    {
-      label: "Delete staging Vectorize index",
-      args: ["vectorize", "delete", resources.vectorizeIndex, "--force"],
-      idempotentOk: MISSING_RESOURCE,
-    },
-    {
-      label: "Delete staging D1 control plane",
-      args: ["d1", "delete", resources.d1, "--skip-confirmation"],
       idempotentOk: MISSING_RESOURCE,
     },
     {

@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Sql } from "../../../src/modules/db/sql";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../../src/modules/stores/list-index";
+import { manifestToIndexItem } from "../../../src/modules/stores/list-items";
 import { contentStoreFor } from "../../../src/modules/stores/content-store";
 import { pgReadingStoreFor } from "../../../src/modules/stores/postgres/reading-store";
 import { mintTenant, readyManifest, seedManifest, testSql } from "../../helpers/pg-fixtures";

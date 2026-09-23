@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveOperatorTenant } from "../../../scripts/corpus-lib/tenant";
-import { tenantKeyRoot } from "../../../src/modules/stores/reading-store";
+import { tenantKeyRoot } from "../../../src/modules/stores/tenant-root";
 import { parseTenantId } from "../../../src/control-plane/ids";
 
 const TENANT_ID = "usr_550e8400-e29b-41d4-a716-446655440000";
@@ -29,7 +29,7 @@ describe("resolveOperatorTenant", () => {
     expect(out.tenant.kind).toBe("tenant");
     expect(out.tenant.namespace).toBe(TENANT_ID);
     // Spelling parity with the hosted data plane: the operator key root must
-    // be exactly what readingStoreFor uses when TENANT_DATA_PLANE=1.
+    // be exactly what contentStoreFor uses when TENANT_DATA_PLANE=1.
     expect(out.tenant.keyRoot).toBe(
       tenantKeyRoot({ tenantId: parseTenantId(TENANT_ID)! }, true),
     );

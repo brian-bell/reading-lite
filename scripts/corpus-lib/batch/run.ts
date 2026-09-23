@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtractedContent } from "../../../src/modules/extractor";
-import type { R2Client, VectorizeClient, VectorizeMatch } from "../../lib/cf-clients";
-import type { VectorLedger } from "../../account-lib/vector-ledger";
+import type { R2Client } from "../../lib/cf-clients";
 import type {
   AnthropicBatchClient,
   OpenAIBatchClient,
@@ -9,7 +8,7 @@ import type {
   OpenAIBatchInfo,
 } from "./clients";
 import type { AuditRow } from "../types";
-import { readManifest } from "./r2-reads";
+import type { BatchCorpus } from "./postgres";
 import { prepareTargets } from "./prepare";
 import { extractTargets } from "./extract-phase";
 import { activateRecoverTargets } from "./activation-phase";
@@ -35,7 +34,6 @@ import {
 import type { SpendRpc } from "../../../src/control-plane/paid-dispatch";
 import { prepareOpenAIBatchPayload } from "./openai-payload";
 import { pollUntilEnded } from "./poll-phase";
-import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import {
   writeOpenAIResults,
   writeResults,
@@ -59,23 +57,10 @@ import { reconcileOpenAIPreSubmitSidecar } from "./openai-reconcile";
 // Relative-key spelling only: keys built here are handed to a tenant-rooted
 // client (withKeyRoot) or tenant-rooted R2Deps, which apply the operator's
 // --tenant key root. This module never sees the root (s1k.4.3).
-const layout = r2KeyLayout();
 
 export interface BatchRunDeps {
   r2: R2Client;
-  vectorize: VectorizeClient;
-  // The durable vector-id ledger (issue #195 S3). Every id is recorded before
-  // its vector is upserted, so a batch pass running against a tenant whose
-  // account wipe is already past its vectors phase cannot leave a vector the
-  // wipe can never address. Omitted for `--tenant global` and in tests, where
-  // write-phase falls back to the no-op.
-  ledger?: VectorLedger;
-  /**
-   * The tenant's Vectorize namespace, so write-phase can compose the ADR 0002
-   * tenant-scoped vector id. Undefined for `--tenant global`. See
-   * `WriteDeps.vectorNamespace` for the pre-existing bug this closes.
-   */
-  vectorNamespace?: string;
+  corpus: BatchCorpus;
   batch?: AnthropicBatchClient;
   openaiBatch?: OpenAIBatchClient;
   embed: OpenAIEmbedClient;
@@ -293,10 +278,7 @@ export async function runBatchPipeline(
 
   let summarizeTargets = await resolveSimilar(extracted, {
     embedMany: (inputs) => deps.embed.embedMany(inputs),
-    query: async (vector, opts) => stripNamespace(
-      await deps.vectorize.query(vector, opts),
-      deps.vectorNamespace,
-    ),
+    query: deps.corpus.query,
     now: () => deps.now(),
   });
 
@@ -503,44 +485,19 @@ async function admitBatch(
 // Eager by-url claim parity with fresh ingest: activateRecoverTargets flips each
 // owner's slot to pending before batch submit (a failed→pending flip for an
 // already-held slot), closing the in-flight race window (#71).
-/**
- * Return neighbour matches under BARE reading ids.
- *
- * `SimilarityStore.query` in the Worker strips its own `{tenant}:` prefix so
- * callers only ever see reading ids; `makeVectorizeClient.query` does not, and
- * the batch pipeline consumes matches directly. That divergence was invisible
- * while this pipeline wrote bare ids — and it stopped being invisible the
- * moment `write-phase` started composing them, because the pipeline then reads
- * back its own prefixed writes.
- *
- * Two things go wrong without this, and neither is loud. `excludeSelf` compares
- * the bare reading id against a prefixed match, so a re-ingested reading no
- * longer excludes itself and spends a neighbour slot on itself at score ~1.0.
- * And the ids flow onward into `similarity` and `connections` on the manifest
- * this pipeline writes, where the read path and the SPA expect bare reading
- * ids.
- */
-function stripNamespace(
-  matches: VectorizeMatch[],
-  namespace: string | undefined,
-): VectorizeMatch[] {
-  if (namespace === undefined) return matches;
-  const prefix = `${namespace}:`;
-  return matches.map((m) =>
-    m.id.startsWith(prefix) ? { ...m, id: m.id.slice(prefix.length) } : m,
-  );
-}
-
 export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<BatchRunResult> {
   return runBatchPipeline(
     async () => {
       const prepared = await prepareTargets(rows, {
-        readManifest: (keyPrefix) => readManifest(deps.r2, keyPrefix),
+        readManifest: deps.corpus.readManifest,
         newAttemptId: deps.newAttemptId ?? newBatchAttemptId,
         now: deps.now,
       });
       const extracted = await extractTargets(prepared.targets, {
-        loadExtracted: (kp) => deps.r2.get(layout.extractedKey(kp)),
+        loadExtracted: async (kp) => {
+          const keys = await deps.corpus.contentKeys(kp);
+          return keys?.extractedKey ? deps.r2.get(keys.extractedKey) : null;
+        },
         extract: deps.extract,
       });
       return {
@@ -555,6 +512,7 @@ export async function runBatch(rows: AuditRow[], deps: BatchRunDeps): Promise<Ba
         ((targets, identity) =>
           activateRecoverTargets(targets, {
             r2: deps.r2,
+            corpus: deps.corpus,
             identity,
             now: deps.now,
             saveSidecar: deps.saveSidecar,
@@ -643,12 +601,10 @@ async function pollAndWrite(
   const results = await batch.results(ended.results_url);
   const spend = await settleBatchSpend(sidecar, anthropicResultLines(results), settleDeps(deps));
   const report = await writeResults(sidecar, results, {
+    corpus: deps.corpus,
     r2: deps.r2,
-    vectorize: deps.vectorize,
     embedMany: (inputs) => deps.embed.embedMany(inputs),
     now: deps.now,
-    ...(deps.ledger ? { ledger: deps.ledger } : {}),
-    ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
     ...(deps.log ? { log: deps.log } : {}),
   });
   return { report, spend };
@@ -715,12 +671,10 @@ async function pollAndWriteOpenAI(
       batchStatus: info.status,
     },
     {
+      corpus: deps.corpus,
       r2: deps.r2,
-      vectorize: deps.vectorize,
       embedMany: (inputs) => deps.embed.embedMany(inputs),
       now: deps.now,
-      ...(deps.ledger ? { ledger: deps.ledger } : {}),
-      ...(deps.vectorNamespace === undefined ? {} : { vectorNamespace: deps.vectorNamespace }),
       ...(deps.log ? { log: deps.log } : {}),
     },
   );

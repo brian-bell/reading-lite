@@ -1,5 +1,6 @@
 import { parseArgs } from "node:util";
 import { parseTenantId } from "../../../src/control-plane/ids";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { PAID_PRICE_CATALOG_VERSION } from "../../../src/modules/paid-pricing";
 import {
@@ -9,6 +10,7 @@ import {
   readPolicy,
   type PolicyEnvironment,
   type PolicyRow,
+  type PolicySession,
 } from "../../system-lib/policy";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 import {
@@ -18,7 +20,7 @@ import {
 } from "../policy-contract";
 
 export interface PolicyDeps extends BaseDeps {
-  connect(env: PolicyEnvironment): ControlPlaneDb;
+  connect(env: PolicyEnvironment): PolicySession;
   now(): number;
 }
 export const systemPolicyCommand: CommandDefinition<PolicyDeps> &
@@ -58,22 +60,25 @@ ${POLICY_REDACTION_PHRASE}`,
               catalog_version: 1,
             });
           return {
-            first: async <T>() => ({ ...rows.get(env)! }) as T,
-            all: async () => [],
-            batch: async () => {
-              throw new Error("unexpected batch");
-            },
-            run: async () => {
-              if (!writes) throw new Error("write in contract probe");
-              rows.set(env, {
-                ...rows.get(env)!,
-                policy_version: 4,
-                paid_work_enabled: 0,
-              });
-              return { changes: 1 };
-            },
-            transaction: () => {
-              throw new Error("unexpected transaction");
+            close: async () => {},
+            db: {
+              first: async <T>() => ({ ...rows.get(env)! }) as T,
+              all: async () => [],
+              batch: async () => {
+                throw new Error("unexpected batch");
+              },
+              run: async () => {
+                if (!writes) throw new Error("write in contract probe");
+                rows.set(env, {
+                  ...rows.get(env)!,
+                  policy_version: 4,
+                  paid_work_enabled: 0,
+                });
+                return { changes: 1 };
+              },
+              transaction: () => {
+                throw new Error("unexpected transaction");
+              },
             },
           };
         },
@@ -152,12 +157,33 @@ ${POLICY_REDACTION_PHRASE}`,
       throw new UsageError("--execute requires --acknowledge-guard-version");
     if (v.execute && env === "production" && !v["confirm-production"])
       throw new UsageError("Production execute requires --confirm-production");
-    let db: ControlPlaneDb;
+    let session: PolicySession;
     try {
-      db = deps.connect(env);
+      session = deps.connect(env);
     } catch {
       throw new Error("Policy connection failed");
     }
+    try {
+      return await applyPolicy(session.db, deps, { env, tenant, patch, ack, execute: v.execute === true });
+    } finally {
+      await session.close();
+    }
+  },
+};
+
+async function applyPolicy(
+  db: ControlPlaneDb,
+  deps: PolicyDeps,
+  v: {
+    env: PolicyEnvironment;
+    tenant: string | undefined;
+    patch: Partial<PolicyRow>;
+    ack: number | undefined;
+    execute: boolean;
+  },
+): Promise<number> {
+  {
+    const { env, tenant, patch, ack } = v;
     const before = await readPolicy(db, tenant);
     // Convergence is about stored state. A repeated old command leaves its
     // result intact but must still refuse: allowing a stale acknowledgement
@@ -203,9 +229,12 @@ ${POLICY_REDACTION_PHRASE}`,
     let changed: number;
     try {
       ({ changes: changed } = await db.run(
-        `UPDATE ${table} SET ${changes.map(([key]) => `${key} = ?`).join(", ")}, policy_version = policy_version + 1, updated_at_ms = ? WHERE ${tenant ? "tenant_id = ?" : "id = 1"} AND policy_version = ?`,
+        // `updated_at` is timestamptz (migration 0003), not the D1-era
+        // `updated_at_ms`; it crosses the boundary as a Date via toTimestamp,
+        // which is the one sanctioned conversion.
+        `UPDATE ${table} SET ${changes.map(([key]) => `${key} = ?`).join(", ")}, policy_version = policy_version + 1, updated_at = ? WHERE ${tenant ? "tenant_id = ?" : "id = 1"} AND policy_version = ?`,
         ...changes.map(([, value]) => value),
-        deps.now(),
+        toTimestamp(deps.now()),
         ...(tenant ? [tenant] : []),
         before.policy_version,
       ));
@@ -222,5 +251,5 @@ ${POLICY_REDACTION_PHRASE}`,
       `Applied policy version ${after.policy_version}. Spend charges are unchanged.`,
     );
     return 0;
-  },
-};
+  }
+}

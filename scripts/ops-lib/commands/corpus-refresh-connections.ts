@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
-import { ListIndexSchema, type ListIndexItem } from "../../../src/schemas/api";
+import type { ListIndexItem } from "../../../src/schemas/api";
 import { ManifestSchema } from "../../../src/schemas/manifest";
 import {
   buildAnthropicRelationshipRequestBody,
@@ -17,7 +17,6 @@ import {
   parseSummarizerProvider,
   type SummarizerProvider,
 } from "../../../src/modules/summarizer";
-import { LIST_INDEX_KEY, r2KeyLayout } from "../../../src/modules/stores/layout";
 import {
   buildRelationshipJudgementInput,
   isJudgedForReport,
@@ -27,14 +26,19 @@ import {
   type RefreshConnectionsReportReading,
 } from "../../corpus-lib/refresh-connections";
 import { describeReportScope } from "../../corpus-lib/refresh-neighbours";
-import { operatorTenantSelector } from "../../corpus-lib/tenant";
+import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { loadDotVars } from "../../lib/dotvars";
+import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
-  r2InventoryClientFromVars,
-  refreshS3RequestDeps,
-  type R2InventoryClient,
-} from "../../lib/cf-clients";
+  listItems,
+  manifestVersion,
+  replaceRelationships,
+  requireTenantRows,
+  withOperatorCorpus,
+  type PublishedReplacement,
+  type SkippedTarget,
+} from "../../pg-lib/operator-corpus";
 import {
   SUMMARIZER_PRICE_DATE,
   approximateTokens,
@@ -65,7 +69,6 @@ import {
   realSleep,
 } from "../execute-pool";
 import { runKeyedPool } from "../../lib/concurrency";
-import { casMergeListIndex, type ListRowPatch } from "../list-index-cas";
 import {
   PHASE_PLANNING_READS,
   PHASE_PROVIDER,
@@ -84,10 +87,11 @@ import {
 } from "../judgement-usage";
 
 const ASSUMED_OUTPUT_TOKENS = 256;
-const layout = r2KeyLayout();
 
 interface Args {
   tenant?: string;
+  databaseUrlEnv?: string;
+  local: boolean;
   billingTenant?: string;
   report: string;
   bucket: string;
@@ -98,25 +102,43 @@ interface Args {
   maxBackoffMs: number;
 }
 
-export interface StoredRawManifest {
+/**
+ * A reading as planning read it, with the version the write compares against.
+ *
+ * `version` is the content hash `src/relationship-judge.ts` uses, standing in
+ * for the manifest ETag the compare-and-set used to witness: planning reads a
+ * manifest, the provider judges from it, and the replace re-reads under the row
+ * lock and refuses unless the hash still matches.
+ */
+export interface StoredManifest {
   manifest: Record<string, unknown>;
-  etag: string;
+  version: string;
 }
 
 export interface RefreshConnectionsStorage {
-  readListIndex(): Promise<ListIndexItem[]>;
-  readManifest(keyPrefix: string): Promise<StoredRawManifest | null>;
-  putManifestIfMatch(
-    keyPrefix: string,
-    manifest: Record<string, unknown>,
-    etag: string,
-  ): Promise<boolean>;
+  listItems(): Promise<ListIndexItem[]>;
+  readManifest(id: string): Promise<StoredManifest | null>;
   /**
-   * Applies this run's `novelty_verdict` decisions to index/list.json as a CAS
-   * read-merge-write, so rows the run never judged keep whatever the live
-   * document has for them.
+   * Writes one judged relationship set: the rows AND the summary flags on the
+   * reading's current revision, in one transaction under the row lock.
+   *
+   * There is no second write to reconcile. The novelty verdict is a column of
+   * the same row, so the closing index/list.json flush — and the list-row heal
+   * that existed to repair what a failed flush left behind — are gone with the
+   * document that needed them.
    */
-  mergeListRows(patches: ListRowPatch[]): Promise<void>;
+  replaceRelationships(entries: readonly PublishedReplacement[]): Promise<{
+    replaced: boolean;
+    skippedTargets: SkippedTarget[];
+  }>;
+}
+
+/** Which corpus a pass opens: the bucket names the database, the tenant the rows. */
+export interface StoreTarget {
+  bucket: string;
+  local: boolean;
+  databaseUrlEnv?: string;
+  tenant: OperatorTenant;
 }
 
 export interface RelationshipProviderPlan {
@@ -133,10 +155,11 @@ export interface RelationshipProviderPlan {
 
 export interface CorpusRefreshConnectionsDeps extends BaseDeps {
   readReport: (path: string) => Promise<string>;
-  createStorage: (
-    bucket: string,
-    keyRoot: string,
-  ) => Promise<RefreshConnectionsStorage>;
+  /** Opens the corpus for one pass and closes the session on every exit path. */
+  withStore: <T>(
+    target: StoreTarget,
+    work: (storage: RefreshConnectionsStorage) => Promise<T>,
+  ) => Promise<T>;
   // `paidFetch` is the spend-admitted transport, present only under --execute.
   // Without it the provider's judge refuses rather than reach a provider unguarded.
   loadProvider: (execute: boolean, paidFetch?: typeof fetch) => Promise<RelationshipProviderPlan>;
@@ -150,26 +173,19 @@ export interface CorpusRefreshConnectionsDeps extends BaseDeps {
 }
 
 interface Action {
-  kind: "judge" | "heal";
   report: RefreshConnectionsReportReading;
   row: ListIndexItem;
-  stored: StoredRawManifest;
-  input?: RelationshipJudgementInput;
-  allowedIds?: Set<string>;
-  estimate?: ReturnType<RelationshipProviderPlan["estimate"]>;
+  stored: StoredManifest;
+  input: RelationshipJudgementInput;
+  allowedIds: Set<string>;
+  estimate: ReturnType<RelationshipProviderPlan["estimate"]>;
 }
 
 /** What one execute action produced, held until its turn in plan order. */
 interface ExecuteOutcome {
   stdout: string[];
   stderr: string[];
-  kind: "judged" | "healed" | "failed" | "skipped";
-  /**
-   * The verdict to flush onto the list row. Read for every outcome that
-   * judged or healed, `undefined` included: a manifest whose `novelty_verdict`
-   * is absent is exactly the drift a heal exists to clear off the row.
-   */
-  verdict: ListIndexItem["novelty_verdict"];
+  kind: "judged" | "failed" | "skipped";
   /** Present whenever the provider was called and billed. */
   usage?: RelationshipJudgementResult["usage"];
 }
@@ -182,6 +198,8 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
       options: {
         tenant: { type: "string" },
         "billing-tenant": { type: "string" },
+        "database-url-env": { type: "string" },
+        local: { type: "boolean", default: false },
         report: { type: "string", default: "refresh-report.json" },
         bucket: {
           type: "string",
@@ -207,6 +225,10 @@ function parseRefreshConnectionsArgs(argv: string[]): Args {
   }
   return {
     ...(values.tenant === undefined ? {} : { tenant: values.tenant }),
+    ...(values["database-url-env"] === undefined
+      ? {}
+      : { databaseUrlEnv: values["database-url-env"] }),
+    local: values.local === true,
     report: values.report!,
     ...(values["billing-tenant"] === undefined ? {} : { billingTenant: values["billing-tenant"] }),
     bucket: values.bucket!,
@@ -229,6 +251,10 @@ async function runCorpusRefreshConnections(
   const timer = createRefreshTimer(deps.now);
   try {
     const tenant = requireOperatorTenant(args.tenant);
+    // Before the spend session opens: `--tenant global` names the pre-tenant R2
+    // layout, which has no rows to judge, and admitting spend for work that
+    // cannot happen is the failure worth preventing.
+    requireTenantRows(tenant);
     const billingTenant = resolveBillingTenant(args.billingTenant, { tenant, execute: args.execute });
     // An --execute without --sole-writer is refused inside, before any provider
     // is loaded, so it needs no spend session either.
@@ -270,20 +296,41 @@ async function refreshConnections(
   // execute writes against the ETags those reads returned. A read added back
   // to the execute path would need its own phase again — the selector is a
   // function so that it can be given one — or it would hide inside this total.
-  const storage = timedRefreshStorage(
-    await deps.createStorage(args.bucket, tenant.keyRoot),
-    timer,
-    () => PHASE_PLANNING_READS,
+  return deps.withStore(
+    {
+      bucket: args.bucket,
+      local: args.local,
+      ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
+      tenant,
+    },
+    (raw) => judgeFromReport(args, deps, timer, { report, provider, selector, storage: raw }),
   );
-  const items = await storage.readListIndex();
+}
+
+interface JudgeContext {
+  report: ReturnType<typeof parseRefreshConnectionsReport>;
+  provider: RelationshipProviderPlan;
+  selector: string;
+  storage: RefreshConnectionsStorage;
+}
+
+async function judgeFromReport(
+  args: Args,
+  deps: CorpusRefreshConnectionsDeps,
+  timer: RefreshTimer,
+  ctx: JudgeContext,
+): Promise<number> {
+  const { report, provider, selector } = ctx;
+  const storage = timedRefreshStorage(ctx.storage, timer, () => PHASE_PLANNING_READS);
+  const items = await storage.listItems();
   const byId = new Map(items.map((item) => [item.id, item]));
-  const manifests = createPrefetchingReader<StoredRawManifest | null>((keyPrefix) =>
-    storage.readManifest(keyPrefix),
+  const manifests = createPrefetchingReader<StoredManifest | null>((id) =>
+    storage.readManifest(id),
   );
-  const readStored = (row: ListIndexItem): Promise<StoredRawManifest | null> =>
-    manifests.read(row.key_prefix);
+  const readStored = (row: ListIndexItem): Promise<StoredManifest | null> =>
+    manifests.read(row.id);
   const prefetchStored = (rows: readonly ListIndexItem[]): Promise<void> =>
-    manifests.prefetch(rows.map((row) => row.key_prefix));
+    manifests.prefetch(rows.map((row) => row.id));
   const liveReadyIds = new Set<string>();
   const invalidCandidateIds = new Set<string>();
   let planningFailed = false;
@@ -299,7 +346,7 @@ async function refreshConnections(
   for (const id of candidateIds) {
     const row = byId.get(id);
     if (!row || row.status !== "ready") continue;
-    let stored: StoredRawManifest | null;
+    let stored: StoredManifest | null;
     try {
       stored = await readStored(row);
     } catch (error) {
@@ -368,7 +415,7 @@ async function refreshConnections(
       deps.io.stderr(`  ! skip ${reportReading.id}: live ready list row does not match report`);
       continue;
     }
-    let stored: StoredRawManifest | null;
+    let stored: StoredManifest | null;
     try {
       stored = await readStored(row);
     } catch (error) {
@@ -395,12 +442,10 @@ async function refreshConnections(
         `report is stale: target ${reportReading.id} changed after ${report.generated_at}; regenerate it`,
       );
     }
-    if (isJudgedForReport(stored.manifest, report.generated_at)) {
-      if (row.novelty_verdict !== stored.manifest.novelty_verdict) {
-        actions.push({ kind: "heal", report: reportReading, row, stored });
-      }
-      continue;
-    }
+    // Already judged for this report: a resume marker, and now the whole of
+    // it. The list row IS this row, so its verdict cannot disagree with the
+    // manifest's and there is nothing left to heal.
+    if (isJudgedForReport(stored.manifest, report.generated_at)) continue;
     const neighbours = liveReportNeighbours(reportReading, liveReadyIds);
     let input: RelationshipJudgementInput;
     try {
@@ -419,7 +464,6 @@ async function refreshConnections(
     }
     const allowedIds = new Set(neighbours.map((neighbour) => neighbour.id));
     actions.push({
-      kind: "judge",
       report: reportReading,
       row,
       stored,
@@ -431,7 +475,7 @@ async function refreshConnections(
 
   const selected =
     args.limit === undefined ? actions : actions.slice(0, args.limit);
-  deps.io.stdout(`Bucket: ${args.bucket}`);
+  deps.io.stdout(`Bucket: ${args.bucket}${args.local ? " (local)" : ""}`);
   deps.io.stdout(`Tenant: ${selector}`);
   deps.io.stdout(`Report: ${args.report} (${report.readings.length} flagged)`);
   // What tier 1 measured, from the report's own header: a nightly log that does
@@ -447,13 +491,7 @@ async function refreshConnections(
 
   let estimatedTotal = 0;
   for (const action of selected) {
-    if (action.kind === "heal") {
-      deps.io.stdout(
-        `  ${action.report.id}  heal-list  verdict=${String(action.stored.manifest.novelty_verdict)}`,
-      );
-      continue;
-    }
-    const estimate = action.estimate!;
+    const estimate = action.estimate;
     estimatedTotal += estimate.costUsd;
     const priorVerdict = action.report.novelty_verdict ?? "(unset)";
     const priorConnections =
@@ -485,12 +523,10 @@ async function refreshConnections(
   });
   if (soleWriter.message) deps.io.stderr(soleWriter.message);
 
-  const verdictUpdates = new Map<string, ListIndexItem["novelty_verdict"]>();
   let failures = 0;
   let judged = 0;
-  let healed = 0;
-  let flushFailed = false;
   let ceilingSkipped = 0;
+  const skippedTargets: SkippedTarget[] = [];
   const usageTotals = emptyUsageTotals();
   const gate = createRateLimitGate({
     now: deps.now,
@@ -513,12 +549,7 @@ async function refreshConnections(
   // action has been folded, so overlapping the calls cannot reorder the run's
   // output or its accounting.
   const runAction = async (action: Action): Promise<ExecuteOutcome> => {
-    const outcome: ExecuteOutcome = {
-      stdout: [],
-      stderr: [],
-      kind: "failed",
-      verdict: undefined,
-    };
+    const outcome: ExecuteOutcome = { stdout: [], stderr: [], kind: "failed" };
     const failWith = (message: string): ExecuteOutcome => {
       outcome.stderr.push(`  ! ${action.report.id}: ${message}`);
       return outcome;
@@ -530,26 +561,17 @@ async function refreshConnections(
       );
       return outcome;
     };
-    if (action.kind === "heal") {
-      outcome.kind = "healed";
-      outcome.verdict = action.stored.manifest
-        .novelty_verdict as ListIndexItem["novelty_verdict"];
-      return outcome;
-    }
-    // The ceiling stops the paid work only: every heal is above this line and
-    // runs, for the same reason `--limit` caps judgements and never the free
-    // repairs. Only the provider call below is worth stopping for.
     if (gate.stopped()) return ceilingSkip();
-    // No re-read: planning read this manifest and kept its ETag, and a report
+    // No re-read: planning read this reading and kept its version, and a report
     // names a reading once, so nothing earlier in this pass can have written
-    // it. The conditional write below is what detects a manifest that changed
+    // it. The conditional write below is what detects a reading that changed
     // since planning, and it detects the changes a re-read never could — the
     // ones that land while the judgement is in flight.
     const current = action.stored;
     try {
       // Built at plan time from this same manifest, and the estimate printed
       // in plan order was made from it.
-      const input = action.input!;
+      const input = action.input;
       // The one place a rate limit is observed for the whole pass: wait for any
       // window another worker opened before adding to it. The wait sits here
       // rather than earlier because it is the paid call it is pacing.
@@ -570,19 +592,36 @@ async function refreshConnections(
       const merged = mergeRelationshipJudgement(
         current.manifest,
         result.judgement,
-        action.allowedIds!,
+        action.allowedIds,
         new Date(deps.now()).toISOString(),
       );
       if (!merged.ok) return failWith(merged.error);
-      const wrote = await storage.putManifestIfMatch(
-        action.row.key_prefix,
-        merged.manifest,
-        current.etag,
-      );
-      if (!wrote) return failWith("manifest CAS lost; no overwrite performed");
+      const next = ManifestSchema.safeParse(merged.manifest);
+      // The judgement is merged onto a manifest that already parsed, so this
+      // can only fail on what the provider contributed. Refused rather than
+      // written: the rows are the corpus now, and a reading the Worker would
+      // reject at read time must not be stored.
+      if (!next.success) return failWith(`judged manifest is invalid: ${next.error.message}`);
+      const written = await storage.replaceRelationships([
+        {
+          id: action.report.id,
+          matches: async (live) => (await manifestVersion(live)) === current.version,
+          next: next.data,
+        },
+      ]);
+      if (!written.replaced) {
+        return failWith("the reading changed since it was planned; no overwrite performed");
+      }
+      // A target dropped between the judgement and the write. Reported rather
+      // than stored, so no refresh needs `corpus purge-connections` run behind
+      // it to stay consistent.
+      for (const skipped of written.skippedTargets) {
+        outcome.stderr.push(
+          `  ! ${skipped.sourceId}: skipped ${skipped.kind} target ${skipped.targetId}: no longer exists`,
+        );
+        skippedTargets.push(skipped);
+      }
       outcome.kind = "judged";
-      outcome.verdict = merged.manifest
-        .novelty_verdict as ListIndexItem["novelty_verdict"];
       return outcome;
     } catch (error) {
       return failWith(error instanceof Error ? error.message : String(error));
@@ -609,54 +648,30 @@ async function refreshConnections(
               `  ! ${action.report.id}: ${error instanceof Error ? error.message : String(error)}`,
             ],
             kind: "failed" as const,
-            verdict: undefined,
           };
         }
       },
-      (outcome, index) => {
+      (outcome) => {
         for (const line of outcome.stdout) deps.io.stdout(line);
         for (const line of outcome.stderr) deps.io.stderr(line);
         if (outcome.usage) addUsage(usageTotals, outcome.usage);
-        // Keyed on the outcome, not on the value: a heal whose manifest has
-        // no verdict must still clear the stale one off the list row, or it
-        // is re-planned every run and never fixed. Which is exactly why the
-        // two outcomes that read a verdict have to be named: a skip never read
-        // the manifest at all, and would otherwise clear a row that is right.
-        if (outcome.kind === "judged" || outcome.kind === "healed") {
-          verdictUpdates.set(selected[index]!.report.id, outcome.verdict);
-        }
         if (outcome.kind === "judged") judged++;
-        else if (outcome.kind === "healed") healed++;
         else if (outcome.kind === "skipped") ceilingSkipped++;
         else failures++;
       },
     );
   } finally {
-    if (verdictUpdates.size > 0) {
-      // One patch per judged or healed row. The key is always present, so an
-      // undefined verdict clears the stale one off the row rather than leaving
-      // it to be re-planned every run.
-      const patches: ListRowPatch[] = [...verdictUpdates].map(([id, novelty_verdict]) => ({
-        id,
-        novelty_verdict,
-      }));
-      try {
-        await storage.mergeListRows(patches);
-      } catch (error) {
-        flushFailed = true;
-        deps.io.stderr(
-          `  ! index/list.json write failed: ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
+    // Nothing to flush: the verdict landed on the reading's own row inside the
+    // same transaction as its relationships.
   }
 
   deps.io.stdout(
-    `\nJudged: ${judged}; list rows healed: ${healed}; failures: ${failures}` +
+    `\nJudged: ${judged}; failures: ${failures}` +
+      (skippedTargets.length > 0 ? `; targets skipped as missing: ${skippedTargets.length}` : "") +
       (ceilingSkipped > 0 ? `; skipped at the backoff ceiling: ${ceilingSkipped}` : ""),
   );
   deps.io.stdout(formatUsageTotals(usageTotals));
-  return planningFailed || failures > 0 || flushFailed || ceilingSkipped > 0 ? 1 : 0;
+  return planningFailed || failures > 0 || ceilingSkipped > 0 ? 1 : 0;
 }
 
 function validTargetManifest(
@@ -691,15 +706,6 @@ function manifestChangedSinceReport(
 ): boolean {
   if (typeof manifest.updated_at !== "string") return true;
   return Date.parse(manifest.updated_at) > Date.parse(reportGeneratedAt);
-}
-
-function defaultStorageVars(): Record<string, string | undefined> {
-  return {
-    ...loadDotVars(".dev.vars"),
-    ...loadDotVars(".prd.vars"),
-    ...loadDotVars(".corpus.vars"),
-    ...process.env,
-  };
 }
 
 export function parseProductionWorkerVars(
@@ -833,62 +839,30 @@ function estimateAnthropic(
   return { inputTokens, outputTokens: ASSUMED_OUTPUT_TOKENS, costUsd };
 }
 
-async function createDefaultStorage(
-  bucket: string,
-  keyRoot: string,
-): Promise<RefreshConnectionsStorage> {
-  // The deadline and transient retry are the refresh commands' policy, not
-  // every ops command's: opt in here rather than in the shared client.
-  const client = r2InventoryClientFromVars(
-    defaultStorageVars(),
-    bucket,
-    globalThis.fetch,
-    refreshS3RequestDeps(),
-  );
-  return storageFromClient(client, keyRoot);
-}
-
-export function storageFromClient(
-  client: R2InventoryClient,
-  keyRoot: string,
-): RefreshConnectionsStorage {
-  const rooted = (key: string) => `${keyRoot}${key}`;
-  return {
-    async readListIndex() {
-      const body = await client.get(rooted(LIST_INDEX_KEY));
-      if (body === null) throw new Error(`${LIST_INDEX_KEY} not found`);
-      return ListIndexSchema.parse(JSON.parse(body)).items;
-    },
-    // One GET. The ETag CAS needs comes back on the read response, so the
-    // LIST that used to fetch it alongside the body is gone: half the requests,
-    // and no window in which the two halves disagree.
-    async readManifest(keyPrefix) {
-      const key = rooted(layout.manifestKey(keyPrefix));
-      const object = await client.getWithEtag(key);
-      if (object === null) return null;
-      // Every write back to this manifest is an If-Match on this token, and an
-      // empty one loses the CAS after the judgement has already been paid for.
-      // R2 always sends an ETag, so this is a broken response, not a corpus
-      // state: say so before the plan is built on it.
-      if (object.etag === "") throw new Error(`manifest ${keyPrefix} was read without an ETag`);
-      const raw: unknown = JSON.parse(object.body);
-      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-        throw new Error(`manifest ${keyPrefix} is not an object`);
-      }
-      return { manifest: raw as Record<string, unknown>, etag: object.etag };
-    },
-    async putManifestIfMatch(keyPrefix, manifest, etag) {
-      return client.putIfMatch(
-        rooted(layout.manifestKey(keyPrefix)),
-        JSON.stringify(manifest),
-        etag,
-        { contentType: "application/json" },
-      );
-    },
-    async mergeListRows(patches) {
-      await casMergeListIndex(client, rooted(LIST_INDEX_KEY), patches);
-    },
-  };
+/**
+ * The default store: one direct PostgreSQL session for the whole pass, closed
+ * on every exit path. `requireTenantRows` refuses `--tenant global`, which
+ * names the pre-tenant R2 layout and has no rows to judge.
+ */
+export function openStore(
+  open: OpenOperatorSql,
+  env: Record<string, string | undefined>,
+): CorpusRefreshConnectionsDeps["withStore"] {
+  return (target, work) =>
+    withOperatorCorpus(target, env, open, ({ sql, tenant, store: rows }) =>
+      work({
+        listItems: () => listItems(rows),
+        readManifest: async (id) => {
+          const found = await rows.loadReadingById(id);
+          if (!found) return null;
+          return {
+            manifest: found.manifest as unknown as Record<string, unknown>,
+            version: await manifestVersion(found.manifest),
+          };
+        },
+        replaceRelationships: (entries) => replaceRelationships(sql, tenant, entries),
+      }),
+    );
 }
 
 export const corpusRefreshConnectionsCommand: CommandDefinition<CorpusRefreshConnectionsDeps> = {
@@ -906,22 +880,27 @@ header is Scope: unstated, not full — pre-header refresh-neighbours already
 accepted positional IDs and --limit, so coverage is not known.
 
 Execute mode updates only connections, novelty_verdict, and
-connections_computed_at, then synchronizes each list-row verdict. It requires a
-sole-writer window and uses ETag CAS writes for both the manifests and the
-closing index/list.json flush, which merges only the verdicts of the rows it
-judged onto the live index. Completed manifests are
-resume markers, so a rerun heals a stale list row without another paid call. It
-prints the provider token usage of each judgement and a run total.
+connections_computed_at. It requires a sole-writer window, and each judgement
+is written in one transaction that locks the reading's row before it re-reads
+it: a reading that changed since it was planned is refused rather than
+overwritten. A judged reading is its own resume marker, so a rerun costs
+nothing for the readings a previous pass finished. A connection naming a
+reading that has since been deleted is dropped and reported, so no refresh
+needs 'corpus purge-connections' run behind it. It prints the provider token
+usage of each judgement and a run total.
 
 Options:
   --report <path>      Tier-one report. Default: ./refresh-report.json.
-  --limit <n>          Cap selected judgement or list-heal actions.
+  --limit <n>          Cap selected judgement actions.
   --concurrency <n>    Judgements in flight during --execute. Default: 4.
   --max-backoff <dur>  Cumulative rate-limit backoff this pass will wait out
                        before it stops dispatching judgements; free repairs still
                        run. Default: 10m (bare = seconds); 30s to 30m.
-  --bucket <name>      R2 bucket. Default: READING_LITE_BUCKET / reading-lite.
-  --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global'.
+  --bucket <name>      R2 bucket, which names the database this pass writes.
+                       Default: READING_LITE_BUCKET / reading-lite.
+  --tenant <selector>  REQUIRED: the tenant id (usr_…) whose corpus to judge.
+${DATABASE_URL_ENV_FLAG_HELP}
+  --local              Use this checkout's own PostgreSQL.
   ${BILLING_TENANT_FLAG_HELP}
                        Default: --tenant. Required to --execute with --tenant global.
   --execute            Make paid provider calls and write results.
@@ -930,7 +909,7 @@ Options:
   defaultDeps: (io: CommandIo): CorpusRefreshConnectionsDeps => ({
     io,
     readReport: (path) => readFile(path, "utf8"),
-    createStorage: createDefaultStorage,
+    withStore: openStore(openOperatorSql, process.env),
     loadProvider: async (execute, paidFetch) =>
       providerFromVars(await defaultProviderVars(), execute, paidFetch ? { fetch: paidFetch } : {}),
     openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),

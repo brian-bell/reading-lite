@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { excludeSelf, summarizeSimilarity } from "../../../src/modules/stores/similarity-store";
-import type { SimilarityMatch } from "../../../src/modules/stores/similarity-store";
+import { excludeSelf, summarizeSimilarity } from "../../../src/modules/stores/similarity";
+import type { SimilarityMatch } from "../../../src/modules/stores/similarity";
 
 const AT = "2026-08-22T00:00:00.000Z";
 const m = (id: string, score: number): SimilarityMatch => ({ id, score, url: `https://x/${id}` });
