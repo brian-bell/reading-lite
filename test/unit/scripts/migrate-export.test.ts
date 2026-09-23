@@ -153,6 +153,14 @@ describe("migrate export: collection", () => {
     expect(collection.report.blocking.filter((d) => d.id === "rd_PURGED001").map((d) => d.code)).toEqual(["tombstoned_manifest"]);
   });
 
+  it("does not block on the url_hash of a tombstoned reading that import will skip", async () => {
+    const { collection } = await exported((lib) => {
+      lib.addReading({ id: "rd_PURGED002", manifest: { url_hash: collection_urlHash("https://example.com/elsewhere") } });
+      lib.put(`u/${LEGACY_TENANT}/index/deleted/rd_PURGED002`, "");
+    });
+    expect(collection.report.blocking.filter((d) => d.id === "rd_PURGED002").map((d) => d.code)).toEqual(["tombstoned_manifest"]);
+  });
+
   it("refuses a returned vector that is not 1536 finite dimensions", async () => {
     const { collection } = await exported((lib) => lib.addReading({ id: "rd_WIDE00001", vector: "invalid" }));
     expect(findings(collection)).toContainEqual(expect.objectContaining({ code: "vector_invalid", id: "rd_WIDE00001" }));
@@ -160,7 +168,24 @@ describe("migrate export: collection", () => {
     expect(collection.reembed).toEqual([]);
   });
 
+  it("refuses a returned vector stored under another namespace, which the tenant's search never saw", async () => {
+    const { collection } = await exported((lib) => {
+      lib.addReading({ id: "rd_ELSEWHR01" });
+      lib.vectorIndex.get(`${LEGACY_TENANT}:rd_ELSEWHR01`)!.namespace = OTHER_TENANT;
+    });
+    expect(collection.library.readings.find((r) => r.id === "rd_ELSEWHR01")!.embedding).toBeNull();
+    expect(collection.report.vectors.invalid).toEqual(["rd_ELSEWHR01"]);
+    expect(findings(collection)).toContainEqual(expect.objectContaining({ code: "vector_namespace_mismatch", id: "rd_ELSEWHR01" }));
+    expect(collection.report.blocking).toContainEqual(expect.objectContaining({ code: "unusable_vector", id: "rd_ELSEWHR01" }));
+    expect(collection.reembed).toEqual([]);
+  });
+
   it.each([
+    [
+      "a manifest whose url_hash is not the hash of its url",
+      (lib: LegacyLibrary) => lib.addReading({ id: "rd_BADHASH01", manifest: { url_hash: collection_urlHash("https://example.com/elsewhere") } }),
+      "url_hash_mismatch",
+    ],
     [
       "a tenant with no account row",
       (lib: LegacyLibrary) => lib.tables.users!.splice(0, 1),

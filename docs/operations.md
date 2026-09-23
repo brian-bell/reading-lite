@@ -2315,7 +2315,9 @@ explicitly with `--accept <code>`:
 | `unresolved_pending` | Imports a pending reading, or one with an active attempt, with its attempt summary and log but **no `reading_jobs` row**, so nothing runs it. Drain the queues before the final freeze so this list is empty. |
 | `unusable_vector` | Imports a ready reading without an embedding, which leaves it unsearchable. |
 
-`duplicate_reading_id`, `tenant_account_missing` (the library would import
+`duplicate_reading_id`, `url_hash_mismatch` (a manifest's `url_hash` is not
+the sha256 of its `url`, so the imported owner is one no lookup finds),
+`tenant_account_missing` (the library would import
 with no account behind it, outside every deletion path), `unfinished_wipe` (only completed wipes import; the
 deploy gate refuses unfinished ones anyway) and `invalid_control_plane_row` (a
 D1 column with no mapping is never dropped silently) cannot be accepted. Fix
@@ -2337,7 +2339,10 @@ copy owns the URL; the others import unowned and, as the runtime stores them,
 without an embedding), dangling relationships (imported,
 because detail reads tolerate a missing target), missing content, size and
 hash mismatches of the raw object, list-index and pointer disagreements, and
-found, retried, re-embedded, invalid and non-ready vectors. `--json` on either
+found, retried, re-embedded, invalid and non-ready vectors. A vector
+`get_by_ids` returns under another namespace counts as invalid
+(`vector_namespace_mismatch`): the tenant's search never saw it, so it is not
+imported. `--json` on either
 command puts the report alone on stdout, with the human lines on stderr, so it
 redirects to a file cleanly. On import it is the target-side report: rows and a hash per table, skipped readings,
 findings and the verification result. It contains no timestamps or connection

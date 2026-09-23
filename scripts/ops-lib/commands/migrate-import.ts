@@ -208,8 +208,9 @@ otherwise it rolls back and exits 1.
 
 Blocking findings refuse --execute until accepted one code at a time:
 ${ACCEPTABLE_CODES.map((code) => `  ${code.padEnd(20)} ${describeAcceptance(code)}`).join("\n")}
-duplicate_reading_id, tenant_account_missing, unfinished_wipe and
-invalid_control_plane_row cannot be accepted: fix the source and export again.
+duplicate_reading_id, url_hash_mismatch, tenant_account_missing,
+unfinished_wipe and invalid_control_plane_row cannot be accepted: fix the
+source and export again.
 
 Options:
   --snapshot <dir>     A snapshot directory from \`ops migrate export\`. Required.

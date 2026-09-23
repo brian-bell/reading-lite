@@ -7,7 +7,7 @@
 
 import { ManifestSchema, type Manifest } from "../../src/schemas/manifest";
 import { EMBEDDING_DIM } from "../../src/schemas/api";
-import { canonicalHash, canonicalJson, type LibraryEntry } from "./snapshot";
+import { canonicalHash, canonicalJson, sha256Text, type LibraryEntry } from "./snapshot";
 import { CONTROL_PLANE_TABLES, toPgRow } from "./control-plane-map";
 
 export interface Discrepancy {
@@ -29,6 +29,7 @@ export const BLOCKING_CODES = {
   },
   unusable_vector: { accept: "the reading is imported without an embedding and is not searchable" },
   duplicate_reading_id: {},
+  url_hash_mismatch: {},
   tenant_account_missing: {},
   unfinished_wipe: {},
   invalid_control_plane_row: {},
@@ -218,6 +219,12 @@ export function blockingIssues(
     const manifest = parsed.manifest;
     if (!prefixMatchesId(entry.key_prefix, entry.id)) {
       issues.push({ code: "identity_mismatch", id: entry.id, key: entry.key_prefix });
+    }
+    // reading_urls is keyed by this hash and lookups compute it from the URL,
+    // so a wrong one imports an owner no lookup finds, and intake would claim
+    // the URL a second time. A tombstoned reading is only ever skipped.
+    if (!tombstoned.has(entry.id) && sha256Text(manifest.url) !== manifest.url_hash) {
+      issues.push({ code: "url_hash_mismatch", id: entry.id, detail: `url_hash ${manifest.url_hash} is not sha256 of ${manifest.url}` });
     }
     if (tombstoned.has(entry.id)) issues.push({ code: "tombstoned_manifest", id: entry.id, key: entry.key_prefix });
     if (isUnresolved(manifest)) {

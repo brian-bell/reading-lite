@@ -320,8 +320,8 @@ export async function collectExport(tenantId: string, deps: ExportDeps): Promise
   const manifests = [...parsedById.values()];
   const ids = new Set(manifests.map((m) => m.manifest.id));
 
-  // URL ownership. The by-url pointer decides; a reading's own url_hash must
-  // also be the hash of its url.
+  // URL ownership. The by-url pointer decides. A reading whose url_hash is not
+  // the hash of its url is blocking (blockingIssues: url_hash_mismatch).
   const pointers = new Map<string, { id: string; key_prefix: string }>();
   for (const hash of byUrl) {
     const decoded = decodeJson(body(`${root}index/by-url/${hash}`));
@@ -334,9 +334,6 @@ export async function collectExport(tenantId: string, deps: ExportDeps): Promise
   }
   const groups = new Map<string, Manifest[]>();
   for (const { manifest } of manifests) {
-    if (sha256Text(manifest.url) !== manifest.url_hash) {
-      note({ code: "url_hash_mismatch", id: manifest.id, detail: `url_hash ${manifest.url_hash} is not sha256 of ${manifest.url}` });
-    }
     groups.set(manifest.url_hash, [...(groups.get(manifest.url_hash) ?? []), manifest]);
   }
   const duplicateOwners: ExportReport["duplicate_url_owners"] = [];
@@ -455,8 +452,12 @@ export async function collectExport(tenantId: string, deps: ExportDeps): Promise
       note({ code: "vector_reembedded", id: manifest.id, detail: "get_by_ids did not return it; embedded from the manifest tldr" });
       continue;
     }
+    // A vector under another namespace was never in this tenant's similarity
+    // scan; importing it would make it searchable here for the first time.
     if (vector.namespace !== undefined && vector.namespace !== tenantId) {
-      note({ code: "vector_namespace_mismatch", id: manifest.id, detail: `namespace ${vector.namespace}` });
+      invalid.push(manifest.id);
+      note({ code: "vector_namespace_mismatch", id: manifest.id, detail: `namespace ${vector.namespace}; not imported` });
+      continue;
     }
     const problem = vectorProblem(vector.values);
     if (problem !== null) {
