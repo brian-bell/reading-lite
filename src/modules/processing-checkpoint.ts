@@ -7,7 +7,7 @@ import {
 } from "../schemas/manifest";
 import type { EmbeddingResult } from "./embeddings";
 import type { SimilarContext, SummarizeReadingResult } from "./summarizer";
-import type { SimilaritySnapshot } from "./stores/similarity-store";
+import type { SimilaritySnapshot } from "./stores/similarity";
 
 // Mid-job paid-stage artifacts for a single attempt. Written after each
 // succeeded paid dispatch so a DeferPaidWorkError retry can skip already-paid

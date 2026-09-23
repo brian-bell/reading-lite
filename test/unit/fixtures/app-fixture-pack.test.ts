@@ -54,12 +54,12 @@ describe("app browser-evidence fixture pack", () => {
       const body = GetReadingDiagnosticsResponseSchema.parse(pack.diagnostics[fixture.id]);
       expect(body.id, fixture.name).toBe(fixture.id);
       expect(body.manifest.status).toBe(fixture.status);
-      // Computed from the seed's pointer objects the way the router computes
-      // them; every seeded reading owns its own pointers.
-      expect(body.pointers.by_id).toMatchObject({ exists: true, matches_manifest: true });
+      // Every seeded reading owns its URL, so the by-url check names the
+      // reading itself, as the router's owner lookup would.
       expect(body.pointers.by_url).toMatchObject({ exists: true, matches_manifest: true });
       expect(body.pointers.by_url.pointer).toEqual({ id: fixture.id, key_prefix: body.key_prefix });
-      expect(body.objects.length, fixture.name).toBeGreaterThan(0);
+      // Objects are captured content, which only a ready reading has.
+      expect(body.objects.length > 0, fixture.name).toBe(fixture.status === "ready");
       expect(body.attempts.length, fixture.name).toBeGreaterThan(0);
       for (const object of body.objects) expect(object.key.startsWith(`${body.key_prefix}/`)).toBe(true);
     }

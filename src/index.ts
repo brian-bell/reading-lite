@@ -35,7 +35,6 @@ import { defaultServices } from "./services";
 
 export interface Env {
   READINGS_BUCKET: R2Bucket;
-  READINGS_INDEX: VectorizeIndex;
   // PostgreSQL through Hyperdrive (ADR 0005): readings and the control plane.
   HYPERDRIVE: Hyperdrive;
   // Optional so the router can return a clear 503 when the binding is missing

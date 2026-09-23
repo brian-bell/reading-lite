@@ -1,12 +1,6 @@
 import { retryDepsFromEnv } from "./modules/http-retry";
 import { buildKeyPrefix } from "./modules/stores/layout";
-import {
-  SIMILAR_TOP_K,
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  excludeSelf,
-  summarizeSimilarity,
-} from "./modules/stores/similarity-store";
+import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimilarity } from "./modules/stores/similarity";
 import { attemptIoFor, type AttemptIo } from "./attempt-io";
 import { sqlSessionFor } from "./modules/db/sql";
 import { PublishCommitError } from "./modules/stores/postgres/reading-writer";

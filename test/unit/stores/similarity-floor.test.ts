@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  type SimilarityMatch,
-} from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR, aboveFloor, type SimilarityMatch } from "../../../src/modules/stores/similarity";
 
 const m = (id: string, score: number): SimilarityMatch => ({ id, score, url: `https://x/${id}` });
 

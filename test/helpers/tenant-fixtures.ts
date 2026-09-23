@@ -5,11 +5,6 @@ import { FOUNDER_PLACEHOLDER_LIMITS } from "../../src/control-plane/bootstrap";
 import { toTimestamp } from "../../src/control-plane/pg-time";
 import type { Env } from "../../src/index";
 import { resolveAttemptId, type ProcessReadingArgs } from "../../src/attempt-ownership";
-import {
-  readingStoreFor,
-  type ListIndexCasDeps,
-  type ReadingStore,
-} from "../../src/modules/stores/reading-store";
 
 import { testControlPlane } from "./control-plane-db";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID } from "./file-tenants";
@@ -49,14 +44,6 @@ export async function reserveReadingSlot(
   });
   const decision = (await res.json()) as { ok?: boolean };
   if (decision.ok !== true) throw new Error(`reserve_reading failed: ${JSON.stringify(decision)}`);
-}
-
-export function testReadingStore(
-  env: { READINGS_BUCKET: R2Bucket; TENANT_DATA_PLANE?: string },
-  tenant: TenantContext = founderTenant(),
-  casDeps: ListIndexCasDeps = {},
-): ReadingStore {
-  return readingStoreFor(env.READINGS_BUCKET, tenant, env, casDeps);
 }
 
 // A user with default settings, limits and a legacy-format token holding every

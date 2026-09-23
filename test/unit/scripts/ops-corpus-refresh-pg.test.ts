@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../../../scripts/ops-lib/cli";
 import { operatorReadings } from "../../../scripts/pg-lib/operator-corpus";
-import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity";
 import type { Sql } from "../../../src/modules/db/sql";
 import type { TenantContext } from "../../../src/control-plane/ids";
 import { BILLING_TENANT, spendHarness } from "../../helpers/operator-spend";

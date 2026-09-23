@@ -2,21 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { inspectTenantActivation, type TenantDeployTarget } from "../../../scripts/ops-lib/tenant-activation-preflight";
 
 const target: TenantDeployTarget = {
-  enabled: true, worker: "reading-lite-staging", bucket: "staging-bucket",
-  jurisdiction: "", index: "staging-index",
+  enabled: true, worker: "reading-lite-staging", bucket: "staging-bucket", jurisdiction: "",
 };
 function fixture() {
   const bindings = [
     { name: "TENANT_DATA_PLANE", type: "plain_text", text: "1" },
     { name: "READINGS_BUCKET", type: "r2_bucket", bucket_name: target.bucket },
-    { name: "READINGS_INDEX", type: "vectorize", index_name: target.index },
   ];
   const version = { metadata: { created_on: "2026-09-01T00:00:00Z" }, resources: { bindings } };
   const replies: Record<string, unknown> = {
     "workers/scripts/reading-lite-staging/deployments": { deployments: [{ versions: [{ version_id: "active", percentage: 100 }] }] },
     "workers/scripts/reading-lite-staging/versions/active": version,
     "r2/buckets/staging-bucket": { creation_date: "2026-08-01T00:00:00Z" },
-    "vectorize/v2/indexes/staging-index": { created_on: "2026-08-01T00:00:00Z" },
   };
   const calls: { path: string; body?: unknown }[] = [];
   const request = async (path: string, body?: unknown) => {
@@ -34,8 +31,14 @@ describe("tenant activation preflight", () => {
     expect(f.calls.map(c => c.path)).toEqual([
       "workers/scripts/reading-lite-staging/deployments",
       "workers/scripts/reading-lite-staging/versions/active",
-      "r2/buckets/staging-bucket", "vectorize/v2/indexes/staging-index",
+      "r2/buckets/staging-bucket",
     ]);
+  });
+  it("ignores the Vectorize binding a pre-cutover active version still carries", async () => {
+    const f = fixture();
+    f.bindings.push({ name: "READINGS_INDEX", type: "vectorize", index_name: "reading-lite-staging" } as never);
+    expect((await inspectTenantActivation(target, f.request)).ok).toBe(true);
+    expect(f.calls.some(c => c.path.startsWith("vectorize/"))).toBe(false);
   });
   it("does no remote work when tenant mode is not requested", async () => {
     const f = fixture();
@@ -51,15 +54,14 @@ describe("tenant activation preflight", () => {
     expect(result.message).toContain("PostgreSQL control plane");
     expect(f.calls.every(call => call.body === undefined)).toBe(true);
   });
-  it.each(["bucket_name", "index_name"])("requires verification after changing %s", async field => {
+  it("requires verification after changing the bucket", async () => {
     const f = fixture();
-    const binding = f.bindings.find(b => field in b)!;
-    (binding as Record<string, unknown>)[field] = "old-resource";
+    (f.bindings[1] as Record<string, unknown>).bucket_name = "old-resource";
     expect((await inspectTenantActivation(target, f.request)).ok).toBe(false);
   });
-  it.each(["r2/buckets/staging-bucket", "vectorize/v2/indexes/staging-index"])("detects same-name recreation of %s", async path => {
+  it("detects same-name recreation of the bucket", async () => {
     const f = fixture();
-    f.replies[path] = { creation_date: "2026-09-02T00:00:00Z", created_on: "2026-09-02T00:00:00Z" };
+    f.replies["r2/buckets/staging-bucket"] = { creation_date: "2026-09-02T00:00:00Z" };
     expect((await inspectTenantActivation(target, f.request)).ok).toBe(false);
   });
   it.each([{}, { deployments: [] }, { deployments: [{ versions: [] }] }])("treats absent/unknown deployments as unverified", async reply => {
@@ -95,7 +97,7 @@ describe("Cloudflare activation adapter", () => {
       return new Response(JSON.stringify({ success: true, result: [] }));
     }) as typeof fetch);
     await request("r2/buckets/bucket");
-    await request("vectorize/v2/indexes/index");
+    await request("workers/scripts/worker/deployments");
     expect(calls[0]?.url).toBe("https://api.cloudflare.com/client/v4/accounts/account/r2/buckets/bucket");
     expect(calls[0]?.init?.method).toBe("GET");
     expect(calls[0]?.init?.headers).toMatchObject({ "cf-r2-jurisdiction": "eu", authorization: "Bearer test-only" });

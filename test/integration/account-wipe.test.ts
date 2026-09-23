@@ -23,7 +23,7 @@ import {
   type WipeProgress,
 } from "../../src/control-plane/wipe-progress";
 import worker, { type Env } from "../../src/index";
-import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
+import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 import type { ListIndexItem } from "../../src/schemas/api";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";

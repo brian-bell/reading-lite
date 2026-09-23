@@ -7,13 +7,17 @@
 // which for an imported reading is the legacy spelling under its key_prefix.
 
 import type { TenantContext } from "../../control-plane/ids";
+import type { ReadingObjectInfo } from "../../schemas/api";
 import { r2KeyLayout, type R2KeyLayout } from "./layout";
-import {
-  tenantDataPlaneEnabled,
-  tenantKeyRoot,
-  type RawObject,
-  type ReadingObjectInfo,
-} from "./reading-store";
+import { tenantDataPlaneEnabled, tenantKeyRoot } from "./tenant-root";
+
+export interface RawObject {
+  arrayBuffer(): Promise<ArrayBuffer>;
+  text(): Promise<string>;
+  body: ReadableStream | null;
+  contentType: string;
+  size: number;
+}
 
 export function contentStoreFor(
   bucket: R2Bucket,

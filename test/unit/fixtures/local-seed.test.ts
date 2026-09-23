@@ -3,14 +3,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildLocalSeed,
   LOCAL_SEED_REMOVED_TARGET_ID,
+  type LocalSeedFixture,
   type LocalSeedObject,
 } from "../../fixtures/local-seed";
 import {
   applyStaleness,
 } from "../../../src/modules/staleness";
-import { manifestToIndexItem } from "../../../src/modules/stores/list-index";
+import { manifestToIndexItem } from "../../../src/modules/stores/list-items";
 import {
-  ByUrlPointerSchema,
   ManifestSchema,
   ProcessingAttemptSchema,
   type Manifest,
@@ -40,11 +40,8 @@ describe("local seed fixture pack", () => {
   const byId = new Map(plan.fixtures.map((f) => [f.id, f]));
 
   /** A fixture's attempt logs, newest first, as the diagnostics endpoint lists them. */
-  function attemptLogsOf(fixture: { keyPrefix: string }) {
-    return plan.objects
-      .filter((o) => o.key.startsWith(`${fixture.keyPrefix}/attempts/`))
-      .map((o) => ProcessingAttemptSchema.parse(JSON.parse(o.body)))
-      .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+  function attemptLogsOf(fixture: LocalSeedFixture) {
+    return [...fixture.attempts].sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
   }
 
   it("names every acceptance-matrix state the issue lists", () => {
@@ -108,20 +105,24 @@ describe("local seed fixture pack", () => {
       const parsed = ManifestSchema.parse(fixture.manifest);
       expect(parsed.id).toBe(fixture.id);
     }
-    // Independently: every manifest.json object body parses too.
-    for (const object of plan.objects.filter((o) => o.key.endsWith("/manifest.json"))) {
-      expect(() => ManifestSchema.parse(JSON.parse(object.body))).not.toThrow();
-    }
   });
 
   it("writes each object key exactly once", () => {
     expect(new Set(plan.objects.map((o) => o.key)).size).toBe(plan.objects.length);
   });
 
-  it("builds a valid list index whose rows match their manifests", () => {
-    const listObject = byKey.get("index/list.json");
-    expect(listObject).toBeDefined();
-    const list = ListIndexSchema.parse(JSON.parse(listObject!.body));
+  it("writes only captured content to R2: no manifests, attempt logs, pointers or list", () => {
+    // Reading state is PostgreSQL rows (ADR 0005); R2 holds only the bytes a
+    // row points at.
+    const contentKeys = new Set(
+      plan.fixtures.flatMap((f) => [`${f.keyPrefix}/extracted.md`, ...["html", "md", "pdf", "txt", "bin"].map((ext) => `${f.keyPrefix}/raw.${ext}`)]),
+    );
+    expect(plan.objects.filter((o) => !contentKeys.has(o.key)).map((o) => o.key)).toEqual([]);
+    expect(plan.objects.length).toBeGreaterThan(0);
+  });
+
+  it("derives list rows that match their manifests, newest first", () => {
+    const list = ListIndexSchema.parse(plan.listIndex);
     expect(list.items).toHaveLength(plan.fixtures.length);
     for (const fixture of plan.fixtures) {
       const row = list.items.find((i) => i.id === fixture.id);
@@ -129,22 +130,12 @@ describe("local seed fixture pack", () => {
     }
   });
 
-  it("seeds by-id and by-url pointers that agree with each manifest", () => {
+  it("gives every fixture its own URL, so each is its URL's owner", () => {
     for (const fixture of plan.fixtures) {
-      const byIdObject = byKey.get(`index/by-id/${fixture.id}`);
-      expect(byIdObject).toBeDefined();
-      expect(ByUrlPointerSchema.parse(JSON.parse(byIdObject!.body))).toEqual({
-        id: fixture.id,
-        key_prefix: fixture.keyPrefix,
-      });
-
-      const byUrlObject = byKey.get(`index/by-url/${urlHash(fixture.manifest.url)}`);
-      expect(byUrlObject).toBeDefined();
-      expect(ByUrlPointerSchema.parse(JSON.parse(byUrlObject!.body))).toEqual({
-        id: fixture.id,
-        key_prefix: fixture.keyPrefix,
-      });
+      expect(fixture.manifest.url_hash, fixture.name).toBe(urlHash(fixture.manifest.url));
     }
+    expect(new Set(manifests.map((m) => m.url_hash)).size).toBe(plan.fixtures.length);
+    expect(plan.fixtures.filter((f) => !f.ownsUrl).map((f) => f.name)).toEqual([]);
   });
 
   it("keeps content hashes, byte counts, and artifacts consistent with the manifest", () => {
@@ -171,9 +162,10 @@ describe("local seed fixture pack", () => {
   it("seeds attempt logs that parse and agree with the manifest", () => {
     for (const fixture of plan.fixtures) {
       const attempts = attemptLogsOf(fixture);
-      // Exactly the logs the fixture says it wrote, oldest first.
-      expect([...attempts].reverse().map((a) => a.id), fixture.name).toEqual(fixture.attemptIds);
+      // Oldest first, each one a valid attempt log.
+      expect([...attempts].reverse(), fixture.name).toEqual(fixture.attempts);
       for (const attempt of attempts) {
+        expect(ProcessingAttemptSchema.parse(attempt)).toEqual(attempt);
         expect(attempt.reading_id).toBe(fixture.id);
         expect(attempt.url).toBe(fixture.manifest.url);
         expect(attempt.url_hash).toBe(fixture.manifest.url_hash);
@@ -285,10 +277,8 @@ describe("local seed fixture pack", () => {
 
   it("gives the dead-lettered stopped fixture the DLQ attempt shape", () => {
     const stopped = byId.get("rd_FXERR00007")!;
-    const attemptKey = plan.objects.find((o) =>
-      o.key.startsWith(`${stopped.keyPrefix}/attempts/`),
-    )!;
-    const attempt = ProcessingAttemptSchema.parse(JSON.parse(attemptKey.body));
+    expect(stopped.attempts).toHaveLength(1);
+    const attempt = stopped.attempts[0]!;
     expect(attempt.events).toEqual([
       { stage: "queued", status: "started", at: attempt.started_at },
     ]);
@@ -349,11 +339,6 @@ describe("local seed fixture pack", () => {
       attention.connections?.some((c) => c.id === LOCAL_SEED_REMOVED_TARGET_ID),
     ).toBe(true);
     expect(byId.has(LOCAL_SEED_REMOVED_TARGET_ID)).toBe(false);
-    expect(
-      plan.objects.some(
-        (o) => o.key === `index/by-id/${LOCAL_SEED_REMOVED_TARGET_ID}`,
-      ),
-    ).toBe(false);
     expect(
       plan.listIndex.items.some((i) => i.id === LOCAL_SEED_REMOVED_TARGET_ID),
     ).toBe(false);

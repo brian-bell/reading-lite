@@ -17,7 +17,7 @@
 // touch move with it instead of silently going stale.
 
 import { parseTenantId } from "../../src/control-plane/ids";
-import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
+import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 import {
   BY_ID_PREFIX,
   BY_URL_PREFIX,

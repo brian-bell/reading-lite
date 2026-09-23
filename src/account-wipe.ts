@@ -127,7 +127,7 @@ import {
   type AccountWipeEnvelopeV1,
 } from "./control-plane/wipe-envelope";
 import { BY_ID_PREFIX, READINGS_PREFIX } from "./modules/stores/layout";
-import { tenantDataPlaneEnabled, tenantKeyRoot } from "./modules/stores/reading-store";
+import { tenantDataPlaneEnabled, tenantKeyRoot } from "./modules/stores/tenant-root";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
 import {
   countTenantReadings,

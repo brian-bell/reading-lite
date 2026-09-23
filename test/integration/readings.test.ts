@@ -13,7 +13,7 @@ import {
 } from "../../src/process-reading";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-index";
+import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { GetReadingResponseSchema } from "../../src/schemas/api";
 import {
@@ -31,53 +31,6 @@ import { rowStore } from "../helpers/row-store";
 import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
 import { testControlPlane } from "../helpers/control-plane-db";
-
-// Vectorize is stubbed in the env at the integration boundary because Miniflare
-// has no native Vectorize emulator. We mutate env.READINGS_INDEX in-place per
-// test. The stub honours `namespace` the way Vectorize does — a query only
-// matches vectors stored in the same namespace (undefined being a namespace of
-// its own) — because wrangler.test.toml runs with TENANT_DATA_PLANE=1 and the
-// tenant-isolation tests rely on that segmentation being real.
-type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): {
-  upsert: AnyMock;
-  query: AnyMock;
-  deleteByIds: AnyMock;
-  vectors: Map<string, { values: number[]; namespace?: string; metadata: Record<string, unknown> }>;
-} {
-  const vectors = new Map<
-    string,
-    { values: number[]; namespace?: string; metadata: Record<string, unknown> }
-  >();
-  const upsert = vi.fn(async (vs: VectorizeVector[]) => {
-    for (const v of vs) {
-      vectors.set(v.id, {
-        values: v.values as number[],
-        ...(v.namespace === undefined ? {} : { namespace: v.namespace }),
-        metadata: (v.metadata ?? {}) as Record<string, unknown>,
-      });
-    }
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const deleteByIds = vi.fn(async (ids: string[]) => {
-    for (const id of ids) vectors.delete(id);
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
-    const k = opts.topK ?? 5;
-    const matches = Array.from(vectors.entries())
-      .filter(([, v]) => v.namespace === opts.namespace)
-      .slice(0, k)
-      .map(([id, v]) => ({ id, score: 0.9, values: v.values, metadata: v.metadata }));
-    return { count: matches.length, matches } as unknown as VectorizeMatches;
-  });
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert,
-    deleteByIds,
-    query,
-  } as unknown as VectorizeIndex;
-  return { upsert, query, deleteByIds, vectors };
-}
 
 async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
@@ -280,7 +233,6 @@ function founderObjectKey(relative: string): string {
 }
 
 beforeEach(() => {
-  installVectorizeStub();
   installQueueStub();
 });
 afterEach(clearBucket);
@@ -981,7 +933,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("records a measured similarity snapshot on the terminal manifest", async () => {
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
-    installVectorizeStub();
 
     const submit = async (url: string) => {
       const ctx = createExecutionContext();
@@ -4778,7 +4729,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
   });
 
   it("drops a stale queued attempt for a purged reading without recreating any object", async () => {
-    const stub = installVectorizeStub();
     const idCounter = { n: 0 };
     const services = makeServices(makeStubFetch(), idCounter);
     const app = createApp({ services });
@@ -4806,7 +4756,7 @@ describe("DELETE /api/readings/:id (purge)", () => {
       prefix: founderObjectKey(`${diag.key_prefix}/`),
     });
     expect(leftover.objects).toEqual([]);
-    expect(stub.vectors.size).toBe(0);
+    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(false);
     const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
       readings: unknown[];
     };

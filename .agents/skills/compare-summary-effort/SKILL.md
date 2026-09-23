@@ -97,12 +97,12 @@ that job — that command is the fixture-based quality matrix, not live readings
   context identical across local candidates for that reading. The fresh OpenAI
   run is the fair within-matrix control; the production output is contextual
   baseline evidence.
-- The original full Vectorize top-K is not persisted. The runner reconstructs a
+- The original full similarity top-K is not persisted. The runner reconstructs a
   stable context from the connections selected in the production manifest and
   resolves their current URL/title/TLDR. State this limitation in the handoff.
 - Stop if a reading is not `ready` with captured content, its hash differs from
   the manifest, a related reading cannot be resolved, or credentials are absent.
-- Never use reprocess, import, queue, R2-write, or Vectorize-write operations for
+- Never use reprocess, import, queue, R2-write, or database-write operations for
   this workflow. Never deploy a model or effort change as part of a comparison.
 - Do not copy the full article into result artifacts. The runner stores source
   identity, hash, frozen context, structured summaries, usage, latency, and

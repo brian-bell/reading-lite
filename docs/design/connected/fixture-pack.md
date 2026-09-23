@@ -1,9 +1,9 @@
 # Local fixture pack state reference
 
 The local fixture pack ([issue #366](https://github.com/brian-bell/reading-lite/issues/366))
-turns the prototype's authored samples into real manifests, list rows,
-pointers, content objects, and attempt logs, seeded into local R2 by one
-command (see [seeding local R2](../../operations.md#seeding-local-r2)):
+turns the prototype's authored samples into real manifests, attempt logs, and
+captured content, seeded into local PostgreSQL (rows) and R2 (content) by one
+command (see [seeding local data](../../operations.md#seeding-local-data)):
 
 ```sh
 npm run seed:local
@@ -15,8 +15,8 @@ evidence ([#374](https://github.com/brian-bell/reading-lite/issues/374)) serves
 the pack without R2: `npm run fixtures:app` projects it into
 `app/e2e/fixtures/fixture-pack.json` — the same bodies
 `GET /api/readings/:id` returns, at a fixed clock, plus the extracted Markdown
-(`contents`), the `GET …/diagnostics` bodies assembled from the seed's
-pointers, objects, and attempt logs (`diagnostics`), and each ready fixture's
+(`contents`), the `GET …/diagnostics` bodies assembled the way the router
+assembles them from rows (`diagnostics`), and each ready fixture's
 raw capture with its stored content type (`raws`) — and
 `test/unit/fixtures/app-fixture-pack.test.ts` fails while that file is stale, so
 a new state is one edit here plus a regenerate.
@@ -64,7 +64,8 @@ and the detail route 404s ("arrived from a removed target").
 
 - Every manifest is built through `src/modules/manifest-drafting.ts` and
   parses with `ManifestSchema`; the test enforces it, plus list-row/manifest
-  equality, by-id/by-url pointer agreement, and `url_hash` correctness.
+  equality, one URL per fixture (so each owns its URL), `url_hash`
+  correctness, and that R2 gets only captured content.
 - Every terminal timestamp is derived from the fixture's own generated
   attempt: ready `updated_at`/`fetched_at` equal `last_attempt.finished_at`,
   `similarity.computed_at` is the `query_similar` completion, and failed
@@ -74,7 +75,7 @@ and the detail route 404s ("arrived from a removed target").
   so diagnostics stay coherent.
 - Failed readings carry the empty-content placeholder with
   `content_status: "failed"`, exactly as the worker failure path writes them.
-- Each reading has an attempt log under `attempts/` with realistic stage
+- Each reading has an attempt log (attempt rows) with realistic stage
   events, including the dead-letter shape for `fail-stopped`.
   `reprocess-failed` has two: its manifest is the ready one rolled forward
   (`rollForward` in `src/modules/manifest-drafting.ts`), so `updated_at` is the
@@ -82,19 +83,19 @@ and the detail route 404s ("arrived from a removed target").
   succeeded attempt's.
 - Seeded ids satisfy the worker's `parseReadingId` shape, so reprocess,
   lookup, and MCP paths treat fixtures like any other reading.
-- The seeder overwrites `index/list.json` with the pack's rows only. Any
-  other local reading keeps its objects but drops out of the list; see
-  [resetting](../../operations.md#seeding-local-r2) for a pristine store.
+- The seeder replaces the local founder's reading rows with the pack's. Any
+  other local reading drops out, though its R2 objects stay; see
+  [resetting](../../operations.md#seeding-local-data) for a pristine store.
 - The library lists the pack's 19 rows, newest first: `pending`, the eight
   failures, then the ready baselines — matching the store's `created_at`
   sort.
 
 ## What the pack deliberately does not cover
 
-Ready readings have no Vectorize vectors (local dev has no binding), so
-`POST /api/readings/similar` returns empty and by-id similarity is
-manifest-only. Submit, import, and reprocess still return 503 locally (no
-Queue); use the seeded states instead. Reprocess-pending (a ready reading
-under a running reprocess) and batch-owned pending are Phase 4 states; add
-them here as named fixtures when those slices need them (the failed variant,
-`reprocess-failed`, is in the pack).
+Ready readings carry deterministic vectors, so similarity finds the other
+ready fixtures, but the scores mean nothing about the prose. Submit, import,
+and reprocess still return 503 locally (no Queue); use the seeded states
+instead. Reprocess-pending (a ready reading under a running reprocess) and
+batch-owned pending are Phase 4 states; add them here as named fixtures when
+those slices need them (the failed variant, `reprocess-failed`, is in the
+pack).

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseTenantId } from "../../../src/control-plane/ids";
-import {
-  tenantDataPlaneEnabled,
-  tenantKeyRoot,
-} from "../../../src/modules/stores/reading-store";
+import { tenantDataPlaneEnabled, tenantKeyRoot } from "../../../src/modules/stores/tenant-root";
 
 const TENANT = { tenantId: parseTenantId("usr_550e8400-e29b-41d4-a716-446655440000")! };
 

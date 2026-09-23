@@ -40,7 +40,7 @@ describe("resolveDropTargets", () => {
     if (!r.ok) expect(r.errors[0]).toMatch(/nope\.com/);
   });
 
-  it("refuses an explicitly-named ready id (would dangle by-url pointer)", () => {
+  it("refuses an explicitly-named ready id (would drop its URL claim)", () => {
     const r = resolveDropTargets([item({ id: "rd_a", status: "ready" })], ["rd_a"]);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.errors[0]).toMatch(/ready/);

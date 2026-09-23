@@ -1,7 +1,7 @@
 /** Activation guard, not a corpus audit. A single active tenant-mode version
  * with unchanged bindings establishes the redeployment baseline (including the
- * already-completed production/staging cutovers). Resource creation timestamps
- * catch deletion/recreation under the same R2/Vectorize names since that version.
+ * already-completed production/staging cutovers). The bucket's creation timestamp
+ * catches deletion/recreation under the same R2 name since that version.
  * Anything else requires a fresh manual migration acknowledgement on this run.
  * No durable certificate or legacy-corpus comparison is introduced. Deployments
  * or data changes outside this CLI can bypass this guard; it is not a lock.
@@ -14,7 +14,6 @@ export interface TenantDeployTarget {
   worker: string;
   bucket: string;
   jurisdiction: string;
-  index: string;
 }
 export interface TenantActivationReadiness { ok: boolean; message: string }
 type Request = (path: string, body?: unknown) => Promise<unknown>;
@@ -51,15 +50,12 @@ export async function inspectTenantActivation(
       throw new Error("active Worker does not have TENANT_DATA_PLANE=1");
     }
     const bucket = binding("READINGS_BUCKET", "r2_bucket");
-    if (bucket.bucket_name !== target.bucket || (bucket.jurisdiction ?? "") !== target.jurisdiction ||
-        binding("READINGS_INDEX", "vectorize").index_name !== target.index) {
-      throw new Error("target R2 or Vectorize bindings differ from the active tenant-mode Worker");
+    if (bucket.bucket_name !== target.bucket || (bucket.jurisdiction ?? "") !== target.jurisdiction) {
+      throw new Error("target R2 binding differs from the active tenant-mode Worker");
     }
     const r2 = z.object({ creation_date: timestamp }).parse(await request(`r2/buckets/${encodeURIComponent(target.bucket)}`));
-    const vector = z.object({ created_on: timestamp }).parse(await request(`vectorize/v2/indexes/${encodeURIComponent(target.index)}`));
-    const versionTime = Date.parse(version.metadata.created_on);
-    if (Date.parse(r2.creation_date) > versionTime || Date.parse(vector.created_on) > versionTime) {
-      throw new Error("R2 bucket or Vectorize index was recreated after the active Worker version");
+    if (Date.parse(r2.creation_date) > Date.parse(version.metadata.created_on)) {
+      throw new Error("R2 bucket was recreated after the active Worker version");
     }
     return { ok: true, message: "already enabled; active bindings match and resources predate the active version (no corpus audit)" };
   } catch (error) {
@@ -88,13 +84,12 @@ export async function readTenantDeployTarget(env: DeployEnvName): Promise<Tenant
     if (found.length !== 1) throw new Error(`target ${name} binding is missing or ambiguous`);
     return found[0]!;
   };
-  if (!enabled) return { enabled, worker: config.name ?? "", accountId: "", bucket: "", jurisdiction: "", index: "" };
+  if (!enabled) return { enabled, worker: config.name ?? "", accountId: "", bucket: "", jurisdiction: "" };
   const bucket = one(z.array(z.object({ binding: text, bucket_name: text, jurisdiction: z.string().optional() })).parse(config.r2_buckets), "READINGS_BUCKET");
   return {
     enabled, worker: text.parse(config.name),
     accountId: process.env.CLOUDFLARE_ACCOUNT_ID || config.account_id || "",
     bucket: text.parse(bucket.bucket_name), jurisdiction: bucket.jurisdiction ?? "",
-    index: text.parse(one(z.array(z.object({ binding: text, index_name: text })).parse(config.vectorize), "READINGS_INDEX").index_name),
   };
 }
 

@@ -13,7 +13,7 @@ import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../sch
 import { sha256Hex } from "../../../services";
 import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
 import { r2KeyLayout, rawExtFromContentType } from "../layout";
-import type { ListManifestsParams, ListManifestsResult } from "../list-index";
+import type { ListManifestsParams, ListManifestsResult } from "../list-items";
 
 export function pgTenantId(tenant: TenantContext): string {
   const tenantId = parseTenantId(String(tenant.tenantId));

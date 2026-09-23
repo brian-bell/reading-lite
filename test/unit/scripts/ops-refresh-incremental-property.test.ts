@@ -30,7 +30,7 @@ import {
   type RefreshState,
 } from "../../../scripts/corpus-lib/refresh-scope";
 import { REFRESH_CANDIDATE_TOP_K } from "../../../src/modules/refresh-neighbours";
-import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity";
 
 /** Every pass addresses one tenant's rows. */
 const TENANT = "usr_11111111-1111-4111-8111-111111111111";
