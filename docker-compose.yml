@@ -13,9 +13,12 @@ services:
   # PostgreSQL 18 with pgvector, matching Neon (ADR 0005). `npm run dev` on the
   # host starts only this service (`docker compose up -d postgres`) and reaches
   # it on the non-default host port 54329; the backend container reaches it as
-  # postgres:5432.
+  # postgres:5432. `init` keeps the postmaster off PID 1, which PostgreSQL 18
+  # would reset on the exit of an orphaned health-check process (see the
+  # Worker job in .github/workflows/ci.yml).
   postgres:
     image: pgvector/pgvector:0.8.1-pg18
+    init: true
     ports:
       - "54329:5432"
     environment:

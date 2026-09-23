@@ -91,6 +91,12 @@ jobs:
     # connect to Neon. The workers pool reaches this through the HYPERDRIVE
     # binding's local connection string, which vitest.workspace.ts points at
     # TEST_DATABASE_URL; globalSetup creates and migrates the database.
+    #
+    # --init keeps the postmaster off PID 1. PostgreSQL 18 treats any unknown
+    # child that exits non-zero as a crash and resets the server, and PID 1
+    # inherits every process orphaned in the container: a health-check
+    # pg_isready outliving its shell under test load exits 2 and drops every
+    # connection mid-run (run 35812647300).
     services:
       postgres:
         image: pgvector/pgvector:0.8.1-pg18
@@ -101,6 +107,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
+          --init
           --health-cmd "pg_isready -U reading_lite -d reading_lite_test"
           --health-interval 2s
           --health-timeout 3s
