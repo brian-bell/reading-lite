@@ -1185,9 +1185,15 @@ paired with `reading-lite-staging`: `STAGING_DATABASE_URL`, or on a laptop
 `NEON_REHEARSAL_DATABASE_URL` from [step 0](#step-0-the-connection-strings):
 
 ```sh
-set -a; . ~/.config/reading-lite/neon.env; set +a
-STAGING_DB="$NEON_REHEARSAL_DATABASE_URL"
+# Cloud agents and CI already have STAGING_DATABASE_URL; a laptop sources the alias.
+[ -n "${STAGING_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
+STAGING_DB="${STAGING_DATABASE_URL:-${NEON_REHEARSAL_DATABASE_URL:-}}"
+: "${STAGING_DB:?set STAGING_DATABASE_URL or NEON_REHEARSAL_DATABASE_URL}"
 ```
+
+The last line stops the drill when neither variable is set. Without it, every
+`psql "$STAGING_DB"` below would get an empty string and connect to whatever
+libpq's defaults name instead.
 
 Staging's old D1 is retained only as the #348 importer's source; nothing in this
 runbook reads or writes it. Until #349 points staging's Worker at this
