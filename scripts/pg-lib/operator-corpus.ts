@@ -260,7 +260,7 @@ export function neighboursOf(
  * misreport the reading as freshly written to everything that orders by it —
  * the list the SPA serves, and the refresh pass's own incremental scope, which
  * would then re-measure the reading it just measured, every night, forever.
- * This is the one-field discipline `withSimilarity` carried on the manifest,
+ * This is the one-field discipline the retired manifest backfill carried,
  * expressed as a column.
  *
  * Returns false when no row was updated: the reading was purged while the pass

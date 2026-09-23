@@ -77,7 +77,6 @@ describe("wrangler CLI launcher", () => {
   it("is imported by every default wrangler spawner the ops CLI uses", () => {
     const spawners = [
       "scripts/corpus-lib/wrangler-r2.ts",
-      "scripts/corpus-lib/wrangler-put.ts",
       "scripts/ops-lib/commands/deploy-worker.ts",
       "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",
