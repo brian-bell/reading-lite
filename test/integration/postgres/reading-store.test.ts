@@ -107,7 +107,17 @@ describe("PgReadingStore.loadReadingById", () => {
     });
     const keyPrefix = await seedManifest(sql, tenant, manifest, { keyPrefix: "readings/imported/odd-prefix" });
     const found = await pgReadingStoreFor(sql, tenant).loadReadingById("rd_full");
-    expect(found).toEqual({ keyPrefix, manifest });
+    expect(found).toEqual({ keyPrefix, manifest, version: expect.any(String) });
+  });
+
+  it("carries a row version that changes only when the row is written", async () => {
+    const tenant = await mintTenant();
+    await seedManifest(sql, tenant, await readyManifest("rd_versioned"));
+    const store = pgReadingStoreFor(sql, tenant);
+    const first = (await store.loadReadingById("rd_versioned"))!.version;
+    expect((await store.loadReadingById("rd_versioned"))!.version).toBe(first);
+    await sql.query("UPDATE readings SET title = 'renamed' WHERE tenant_id = $1 AND id = $2", [String(tenant.tenantId), "rd_versioned"]);
+    expect((await store.loadReadingById("rd_versioned"))!.version).not.toBe(first);
   });
 
   it("round-trips a failed manifest without a revision", async () => {
@@ -202,16 +212,25 @@ describe("PgReadingStore content keys", () => {
     expect(await content.get(keys!.rawKey)).toBeNull();
   });
 
-  it("derives keys from key_prefix for a reading that was never published", async () => {
+  // The same rule the importer's revision row follows: no extracted object
+  // unless the content was captured.
+  it.each([
+    ["captured", `/extracted.md`],
+    ["raw_only", null],
+    ["failed", null],
+  ] as const)("derives keys from key_prefix for a never-published reading whose content is %s", async (contentStatus, extracted) => {
     const tenant = await mintTenant();
     const keyPrefix = await seedManifest(
       sql,
       tenant,
-      await readyManifest("rd_unpublished", { status: "failed", connections: undefined, summary_markdown: undefined, content_type: "application/pdf" }),
+      await readyManifest("rd_unpublished", {
+        status: "failed", connections: undefined, summary_markdown: undefined,
+        content_type: "application/pdf", content_status: contentStatus,
+      }),
     );
     expect(await pgReadingStoreFor(sql, tenant).contentKeys("rd_unpublished")).toEqual({
       rawKey: `${keyPrefix}/raw.pdf`,
-      extractedKey: `${keyPrefix}/extracted.md`,
+      extractedKey: extracted === null ? null : `${keyPrefix}${extracted}`,
       contentType: "application/pdf",
     });
   });

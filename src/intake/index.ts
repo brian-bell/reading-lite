@@ -5,7 +5,7 @@ import { assertSafeUrl } from "../modules/extractor/safe-fetch";
 import { applyStaleness } from "../modules/staleness";
 import type { ContentStore } from "../modules/stores/content-store";
 import { r2KeyLayout } from "../modules/stores/layout";
-import type { PgReadingStore } from "../modules/stores/postgres/reading-store";
+import type { PgReadingStore, ReadingSnapshot } from "../modules/stores/postgres/reading-store";
 import type { NewAttempt, PgReadingWriter } from "../modules/stores/postgres/reading-writer";
 import {
   newAttemptId,
@@ -21,7 +21,13 @@ import {
 import type { Manifest } from "../schemas/manifest";
 import { sha256Hex, type Services } from "../services";
 import type { TenantUsage, UsageDecision } from "../control-plane/tenant-usage-guard";
-import { activateAttempt, type ActivationArtifacts, type ActivationOutcome } from "./activation";
+import {
+  activateAttempt,
+  captureArtifacts,
+  discardArtifacts,
+  type ActivationArtifacts,
+  type ActivationOutcome,
+} from "./activation";
 
 // Reading intake: the write-side front door for a reading. The three verbs —
 // submit, importMarkdown, reprocess — own the claim → attempt → activation
@@ -104,10 +110,9 @@ export function readingIntakeFor(deps: ReadingIntakeDeps): ReadingIntake {
   return new ReadingIntake(deps);
 }
 
-interface Owner {
-  keyPrefix: string;
-  manifest: Manifest;
-}
+// The owner as loaded: the manifest a verb decides on and the row version
+// startAttempt checks under its lock.
+type Owner = ReadingSnapshot;
 
 const layout = r2KeyLayout("");
 
@@ -336,15 +341,21 @@ export class ReadingIntake {
     const artifacts = markdownArtifacts(owner.keyPrefix, attemptId, markdown, markdownBytes);
 
     return this.withReservedSlot(attemptId, async () => {
+      // Content first; the failed owner is untouched if it never lands.
+      if (!(await this.captureImport(artifacts))) {
+        return { kind: "unavailable", reason: "activation_failed", id: effective.id } satisfies IntakeOutcome;
+      }
       const started = await this.deps.writer.startAttempt(
         pendingManifest,
         newAttempt(activeAttempt, args, artifacts),
-        owner.manifest,
+        owner,
       );
-      if (started.kind !== "started") return startRefused(started.kind);
+      if (started.kind !== "started") {
+        await discardArtifacts(this.deps.content, artifacts).catch((err) => console.error(err));
+        return startRefused(started.kind);
+      }
       return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
-        artifacts,
         // Rollback lands on the freshly-built pending manifest (→ failed,
         // retryable), never the prior failed manifest's error.
         rollbackManifest: pendingManifest,
@@ -353,6 +364,20 @@ export class ReadingIntake {
         principal: this.deps.principal,
       });
     });
+  }
+
+  // The import's content, in R2 before any row points at it. False when it
+  // did not land: whatever part did is swept, and the caller answers
+  // activation_failed without having written a row.
+  private async captureImport(artifacts: ActivationArtifacts): Promise<boolean> {
+    try {
+      await captureArtifacts(this.deps.content, artifacts);
+      return true;
+    } catch (err) {
+      console.error(err);
+      await discardArtifacts(this.deps.content, artifacts).catch((e) => console.error(e));
+      return false;
+    }
   }
 
   private async createForImport(
@@ -385,16 +410,22 @@ export class ReadingIntake {
     const queueMessage: ProcessReadingArgs = { ...args, attemptId, attemptStartedAt, trigger: "import", email: opts.email };
     const artifacts = markdownArtifacts(args.keyPrefix, attemptId, markdown, markdownBytes);
     return this.withReservedSlot(attemptId, async () => {
+      // Content first, under a prefix only this claim would ever point at.
+      if (!(await this.captureImport(artifacts))) {
+        return { kind: "unavailable", reason: "activation_failed" } satisfies IntakeOutcome;
+      }
       const claimed = await this.deps.writer.claimUrl(
         pendingManifest,
         args.keyPrefix,
         newAttempt(activeAttempt, queueMessage, artifacts),
       );
-      if (claimed.kind === "tenant_inactive") return { kind: "tenant_inactive" } satisfies IntakeOutcome;
-      if (claimed.kind === "owned") return retry;
+      if (claimed.kind !== "claimed") {
+        await discardArtifacts(this.deps.content, artifacts).catch((err) => console.error(err));
+        if (claimed.kind === "tenant_inactive") return { kind: "tenant_inactive" } satisfies IntakeOutcome;
+        return retry;
+      }
       return activateAttempt(this.deps, queue, this.deps.services, {
         manifest: pendingManifest,
-        artifacts,
         rollbackManifest: pendingManifest,
         rollbackAttempt: activeAttempt,
         queueMessage,
@@ -469,7 +500,7 @@ export class ReadingIntake {
       const started = await this.deps.writer.startAttempt(
         nextManifest,
         { summary: activeAttempt, payload: args },
-        owner.manifest,
+        owner,
       );
       if (started.kind !== "started") return startRefused(started.kind);
       return activateAttempt(this.deps, queue, this.deps.services, {
@@ -498,6 +529,7 @@ function markdownArtifacts(
   bytes: Uint8Array,
 ): ActivationArtifacts {
   return {
+    revisionPrefix: `${layout.revisionsPrefix(keyPrefix)}${attemptId}/`,
     rawKey: layout.revisionRawKey(keyPrefix, attemptId, "md"),
     rawBytes: bytes,
     rawContentType: "text/markdown; charset=utf-8",

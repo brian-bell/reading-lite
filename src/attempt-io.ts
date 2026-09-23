@@ -98,6 +98,22 @@ export class AttemptIo {
     await discardUnreferencedContent(this.store, this.content, this.args);
   }
 
+  // The content of the revision this attempt's publication replaced. Its row
+  // is gone (PgReadingWriter.publish), so nothing resolves these keys any
+  // more. Content under a revision prefix goes with its prefix; the legacy
+  // spelling shares key_prefix with everything else, so only its two objects
+  // go. Never this attempt's own prefix, which is the live content now.
+  async discardSupersededContent(keys: AttemptContentKeys): Promise<void> {
+    const revisions = layout.revisionsPrefix(this.args.keyPrefix);
+    const own = `${revisions}${resolveAttemptId(this.args)}/`;
+    if (keys.rawKey.startsWith(own)) return;
+    if (keys.rawKey.startsWith(revisions)) {
+      await this.content.deletePrefix(keys.rawKey.slice(0, keys.rawKey.lastIndexOf("/") + 1));
+      return;
+    }
+    await this.content.delete(keys.extractedKey === null ? [keys.rawKey] : [keys.rawKey, keys.extractedKey]);
+  }
+
   private async recordContent(): Promise<void> {
     const captured = this.capturedContent();
     if (captured) await this.writer.setAttemptContent(this.args, captured);

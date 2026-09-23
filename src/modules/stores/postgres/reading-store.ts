@@ -12,8 +12,8 @@ import { ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
 import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
-import { r2KeyLayout, rawExtFromContentType } from "../layout";
 import type { ListManifestsParams, ListManifestsResult } from "../list-index";
+import { legacyContentKeys } from "./manifest-rows";
 
 export function pgTenantId(tenant: TenantContext): string {
   const tenantId = parseTenantId(String(tenant.tenantId));
@@ -30,6 +30,14 @@ export function pgReadingStoreFor(sql: Sql, tenant: TenantContext): PgReadingSto
 export interface UrlOwner {
   id: string;
   status: ManifestStatus;
+}
+
+export interface ReadingSnapshot {
+  keyPrefix: string;
+  manifest: Manifest;
+  // Opaque row version; equal to another read's only if nothing was written
+  // to the row in between.
+  version: string;
 }
 
 export interface ContentKeys {
@@ -67,19 +75,25 @@ export class PgReadingStore {
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
     const q = params.q?.trim().toLowerCase() ?? "";
     const tag = params.tag?.trim().toLowerCase() ?? "";
-    const [count] = await this.sql.query<{ total: number }>(
-      `SELECT count(*)::int AS total FROM readings WHERE ${LIST_FILTER}`,
-      [this.tenantId, q, tag],
-    );
-    // The id tiebreak is deliberate: today's sort is stable on created_at alone.
-    const rows = await this.sql.query(
-      `SELECT ${LIST_COLUMNS} FROM readings WHERE ${LIST_FILTER}
+    // The page and its unpaged count come from one statement, so they are one
+    // snapshot, as the single index/list.json read was. The id tiebreak is
+    // deliberate: today's sort is stable on created_at alone.
+    const rows = await this.sql.query<SqlRow & { total_filtered: number }>(
+      `SELECT ${LIST_COLUMNS}, count(*) OVER ()::int AS total_filtered FROM readings WHERE ${LIST_FILTER}
        ORDER BY created_at DESC, id DESC OFFSET $4 LIMIT $5`,
       [this.tenantId, q, tag, params.offset, params.limit],
     );
+    // An empty page carries no window count: either nothing matched or the
+    // offset is past the end, and only a count tells those apart.
+    const total = rows.length > 0
+      ? rows[0]!.total_filtered
+      : (await this.sql.query<{ total: number }>(
+          `SELECT count(*)::int AS total FROM readings WHERE ${LIST_FILTER}`,
+          [this.tenantId, q, tag],
+        ))[0]!.total;
     return {
-      readings: rows.map((row) => ListIndexItemSchema.parse(present(row))),
-      total_filtered: count!.total,
+      readings: rows.map(({ total_filtered: _total, ...row }) => ListIndexItemSchema.parse(present(row))),
+      total_filtered: total,
     };
   }
 
@@ -105,9 +119,12 @@ export class PgReadingStore {
     return rows.map((row) => ListIndexItemSchema.parse(present(row)));
   }
 
-  async loadReadingById(id: string): Promise<{ keyPrefix: string; manifest: Manifest } | null> {
+  // `version` is the row's xmin: it changes with every committed write to the
+  // reading, so a writer that took `next` from this read can tell under its
+  // lock whether the row is still the one it saw (PgReadingWriter.startAttempt).
+  async loadReadingById(id: string): Promise<ReadingSnapshot | null> {
     const [row] = await this.sql.query(
-      `SELECT r.id, r.key_prefix, r.url, r.url_hash, r.source_type, r.status, r.error,
+      `SELECT r.xmin::text AS version, r.id, r.key_prefix, r.url, r.url_hash, r.source_type, r.status, r.error,
               r.active_attempt, r.last_attempt, r.title, r.tldr, r.tags, r.keywords, r.people,
               r.orgs, r.novelty_verdict, r.similarity, r.content_type, r.content_status,
               r.content_bytes, r.extracted_bytes, r.content_sha256, r.enrichment_degradation,
@@ -122,7 +139,7 @@ export class PgReadingStore {
       [this.tenantId, id],
     );
     if (!row) return null;
-    const { key_prefix, connections_present, tensions_present, ...fields } = row;
+    const { version, key_prefix, connections_present, tensions_present, ...fields } = row;
     const relationships =
       connections_present || tensions_present
         ? await this.sql.query<{ kind: string; target_id: string; tension_kind: string; reason: string; computed_at: string }>(
@@ -142,7 +159,7 @@ export class PgReadingStore {
         .filter((rel) => rel.kind === "tension")
         .map((rel) => ({ id: rel.target_id, kind: rel.tension_kind, reason: rel.reason, computed_at: rel.computed_at }));
     }
-    return { keyPrefix: key_prefix as string, manifest: ManifestSchema.parse(manifest) };
+    return { keyPrefix: key_prefix as string, manifest: ManifestSchema.parse(manifest), version: version as string };
   }
 
   // /lookup's owner resolution: a pure SELECT, so it is safe (and tested)
@@ -167,11 +184,13 @@ export class PgReadingStore {
     const [row] = await this.sql.query<{
       key_prefix: string;
       content_type: string;
+      content_status: Manifest["content_status"];
       raw_key: string | null;
       extracted_key: string | null;
       has_revision: boolean;
     }>(
-      `SELECT r.key_prefix, r.content_type, v.raw_key, v.extracted_key, v.id IS NOT NULL AS has_revision
+      `SELECT r.key_prefix, r.content_type, r.content_status, v.raw_key, v.extracted_key,
+              v.id IS NOT NULL AS has_revision
        FROM readings r
        LEFT JOIN reading_revisions v
          ON (v.tenant_id, v.reading_id, v.id) = (r.tenant_id, r.id, r.current_revision_id)
@@ -192,11 +211,8 @@ export class PgReadingStore {
     if (captured) {
       return { rawKey: captured.raw_key, extractedKey: captured.extracted_key, contentType: row.content_type };
     }
-    const layout = r2KeyLayout("");
-    return {
-      rawKey: layout.rawKey(row.key_prefix, rawExtFromContentType(row.content_type)),
-      extractedKey: layout.extractedKey(row.key_prefix),
-      contentType: row.content_type,
-    };
+    // The same rule the importer's revision row is spelled by: no extracted
+    // object unless the content was captured.
+    return { ...legacyContentKeys(row.key_prefix, row), contentType: row.content_type };
   }
 }

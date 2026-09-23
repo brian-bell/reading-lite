@@ -69,7 +69,8 @@ describe("fixture pack parity: R2 stores vs PostgreSQL stores", () => {
   it.each(plan.fixtures.map((fixture) => [fixture.name, fixture.id]))("loads %s identically", async (_name, id) => {
     const expected = await r2.loadReadingById(id);
     expect(expected).not.toBeNull();
-    expect(await postgres.loadReadingById(id)).toEqual(expected);
+    const { version: _version, ...loaded } = (await postgres.loadReadingById(id))!;
+    expect(loaded).toEqual(expected);
   });
 
   it("resolves relationship targets identically, removed target included", async () => {
