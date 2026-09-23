@@ -23,8 +23,9 @@ import {
 import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
 import { sqlScope } from "./modules/db/request-sql";
 import type { Sql } from "./modules/db/sql";
-import { contentStoreFor } from "./modules/stores/content-store";
-import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
+import { contentStoreFor, type ContentStore } from "./modules/stores/content-store";
+import type { RawObject } from "./modules/stores/reading-store";
+import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { defaultServices, type Services } from "./services";
@@ -371,11 +372,8 @@ export function createApp(opts: AppOptions = {}) {
     if (found.manifest.content_status !== "captured") {
       return c.json({ error: "extracted markdown not available" }, 404);
     }
-    // The row's keys, never a spelling derived from key_prefix: a published
-    // reading's content is under its revision, an imported one's is not.
-    const keys = await store.contentKeys(id);
-    const obj = keys?.extractedKey ? await content.get(keys.extractedKey) : null;
-    if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
+    const obj = await readContent(store, content, id, (keys) => keys.extractedKey);
+    if (!obj) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
       headers: { "content-type": "text/markdown; charset=utf-8" },
@@ -385,10 +383,8 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/api/readings/:id/content/raw", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
     const { store, content } = storesFor(c.env, c.get("principal"), c.get("sql"));
-    const keys = await store.contentKeys(id);
-    if (!keys) return c.json({ error: "not found" }, 404);
-    const obj = await content.get(keys.rawKey);
-    if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
+    const obj = await readContent(store, content, id, (keys) => keys.rawKey);
+    if (!obj) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
       headers: { "content-type": obj.contentType },
@@ -396,6 +392,31 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   return app;
+}
+
+// A content read: the row's keys (never a spelling derived from key_prefix; a
+// published reading's content is under its revision, an imported one's is
+// not), then the object. The two steps are not atomic. A reprocess that
+// publishes in between commits new keys and deletes the superseded object
+// (AttemptIo.discardSupersededContent), so a key resolved just before that can
+// point at nothing. A missing object is therefore resolved once more: the keys
+// changed, and the current object is served; or they did not, and the content
+// is genuinely gone.
+async function readContent(
+  store: PgReadingStore,
+  content: ContentStore,
+  id: string,
+  pick: (keys: ContentKeys) => string | null,
+): Promise<RawObject | null> {
+  const first = await store.contentKeys(id);
+  const firstKey = first ? pick(first) : null;
+  const obj = firstKey ? await content.get(firstKey) : null;
+  if (obj?.body) return obj;
+  const again = await store.contentKeys(id);
+  const againKey = again ? pick(again) : null;
+  if (!againKey || againKey === firstKey) return null;
+  const retried = await content.get(againKey);
+  return retried?.body ? retried : null;
 }
 
 // The 503 bodies the SPA and operator tooling match on — one message per

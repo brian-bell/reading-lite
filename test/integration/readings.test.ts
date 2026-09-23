@@ -3699,6 +3699,48 @@ describe("GET /api/readings/lookup", () => {
   });
 });
 
+// A content read resolves the reading's keys in PostgreSQL and then fetches
+// R2: two steps, not one. A reprocess that publishes in between commits new
+// keys and deletes the superseded object, so the read's first key can point
+// at nothing. The read resolves the keys again and serves the current
+// revision instead of a spurious 404.
+describe("GET /api/readings/:id/content(/raw) across a concurrent publish", () => {
+  it.each([
+    ["/content", "extractedKey"],
+    ["/content/raw", "rawKey"],
+  ] as const)("%s re-resolves the keys when the first object is gone", async (path, stale) => {
+    const { app, id } = await seedFounderReading(`https://example.com/content-race${path}`);
+    const store = testReadingsFor(founderTenant());
+    const live = (await store.store.contentKeys(id))!;
+    // The first resolution saw the revision a publish then superseded.
+    const gone = { ...live, [stale]: `${await store.keyPrefix(id)}/revisions/at_superseded/${stale === "rawKey" ? "raw.html" : "extracted.md"}` };
+    const real = PgReadingStore.prototype.contentKeys;
+    const spy = vi.spyOn(PgReadingStore.prototype, "contentKeys").mockImplementationOnce(async () => gone);
+
+    const res = await apiRequest(app, TOKEN, `/api/readings/${id}${path}`);
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain(path === "/content" ? "picked up by readability" : "Test Article");
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+    expect(PgReadingStore.prototype.contentKeys).toBe(real);
+  });
+
+  it("still 404s when the keys resolve to a missing object both times", async () => {
+    const { app, id } = await seedFounderReading("https://example.com/content-race-gone");
+    const store = testReadingsFor(founderTenant());
+    const live = (await store.store.contentKeys(id))!;
+    const gone = { ...live, extractedKey: `${await store.keyPrefix(id)}/revisions/at_never/extracted.md` };
+    const spy = vi.spyOn(PgReadingStore.prototype, "contentKeys").mockResolvedValue(gone);
+
+    const res = await apiRequest(app, TOKEN, `/api/readings/${id}/content`);
+
+    expect(res.status).toBe(404);
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+});
+
 describe("POST /api/readings/similar", () => {
   it("returns only the caller's neighbours when two tenants store identical vectors", async () => {
     await insertSecondTenant(env as unknown as Env);

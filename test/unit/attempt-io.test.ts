@@ -7,9 +7,15 @@ import type { ContentStore } from "../../src/modules/stores/content-store";
 
 const KEY_PREFIX = "readings/2026/04/26T200000Z-rd_1";
 
-function ioWith(content: Pick<ContentStore, "deletePrefix" | "delete">, attemptId = "at_new"): AttemptIo {
+// The reading's current keys, as the store reports them: the live revision by
+// default, so the superseded keys under test are unreferenced.
+function ioWith(
+  content: Pick<ContentStore, "deletePrefix" | "delete">,
+  attemptId = "at_new",
+  currentRawKey = `${KEY_PREFIX}/revisions/${attemptId}/raw.html`,
+): AttemptIo {
   return new AttemptIo(
-    {} as never,
+    { contentKeys: async () => ({ rawKey: currentRawKey, extractedKey: null, contentType: "text/html" }) } as never,
     {} as never,
     content as ContentStore,
     {} as never,
@@ -41,7 +47,18 @@ describe("AttemptIo.discardSupersededContent", () => {
     expect(content.deletePrefix).not.toHaveBeenCalled();
   });
 
-  // Fail-closed guard: the attempt's own prefix is the live content.
+  // Fail-closed guard, as discardUnreferencedContent has: the reading's
+  // current keys are read first, and whatever they point at stays.
+  it("refuses keys the reading still points at", async () => {
+    const content = { deletePrefix: vi.fn(async () => 0), delete: vi.fn(async () => undefined) };
+    await ioWith(content, "at_new", `${KEY_PREFIX}/revisions/at_old/raw.html`).discardSupersededContent({
+      rawKey: `${KEY_PREFIX}/revisions/at_old/raw.html`,
+      extractedKey: null,
+    });
+    expect(content.deletePrefix).not.toHaveBeenCalled();
+    expect(content.delete).not.toHaveBeenCalled();
+  });
+
   it("never deletes this attempt's own revision prefix", async () => {
     const content = { deletePrefix: vi.fn(async () => 0), delete: vi.fn(async () => undefined) };
     await ioWith(content, "at_new").discardSupersededContent({

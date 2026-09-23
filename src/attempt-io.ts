@@ -100,13 +100,21 @@ export class AttemptIo {
 
   // The content of the revision this attempt's publication replaced. Its row
   // is gone (PgReadingWriter.publish), so nothing resolves these keys any
-  // more. Content under a revision prefix goes with its prefix; the legacy
-  // spelling shares key_prefix with everything else, so only its two objects
-  // go. Never this attempt's own prefix, which is the live content now.
+  // more. Guarded the way discardUnreferencedContent is: the reading's
+  // current keys are read first, and whatever they still point at stays,
+  // this attempt's own prefix included. Content under a revision prefix goes
+  // with its prefix; the legacy spelling shares key_prefix with everything
+  // else, so only its two objects go.
+  //
+  // A read that resolved the old keys just before this delete re-resolves
+  // them on a missing object (router.ts readContent), which is what makes
+  // deleting here, rather than deferring, safe for in-flight requests.
   async discardSupersededContent(keys: AttemptContentKeys): Promise<void> {
     const revisions = layout.revisionsPrefix(this.args.keyPrefix);
     const own = `${revisions}${resolveAttemptId(this.args)}/`;
     if (keys.rawKey.startsWith(own)) return;
+    const current = await this.store.contentKeys(this.args.id);
+    if (current && (current.rawKey === keys.rawKey || (keys.extractedKey !== null && current.extractedKey === keys.extractedKey))) return;
     if (keys.rawKey.startsWith(revisions)) {
       await this.content.deletePrefix(keys.rawKey.slice(0, keys.rawKey.lastIndexOf("/") + 1));
       return;
