@@ -171,8 +171,8 @@ describes only the live control plane that reading-lite-gh348 imports from.
   into a fresh index. Provider selection and model/effort validation fail closed;
   preserve Anthropic's cached system/tool prefix and its snapshot tests.
 - Hosted provider fetches must retain lease checks and budget admission inside
-  the HTTP retry loop. Synchronous operator clients (backfill-vectors, refresh
-  judgements, evals, comparisons) take the same wrapper through `OperatorSpend`
+  the HTTP retry loop. Synchronous operator clients (refresh judgements,
+  evals, comparisons) take the same wrapper through `OperatorSpend`
   and `scripts/ops-lib/operator-spend.ts`, billed to `--billing-tenant`. Operator
   batches (`corpus ingest`, `corpus recover --batch`) admit their summed maximum
   before the first pending sidecar and settle from results; the sidecar carries
@@ -201,8 +201,10 @@ describes only the live control plane that reading-lite-gh348 imports from.
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
 `WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
-`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue/Vectorize;
-integration tests inject `installQueueStub()` and `installVectorizeStub()`.
+`cloudflare:test` Env typing. `wrangler.test.toml` has no Queue or Vectorize;
+integration tests inject `installQueueStub()`. Similarity is pgvector, and the
+runtime never reads `READINGS_INDEX`, so the file-local `installVectorizeStub()`
+helpers some integration files still install stand in for nothing.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
 migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
 unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL

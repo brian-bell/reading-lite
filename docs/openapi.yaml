@@ -19,8 +19,8 @@ info:
     expects (`usr_…` or `global`). When present, a mismatch returns 412 before
     any store write.
 
-    Local `wrangler dev` has no Queue or Vectorize binding: submit/reprocess/
-    import return 503, and similar returns an empty list.
+    Local `wrangler dev` has no Queue binding: submit/reprocess/import return
+    503. Reads, search and similarity run against local PostgreSQL.
   contact:
     url: https://github.com/brian-bell/reading-lite
 servers:
@@ -105,8 +105,9 @@ paths:
         (revoked cookies/tokens 401). Queue, DLQ, digest, and notification
         paths refuse to resurrect data for a deleting tenant.
 
-        Cron starts the tenant R2 and Vectorize wipe after a seven-day grace.
-        Vector deletion propagates asynchronously. Once the wipe completes and
+        Cron starts the tenant wipe after a seven-day grace: the tenant's
+        reading rows (embeddings with them), then its R2 prefix. Once the wipe
+        completes and
         the prefix is confirmed empty, cron writes an audit record, purges
         tenant Durable Object state, rechecks the prefix, and deletes child
         rows before the user. No relationship cascades. Global incurred
@@ -659,7 +660,7 @@ paths:
       operationId: listReadings
       summary: List readings (newest first)
       description: |
-        Server-side filter against denormalized `index/list.json`. `q` is a
+        Server-side filter over the tenant's reading rows. `q` is a
         case-insensitive substring across title, tldr, url, and keywords.
         `tag` is an exact case-insensitive match on tags only.
       security:
@@ -813,8 +814,8 @@ paths:
       operationId: lookupReadingByUrl
       summary: Resolve the owner id for a URL
       description: |
-        Side-effect-free. Only a live, valid by-url pointer resolves. Does not
-        claim cold legacy pointers or repair damaged ones.
+        Side-effect-free. Resolves the tenant's URL-ownership row; never claims
+        a URL or writes anything.
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -858,8 +859,8 @@ paths:
       operationId: querySimilarReadings
       summary: Top-K similar readings by embedding
       description: |
-        Queries Vectorize. Without a Vectorize binding (local dev), returns
-        `{ "items": [] }`.
+        Exact cosine similarity over the tenant's embeddings in PostgreSQL
+        (pgvector).
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -923,8 +924,9 @@ paths:
       operationId: deleteReading
       summary: Purge a reading
       description: |
-        Visibility-first purge: Vectorize vector, owned by-url pointer, list
-        row, R2 objects under the prefix, by-id pointer last. 409 while an
+        Deletes the reading's row in one transaction (its URL ownership,
+        revisions, relationships, embedding, attempts and jobs cascade), then
+        the R2 objects under its prefix. 409 while an
         attempt is actively running (stale attempts past the pending TTL do
         not block). Inbound `connections` on other readings may still name the
         deleted id.
@@ -1878,7 +1880,7 @@ components:
           minLength: 1
         vector_delete_requested:
           type: boolean
-          description: Vectorize deleteByIds was issued (existence not reported)
+          description: Always true; the embedding row is deleted with the reading. Kept for the report contract.
         list_row_removed:
           type: boolean
         by_url_released:

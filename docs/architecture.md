@@ -185,14 +185,16 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `key_prefix` values and content keys stay relative, such as
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
-The R2 `ReadingStore`, `ListIndexStore`, and Vectorize `SimilarityStore` remain
-for the operator scripts, which move in a later slice. The account wipe no
-longer has Vectorize or vector-ledger phases at all: an embedding is a row that
-deletes with its reading, so the wipe is rows then objects, and the ledger
-module is operator-only (`scripts/account-lib/vector-ledger.ts`). Vectors
-written to Vectorize before the cutover are left to its retirement at cutover.
-No runtime reading path writes manifests, `index/list.json`, pointers, or
-Vectorize.
+The R2-era `reading-store.ts`, `list-index.ts` and `similarity-store.ts`
+modules survive only for their shared helpers (`tenantKeyRoot`,
+`manifestToIndexItem`, the similarity floor and snapshot); nothing in the
+Worker or the operator scripts constructs their `ReadingStore`,
+`ListIndexStore` or `SimilarityStore` classes any more. The account wipe has no
+Vectorize or vector-ledger phases: an embedding is a row that deletes with its
+reading, so the wipe is rows then objects, and no ledger exists anywhere.
+Vectors written to Vectorize before the cutover are left to its retirement at
+cutover. No runtime or operator path writes manifests, `index/list.json`,
+pointers, or Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover
 copied data and retained global R2 objects and unnamespaced vectors, which
@@ -289,10 +291,28 @@ safety classification, and help path. Normal CLI exits are 0 for success, 2 for
 usage, and 1 for operational failure; neighbour refresh also uses 3 for readings
 that need repair.
 
+Operators reach PostgreSQL directly with node-postgres over a DIRECT
+connection string, never Hyperdrive, through `scripts/pg-lib/`:
+
+| Module | Responsibility |
+|---|---|
+| `operator-db.ts` | The bucket → database pairing (`reading-lite` → `PRODUCTION_DATABASE_URL` / `NEON_MAIN_DATABASE_URL`, `reading-lite-staging` → `STAGING_DATABASE_URL` / `NEON_REHEARSAL_DATABASE_URL`), refusing a bare `DATABASE_URL` or another environment's name, and session open/close |
+| `operator-corpus.ts` | The corpus commands' reads and deletes, delegating to the Worker's `PgReadingStore` and writer so the two cannot disagree about a reading |
+| `migrate.ts`, `migrate-runner.ts` | The forward-only runner over `db/migrations/` and the plan/apply body shared by `db migrate`, `deploy worker` and `staging setup` |
+| `local-postgres.ts`, `local-seed-rows.ts`, `manifest-rows.ts` | Local dev and `seed:local` |
+
+Every `corpus` command resolves `--tenant` and scopes each query by it; the
+commands that read or delete rows refuse `--tenant global`. Which command
+survived, moved, or retired, and why, is the
+[operator tooling inventory](operator-tooling.md).
+
 The offline batch pipeline in `scripts/corpus-lib/batch/` shares manifest
 constructors with hosted processing. `run.ts` documents phase ordering;
 `prepare.ts`, `extract-phase.ts`, and `activation-phase.ts` handle recovery;
 `prepare-fresh-markdown.ts` and `run-fresh-markdown.ts` handle new Markdown.
+`postgres.ts` binds it to the runtime reading store and writer, so a batch
+publishes through the same tenant-scoped transactions as the queue consumer
+and R2 holds only the captured bytes.
 The sidecar records provider/model and progress so resume does not create a
 second batch, and `spend.ts` bounds, admits, and settles each batch as one
 spend operation that the sidecar carries. See

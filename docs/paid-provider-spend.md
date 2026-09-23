@@ -162,8 +162,7 @@ reaches none of these providers.
 
 | Path | Provider request | Operation | Payer and authority |
 | --- | --- | --- | --- |
-| `corpus backfill-vectors` | Synchronous OpenAI embeddings | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--bucket` |
-| `corpus refresh-connections`, `corpus refresh-tensions` | Synchronous OpenAI Responses or Anthropic Messages judgements | Per attempt | As above |
+| `corpus refresh-connections`, `corpus refresh-tensions` | Synchronous OpenAI Responses or Anthropic Messages judgements | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--bucket` |
 | `corpus ingest`, `corpus recover --batch` | OpenAI Batch or Anthropic Message Batches summaries, plus synchronous OpenAI embeddings | One per provider batch; embeddings per attempt | As above; a resume pays with the tenant its sidecar recorded |
 | `eval summarizer`, compare-summary-effort script | Synchronous OpenAI or Anthropic summaries | Per attempt | `--billing-tenant` required; authority from `--env` |
 | `corpus recover` without `--batch`, `reading submit`, `import …`, `staging smoke`, `extract agent` | None from the operator: the hosted consumer calls the provider | Hosted, per attempt | The bearer token's tenant; `--billing-tenant` does not apply |
@@ -173,8 +172,7 @@ reaches none of these providers.
 
 ### Synchronous operator clients
 
-`corpus backfill-vectors`, `corpus refresh-connections`, `corpus refresh-tensions`,
-`eval summarizer`, and the compare-summary-effort script wrap their provider
+`corpus refresh-connections`, `corpus refresh-tensions`, `eval summarizer`, and the compare-summary-effort script wrap their provider
 fetch in the same `createPaidFetch`, inside the client's retry loop, in their
 `--execute` branch only. A plan opens no spend session. The verbs travel over
 the `OperatorSpend` service binding (`scripts/system-lib/spend.ts`, one
