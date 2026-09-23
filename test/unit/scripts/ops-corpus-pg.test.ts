@@ -540,6 +540,60 @@ describe("ops corpus audit", () => {
   });
 });
 
+// Local dev leaves TENANT_DATA_PLANE unset, so `seed:local` and the dev Worker
+// keep a tenant's rows under its id but its content at unprefixed keys. The
+// bucket here stores full keys and the fake applies the root the command
+// passes, so a command that kept the `u/{tenant}/` root would miss every object.
+describe("--local addresses the unprefixed R2 root local dev writes", () => {
+  function localDeps() {
+    const io = captureIo();
+    const session = operatorSession(() => sql);
+    return {
+      io: io.io,
+      r2: {
+        deleteObject: (key: string, d: { keyRoot: string }) => bucket.deleteObject(`${d.keyRoot}${key}`),
+        readObject: (key: string, d: { keyRoot: string }) => bucket.readObject(`${d.keyRoot}${key}`),
+      },
+      openSql: session.openSql,
+      env: {},
+      mkdir: async () => {},
+      writeFile: async () => {},
+      now: () => Date.parse("2026-03-01T00:00:00.000Z"),
+    };
+  }
+
+  it("drop deletes the content it seeded", async () => {
+    const reading = await seedReading(sql, tenant, "rd_f", { status: "failed" });
+    bucket.put(`${reading.keyPrefix}/raw.html`);
+
+    expect(await corpusDropCommand.run([...tenantArg(), "rd_f", "--local", "--execute"], localDeps())).toBe(0);
+    expect(bucket.keys()).toEqual([]);
+  });
+
+  it("sweep deletes the duplicate's content", async () => {
+    await seedReading(sql, tenant, "rd_keep", { url: "https://www.youtube.com/watch?v=abc", tldr: "a much richer summary" });
+    const dropped = await seedReading(sql, tenant, "rd_dup", { url: "https://youtu.be/abc", tldr: "thin" });
+    bucket.put(`${dropped.keyPrefix}/raw.html`);
+
+    expect(await corpusSweepCommand.run([...tenantArg(), "--local", "--execute"], localDeps())).toBe(0);
+    expect(bucket.keys()).toEqual([]);
+  });
+
+  it("audit reads the extracted text it checks for teasers", async () => {
+    const prefix = keyPrefixFor("rd_t");
+    const extractedKey = `${prefix}/revisions/rv_1/extracted.md`;
+    await seedReading(sql, tenant, "rd_t", {
+      url: "https://writer.substack.com/p/post",
+      revision: { id: "rv_1", rawKey: `${prefix}/revisions/rv_1/raw.html`, extractedKey },
+    });
+    bucket.put(extractedKey, "This post is for paid subscribers");
+
+    const io = captureIo();
+    expect(await corpusAuditCommand.run([...tenantArg(), "--local", "--teasers"], { ...localDeps(), io: io.io })).toBe(0);
+    expect(io.all()).toContain('"teasers": 1');
+  });
+});
+
 // One loop rather than a case per command: the session is opened and closed in
 // one place (withOperatorSql), so what needs pinning is that every command that
 // opens one goes through it — on the way out of a success and of a failure

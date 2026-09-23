@@ -43,6 +43,7 @@ import {
 } from "../../pg-lib/operator-corpus";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorKeyRoot } from "../../corpus-lib/tenant";
 import { READINGS_PREFIX } from "../../../src/modules/stores/layout";
 
 export interface CorpusDropR2 {
@@ -103,7 +104,7 @@ async function runCorpusDrop(argv: string[], deps: CorpusDropDeps): Promise<numb
   }
 
   const selector = requireOperatorTenant(opts.tenant);
-  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: selector.keyRoot, remote: opts.remote };
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: operatorKeyRoot(selector, !opts.remote), remote: opts.remote };
 
   return withOperatorCorpus(
     { bucket: opts.bucket, tenant: selector, local: !opts.remote, databaseUrlEnv: opts.databaseUrlEnv },

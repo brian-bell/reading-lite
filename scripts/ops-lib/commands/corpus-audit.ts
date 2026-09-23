@@ -31,7 +31,7 @@ import { latestAttemptStage, listItems, withOperatorCorpus } from "../../pg-lib/
 import type { PgReadingStore } from "../../../src/modules/stores/postgres/reading-store";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
-import { operatorTenantSelector } from "../../corpus-lib/tenant";
+import { operatorKeyRoot, operatorTenantSelector } from "../../corpus-lib/tenant";
 
 export interface CorpusAuditDeps extends BaseDeps {
   // Content still lives in R2; only the inventory moved.
@@ -132,7 +132,7 @@ async function deepenStrandedStages(
 async function runCorpusAudit(argv: string[], deps: CorpusAuditDeps): Promise<number> {
   const args = parseAuditArgs(argv);
   const selector = requireOperatorTenant(args.tenant);
-  const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: selector.keyRoot, remote: args.remote };
+  const r2Deps: R2Deps = { bucket: args.bucket, keyRoot: operatorKeyRoot(selector, !args.remote), remote: args.remote };
 
   return withOperatorCorpus(
     { bucket: args.bucket, tenant: selector, local: !args.remote, databaseUrlEnv: args.databaseUrlEnv },

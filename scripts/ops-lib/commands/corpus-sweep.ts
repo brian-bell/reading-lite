@@ -20,6 +20,7 @@ import {
 import type { R2Deps } from "../../corpus-lib/wrangler-r2";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 import { requireOperatorTenant } from "../tenant-flag";
+import { operatorKeyRoot } from "../../corpus-lib/tenant";
 import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
 import {
   contentKeysFor,
@@ -85,7 +86,7 @@ async function runCorpusSweep(argv: string[], deps: CorpusSweepDeps): Promise<nu
   const opts = parseSweepArgs(argv);
   const { io, r2 } = deps;
   const selector = requireOperatorTenant(opts.tenant);
-  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: selector.keyRoot, remote: opts.remote };
+  const r2Deps: R2Deps = { bucket: opts.bucket, keyRoot: operatorKeyRoot(selector, !opts.remote), remote: opts.remote };
 
   // --drop is the operator-asserted pair mode: two readings that carry the same
   // material but are genuinely different resources, so no canonicalization rule

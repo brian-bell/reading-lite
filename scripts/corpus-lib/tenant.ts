@@ -31,6 +31,18 @@ export function operatorTenantSelector(tenant: OperatorTenant): string {
   return tenant.kind === "global" ? "global" : tenant.tenantId;
 }
 
+/**
+ * The R2 key root a command applies to this tenant's content keys.
+ *
+ * `--local` addresses this checkout's own bucket, where TENANT_DATA_PLANE is
+ * unset: the dev Worker and `seed:local` keep a usr_… tenant's rows under its
+ * id but its bytes at unprefixed keys. The selector still scopes PostgreSQL;
+ * only the bucket side drops the `u/{tenant}/` root.
+ */
+export function operatorKeyRoot(tenant: OperatorTenant, local: boolean): string {
+  return local ? "" : tenant.keyRoot;
+}
+
 export function resolveOperatorTenant(
   selector: string | undefined,
 ): ResolveOperatorTenantResult {
