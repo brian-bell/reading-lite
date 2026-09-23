@@ -80,7 +80,8 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
   never fabricated.
 - **List projection** — the `IndexItem` shape list, search and relationship
   targets return, projected from rows by `PgReadingStore` (`manifestToIndexItem`
-  names the mapping). There is no stored list to keep in step.
+  in `stores/list-items.ts` names the mapping). There is no stored list to keep
+  in step.
 - **Publication** — `PgReadingWriter.publish` is the terminal write for a
   successful attempt: one transaction that takes the tenant lock, then the
   reading lock, checks attempt ownership, then writes URL ownership, revision,

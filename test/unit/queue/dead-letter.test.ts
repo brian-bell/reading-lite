@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { handleDeadLetter } from "../../../src/index";
-import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../../src/modules/stores/layout";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
 import { FOUNDER_TENANT_ID as TENANT } from "../../helpers/file-tenants";
 import { testControlPlane } from "../../helpers/control-plane-db";

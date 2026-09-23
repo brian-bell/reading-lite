@@ -7,16 +7,16 @@
 // validated TenantContext.
 //
 // Spelling is single-homed with the worker: the key root comes from
-// tenantKeyRoot (the same function readingStoreFor uses when
-// TENANT_DATA_PLANE=1), and the Vectorize namespace is the tenant id, matching
-// similarityStoreFor. `global` maps to the empty key root and no namespace —
+// tenantKeyRoot (the same function contentStoreFor uses when
+// TENANT_DATA_PLANE=1), and the legacy Vectorize namespace is the tenant id.
+// `global` maps to the empty key root and no namespace —
 // the pre-tenant layout: local (TENANT_DATA_PLANE still unset),
 // and the leftover global objects both deployed
 // environments retain after their cutovers. Production and staging live corpus
 // is a usr_… selector from whoami.
 
 import { parseTenantId } from "../../src/control-plane/ids";
-import { tenantKeyRoot } from "../../src/modules/stores/reading-store";
+import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 
 export type OperatorTenant =
   | { kind: "global"; keyRoot: ""; namespace: undefined }

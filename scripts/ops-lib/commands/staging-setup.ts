@@ -1,6 +1,6 @@
 // `ops staging setup` — migrate staging's PostgreSQL database, then create the
-// one-time Cloudflare staging resources for reading-lite: R2 bucket, Vectorize
-// index, and the Queue + DLQ pairs. Idempotent and hard-coded to staging
+// one-time Cloudflare staging resources for reading-lite: R2 bucket and the
+// Queue + DLQ pairs. Idempotent and hard-coded to staging
 // names. Plan-first: a mode-less run reads the database's migration history
 // read-only and prints the wrangler command plan; --execute migrates, then
 // creates the resources.
@@ -152,7 +152,7 @@ export const stagingSetupCommand: CommandDefinition<StagingSetupDeps> = {
 
 Migrates staging's PostgreSQL database (the Neon rehearsal branch), then
 creates the one-time Cloudflare staging resources for reading-lite: R2 bucket,
-Vectorize index, and reading, digest, wipe, and refresh Queue + DLQ pairs.
+and reading, digest, wipe, and refresh Queue + DLQ pairs.
 
 Plans by default: connects read-only to list applied and pending migrations,
 and prints the wrangler commands. With no staging database variable set, or

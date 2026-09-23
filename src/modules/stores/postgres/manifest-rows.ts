@@ -10,12 +10,12 @@
 // Rank duplicates with `compareUrlOwnership`, re-exported here, so importers
 // do not fork the ready > pending > failed, then newest, rule.
 
-import type { Manifest } from "../../../schemas/manifest";
+import type { Manifest, ProcessingAttempt } from "../../../schemas/manifest";
 import type { SqlQuery } from "../../db/sql";
 import { vectorLiteral } from "../../db/sql";
 import { r2KeyLayout, rawExtFromContentType } from "../layout";
 
-export { compareUrlOwnership } from "../list-index";
+export { compareUrlOwnership } from "../list-items";
 
 export interface ManifestRowsInput {
   tenantId: string;
@@ -304,6 +304,27 @@ export async function upsertEmbedding(
     `INSERT INTO reading_embeddings (tenant_id, reading_id, embedding) VALUES ($1, $2, $3::vector)
      ON CONFLICT (tenant_id, reading_id) DO UPDATE SET embedding = EXCLUDED.embedding`,
     [tenantId, readingId, vectorLiteral(embedding)],
+  );
+}
+
+// One attempt-log row, inserted or brought up to date. The writer records an
+// attempt's progress through it and seed:local writes the fixture pack's logs,
+// so both spell the row the same way. The reading row must already exist.
+export async function upsertAttempt(
+  tx: SqlQuery,
+  tenantId: string,
+  attempt: ProcessingAttempt,
+): Promise<void> {
+  await tx.query(
+    `INSERT INTO reading_attempts (tenant_id, reading_id, id, trigger, status, stage, started_at, finished_at, error, events)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb)
+     ON CONFLICT (tenant_id, reading_id, id) DO UPDATE SET
+       status = EXCLUDED.status, stage = EXCLUDED.stage, finished_at = EXCLUDED.finished_at,
+       error = EXCLUDED.error, events = EXCLUDED.events`,
+    [
+      tenantId, attempt.reading_id, attempt.id, attempt.trigger, attempt.status, attempt.stage ?? null,
+      attempt.started_at, attempt.finished_at ?? null, json(attempt.error ?? null), JSON.stringify(attempt.events),
+    ],
   );
 }
 

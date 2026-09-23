@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ProcessReadingArgs } from "../attempt-ownership";
-import { buildKeyPrefix } from "../modules/stores/reading-store";
+import { buildKeyPrefix } from "../modules/stores/layout";
 import { parseReadingId, sha256Hex } from "../services";
 import { ProcessingAttemptTriggerSchema, SourceTypeSchema } from "../schemas/manifest";
 import type { ControlPlaneDb } from "./db";

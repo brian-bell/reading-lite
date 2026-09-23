@@ -1,4 +1,4 @@
-import type { SimilaritySnapshot } from "../../../src/modules/stores/similarity-store";
+import type { SimilaritySnapshot } from "../../../src/modules/stores/similarity";
 import type {
   EnrichmentDegradation,
   Manifest,

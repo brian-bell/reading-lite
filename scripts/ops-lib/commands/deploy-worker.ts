@@ -104,7 +104,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
       deps.io.stderr("[DEPLOY] OVERRIDE: operator acknowledges target tenant migration and deletion eligibility were verified manually for this deployment.");
     }
   } else {
-    deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and R2/Vectorize resource creation metadata before upload; no remote readiness check has run. The database is read below, for the pending migrations only.");
+    deps.io.stderr("[PLAN] execute will inspect the active tenant-mode version and the R2 bucket's creation metadata before upload; no remote readiness check has run. The database is read below, for the pending migrations only.");
   }
 
   // The last gate before the upload: the database must be at the head of
@@ -171,8 +171,8 @@ drift also exits 1, after the build dry-run. A plan that cannot reach the
 database warns, dry-runs and exits 0: the history went unread, which is a gap
 in the plan rather than evidence against it.
 
-Before the upload, tenant mode must already be active with matching
-R2/Vectorize bindings and resource creation metadata, or the operator must
+Before the upload, tenant mode must already be active with a matching R2
+binding and bucket creation metadata, or the operator must
 acknowledge manual migration verification. Unverified activation prints deletion
 eligibility when available and exits 2 without the override. Plan mode does not
 inspect remote readiness. See docs/operations.md: Tenant-mode activation guard.

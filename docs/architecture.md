@@ -185,11 +185,11 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `key_prefix` values and content keys stay relative, such as
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
-The R2-era `reading-store.ts`, `list-index.ts` and `similarity-store.ts`
-modules survive only for their shared helpers (`tenantKeyRoot`,
-`manifestToIndexItem`, the similarity floor and snapshot); nothing in the
-Worker or the operator scripts constructs their `ReadingStore`,
-`ListIndexStore` or `SimilarityStore` classes any more. The account wipe has no
+Beside the PostgreSQL stores, three storage-free modules hold what the Worker,
+the operator scripts and the batch pipeline share: `tenant-root.ts`
+(`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
+ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
+snapshot). The Worker binds no Vectorize index. The account wipe has no
 Vectorize or vector-ledger phases: an embedding is a row that deletes with its
 reading, so the wipe is rows then objects, and no ledger exists anywhere.
 Vectors written to Vectorize before the cutover are left to its retirement at

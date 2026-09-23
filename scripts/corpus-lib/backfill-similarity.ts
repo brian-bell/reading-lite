@@ -17,12 +17,7 @@
 // vector actually stored.
 
 import { ManifestSchema } from "../../src/schemas/manifest";
-import {
-  SIMILAR_TOP_K,
-  excludeSelf,
-  summarizeSimilarity,
-  type SimilaritySnapshot,
-} from "../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, excludeSelf, summarizeSimilarity, type SimilaritySnapshot } from "../../src/modules/stores/similarity";
 
 export interface BackfillRow {
   id: string;

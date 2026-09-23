@@ -2,13 +2,7 @@ import { truncateForEmbed } from "../../../src/process-reading";
 import type { SimilarContext } from "../../../src/modules/anthropic";
 import type { VectorizeMatch } from "../../lib/cf-clients";
 import type { EmbedResult } from "./clients";
-import {
-  SIMILAR_TOP_K,
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  excludeSelf,
-  summarizeSimilarity,
-} from "../../../src/modules/stores/similarity-store";
+import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimilarity } from "../../../src/modules/stores/similarity";
 import type { ExtractedTarget, SummarizeTarget } from "./types";
 
 // Mirror the realtime pipeline: embed the source text, query the index for the

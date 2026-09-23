@@ -37,7 +37,7 @@ import {
   type SkippedTarget,
 } from "../../src/modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "../../src/modules/stores/postgres/similarity-store";
-import type { SimilarityMatch } from "../../src/modules/stores/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity";
 import type { Manifest, SimilaritySnapshot } from "../../src/schemas/manifest";
 import type { ListIndexItem } from "../../src/schemas/api";
 import { sha256Hex } from "../../src/services";

@@ -16,7 +16,7 @@ import {
 import { parseTenantId, parseTokenId, parseUserId } from "../../../src/control-plane/ids";
 import { createApiTokenPrincipal, createSessionPrincipal } from "../../../src/control-plane/principal";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
-import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../../src/modules/stores/layout";
 import { useControlPlane } from "../../helpers/control-plane-pg";
 import { toTimestamp } from "../../../src/control-plane/pg-time";
 

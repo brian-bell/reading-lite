@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { BILLING_TENANT, EMBED_URL, FAIL_CLOSED_CASES, spendHarness } from "../../helpers/operator-spend";
-import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR } from "../../../src/modules/stores/similarity";
 import { RateLimitedError } from "../../../src/modules/http-retry";
 import type {
   RelationshipJudgementInput,
