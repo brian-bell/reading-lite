@@ -1280,8 +1280,9 @@ Re-read the user and progress rows before resuming: the user must be active,
 That still is **not** a full rescue: `beginAccountDeletion` stamped
 `revoked_at` on every session and API token and nothing reverses that, so the
 account is `active` but cannot authenticate. Re-run
-`ops founder bootstrap --env staging --execute` for the founder, or issue a
-fresh magic link, before assuming staging works again.
+`ops founder bootstrap --env staging --execute` for the founder (it refuses
+until #349 opens `STAGING_FOUNDER_BOOTSTRAP_OPEN`, which this drill already
+waits for), or issue a fresh magic link, before assuming staging works again.
 
 Staging already has tenant mode enabled and its founder cutover is complete.
 Do not rerun that migration to rehearse deletion. For a rebuilt environment,
