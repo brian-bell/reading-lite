@@ -69,9 +69,12 @@ Every item must be true. Stop if any is not.
 5. **`main` is empty.** No tables in `public`, pgvector installed. The
    importer refuses anything else. The free plan cannot mark a branch
    protected, and that is accepted.
-6. **Actions has reached `main`.** A workflow run has read the database
-   through `PRODUCTION_DATABASE_URL`, not only the Neon connection settings
-   (no IP allowlist, public connections allowed).
+6. **Actions can reach `main`, proved by the cutover run itself.** No
+   workflow can reach the database before the release: the Neon settings
+   allow public connections with no IP allowlist, and the release's wipe gate
+   and migration step are the first Actions reads of `PRODUCTION_DATABASE_URL`.
+   Both fail closed before the upload, so a connection failure costs a retry
+   inside the freeze, not a broken deploy (decided 2026-09-24).
 7. **The freeze will not straddle 03:07 UTC.** A refresh judgement between the
    final export and the cutover advances the R2 cursor while PostgreSQL never
    receives its job row or connections patch.
