@@ -1,61 +1,65 @@
 ---
 name: corpus-drop
-description: Remove one or more readings from the reading-lite corpus, identified by URL or by reading id. Resolves each selector against index/list.json, deletes every object under the reading's id-scoped prefix (including the by-url ownership pointer when the dropped reading actually owns it), and rewrites index/list.json. Non-ready only — refuses ready readings (which own a Vectorize embedding). Dry-run by default; writes only with --execute. Use whenever the user wants to drop, delete, or remove a specific reading, URL, dead link, junk, or duplicate failed copy from the corpus — including when they just paste a URL or rd_ id and say to get rid of it.
+description: Remove one or more readings from the reading-lite corpus, identified by URL or by reading id. Resolves each selector against the tenant's readings in PostgreSQL, deletes the row (its URL claim, revisions, attempts, relationships and embedding cascade with it), and deletes the reading's captured content from R2. Non-ready only by default — a ready reading needs --allow-ready, which refuses the production bucket. Dry-run by default; writes only with --execute. Use whenever the user wants to drop, delete, or remove a specific reading, URL, dead link, junk, or duplicate failed copy from the corpus — including when they just paste a URL or rd_ id and say to get rid of it.
 ---
 
 # corpus-drop
 
 Drops readings from the reading-lite corpus, fully and consistently, given a URL
 or a reading id. It is the generic "delete this from the corpus" tool: resolve
-selectors → delete each reading's R2 objects → rewrite `index/list.json` once.
+selectors → delete each reading's captured content from R2 → delete its row.
 
 **Dry-run by default. It only writes with `--execute`.**
 
 ## What it does
 
-For each target reading it deletes, under that reading's own id-scoped prefix:
-- `{prefix}/manifest.json` (durability anchor — list rebuilds key off this)
-- `{prefix}/extracted.md`, `{prefix}/raw.{ext}` (best-effort across common exts)
-- `{prefix}/attempts/{id}.json` (attempt ids read live from the manifest)
-- `index/by-id/{id}` (so `GET /api/readings/:id` 404s instead of resolving)
-- `index/by-url/{hash}` — **only when the stored pointer is owned by this
-  reading**. by-url pointers are eager URL ownership claims, so a failed/pending
-  reading may own its pointer; but an orphan-duplicate's URL hashes to the same
-  slot as the surviving ready copy, whose pointer must be left intact. The tool
-  reads the pointer object and deletes it only if `pointer.id` matches the
-  dropped reading.
+For each target reading:
 
-Then it rewrites `index/list.json` once, dropping the targeted ids.
+1. **Resolves its captured content** by asking the reading where its bytes are.
+   That answer comes in three tiers: the current revision's keys; the latest
+   capturing attempt's keys, for a reading that was never published; and the
+   legacy spelling under the stored `key_prefix`, for an imported reading no
+   attempt has touched. All three are deleted. (Deriving the keys from the
+   revision alone silently strands the third tier's bytes — the rows go, R2
+   keeps the objects, and nothing reports it.)
+2. **Deletes the `readings` row.** `reading_urls` (the URL claim),
+   `reading_revisions`, `reading_attempts`, `reading_relationships` and
+   `reading_embeddings` all cascade from it, so there is nothing else to clean
+   up and no separate Vectorize delete.
+
+**Bytes first, row last.** If an object delete fails, the row is left in place,
+so the reading stays visible to the next audit and the drop stays re-runnable.
 
 ## Selectors
 
 A selector is either a **reading id** (`rd_…`) or a **URL**. Mix freely.
-- A **URL** resolves to *every non-ready copy* of that URL in `index/list.json`
-  (a failed URL often has several duplicate attempts).
+- A **URL** resolves to *every non-ready copy* of that URL in the tenant's
+  corpus (a failed URL often has several duplicate attempts).
 - A **reading id** resolves to that one reading.
 
 ## Non-ready only (the safety rule)
 
-A `ready` reading owns a Vectorize embedding (and, as the live owner of its URL,
-its `index/by-url/{hash}` pointer); dropping it here would dangle the embedding.
-So:
+A `ready` reading is the live, searchable copy of its URL, so dropping one is
+never routine:
 - a `ready` id named explicitly is **refused** (hard error), and
 - a URL with a ready copy **keeps** that copy and drops only its non-ready
   duplicates (the orphan-dup cleanup case).
 
-Dropping those non-ready duplicates is safe: by-url pointers are eager ownership
-claims, so the deletion plan removes `index/by-url/{hash}` only when the dropped
-reading genuinely owns it — never the surviving ready copy's pointer. To remove a
-`ready` reading you'd still also need to delete its Vectorize vector — out of
-scope here on purpose.
+`--allow-ready` opts into it for staging cleanup, and **refuses the production
+bucket name**. There is no longer a `--vectorize` flag to pair with it: the
+embedding is a row that cascades with the reading. To remove a ready reading
+from production, use `corpus-sweep`, which only ever drops one alongside a
+surviving keeper.
 
 ## Prerequisites
 
-A Cloudflare session that can read **and write** R2: `wrangler login`, or
-`CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`).
-
-Run it when nothing is being submitted: the `index/list.json` rewrite is a plain
-put, not a CAS write, so a concurrent queue write could be lost.
+- `--tenant <usr_…>`. `--tenant global` is **refused** here: it names the
+  pre-tenant R2 layout, which has no rows.
+- A direct PostgreSQL connection string in the variable paired with the bucket
+  (`PRODUCTION_DATABASE_URL` for `reading-lite`), from
+  `~/.config/reading-lite/neon.env`.
+- A Cloudflare session that can read **and write** R2, for the content deletes:
+  `wrangler login`, or `CLOUDFLARE_API_TOKEN` (+ `CLOUDFLARE_ACCOUNT_ID`).
 
 ## Usage
 
@@ -70,28 +74,39 @@ npm run ops -- corpus drop --tenant "$TENANT" rd_ABC https://a.com/x https://b.c
 # Apply.
 npm run ops -- corpus drop --tenant "$TENANT" https://example.com/dead-link --execute
 
-# Alternate bucket / local miniflare cache (gate-off: --tenant global).
-npm run ops -- corpus drop --tenant global rd_ABC --bucket some-other-bucket --execute
-npm run ops -- corpus drop --tenant global rd_ABC --local --execute
+# Staging cleanup of a ready reading.
+npm run ops -- corpus drop --tenant "$STG_TENANT" rd_ABC \
+  --bucket reading-lite-staging --allow-ready --execute
+
+# This checkout's local database and R2 cache.
+npm run ops -- corpus drop --tenant "$TENANT" rd_ABC --local --execute
 ```
 
-`--tenant` is required on every corpus command. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see `docs/operations.md`). `--tenant global` is the pre-tenant layout: local only and the leftover global objects production and staging both retain. Staging pins the gate too, so staging corpus commands take its founder tenant id, not `global`. A `usr_…` id addresses that tenant's `u/{tenantId}/` namespace.
-Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`),
-`--local` (local miniflare bucket instead of `--remote`), `--execute`, `--help`.
+`--tenant` is required on every corpus command, and here it must be a real
+tenant id. Production uses `--tenant "$TENANT"` from `GET /api/whoami` (see
+`docs/operations.md`); staging takes its founder tenant id.
+
+Flags: `--bucket` (default `READING_LITE_BUCKET` env, then `reading-lite`; it
+selects the database too), `--database-url-env <NAME>`, `--allow-ready`,
+`--local`, `--execute`, `--help`.
 
 ## Always dry-run first
 
-The default run prints every object it would delete and the `list.json` diff and
-changes nothing. Confirm the target set, then re-run with `--execute`.
+The default run prints every object and row it would delete and changes nothing.
+Confirm the target set, then re-run with `--execute`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-drop.ts` (via `scripts/ops.ts`)
 - Pure resolver (tested): `scripts/corpus-lib/drop.ts`
-- R2 read/delete/put (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
-- Tests: `test/unit/corpus/drop.test.ts` (node project)
+- Rows and content keys: `scripts/pg-lib/operator-corpus.ts`, over
+  `PgReadingStore`
+- R2 delete (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
+- Tests: `test/unit/corpus/drop.test.ts` (resolver) and
+  `test/unit/scripts/ops-corpus-pg.test.ts` (end to end, one case per
+  content tier)
 
 ## Related
 - **`corpus-audit`** — find what's broken first (it surfaces the ids/URLs).
 - **`corpus-recover`** — try to *fix* recoverable readings instead of dropping.
-- **`corpus-delete-orphans`** — the original, audit-driven bulk variant
-  (`--ids`/orphan-dup mode). `corpus-drop` is the ad-hoc URL-or-id front-end.
+- **`corpus-sweep`** — the tool for duplicates across URL spellings, and the
+  only one that drops a ready reading on production.

@@ -2,7 +2,14 @@
 // fence. Global and tenant edits never share an invocation or transaction.
 import { z } from "zod";
 import type { ControlPlaneDb } from "../../src/control-plane/db";
-import { controlPlaneDbForBucket } from "../account-lib/control-plane";
+import { fromSql } from "../../src/control-plane/db";
+import type { Sql } from "../../src/modules/db/sql";
+import {
+  bucketForDeployEnv,
+  openOperatorSql,
+  resolveOperatorDatabaseUrl,
+  type OpenOperatorSql,
+} from "../pg-lib/operator-db";
 import { UsageError } from "../ops-lib/contract";
 export type PolicyEnvironment = "staging" | "production";
 export function policyEnvironment(
@@ -12,10 +19,56 @@ export function policyEnvironment(
     throw new UsageError("--env must be staging or production");
   return value;
 }
-export function policyDb(env: PolicyEnvironment): ControlPlaneDb {
-  return controlPlaneDbForBucket(
-    env === "production" ? "reading-lite" : "reading-lite-staging",
-  );
+
+export interface PolicySession {
+  db: ControlPlaneDb;
+  /** Closes the connection. Safe to call more than once. */
+  close: () => Promise<void>;
+}
+
+export interface PolicyDbOptions {
+  databaseUrlEnv?: string;
+  open?: OpenOperatorSql;
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * The control plane for a policy read or edit, over a direct PostgreSQL
+ * connection (ADR 0005) rather than wrangler D1 — the D1 database no Worker
+ * binding reads any more, where a cap the operator believed was set never
+ * applied. The caller owns the session and must `close` it; `withPolicyDb` is
+ * the safe form.
+ */
+export function policyDb(env: PolicyEnvironment, opts: PolicyDbOptions = {}): PolicySession {
+  const { db, sql } = policyDbSession(env, opts);
+  return { db, close: () => sql.end().catch(() => undefined) };
+}
+
+function policyDbSession(
+  env: PolicyEnvironment,
+  opts: PolicyDbOptions = {},
+): { db: ControlPlaneDb; sql: Sql } {
+  const { url } = resolveOperatorDatabaseUrl({
+    bucket: bucketForDeployEnv(env),
+    ...(opts.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: opts.databaseUrlEnv }),
+    ...(opts.env === undefined ? {} : { env: opts.env }),
+  });
+  const sql = (opts.open ?? openOperatorSql)(url);
+  return { db: fromSql(sql), sql };
+}
+
+/** Runs `work` against the environment's control plane and closes the session. */
+export async function withPolicyDb<T>(
+  env: PolicyEnvironment,
+  work: (db: ControlPlaneDb) => Promise<T>,
+  opts: PolicyDbOptions = {},
+): Promise<T> {
+  const session = policyDb(env, opts);
+  try {
+    return await work(session.db);
+  } finally {
+    await session.close();
+  }
 }
 export function positiveInteger(value: string, flag: string): number {
   if (
@@ -30,7 +83,14 @@ const Positive = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 export const PolicyRowSchema = z.object({
   policy_version: Positive,
   daily_spend_microdollars: Positive.nullable(),
-  paid_work_enabled: z.union([z.literal(0), z.literal(1)]).optional(),
+  // PostgreSQL's system_policy.paid_work_enabled is `boolean` (migration 0003)
+  // and pg returns a JS boolean for it. The operator's 0|1 spelling is kept —
+  // it is what the CLI prints and what the plan/execute diff compares — so the
+  // boolean is normalized here rather than at each reader.
+  paid_work_enabled: z
+    .union([z.literal(0), z.literal(1), z.boolean()])
+    .optional()
+    .transform((value) => (typeof value === "boolean" ? (value ? 1 : 0) : value)),
   catalog_version: z
     .number()
     .int()

@@ -1,7 +1,7 @@
 # Docker Compose local dev
 
-`docker compose up` runs the backend and `app/` Workers each in their own
-container, giving an isolated, reproducible environment instead of whatever
+`docker compose up` runs PostgreSQL plus the backend and `app/` Workers each in
+their own container, giving an isolated, reproducible environment instead of whatever
 Node/npm state happens to be on the host. This is an alternative to the native
 flow — `npm run dev` plus `cd app && npm run dev`, or the
 [reading-lite-local](../.agents/skills/reading-lite-local/SKILL.md) skill —
@@ -20,9 +20,22 @@ docker compose up --build
 The first run needs `.dev.vars` at the repository root; copy it from
 `.dev.vars.example` if you have not already (the backend container does this
 itself on first boot if the file is missing, since it is bind-mounted from the
-host and gitignored). Local D1 data, R2 objects, and Wrangler's dev registry
-persist in named volumes across `docker compose down` / `up`; `docker compose
+host and gitignored). Local R2 objects, PostgreSQL data, and
+Wrangler's dev registry persist in named volumes across `docker compose down` / `up`; `docker compose
 down -v` clears them.
+
+## PostgreSQL
+
+The `postgres` service is PostgreSQL 18 with pgvector 0.8.x, matching Neon
+([ADR 0005](decisions/0005-postgresql-storage.md)). `backend` waits for its
+health check, then `npm run dev` migrates it; there is no Docker inside the
+container, so `READING_LITE_DATABASE_URL` marks the database as self-managed and
+`CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` points the Worker's
+`HYPERDRIVE` binding at `postgres:5432` instead of the host port in
+`wrangler.toml`. The service is also published on host port **54329** for the
+native flow and the test suite, which start it alone with
+`docker compose up -d postgres`. `docker-compose.yml` maps to no CI job, so
+check this wiring by hand after changing it.
 
 ## Why one shared network namespace
 
@@ -61,14 +74,15 @@ Both still work through the containers, using the same commands as the native
 flow (see the skill), run against the published ports:
 
 ```sh
-docker compose exec backend npm run seed:local
+docker compose exec backend npm run seed:local   # R2 and PostgreSQL
 curl -s 'http://127.0.0.1:8787/api/dev/mailbox?email=founder%40localhost' | jq
 ```
 
 ## Limits
 
-Same as native local dev: no Queue or Vectorize, so submit/import/reprocess
-return 503 and vector similarity is empty. Editing `package.json` in either
+Same as native local dev: no Queue, so submit/import/reprocess return 503.
+List, detail, content, lookup, search and similarity work against the seeded
+PostgreSQL rows. Editing `package.json` in either
 project needs `docker compose build` (dependencies are baked into the image,
 not reinstalled on every `up`); editing application source does not, since the
 repository is bind-mounted and both dev servers hot-reload.

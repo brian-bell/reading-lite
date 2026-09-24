@@ -121,12 +121,7 @@ describe("the fixed labels", () => {
 
   it("shows an object by its name under the reading's prefix", () => {
     const { key_prefix, objects } = pack.diagnostics[ATTENTION];
-    expect(objects.map((o) => objectName(o.key, key_prefix))).toEqual([
-      "manifest.json",
-      "raw.html",
-      "extracted.md",
-      "attempts/at_FXATTENT01.json",
-    ]);
+    expect(objects.map((o) => objectName(o.key, key_prefix))).toEqual(["raw.html", "extracted.md"]);
     expect(objectName("elsewhere/x", key_prefix)).toBe("elsewhere/x");
     // On the tenant data plane object keys carry the tenant root in front of
     // the stored, relative prefix.

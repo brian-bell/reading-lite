@@ -1,8 +1,7 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
 import { digestDeliveryKeyId, getDigestDelivery } from "../../src/control-plane/digest-ledger";
-import { fromD1 } from "../../src/control-plane/db";
 import {
   consumeDigestMessage,
   DIGEST_PENDING_STALE_MS,
@@ -12,7 +11,7 @@ import {
   processDigestJob,
 } from "../../src/digest-pipeline";
 import worker, { type Env } from "../../src/index";
-import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { Manifest } from "../../src/schemas/manifest";
 import {
   FOUNDER_TENANT_ID,
@@ -20,9 +19,14 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 import type { ListIndexItem } from "../../src/schemas/api";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { interceptSql } from "../helpers/sql-faults";
+import { toTimestamp } from "../../src/control-plane/pg-time";
+
+afterEach(() => vi.restoreAllMocks());
 
 const NOW_MS = Date.parse("2026-09-02T09:00:00.000Z");
 const READING_ID = "rd_0123456780";
@@ -59,7 +63,7 @@ async function setDigest(
     notifyImmediate?: number;
   },
 ): Promise<void> {
-  await env.CONTROL_PLANE.prepare(
+  await testControlPlane(env).run(
     `UPDATE user_settings
         SET digest_cadence = ?,
             time_zone = ?,
@@ -67,23 +71,20 @@ async function setDigest(
             digest_weekday = ?,
             notify_immediate = ?
       WHERE user_id = ?`,
-  )
-    .bind(
-      values.cadence,
+    values.cadence,
       values.timeZone ?? "UTC",
       values.hour ?? 9,
       values.weekday ?? 1,
       values.notifyImmediate ?? 1,
       userId,
-    )
-    .run();
+  );
 }
 
 async function resetState(): Promise<void> {
-  await env.CONTROL_PLANE.prepare("DELETE FROM digest_deliveries").run();
-  await env.CONTROL_PLANE.prepare(
+  await testControlPlane(env).run("DELETE FROM digest_deliveries");
+  await testControlPlane(env).run(
     "UPDATE user_settings SET digest_cadence = 'off', time_zone = 'UTC', digest_hour_local = 9, digest_weekday = 1",
-  ).run();
+  );
   installDigestQueue();
 }
 
@@ -137,7 +138,7 @@ describe("digest fan-out + send-time skips", () => {
     for (const body of queued) {
       await processDigestJob(body, env as unknown as Env, { nowMs: NOW_MS });
     }
-    const db = fromD1(env.CONTROL_PLANE);
+    const db = testControlPlane(env);
     const row = await getDigestDelivery(db, {
       userId: FOUNDER_TENANT_ID,
       cadence: "daily",
@@ -151,33 +152,30 @@ describe("digest fan-out + send-time skips", () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
     const inflight = queued[0]!;
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
-      .bind(FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     try {
       expect(
         await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS + DIGEST_PENDING_STALE_MS }),
       ).toEqual({ enqueued: 0 });
       await processDigestJob(inflight, env as unknown as Env, { nowMs: NOW_MS });
-      const row = await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      const row = await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
       });
       expect(row).toMatchObject({ status: "skipped", skip_reason: "inactive_user" });
     } finally {
-      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
-        .bind(FOUNDER_TENANT_ID)
-        .run();
+      await testControlPlane(env).run("UPDATE users SET status = 'active' WHERE id = ?", FOUNDER_TENANT_ID);
     }
   });
 
   it("skips an invalid stored TZ at send without calling mail", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
-    await env.CONTROL_PLANE.prepare("UPDATE user_settings SET time_zone = ? WHERE user_id = ?")
-      .bind("Not/A_Zone", FOUNDER_TENANT_ID)
-      .run();
+    await testControlPlane(env).run(
+      "UPDATE user_settings SET time_zone = ? WHERE user_id = ?",
+      "Not/A_Zone", FOUNDER_TENANT_ID,
+    );
 
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS });
@@ -188,7 +186,7 @@ describe("digest fan-out + send-time skips", () => {
     warn.mockRestore();
 
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -209,7 +207,7 @@ describe("digest fan-out + send-time skips", () => {
     expect(msg.ack).toHaveBeenCalledTimes(2);
     expect(msg.retry).not.toHaveBeenCalled();
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -231,7 +229,7 @@ describe("digest fan-out + send-time skips", () => {
       { nowMs: NOW_MS },
     );
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -246,7 +244,7 @@ describe("digest fan-out + send-time skips", () => {
       nowMs: Date.parse("2026-09-03T09:00:00.000Z"),
     });
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -259,30 +257,12 @@ describe("digest fan-out + send-time skips", () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await setDigest(OTHER_TENANT_ID, { cadence: "daily" });
 
-    const inner = env.CONTROL_PLANE;
-    const throwingPlane = {
-      prepare(sql: string) {
-        const stmt = inner.prepare(sql);
-        if (!/INSERT INTO digest_deliveries/i.test(sql)) return stmt;
-        return {
-          bind(...params: unknown[]) {
-            const bound = stmt.bind(...params);
-            return {
-              run: async () => {
-                if (params[0] === OTHER_TENANT_ID) throw new Error("claim boom");
-                return bound.run();
-              },
-            };
-          },
-        };
-      },
-    } as unknown as D1Database;
+    interceptSql(/INSERT INTO digest_deliveries/, (_call, values) =>
+      values[0] === OTHER_TENANT_ID ? new Error("claim boom") : "pass",
+    );
 
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    const result = await fanOutDueDigests(
-      { ...(env as unknown as Env), CONTROL_PLANE: throwingPlane },
-      { nowMs: NOW_MS },
-    );
+    const result = await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
     consoleErr.mockRestore();
 
     expect(result.enqueued).toBe(1);
@@ -298,7 +278,7 @@ describe("digest fan-out + send-time skips", () => {
     });
     consoleErr.mockRestore();
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -311,7 +291,7 @@ describe("digest fan-out + send-time skips", () => {
     });
     expect(queued).toHaveLength(1);
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -325,7 +305,7 @@ describe("digest fan-out + send-time skips", () => {
       enqueued: 1,
     });
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -339,7 +319,7 @@ describe("digest fan-out + send-time skips", () => {
     expect(queued).toHaveLength(0);
 
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -354,13 +334,14 @@ describe("digest fan-out + send-time skips", () => {
       enqueued: 0,
     });
 
-    await env.CONTROL_PLANE.prepare(
+    await testControlPlane(env).run(
       `INSERT INTO digest_deliveries
-         (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+         (user_id, cadence, period_key, status, created_at, updated_at)
        VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
-    )
-      .bind(FOUNDER_TENANT_ID, laterMs - DIGEST_PENDING_STALE_MS, laterMs - DIGEST_PENDING_STALE_MS)
-      .run();
+      FOUNDER_TENANT_ID,
+      toTimestamp(laterMs - DIGEST_PENDING_STALE_MS),
+      toTimestamp(laterMs - DIGEST_PENDING_STALE_MS),
+    );
 
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
       enqueued: 1,
@@ -379,13 +360,14 @@ describe("digest fan-out + send-time skips", () => {
   it("does not re-enqueue a fresh leftover pending row after the due hour", async () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     const laterMs = Date.parse("2026-09-02T10:30:00.000Z");
-    await env.CONTROL_PLANE.prepare(
+    await testControlPlane(env).run(
       `INSERT INTO digest_deliveries
-         (user_id, cadence, period_key, status, created_at_ms, updated_at_ms)
+         (user_id, cadence, period_key, status, created_at, updated_at)
        VALUES (?, 'daily', '2026-09-02', 'pending', ?, ?)`,
-    )
-      .bind(FOUNDER_TENANT_ID, laterMs, laterMs)
-      .run();
+      FOUNDER_TENANT_ID,
+      toTimestamp(laterMs),
+      toTimestamp(laterMs),
+    );
 
     expect(await fanOutDueDigests(env as unknown as Env, { nowMs: laterMs })).toEqual({
       enqueued: 0,
@@ -422,7 +404,7 @@ describe("digest DLQ does not touch reading manifests", () => {
     await setDigest(FOUNDER_TENANT_ID, { cadence: "daily" });
     await fanOutDueDigests(env as unknown as Env, { nowMs: NOW_MS });
 
-    const reader = testReadingStore(env);
+    const reader = testReadingsFor(founderTenant());
     const manifest: Manifest = {
       id: READING_ID,
       url: "https://example.com/dlq",
@@ -443,8 +425,7 @@ describe("digest DLQ does not touch reading manifests", () => {
         started_at: "2026-05-07T12:00:05.000Z",
       },
     };
-    await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
+    await reader.seed(manifest, { keyPrefix: KEY_PREFIX });
 
     const ack = vi.fn();
     const batch = {
@@ -464,9 +445,9 @@ describe("digest DLQ does not touch reading manifests", () => {
     await worker.queue(batch, env as unknown as Env);
 
     expect(ack).toHaveBeenCalledOnce();
-    expect((await reader.readManifest(KEY_PREFIX))?.status).toBe("pending");
+    expect((await reader.manifest(READING_ID))?.status).toBe("pending");
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -475,6 +456,7 @@ describe("digest DLQ does not touch reading manifests", () => {
   });
 
   it("handleDigestDeadLetter acks even when the ledger write throws", async () => {
+    interceptSql(/digest_deliveries/, () => new Error("database hiccup"));
     const ack = vi.fn();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
     await handleDigestDeadLetter(
@@ -488,14 +470,7 @@ describe("digest DLQ does not touch reading manifests", () => {
         },
         ack,
       },
-      {
-        CONTROL_PLANE: {
-          prepare: () => {
-            throw new Error("D1 hiccup");
-          },
-        } as unknown as D1Database,
-        EMAIL_FROM: "reading-lite@test.example",
-      },
+      { HYPERDRIVE: env.HYPERDRIVE, EMAIL_FROM: "reading-lite@test.example" },
       { nowMs: NOW_MS },
     );
     expect(ack).toHaveBeenCalledOnce();
@@ -563,7 +538,7 @@ async function seedList(
   tenant: ReturnType<typeof founderTenant>,
   items: ListIndexItem[],
 ): Promise<void> {
-  await testReadingStore(env, tenant).writeListIndex({ version: 1, items });
+  await testReadingsFor(tenant).seedListItems(items);
 }
 
 describe("digest send isolation (196 B2)", () => {
@@ -632,7 +607,7 @@ describe("digest send isolation (196 B2)", () => {
     expect(fetchFn).toHaveBeenCalledTimes(2);
 
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -649,7 +624,7 @@ describe("digest send isolation (196 B2)", () => {
     await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: NOW_MS, fetch: fetchFn });
     expect(fetchFn).not.toHaveBeenCalled();
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -672,7 +647,7 @@ describe("digest send isolation (196 B2)", () => {
     await processDigestJob(queued[0]!, env as unknown as Env, { nowMs: laterMs, fetch: fetchFn });
     expect(fetchFn).not.toHaveBeenCalled();
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",
@@ -698,7 +673,7 @@ describe("digest send isolation (196 B2)", () => {
     expect(msg.ack).not.toHaveBeenCalled();
     expect(msg.retry).toHaveBeenCalledWith({ delaySeconds: 30 });
     expect(
-      await getDigestDelivery(fromD1(env.CONTROL_PLANE), {
+      await getDigestDelivery(testControlPlane(env), {
         userId: FOUNDER_TENANT_ID,
         cadence: "daily",
         periodKey: "2026-09-02",

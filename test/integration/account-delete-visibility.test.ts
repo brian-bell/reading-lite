@@ -1,41 +1,22 @@
 import { env } from "cloudflare:test";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { dispatchQueueMessage, type Env } from "../../src/index";
-import { VectorLedgerWriteError } from "../../src/control-plane/vector-ledger";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { PgReadingWriter, PublishCommitError } from "../../src/modules/stores/postgres/reading-writer";
 import { sha256Hex, type Services } from "../../src/services";
-import { buildKeyPrefix, ReadingStore } from "../../src/modules/stores/reading-store";
-import { founderTenant, PUBLIC_LOOKUP, reserveReadingSlot, testReadingStore } from "../helpers/tenant-fixtures";
+import { founderTenant, FOUNDER_TENANT_ID, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
+import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
+import { beginAccountDeletion } from "../../src/control-plane/account-delete";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { submitPending } from "../../src/modules/manifest-drafting";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
 <p>This is a paragraph with enough words to be picked up by readability as the main content body of the article.</p>
 <p>This is a second paragraph that adds more content so the article passes the readability character threshold.</p>
 </article></main></body></html>`;
-
-function installVectorizeStub() {
-  const vectors = new Map<string, { values: number[]; metadata: Record<string, unknown> }>();
-  const upsert = vi.fn(async (vs: VectorizeVector[]) => {
-    for (const v of vs) {
-      vectors.set(v.id, {
-        values: v.values as number[],
-        metadata: (v.metadata ?? {}) as Record<string, unknown>,
-      });
-    }
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const deleteByIds = vi.fn(async (ids: string[]) => {
-    for (const id of ids) vectors.delete(id);
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const query = vi.fn(async () => ({ count: 0, matches: [] }) as unknown as VectorizeMatches);
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert,
-    deleteByIds,
-    query,
-  } as unknown as VectorizeIndex;
-  return { upsert, deleteByIds, query, vectors };
-}
 
 function makeStubFetch() {
   const embedding = new Array(1536).fill(0.1);
@@ -100,41 +81,6 @@ function makeServices(fetchFn: typeof fetch): Services {
   };
 }
 
-function statusLookupPlane(
-  inner: D1Database,
-  succeed: number,
-  after: "throw" | { status: string } = "throw",
-): D1Database {
-  let remaining = succeed;
-  return {
-    // Delegated, not stubbed away: the publisher writes its vector-ledger row
-    // through `batch` (issue #195 S3), and a double that omitted it would make
-    // every publish throw for a reason the test is not about.
-    batch: (statements: unknown[]) => (inner as D1Database).batch(statements as never),
-    prepare(sql: string) {
-      const stmt = inner.prepare(sql);
-      if (!/SELECT\s+status\s+FROM\s+users\s+WHERE\s+id\s*=\s*\?/i.test(sql)) return stmt;
-      return {
-        bind(...params: unknown[]) {
-          const bound = stmt.bind(...params);
-          return {
-            first: async () => {
-              if (remaining <= 0) {
-                if (after === "throw") throw new Error("D1 hiccup");
-                return after;
-              }
-              remaining -= 1;
-              return bound.first();
-            },
-            run: () => bound.run(),
-            all: () => bound.all(),
-          };
-        },
-      };
-    },
-  } as unknown as D1Database;
-}
-
 async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
   for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
@@ -142,46 +88,30 @@ async function clearBucket() {
 
 beforeEach(clearBucket);
 
-describe("processReading — vector ledger at publish", () => {
-  it("fails closed on a D1 outage and the retry actually republishes", async () => {
-    // Every other visibility write on this path is reconciled defensively —
-    // a list row or a vector that did not land is visible and self-heals. A
-    // LEDGER row that did not land is neither: nothing repairs it and nothing
-    // reports it, and what survives is a published reading missing from the one
-    // record that says which vectors this tenant owns. So it must propagate.
-    //
-    // And it must propagate WITHOUT destroying anything and WITHOUT stranding
-    // the reading. That is why the ledger write sits in `commitTerminalManifest`
-    // ahead of the terminal manifest write rather than inside
-    // `ReadingVisibility.publish`: the terminal `ready` manifest clears
-    // `active_attempt`, and once it is cleared no redelivery can republish, so
-    // a ledger throw from inside publish would requeue into a no-op and leave a
-    // ready, listed reading with no vector and no ledger row forever.
-    //
-    // So this test does not settle for "an error was thrown". It fails the real
-    // D1 INSERT, asserts nothing terminal happened, then heals D1 and re-runs
-    // the very same job the queue would redeliver — and requires that second
-    // pass to end with BOTH a live vector upserted AND a ledger row present.
-    const vector = installVectorizeStub();
-    const fetchFn = makeStubFetch();
-    const reader = testReadingStore(env);
-    const url = "https://example.com/ledger-fail-closed";
-    const urlHash = await sha256Hex(url);
-    const id = "rd_LEDGERX";
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const job: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_LEDGERX",
-      attemptStartedAt: createdAt,
-      trigger: "submit",
-      email: false,
-    };
-    await reader.writeManifest(keyPrefix, {
+afterEach(() => vi.restoreAllMocks());
+
+const CREATED_AT = "2026-04-26T20:00:00.000Z";
+
+// The state intake leaves for the consumer: a pending reading this job's
+// attempt owns, and a reserved reading slot.
+async function pendingJob(id: string, url: string) {
+  const readings = testReadingsFor(founderTenant());
+  const urlHash = await sha256Hex(url);
+  const keyPrefix = buildKeyPrefix(id, CREATED_AT);
+  const attemptId = `at_${id.slice(3)}`;
+  const job: ProcessReadingArgs = {
+    id,
+    url,
+    urlHash,
+    createdAt: CREATED_AT,
+    keyPrefix,
+    attemptId,
+    attemptStartedAt: CREATED_AT,
+    trigger: "submit",
+    email: false,
+  };
+  await readings.seed(
+    {
       id,
       url,
       url_hash: urlHash,
@@ -190,85 +120,74 @@ describe("processReading — vector ledger at publish", () => {
       content_status: "captured",
       content_bytes: 0,
       content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
+      created_at: CREATED_AT,
+      updated_at: CREATED_AT,
       // The shape intake actually writes: a live `active_attempt` this job owns.
-      // It is what lets a redelivery write attempt artifacts, and what the
-      // terminal `ready` manifest clears — so the fixture must carry it for the
-      // retry half of this test to mean anything.
-      active_attempt: {
-        id: "at_LEDGERX",
-        trigger: "submit",
-        status: "running",
-        started_at: createdAt,
-      },
+      // It is what lets a redelivery keep writing, and what publication clears —
+      // so the fixture must carry it for a retry to mean anything.
+      active_attempt: { id: attemptId, trigger: "submit", status: "running", started_at: CREATED_AT },
+    },
+    { keyPrefix },
+  );
+  await reserveReadingSlot(env, founderTenant(), job);
+  return { readings, job, keyPrefix };
+}
+
+function summarizeCalls(fetchFn: ReturnType<typeof makeStubFetch>): number {
+  return fetchFn.mock.calls.filter(([input]) => String(input).startsWith("https://api.openai.com/v1/responses")).length;
+}
+
+describe("processReading — the publish transaction", () => {
+  it("fails closed on a database failure and the retry actually republishes", async () => {
+    // Publication is one transaction, so a failure inside it leaves nothing
+    // half-published. It must also propagate WITHOUT destroying anything and
+    // WITHOUT stranding the reading: by publish time the summarization is paid
+    // for, and a reading marked failed here would throw that away over a blip.
+    //
+    // So this test does not settle for "an error was thrown". It fails a real
+    // transaction at its last statement, asserts nothing terminal happened,
+    // then re-runs the very same job the queue would redeliver — and requires
+    // that second pass to publish, without paying for a second summary.
+    const fetchFn = makeStubFetch();
+    const { readings, job } = await pendingJob("rd_PUBFAIL", "https://example.com/publish-fail-closed");
+
+    // The embedding is the transaction's last write; a wrong dimension makes
+    // PostgreSQL reject it after the revision, reading and relationships
+    // were written, so the rollback is real.
+    const publish = PgReadingWriter.prototype.publish;
+    vi.spyOn(PgReadingWriter.prototype, "publish").mockImplementationOnce(function (this: PgReadingWriter, ref, ready, opts) {
+      return publish.call(this, ref, ready, { ...opts, embedding: [1, 2, 3] });
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reserveReadingSlot(env, founderTenant(), job);
-
-    // Fail only the ledger INSERT, leaving every other control-plane read and
-    // write alone, so this test is about the ledger and not about D1 generally.
-    // `d1Down` is flipped between the two passes: a real outage, then recovery.
-    let d1Down = true;
-    const workerEnv = env as unknown as Env;
-    const inner = workerEnv.CONTROL_PLANE;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: {
-        batch: (statements: unknown[]) => inner.batch(statements as never),
-        prepare(sql: string) {
-          if (d1Down && /INSERT INTO vector_ledger/i.test(sql)) {
-            const boom = () => {
-              throw new Error("D1 unavailable");
-            };
-            return { bind: () => ({ first: boom, run: boom, all: boom }) };
-          }
-          return inner.prepare(sql);
-        },
-      } as unknown as D1Database,
-    };
-    const ledgerRow = async () =>
-      await inner
-        .prepare("SELECT reading_id, state FROM vector_ledger WHERE reading_id = ?")
-        .bind(id)
-        .first<{ reading_id: string; state: string }>();
-
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).rejects.toThrow(VectorLedgerWriteError);
+      processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant()),
+    ).rejects.toThrow(PublishCommitError);
     consoleErr.mockRestore();
 
-    // Nothing terminal happened: the manifest is untouched and — the part that
-    // makes the retry work at all — `active_attempt` is still this attempt's,
-    // so the redelivery can still write attempt artifacts.
-    const afterFailure = await reader.readManifest(keyPrefix);
+    // Nothing terminal happened: the reading is untouched and — the part that
+    // makes the retry work at all — `active_attempt` is still this attempt's.
+    const afterFailure = await readings.manifest(job.id);
     expect(afterFailure?.status).toBe("pending");
     expect(afterFailure?.error).toBeUndefined();
     expect(afterFailure?.active_attempt?.id).toBe(job.attemptId);
-    // No vector, and no ledger row: row-before-upsert means a failure here
-    // strands nothing on either side.
-    expect(vector.upsert).not.toHaveBeenCalled();
-    expect(await ledgerRow()).toBeNull();
+    expect(await readings.hasEmbedding(job.id)).toBe(false);
+    expect(await readings.sql.query("SELECT 1 FROM reading_revisions WHERE reading_id = $1", [job.id])).toEqual([]);
 
-    // The retry the queue performs: same message body, D1 healthy again.
-    d1Down = false;
-    await processReading(job, wrapped, makeServices(fetchFn), founderTenant());
+    // The retry the queue performs: same message body, database healthy again.
+    await processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant());
 
-    const republished = await reader.readManifest(keyPrefix);
+    const republished = await readings.manifest(job.id);
     expect(republished?.status).toBe("ready");
     expect(republished?.error).toBeUndefined();
-    // Both halves landed on the retry — this is the claim the placement exists
-    // to make true, not merely that an error propagated.
-    expect(vector.upsert).toHaveBeenCalledTimes(1);
-    expect([...vector.vectors.keys()].some((key) => key.endsWith(id))).toBe(true);
-    expect(await ledgerRow()).toMatchObject({ reading_id: id, state: "live" });
+    expect(await readings.hasEmbedding(job.id)).toBe(true);
+    // The checkpoint carried the paid summary across the retry.
+    expect(summarizeCalls(fetchFn)).toBe(1);
   });
 
   it("retries the delivery rather than acking it", async () => {
     // The consumer's default branch acks, because processReading normally
-    // writes a failed manifest before throwing. It does not here — nothing
+    // marks the reading failed before throwing. It does not here — nothing
     // terminal was written at all — so acking would abandon a paid-for reading
     // as pending with nothing to notice.
     const ack = vi.fn();
@@ -276,7 +195,7 @@ describe("processReading — vector ledger at publish", () => {
     await dispatchQueueMessage(
       { body: {}, ack, retry, attempts: 1 } as unknown as Message<unknown>,
       async () => {
-        throw new VectorLedgerWriteError("usr_x", new Error("D1 unavailable"));
+        throw new PublishCommitError(new Error("database unavailable"));
       },
     );
     expect(ack).not.toHaveBeenCalled();
@@ -284,249 +203,99 @@ describe("processReading — vector ledger at publish", () => {
   });
 });
 
-describe("processReading — tenant status lookup at publish", () => {
-  it("fail-opens and publishes when the post-CAS tenant-status lookup throws", async () => {
-    const vector = installVectorizeStub();
+// Tenant eligibility joins the publish transaction (slice 1c.3). `users` is in
+// the same database, so publish locks the tenant row FOR SHARE and reads
+// `status` under that lock: there is no window between the check and the
+// commit, and nothing to compensate for afterwards.
+describe("processReading — tenant eligibility inside the publish transaction", () => {
+  // An ineligible tenant's reading is still stored — the attempt paid for it —
+  // but never becomes searchable. A `deleting` tenant's copy is left to the
+  // account wipe, which sweeps rows again after its objects phase for exactly
+  // this publisher; a `suspended` tenant runs no wipe, and a suspension can be
+  // lifted, so the reading has to survive.
+  it.each(["deleting", "suspended"])(
+    "stores a %s tenant's reading without making it searchable",
+    async (status) => {
+      const fetchFn = makeStubFetch();
+      const { readings, job } = await pendingJob("rd_INELIG", "https://example.com/ineligible-tenant");
+      // Active for the pre-spend gate, ineligible by the time publish locks it.
+      interceptSql(TENANT_STATUS_LOCK, () => [{ status }]);
+
+      await expect(
+        processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant()),
+      ).resolves.toBeUndefined();
+
+      const manifest = await readings.manifest(job.id);
+      expect(manifest?.status).toBe("ready");
+      expect(manifest?.error).toBeUndefined();
+      expect(await readings.extractedText(job.id)).not.toBeNull();
+      expect(await readings.hasEmbedding(job.id)).toBe(false);
+    },
+  );
+
+  // The race the fence used to compensate for, run for real on two
+  // connections: the deletion's status UPDATE waits on the tenant row this
+  // transaction holds FOR SHARE, so the publish it raced completes whole.
+  it("makes DELETE /api/account wait for an in-flight publish", async () => {
     const fetchFn = makeStubFetch();
-    const reader = testReadingStore(env);
-    const url = "https://example.com/pre-publish-lookup";
-    const urlHash = await sha256Hex(url);
-    const id = "rd_PREPUB";
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const job: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_PREPUB",
-      attemptStartedAt: createdAt,
-      trigger: "submit",
-      email: false,
-    };
-    await reader.writeManifest(keyPrefix, {
-      id,
-      url,
-      url_hash: urlHash,
-      status: "pending",
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
+    const { readings, job } = await pendingJob("rd_SERIAL", "https://example.com/publish-vs-delete");
+    let deletion: Promise<unknown> | null = null;
+    let deleted = false;
+
+    // The reading lock is the publish transaction's second statement, so the
+    // tenant lock is already held when this runs.
+    interceptSql(/FROM readings WHERE tenant_id = \$1 AND id = \$2\s+FOR UPDATE/, async (): Promise<"pass"> => {
+      if (!deletion) {
+        deletion = beginAccountDeletion(testControlPlane(env), {
+          userId: FOUNDER_TENANT_ID,
+          nowMs: Date.parse("2026-04-26T20:01:00.000Z"),
+        }).then((out) => {
+          deleted = true;
+          return out;
+        });
+        // Long enough for an unblocked UPDATE to have committed.
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        expect(deleted).toBe(false);
+      }
+      return "pass";
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reserveReadingSlot(env, founderTenant(), job);
 
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 1),
-    };
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
+    await processReading(job, env as unknown as Env, makeServices(fetchFn), founderTenant());
 
-    await expect(
-      processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-    ).resolves.toBeUndefined();
-
-    consoleErr.mockRestore();
-    expect(fetchFn).toHaveBeenCalled();
-    const manifest = await reader.readManifest(keyPrefix);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.error).toBeUndefined();
-    expect(await reader.findListIndexItem(id)).not.toBeNull();
-    expect(vector.upsert).toHaveBeenCalled();
+    expect(await deletion).toEqual({ kind: "started" });
+    // The publish held the lock first, so it published in full.
+    expect((await readings.manifest(job.id))?.status).toBe("ready");
+    expect(await readings.hasEmbedding(job.id)).toBe(true);
+    expect(
+      await testControlPlane(env).first<{ status: string }>("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID),
+    ).toEqual({ status: "deleting" });
   });
 
-  // The publisher-side deletion fence (S1 of #195). A consumer that publishes
-  // against a tenant already `deleting` must delete its own vector directly,
-  // without depending on the `index/list.json` row still being there — a
-  // concurrent account wipe deletes that row, and R2 is the only source of the
-  // reading ids the wipe's deleteByIds would need.
-  it("deletes the vector it just upserted when the tenant is deleting and the list row is gone", async () => {
-    const vector = installVectorizeStub();
-    const fetchFn = makeStubFetch();
-    const reader = testReadingStore(env);
-    const url = "https://example.com/wiped-list-row";
-    const urlHash = await sha256Hex(url);
-    const id = "rd_FENCE";
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const job: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_FENCE",
-      attemptStartedAt: createdAt,
-      trigger: "submit",
-      email: false,
-    };
-    await reader.writeManifest(keyPrefix, {
-      id,
-      url,
-      url_hash: urlHash,
-      status: "pending",
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
+  // The other side of that race, and the reason claim takes the same lock: a
+  // claim that lands after the status flipped must leave nothing at all.
+  it("writes no rows for a claim that lands after the account is marked deleting", async () => {
+    const readings = testReadingsFor(founderTenant());
+    const url = "https://example.com/claim-after-delete";
+    await beginAccountDeletion(testControlPlane(env), {
+      userId: FOUNDER_TENANT_ID,
+      nowMs: Date.parse("2026-04-26T20:01:00.000Z"),
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reserveReadingSlot(env, founderTenant(), job);
-    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-
-    const workerEnv = env as unknown as Env;
-    // Active for the pre-spend and pre-publish checks, `deleting` for the
-    // post-publish recheck: the exact window this fence exists for.
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "deleting" }),
-    };
-    // The wipe got there first: `index/list.json` is gone, so there is no row
-    // for the ordinary removal path to find.
-    const wipedListRow = vi
-      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
-      .mockResolvedValue(undefined);
-
-    try {
-      await expect(
-        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-      ).resolves.toBeUndefined();
-    } finally {
-      wipedListRow.mockRestore();
-    }
-
-    expect(vector.upsert).toHaveBeenCalled();
-    expect(vector.deleteByIds).toHaveBeenCalled();
-    expect(vector.vectors.size).toBe(0);
-  });
-
-  // The fence is for `deleting` only. Any other reason the tenant stopped
-  // allowing visibility — `suspended` here — keeps the ordinary gated removal,
-  // which does nothing to the vector when there is no list row to remove. No
-  // account wipe runs for a suspended tenant, so nothing has raced away the
-  // state those gates read.
-  it("does not delete the vector for a non-deleting inactive tenant", async () => {
-    const vector = installVectorizeStub();
-    const fetchFn = makeStubFetch();
-    const reader = testReadingStore(env);
-    const url = "https://example.com/suspended-not-deleting";
     const urlHash = await sha256Hex(url);
-    const id = "rd_SUSPND";
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const job: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_SUSPND",
-      attemptStartedAt: createdAt,
-      trigger: "submit",
-      email: false,
-    };
-    await reader.writeManifest(keyPrefix, {
-      id,
-      url,
-      url_hash: urlHash,
-      status: "pending",
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
+    const draft = submitPending(
+      { id: "rd_LATECLM", url, urlHash, createdAt: CREATED_AT },
+      { attemptId: "at_LATECLM", startedAt: CREATED_AT },
+    );
+
+    const claimed = await readings.writer.claimUrl(draft.manifest, buildKeyPrefix("rd_LATECLM", CREATED_AT), {
+      summary: draft.attempt,
+      payload: {},
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reserveReadingSlot(env, founderTenant(), job);
-    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
 
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 2, { status: "suspended" }),
-    };
-    const noListRow = vi
-      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
-      .mockResolvedValue(undefined);
-
-    try {
-      await expect(
-        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-      ).resolves.toBeUndefined();
-    } finally {
-      noListRow.mockRestore();
+    expect(claimed).toEqual({ kind: "tenant_inactive" });
+    expect(await readings.manifest("rd_LATECLM")).toBeNull();
+    expect(await readings.urlOwnerId(url)).toBeNull();
+    for (const table of ["reading_attempts", "reading_jobs"]) {
+      expect(await readings.sql.query(`SELECT 1 FROM ${table} WHERE reading_id = $1`, ["rd_LATECLM"])).toEqual([]);
     }
-
-    expect(vector.upsert).toHaveBeenCalled();
-    expect(vector.deleteByIds).not.toHaveBeenCalled();
-    expect(vector.vectors.size).toBe(1);
-  });
-
-  it("does not markFailed when tenant-fence visibility.remove throws after ready CAS", async () => {
-    installVectorizeStub();
-    const fetchFn = makeStubFetch();
-    const reader = testReadingStore(env);
-    const url = "https://example.com/hide-failure";
-    const urlHash = await sha256Hex(url);
-    const id = "rd_HIDE";
-    const createdAt = "2026-04-26T20:00:00.000Z";
-    const keyPrefix = buildKeyPrefix(id, createdAt);
-    const job: ProcessReadingArgs = {
-      id,
-      url,
-      urlHash,
-      createdAt,
-      keyPrefix,
-      attemptId: "at_HIDE",
-      attemptStartedAt: createdAt,
-      trigger: "submit",
-      email: false,
-    };
-    await reader.writeManifest(keyPrefix, {
-      id,
-      url,
-      url_hash: urlHash,
-      status: "pending",
-      content_type: "application/octet-stream",
-      content_status: "captured",
-      content_bytes: 0,
-      content_sha256: "0".repeat(64),
-      created_at: createdAt,
-      updated_at: createdAt,
-    });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reserveReadingSlot(env, founderTenant(), job);
-    await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-
-    const workerEnv = env as unknown as Env;
-    const wrapped: Env = {
-      ...workerEnv,
-      CONTROL_PLANE: statusLookupPlane(workerEnv.CONTROL_PLANE, 1, { status: "deleting" }),
-    };
-    const hide = vi
-      .spyOn(ReadingStore.prototype, "removeListIndexItemIf")
-      .mockRejectedValue(new Error("R2 hide failure"));
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-
-    try {
-      await expect(
-        processReading(job, wrapped, makeServices(fetchFn), founderTenant()),
-      ).resolves.toBeUndefined();
-    } finally {
-      hide.mockRestore();
-      consoleErr.mockRestore();
-    }
-
-    const manifest = await reader.readManifest(keyPrefix);
-    expect(manifest?.status).toBe("ready");
-    expect(manifest?.error).toBeUndefined();
   });
 });

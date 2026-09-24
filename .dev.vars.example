@@ -12,6 +12,13 @@ AUTH_ROOT_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
 # TURNSTILE_SITE_KEY=
 # TURNSTILE_SECRET_KEY=
 FOUNDER_EMAIL=founder@localhost
+# Optional. Local PostgreSQL defaults to the docker-compose `postgres` service,
+# which `npm run dev` starts and migrates:
+#   postgres://reading_lite:reading_lite@127.0.0.1:54329/reading_lite
+# Set READING_LITE_DATABASE_URL only to use your own PostgreSQL 18 + pgvector server; then
+# also export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE with the
+# same value so the Worker follows. See docs/operations.md#local-postgres.
+# READING_LITE_DATABASE_URL=
 OPENAI_API_KEY=sk-...
 # Required only when importing x.com/twitter.com status URLs.
 X_API_BEARER_TOKEN=

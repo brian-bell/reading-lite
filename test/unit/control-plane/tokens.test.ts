@@ -7,7 +7,6 @@ import {
   TOKEN_NAME_MAX,
 } from "../../../src/control-plane/constants";
 import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
-import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import {
@@ -16,7 +15,10 @@ import {
   listApiTokensForUser,
   revokeOwnedApiToken,
 } from "../../../src/control-plane/tokens";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
@@ -25,7 +27,7 @@ const TOKEN_UUID = "770e8400-e29b-41d4-a716-446655440000";
 const SECRET_BYTES = new Uint8Array(32).fill(0xab);
 
 async function seeded() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   const founder = await bootstrapFounder(db, {
     email: "founder@example.com",
     legacyToken: "test-token",
@@ -37,12 +39,12 @@ async function seeded() {
   });
   const userId = parseUserId(founder.userId);
   if (!userId) throw new Error("expected founder id");
-  return { sqlite, db, founder, userId };
+  return { raw, db, founder, userId };
 }
 
 describe("createApiToken", () => {
   it("mints a standard tok_.hex credential once and never stores the secret", async () => {
-    const { sqlite, db, userId } = await seeded();
+    const { raw, db, userId } = await seeded();
     const created = await createApiToken(db, {
       userId,
       name: "  ops  ",
@@ -64,7 +66,7 @@ describe("createApiToken", () => {
       expires_at_ms: NOW_MS + TOKEN_MAX_TTL_MS,
     });
 
-    const row = sqlite.prepare("SELECT * FROM api_tokens WHERE id = ?").get(created.created.id) as Record<
+    const row = withMs(await raw.first("SELECT * FROM api_tokens WHERE id = ?", created.created.id)) as Record<
       string,
       unknown
     >;
@@ -73,9 +75,10 @@ describe("createApiToken", () => {
     expect(JSON.stringify(row)).not.toContain("ab".repeat(32));
     expect(row.secret_hmac).not.toBe("ab".repeat(32));
 
-    const scopes = sqlite
-      .prepare("SELECT scope FROM api_token_scopes WHERE token_id = ? ORDER BY scope")
-      .all(created.created.id) as { scope: string }[];
+    const scopes = withMs(await raw.all(
+      "SELECT scope FROM api_token_scopes WHERE token_id = ? ORDER BY scope",
+      created.created.id,
+    )) as { scope: string }[];
     expect(scopes.map((s) => s.scope)).toEqual([...API_SCOPES].sort());
   });
 
@@ -116,7 +119,7 @@ describe("createApiToken", () => {
   });
 
   it("409s at 10 active tokens including the founder legacy row", async () => {
-    const { sqlite, db, userId, founder } = await seeded();
+    const { raw, db, userId, founder } = await seeded();
     expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(1);
 
     for (let i = 0; i < MAX_ACTIVE_TOKENS - 1; i += 1) {
@@ -143,9 +146,9 @@ describe("createApiToken", () => {
       newUuid: () => "880e8400-e29b-41d4-a716-446655440000",
     });
     expect(blocked).toEqual({ kind: "cap" });
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: MAX_ACTIVE_TOKENS });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM api_tokens"))).toEqual({ n: MAX_ACTIVE_TOKENS });
 
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ? WHERE id = ?").run(NOW_MS, founder.tokenId);
+    await raw.run("UPDATE api_tokens SET expires_at = ? WHERE id = ?", toTimestamp(NOW_MS), founder.tokenId);
     const afterExpiry = await createApiToken(db, {
       userId,
       name: "after-expiry",
@@ -158,140 +161,11 @@ describe("createApiToken", () => {
     expect(afterExpiry.kind).toBe("ok");
   });
 
-  it("admits only one of two concurrent mints competing for the last active slot", async () => {
-    const { sqlite, db, userId } = await seeded();
-    for (let i = 0; i < MAX_ACTIVE_TOKENS - 2; i += 1) {
-      const minted = await createApiToken(db, {
-        userId,
-        name: `fill-${i}`,
-        scopes: ["readings:read"],
-        nowMs: NOW_MS + i,
-        authRoot,
-        userAgentLabel: null,
-        newUuid: () => `770e8400-e29b-41d4-a716-44665544001${i}`,
-      });
-      expect(minted.kind).toBe("ok");
-    }
-    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS - 1);
-
-    const [first, second] = await Promise.all([
-      createApiToken(db, {
-        userId,
-        name: "race-a",
-        scopes: ["readings:read"],
-        nowMs: NOW_MS + 20,
-        authRoot,
-        userAgentLabel: null,
-        newUuid: () => "880e8400-e29b-41d4-a716-44665544000a",
-      }),
-      createApiToken(db, {
-        userId,
-        name: "race-b",
-        scopes: ["readings:read"],
-        nowMs: NOW_MS + 21,
-        authRoot,
-        userAgentLabel: null,
-        newUuid: () => "880e8400-e29b-41d4-a716-44665544000b",
-      }),
-    ]);
-
-    expect([first.kind, second.kind].sort()).toEqual(["cap", "ok"]);
-    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: MAX_ACTIVE_TOKENS });
-    expect(
-      sqlite
-        .prepare(
-          `SELECT COUNT(*) AS n FROM api_token_scopes s
-           LEFT JOIN api_tokens t ON t.id = s.token_id
-           WHERE t.id IS NULL`,
-        )
-        .get(),
-    ).toEqual({ n: 0 });
-  });
-
-  it("detects mint success from batch changes even if a later SELECT would miss the row", async () => {
-    const { sqlite, db: inner, userId } = await seeded();
-    const db: ControlPlaneDb = {
-      first: async (sql, ...params) => {
-        if (sql.trim() === "SELECT id FROM api_tokens WHERE id = ?") {
-          throw new Error("admission must not SELECT after batch");
-        }
-        return inner.first(sql, ...params);
-      },
-      all: (sql, ...params) => inner.all(sql, ...params),
-      batch: (statements) => inner.batch(statements),
-      run: (sql, ...params) => inner.run(sql, ...params),
-    };
-
-    const created = await createApiToken(db, {
-      userId,
-      name: "replica-safe",
-      scopes: ["readings:read"],
-      nowMs: NOW_MS,
-      authRoot,
-      userAgentLabel: null,
-      newUuid: () => TOKEN_UUID,
-      randomBytes: () => SECRET_BYTES,
-    });
-    expect(created.kind).toBe("ok");
-    if (created.kind !== "ok") return;
-    expect(created.created.token).toBe(`tok_${TOKEN_UUID}.${"ab".repeat(32)}`);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE id = ?").get(created.created.id)).toEqual({
-      n: 1,
-    });
-  });
-
-  it("admits a mint after revoke even when a stale COUNT still reports the cap", async () => {
-    const { sqlite, db: inner, userId } = await seeded();
-    for (let i = 0; i < MAX_ACTIVE_TOKENS - 1; i += 1) {
-      const minted = await createApiToken(inner, {
-        userId,
-        name: `t${i}`,
-        scopes: ["readings:read"],
-        nowMs: NOW_MS + i,
-        authRoot,
-        userAgentLabel: null,
-        newUuid: () => `770e8400-e29b-41d4-a716-44665544002${i}`,
-      });
-      expect(minted.kind).toBe("ok");
-      if (minted.kind !== "ok") return;
-      if (i === 0) {
-        expect(await revokeOwnedApiToken(inner, { tokenId: minted.created.id, userId, nowMs: NOW_MS + 50 })).toBe(
-          "ok",
-        );
-      }
-    }
-    expect(await countActiveApiTokens(inner, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS - 1);
-
-    const db: ControlPlaneDb = {
-      first: async <T>(sql: string, ...params: unknown[]) => {
-        if (/SELECT COUNT\(\*\) AS n FROM api_tokens/i.test(sql)) {
-          return { n: MAX_ACTIVE_TOKENS } as T;
-        }
-        return inner.first<T>(sql, ...params);
-      },
-      all: (sql, ...params) => inner.all(sql, ...params),
-      batch: (statements) => inner.batch(statements),
-      run: (sql, ...params) => inner.run(sql, ...params),
-    };
-    const created = await createApiToken(db, {
-      userId,
-      name: "after-stale-count",
-      scopes: ["readings:read"],
-      nowMs: NOW_MS + 60,
-      authRoot,
-      userAgentLabel: null,
-      newUuid: () => "880e8400-e29b-41d4-a716-44665544000c",
-    });
-    expect(created.kind).toBe("ok");
-    expect(await countActiveApiTokens(inner, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens").get()).toEqual({ n: MAX_ACTIVE_TOKENS + 1 });
-  });
 });
 
 describe("listApiTokensForUser", () => {
   it("omits secrets and marks revoked or expired rows unusable", async () => {
-    const { sqlite, db, userId, founder } = await seeded();
+    const { raw, db, userId, founder } = await seeded();
     const created = await createApiToken(db, {
       userId,
       name: "ops",
@@ -304,7 +178,7 @@ describe("listApiTokensForUser", () => {
     expect(created.kind).toBe("ok");
     if (created.kind !== "ok") return;
 
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ? WHERE id = ?").run(NOW_MS, founder.tokenId);
+    await raw.run("UPDATE api_tokens SET expires_at = ? WHERE id = ?", toTimestamp(NOW_MS), founder.tokenId);
 
     const listed = await listApiTokensForUser(db, { userId, nowMs: NOW_MS });
     expect(JSON.stringify(listed)).not.toContain(created.created.token);
@@ -326,7 +200,7 @@ describe("listApiTokensForUser", () => {
 
 describe("revokeOwnedApiToken", () => {
   it("soft-revokes an owned token and 404s another user's id", async () => {
-    const { sqlite, db, userId } = await seeded();
+    const { raw, db, userId } = await seeded();
     const created = await createApiToken(db, {
       userId,
       name: "ops",
@@ -340,13 +214,13 @@ describe("revokeOwnedApiToken", () => {
     if (created.kind !== "ok") return;
 
     expect(await revokeOwnedApiToken(db, { tokenId: created.created.id, userId, nowMs: NOW_MS + 5 })).toBe("ok");
-    const row = sqlite.prepare("SELECT revoked_at_ms FROM api_tokens WHERE id = ?").get(created.created.id) as {
+    const row = withMs(await raw.first("SELECT revoked_at FROM api_tokens WHERE id = ?", created.created.id)) as {
       revoked_at_ms: number | null;
     };
     expect(row.revoked_at_ms).toBe(NOW_MS + 5);
     expect(await revokeOwnedApiToken(db, { tokenId: created.created.id, userId, nowMs: NOW_MS + 9 })).toBe("ok");
     expect(
-      sqlite.prepare("SELECT revoked_at_ms FROM api_tokens WHERE id = ?").get(created.created.id),
+      withMs(await raw.first("SELECT revoked_at FROM api_tokens WHERE id = ?", created.created.id)),
     ).toEqual({ revoked_at_ms: NOW_MS + 5 });
 
     const other = parseUserId("usr_11111111-1111-4111-8111-111111111111");

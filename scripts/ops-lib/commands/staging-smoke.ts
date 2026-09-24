@@ -190,7 +190,10 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   };
 
   const submittedId = acceptedId(
-    await api.submit(`https://www.rfc-editor.org/rfc/rfc1149.html?reading-lite-${marker}`, {
+    // rfc-editor.org and iana.org have answered Workers egress with empty
+    // bodies since 2026-09-10 (a laptop still gets HTML), so the submit uses a
+    // host staging has fetched cleanly.
+    await api.submit(`https://martinfowler.com/bliki/StranglerFigApplication.html?reading-lite-${marker}`, {
       email: false,
     }),
     "submit",

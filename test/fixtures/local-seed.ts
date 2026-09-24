@@ -1,7 +1,8 @@
 // The local fixture pack (issue #366): the Connected prototype's authored
-// samples turned into real manifests, list-index rows, pointers, content
-// objects, and attempt logs, seeded into local R2 by
-// `npm run seed:local` (scripts/seed-local-fixtures.ts).
+// samples turned into real manifests, attempt logs, and captured content.
+// `npm run seed:local` (scripts/seed-local-fixtures.ts) writes the manifests
+// and attempts to local PostgreSQL as rows (ADR 0005) and the content to local
+// R2; the list rows here are derived for assertions and the app/ snapshot.
 //
 // Every manifest is built through src/modules/manifest-drafting.ts — the same
 // pure constructors the worker uses — so fixture state matches production
@@ -29,7 +30,7 @@ import {
   submitPending,
 } from "../../src/modules/manifest-drafting";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-index";
+import { compareUrlOwnership, manifestToIndexItem } from "../../src/modules/stores/list-items";
 import {
   ManifestSchema,
   ProcessingAttemptSchema,
@@ -67,14 +68,21 @@ export interface LocalSeedFixture {
   id: string;
   keyPrefix: string;
   manifest: Manifest;
-  /** Ids of the attempt logs written under `attempts/`, oldest first. */
-  attemptIds: string[];
+  /** The reading's attempt logs, oldest first; seeded as attempt rows. */
+  attempts: ProcessingAttempt[];
+  /**
+   * Whether this reading owns its URL (the `reading_urls` row points at it).
+   * Decided in buildLocalSeed once the whole pack is known.
+   */
+  ownsUrl: boolean;
 }
 
 export interface LocalSeedPlan {
+  /** Newest first. */
   fixtures: LocalSeedFixture[];
-  /** Every R2 object to write, including index/list.json. */
+  /** The captured content to write to R2 (raw and extracted), nothing else. */
   objects: LocalSeedObject[];
+  /** The fixtures' list rows, newest first, as PostgreSQL projects them. */
   listIndex: ListIndex;
   /** Connection-target id referenced by fixtures but deliberately never written. */
   removedTargetId: string;
@@ -107,6 +115,27 @@ const IDS = {
 } as const;
 
 export const LOCAL_SEED_REMOVED_TARGET_ID = "rd_FXVANSHD01";
+
+const FIXTURE_EMBEDDING_DIM = 1536;
+
+/**
+ * A deterministic 1536-dimension vector for a fixture reading, so PostgreSQL
+ * similarity works over the pack without an embedding call. Seeded from the id
+ * alone; the shared offset puts pairwise cosine near 0.6, the range real prose
+ * embeddings occupy (see SIMILARITY_FLOOR).
+ */
+export function localSeedEmbedding(id: string): number[] {
+  // FNV-1a seed, mulberry32 stream.
+  let state = 2166136261;
+  for (let i = 0; i < id.length; i++) state = Math.imul(state ^ id.charCodeAt(i), 16777619);
+  const next = () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return Array.from({ length: FIXTURE_EMBEDDING_DIM }, () => Number((next() - 0.5 + 0.35).toFixed(6)));
+}
 
 /** The reading's nth attempt id: every fixture id ends in a digit, which the ordinal replaces. */
 function attemptIdOf(readingId: string, ordinal: number): string {
@@ -491,34 +520,18 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
     );
   }
 
-  const objects: LocalSeedObject[] = [];
-  objects.push(
-    seedManifest(keyPrefix, manifest),
-    seedPointer(layout.byIdKey(spec.id), keyPrefix, spec.id),
-    seedPointer(layout.byUrlKey(urlHashValue), keyPrefix, spec.id),
+  const objects: LocalSeedObject[] = [
     {
       key: layout.rawKey(keyPrefix, extFor(content.raw.contentType)),
       body: content.raw.body,
       contentType: content.raw.contentType,
     },
-  );
+  ];
   if (content.extractedMarkdown !== null) {
     objects.push({
       key: layout.extractedKey(keyPrefix),
       body: content.extractedMarkdown,
       contentType: "text/markdown; charset=utf-8",
-    });
-  }
-  objects.push({
-    key: layout.attemptKey(keyPrefix, attempt.id),
-    body: JSON.stringify(attempt),
-    contentType: "application/json",
-  });
-  if (reprocessAttempt !== undefined) {
-    objects.push({
-      key: layout.attemptKey(keyPrefix, reprocessAttempt.id),
-      body: JSON.stringify(reprocessAttempt),
-      contentType: "application/json",
     });
   }
 
@@ -529,7 +542,8 @@ function assembleReady(spec: ReadySpec): AssembledFixture {
       id: spec.id,
       keyPrefix,
       manifest,
-      attemptIds: [attempt.id, ...(reprocessAttempt === undefined ? [] : [reprocessAttempt.id])],
+      attempts: [attempt, ...(reprocessAttempt === undefined ? [] : [reprocessAttempt])],
+      ownsUrl: false,
     },
     objects,
   };
@@ -542,22 +556,6 @@ function extFor(contentType: string): string {
   if (major === "application/pdf") return "pdf";
   if (major === "text/plain") return "txt";
   return "bin";
-}
-
-function seedManifest(keyPrefix: string, manifest: Manifest): LocalSeedObject {
-  return {
-    key: layout.manifestKey(keyPrefix),
-    body: JSON.stringify(manifest),
-    contentType: "application/json",
-  };
-}
-
-function seedPointer(key: string, keyPrefix: string, id: string): LocalSeedObject {
-  return {
-    key,
-    body: JSON.stringify({ id, key_prefix: keyPrefix }),
-    contentType: "application/json",
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -610,18 +608,10 @@ function assembleFailed(spec: FailedSpec): AssembledFixture {
       id: spec.id,
       keyPrefix,
       manifest,
-      attemptIds: [attempt.id],
+      attempts: [attempt],
+      ownsUrl: false,
     },
-    objects: [
-      seedManifest(keyPrefix, manifest),
-      seedPointer(layout.byIdKey(spec.id), keyPrefix, spec.id),
-      seedPointer(layout.byUrlKey(urlHashValue), keyPrefix, spec.id),
-      {
-        key: layout.attemptKey(keyPrefix, attempt.id),
-        body: JSON.stringify(attempt),
-        contentType: "application/json",
-      },
-    ],
+    objects: [],
   };
 }
 
@@ -1202,23 +1192,15 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
       id: pendingId,
       keyPrefix: pendingPrefix,
       manifest: pendingManifest,
-      attemptIds: [pendingAttemptId],
+      attempts: [pendingAttempt],
+      ownsUrl: false,
     },
-    objects: [
-      seedManifest(pendingPrefix, pendingManifest),
-      seedPointer(layout.byIdKey(pendingId), pendingPrefix, pendingId),
-      seedPointer(layout.byUrlKey(pendingHash), pendingPrefix, pendingId),
-      {
-        key: layout.attemptKey(pendingPrefix, pendingAttemptId),
-        body: JSON.stringify(pendingAttempt),
-        contentType: "application/json",
-      },
-    ],
+    objects: [],
   });
 
   const objects: LocalSeedObject[] = [];
-  // Newest first, matching the store's created_at sort, so a raw read of
-  // index/list.json reads in library order.
+  // Newest first, matching the store's created_at sort, so the list rows read
+  // in library order.
   const sorted = [...assembled].sort((a, b) =>
     a.fixture.manifest.created_at < b.fixture.manifest.created_at ? 1 : -1,
   );
@@ -1229,11 +1211,18 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
     manifestToIndexItem(item.fixture.manifest, item.fixture.keyPrefix),
   );
   const listIndex: ListIndex = { version: 1, items };
-  objects.push({
-    key: layout.listIndexKey(),
-    body: JSON.stringify(listIndex),
-    contentType: "application/json",
-  });
+
+  // One owner per URL, ranked the way the importer ranks duplicates. The pack
+  // currently gives every reading its own URL, so each owns it.
+  const owners = new Map<string, ListIndexItem & { url_hash: string }>();
+  for (const item of sorted) {
+    const row = { ...manifestToIndexItem(item.fixture.manifest, item.fixture.keyPrefix), url_hash: item.fixture.manifest.url_hash };
+    const current = owners.get(row.url_hash);
+    if (current === undefined || compareUrlOwnership(row, current) < 0) owners.set(row.url_hash, row);
+  }
+  for (const item of sorted) {
+    item.fixture.ownsUrl = owners.get(item.fixture.manifest.url_hash)!.id === item.fixture.id;
+  }
 
   return {
     fixtures: sorted.map((item) => item.fixture),

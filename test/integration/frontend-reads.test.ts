@@ -4,8 +4,6 @@ import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { FrontendReads, type Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
-import { buildKeyPrefix } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-index";
 import type { Manifest } from "../../src/schemas/manifest";
 import {
   FOUNDER_TENANT_ID,
@@ -13,8 +11,10 @@ import {
   founderTenant,
   insertSecondTenant,
   otherTenant,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 // The backend's read-only entrypoint for the frontend Worker (ADR 0003, Server
 // reads). Reached only through a service binding; these tests construct it
@@ -97,11 +97,7 @@ function manifest(id: string): Manifest {
 }
 
 async function seed(tenant: ReturnType<typeof founderTenant>, m: Manifest) {
-  const reader = testReadingStore(workerEnv, tenant);
-  const keyPrefix = buildKeyPrefix(m.id, m.created_at);
-  await reader.writeManifest(keyPrefix, m);
-  await reader.writeByIdPointer(m.id, { id: m.id, key_prefix: keyPrefix });
-  await reader.appendOrReplaceListIndexItem(manifestToIndexItem(m, keyPrefix));
+  await testReadingsFor(tenant).seed(m);
 }
 
 function entrypoint(): FrontendReads {
@@ -138,7 +134,7 @@ describe("FrontendReads.whoami", () => {
 
   it("returns 401 for a revoked session", async () => {
     const cookie = await signIn("founder@test.example", "clm_front_revoked");
-    await workerEnv.CONTROL_PLANE.prepare("UPDATE sessions SET revoked_at_ms = ?").bind(Date.now()).run();
+    await testControlPlane(workerEnv).run("UPDATE sessions SET revoked_at = ?", toTimestamp(Date.now()));
     expect(await entrypoint().whoami({ cookie, host: HOST })).toEqual({
       status: 401,
       body: { error: "unauthorized" },

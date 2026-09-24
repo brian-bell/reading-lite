@@ -66,7 +66,8 @@ const RULES: Rule[] = [
   [/^(src|scripts)\//, BACKEND],
   [/^(package\.json|package-lock\.json|tsconfig\.json|vitest\.config\.ts|vitest\.workspace\.ts)$/, BACKEND],
   [/^test\/unit\/lib\/wrangler-cli\.test\.ts$/, BACKEND],
-  [/^(test|migrations|\.cursor)\//, ["worker"]],
+  // db/ holds the PostgreSQL migrations the Worker suite's globalSetup applies.
+  [/^(test|migrations|db|\.cursor)\//, ["worker"]],
   [/^(wrangler\.test\.toml|worker-configuration\.d\.ts|\.(dev|stg|corpus)\.vars\.example)$/, ["worker"]],
 ];
 

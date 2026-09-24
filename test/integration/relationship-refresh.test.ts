@@ -2,22 +2,25 @@ import { env } from "cloudflare:test";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../../src/index";
 import { REFRESH_CRON, REFRESH_SCAN_SIZE, consumeRelationshipRefresh, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
-import { buildKeyPrefix, manifestToIndexItem } from "../../src/modules/stores/reading-store";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
-import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, testReadingStore } from "../helpers/tenant-fixtures";
+import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
+import type { SimilarityMatch } from "../../src/modules/stores/similarity";
+import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, founderTenant } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
 import type { Manifest } from "../../src/schemas/manifest";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const NOW = Date.parse("2026-09-06T03:07:00Z");
 const ROOT = `u/${FOUNDER_TENANT_ID}/`;
 const KEY = () => r2KeyLayout(ROOT).refreshCursorKey();
 let runtime: Env;
 let queued: RefreshEnvelope[];
-let query: ReturnType<typeof vi.fn>;
+let query: ReturnType<typeof vi.fn<(id: string, topK: number) => Promise<SimilarityMatch[] | null>>>;
 let sendBatch: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   queued = [];
-  query = vi.fn(async (id: string) => ({ matches: [{ id, score: 1 }] }));
+  query = vi.fn(async (id: string) => [{ id, score: 1, url: "" }]);
   sendBatch = vi.fn(async (batch: { body: RefreshEnvelope }[]) => {
     queued.push(...batch.map(x => x.body));
   });
@@ -27,15 +30,16 @@ beforeEach(() => {
     RELATIONSHIP_REFRESH_JOBS: {
       send: vi.fn(async (body: RefreshEnvelope) => { queued.push(body); }), sendBatch,
     } as unknown as Queue<RefreshEnvelope>,
-    READINGS_INDEX: {
-      getByIds: vi.fn(async (ids: string[]) => ids.map(id => ({ id }))), queryById: query,
-    } as unknown as VectorizeIndex,
   } as unknown as Env;
+  // Neighbourhoods come from pgvector. These tests are about what the scan does
+  // with a neighbourhood, so `query` scripts one: its matches, or null for a
+  // reading with no embedding. The similarity store has its own suite.
+  vi.spyOn(PgSimilarityStore.prototype, "queryByVectorId").mockImplementation((id, topK) => query(id, topK));
 });
 afterEach(() => vi.restoreAllMocks());
 
 async function seed(n: number): Promise<Manifest[]> {
-  const store = testReadingStore(env);
+  const store = testReadingsFor(founderTenant());
   const manifests: Manifest[] = [];
   for (let i = 0; i < n; i++) {
     const id = `rd_${String(i).padStart(10, "0")}`;
@@ -43,12 +47,11 @@ async function seed(n: number): Promise<Manifest[]> {
       id, url: `https://example.com/${i}`, url_hash: "a".repeat(64), status: "ready",
       novelty_verdict: "familiar", connections: [],
       content_type: "text/html", content_status: "captured", content_bytes: 1,
-      content_sha256: "b".repeat(64), created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
+      content_sha256: "b".repeat(64), created_at: "2026-09-01T00:00:00.000Z", updated_at: "2026-09-01T00:00:00.000Z",
     };
     manifests.push(m);
-    await store.writeManifest(buildKeyPrefix(id, m.created_at), m);
+    await store.seed(m);
   }
-  await store.writeListIndex({ version: 1, items: manifests.map(m => manifestToIndexItem(m, buildKeyPrefix(m.id, m.created_at))) });
   return manifests;
 }
 
@@ -89,24 +92,24 @@ describe("relationship refresh scan", () => {
     expect(judges()).toHaveLength(4);
     expect(query).toHaveBeenCalledTimes(manifests.length);
     expect(new Set(judges().map(x => x.kind === "judge" && x.readingId)).size).toBe(4);
-    const store = testReadingStore(env);
-    for (const m of manifests) expect(await store.readManifest(buildKeyPrefix(m.id, m.created_at))).toEqual(m);
+    const store = testReadingsFor(founderTenant());
+    for (const m of manifests) expect(await store.manifest(m.id)).toEqual(m);
   });
 
   it("finds a fifth ready neighbour behind a stale vector", async () => {
     const manifests = await seed(6);
     const target = manifests[0]!;
     const known = manifests.slice(1, 5).map(m => m.id);
-    const store = testReadingStore(env);
-    await store.writeManifest(buildKeyPrefix(target.id, target.created_at), {
+    const store = testReadingsFor(founderTenant());
+    await store.seed({
       ...target, connections: known.map(id => ({ id, reason: "Known" })),
       connections_neighbourhood_ids: known,
     });
-    query.mockImplementation(async (id: string, options: { topK: number }) => ({ matches: [
-      { id, score: 1 },
-      { id: `${FOUNDER_TENANT_ID}:rd_9999999999`, score: 0.99 },
-      ...manifests.slice(1).map((m, i) => ({ id: `${FOUNDER_TENANT_ID}:${m.id}`, score: 0.9 - i * 0.01 })),
-    ].slice(0, options.topK) }));
+    query.mockImplementation(async (id, topK) => [
+      { id, score: 1, url: "" },
+      { id: "rd_9999999999", score: 0.99, url: "" },
+      ...manifests.slice(1).map((m, i) => ({ id: m.id, score: 0.9 - i * 0.01, url: "" })),
+    ].slice(0, topK));
     await scheduleRelationshipRefresh(runtime, NOW);
     await drainScans();
     expect(judges()).toContainEqual(expect.objectContaining({ readingId: target.id }));
@@ -217,22 +220,22 @@ describe("relationship refresh scan", () => {
   it("skips purged, in-TTL reprocessing and vectorless readings", async () => {
     const manifests = await seed(3);
     await scheduleRelationshipRefresh(runtime, NOW);
-    const store = testReadingStore(env);
+    const store = testReadingsFor(founderTenant());
     const [purged, running, vectorless] = manifests;
-    await store.removeListIndexItem(purged!.id);
-    await store.writeManifest(buildKeyPrefix(running!.id, running!.created_at), {
+    await store.purge(purged!.id);
+    await store.seed({
       ...running!, active_attempt: { id: "at_test", trigger: "reprocess", status: "running", stage: "queued", started_at: new Date().toISOString() },
     });
-    vi.mocked(runtime.READINGS_INDEX.getByIds).mockResolvedValue([]);
+    query.mockResolvedValue(null);
     await drainScans();
-    expect(runtime.READINGS_INDEX.getByIds).toHaveBeenCalledWith([`${FOUNDER_TENANT_ID}:${vectorless!.id}`]);
-    expect(query).not.toHaveBeenCalled();
+    // Only the reading with no embedding is asked for a neighbourhood.
+    expect(query.mock.calls.map(([id]) => id)).toEqual([vectorless!.id]);
     expect(judges()).toHaveLength(0);
   });
 
   it("keeps a zombie-running ready target as a scan candidate", async () => {
     const [target] = await seed(1);
-    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+    await testReadingsFor(founderTenant()).seed({
       ...target!,
       active_attempt: { id: "at_zombie", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-01T00:00:00Z" },
     });
@@ -244,7 +247,7 @@ describe("relationship refresh scan", () => {
   it("omits an in-TTL running target when the scan clock is services.now()", async () => {
     const nowIso = "2026-09-06T03:07:00.000Z";
     const [target] = await seed(1);
-    await testReadingStore(env).writeManifest(buildKeyPrefix(target!.id, target!.created_at), {
+    await testReadingsFor(founderTenant()).seed({
       ...target!,
       active_attempt: { id: "at_live", trigger: "reprocess", status: "running", stage: "queued", started_at: "2026-09-06T03:06:00.000Z" },
     });
@@ -267,7 +270,7 @@ describe("relationship refresh scan", () => {
     await seed(1);
     await scheduleRelationshipRefresh(runtime, NOW);
     const before = await (await env.READINGS_BUCKET.get(KEY()))!.text();
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").bind(FOUNDER_TENANT_ID).run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     await drainScans();
     expect(query).not.toHaveBeenCalled();
     expect(await (await env.READINGS_BUCKET.get(KEY()))!.text()).toBe(before);

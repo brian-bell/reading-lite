@@ -1,6 +1,4 @@
 # Test-only wrangler config used by vitest-pool-workers / Miniflare.
-# Omits the Vectorize binding (Miniflare has no native Vectorize stub);
-# tests inject a fake VectorizeIndex via the SimilarityStore constructor.
 # No cron / DIGEST_JOBS / ACCOUNT_WIPE_JOBS binding: digest and wipe due+enqueue
 # are exercised by calling fanOutDueDigests / fanOutDueAccountWipes / scheduled()
 # with a frozen now in tests.
@@ -54,12 +52,6 @@ AUTH_RATE_GLOBAL_MAX = "10000"
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-test"
 
-[[d1_databases]]
-binding = "CONTROL_PLANE"
-database_name = "reading-lite-control-test"
-database_id = "00000000-0000-0000-0000-000000000099"
-migrations_dir = "migrations"
-
 [[durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
 class_name = "AuthRateGuard"
@@ -71,3 +63,14 @@ class_name = "TenantUsageGuard"
 [[durable_objects.bindings]]
 name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
+
+# PostgreSQL through Hyperdrive (ADR 0005). Locally Hyperdrive is a passthrough
+# to this connection string: the docker-compose `postgres` service on its
+# non-default host port. The binding must be declared here, but
+# vitest.workspace.ts always replaces this string (Miniflare `hyperdrives`)
+# with the database globalSetup prepares: per checkout locally,
+# TEST_DATABASE_URL in CI. Tests never connect to Neon.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "00000000000000000000000000000099"
+localConnectionString = "postgres://reading_lite:reading_lite@127.0.0.1:54329/reading_lite_test"

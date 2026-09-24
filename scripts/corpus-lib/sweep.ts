@@ -1,22 +1,22 @@
 // Pure planner for `corpus-sweep`: finds readings that are the *same resource*
 // stored under different URL spellings, and decides which copy survives.
 //
-// Why this exists separately from `corpus-drop`. By-url ownership
-// (`index/by-url/{sha256(url)}`) is keyed on the exact submitted URL, so
+// Why this exists separately from `corpus-drop`. URL ownership (one
+// `reading_urls` row per tenant and URL) is keyed on the exact submitted URL, so
 // `https://youtu.be/X` and `https://www.youtube.com/watch?v=X` claim two
 // different slots and both reach `ready`. Nothing in the write path can see
 // that they are one video, and `corpus-drop` — which matches selectors by exact
 // URL equality — cannot reconcile them either.
 //
 // The result is a duplicate pair of *ready* readings, which `corpus-drop`
-// refuses on production because a ready reading owns a Vectorize embedding that
-// a blind drop would dangle. Sweep can safely go where drop won't, because it
+// refuses on production because a blind drop of a ready reading is a corpus
+// change, not cleanup. Sweep can safely go where drop won't, because it
 // carries a stronger invariant than "never touch ready":
 //
 //   1. A drop is only ever proposed as part of a group that keeps a survivor,
 //      so the resource never leaves the corpus entirely.
-//   2. Every ready drop is reported in `readyDropCount`, and the CLI refuses to
-//      run without a Vectorize index, so the embedding goes with the reading.
+//   2. Every ready drop is reported in `readyDropCount`; the embedding cascades
+//      with the row, so it goes with the reading.
 //
 // This module is deliberately pure and offline: URL canonicalization and keeper
 // choice are the parts worth testing, and they need no R2.
@@ -46,7 +46,7 @@ export interface SweepGroup {
 export interface SweepPlan {
   groups: SweepGroup[];
   errors: string[];
-  // How many drops are `ready` and therefore also own a Vectorize vector.
+  // How many drops are `ready` and therefore also take an embedding with them.
   readyDropCount: number;
 }
 
@@ -281,8 +281,8 @@ export function planExplicitPair(
   const byId = new Map(items.map((i) => [i.id, i]));
   const drop = byId.get(sel.drop);
   const keep = byId.get(sel.keep);
-  if (!drop) errors.push(`id not found in index/list.json: ${sel.drop}`);
-  if (!keep) errors.push(`id not found in index/list.json: ${sel.keep}`);
+  if (!drop) errors.push(`id not found in this tenant's corpus: ${sel.drop} (check --tenant and --bucket)`);
+  if (!keep) errors.push(`id not found in this tenant's corpus: ${sel.keep} (check --tenant and --bucket)`);
   if (errors.length > 0) return { groups: [], errors, readyDropCount: 0 };
 
   if (keep!.status !== "ready") {
@@ -353,7 +353,7 @@ export function invalidatedByDrop(
   if (manifest === null) return base;
 
   // Every field below is read defensively. This report runs AFTER objects are
-  // deleted and index/list.json is rewritten, so a stored value of an
+  // deleted and the rows are gone, so a stored value of an
   // unexpected shape must not throw -- that would turn a fully successful
   // destructive sweep into a failed command and discard the report with it.
   // Full ManifestSchema parsing would be the wrong tool: it would reject a

@@ -9,11 +9,12 @@ import {
   INGRESS_REQUEST_WINDOW_MS,
 } from "../../src/control-plane/constants";
 import { tearDownAccount } from "../../src/control-plane/account-teardown";
-import { fromD1 } from "../../src/control-plane/db";
 import { globalUsageFor, purgeGlobalUsageLeases } from "../../src/control-plane/global-usage-guard";
 import { leaseStorageKey } from "../../src/control-plane/processing-lease-state";
 import { purgeTenantUsageGuard, tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
 import { FOUNDER_TENANT_ID, insertSecondTenant, OTHER_TENANT_ID } from "../helpers/tenant-fixtures";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 // These are deliberately fixture-only direct reads of the *real* SQLite DO
 // storage. They exercise the existing HTTP purge verbs, then inspect the
@@ -62,9 +63,9 @@ afterEach(async () => {
       await state.storage.deleteAlarm();
     });
   }
-  await env.CONTROL_PLANE.batch([
-    env.CONTROL_PLANE.prepare("DELETE FROM account_deletions WHERE tenant_id = ?").bind(OTHER_TENANT_ID),
-    env.CONTROL_PLANE.prepare("DELETE FROM wipe_progress WHERE tenant_id = ?").bind(OTHER_TENANT_ID),
+  await testControlPlane(env).batch([
+    { sql: "DELETE FROM account_deletions WHERE tenant_id = ?", params: [OTHER_TENANT_ID] },
+    { sql: "DELETE FROM wipe_progress WHERE tenant_id = ?", params: [OTHER_TENANT_ID] },
   ]);
 });
 
@@ -165,15 +166,19 @@ describe.sequential("account-deletion Durable Object storage", () => {
   });
 
   it("can recreate a global lease after teardown guard purge and before its hard-delete batch", async () => {
-    await env.CONTROL_PLANE.batch([
-      env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting', deleting_at_ms = ? WHERE id = ?")
-        .bind(NOW_MS, OTHER_TENANT_ID),
-      env.CONTROL_PLANE.prepare(
-        `INSERT INTO wipe_progress (
-           tenant_id, phase, lease_seq, updated_at_ms, force,
-           completed_at_ms, residue, first_completed_at_ms, first_residue
-         ) VALUES (?, 'done', 1, ?, 0, ?, 0, ?, 0)`,
-      ).bind(OTHER_TENANT_ID, NOW_MS, NOW_MS, NOW_MS),
+    const now = toTimestamp(NOW_MS);
+    await testControlPlane(env).batch([
+      {
+        sql: "UPDATE users SET status = 'deleting', deleting_at = ? WHERE id = ?",
+        params: [now, OTHER_TENANT_ID],
+      },
+      {
+        sql: `INSERT INTO wipe_progress (
+                tenant_id, phase, lease_seq, updated_at, force,
+                completed_at, residue, first_completed_at, first_residue
+              ) VALUES (?, 'done', 1, ?, false, ?, false, ?, false)`,
+        params: [OTHER_TENANT_ID, now, now, now],
+      },
     ]);
 
     let reachedPrefixVerdict!: () => void;
@@ -184,7 +189,7 @@ describe.sequential("account-deletion Durable Object storage", () => {
     const release = new Promise<void>((resolve) => {
       releasePrefixVerdict = resolve;
     });
-    const teardown = tearDownAccount(fromD1(env.CONTROL_PLANE), env, {
+    const teardown = tearDownAccount(testControlPlane(env), env, {
       tenantId: OTHER_TENANT_ID,
       nowMs: NOW_MS,
       prefixVerdict: async () => {
@@ -208,7 +213,7 @@ describe.sequential("account-deletion Durable Object storage", () => {
     releasePrefixVerdict();
     await expect(teardown).resolves.toMatchObject({ kind: "torn_down", tenantId: OTHER_TENANT_ID });
     expect((await storageSnapshot(stub)).keys).toContain(lateKey);
-    await expect(env.CONTROL_PLANE.prepare("SELECT id FROM users WHERE id = ?").bind(OTHER_TENANT_ID).first()).resolves.toBeNull();
+    await expect(testControlPlane(env).first("SELECT id FROM users WHERE id = ?", OTHER_TENANT_ID)).resolves.toBeNull();
   });
 
   it("expires valid and legacy AuthRateGuard windows on its runtime alarm while retaining malformed records", async () => {

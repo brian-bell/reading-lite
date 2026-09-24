@@ -10,6 +10,7 @@ import {
 } from "../../../src/control-plane/tenant-usage-guard";
 import type { Env } from "../../../src/index";
 import { READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "../../../src/control-plane/constants";
+import { fakeHyperdrive } from "../../helpers/fake-control-plane";
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const NOW = Date.parse("2026-09-03T02:14:00.000Z");
@@ -30,6 +31,9 @@ function memoryStorage(
     },
     delete: async (key: string) => {
       map.delete(key);
+    },
+    deleteAll: async () => {
+      map.clear();
     },
     list: async () => new Map(map),
     getAlarm: async () => alarm,
@@ -57,24 +61,15 @@ function guardState(storage: DurableObjectStorage = memoryStorage()): DurableObj
   } as DurableObjectState;
 }
 
-function fakeD1(row: Record<string, number> | null, throwOnQuery = false): D1Database {
-  return {
-    prepare: () => ({
-      bind: () => ({
-        first: async () => {
-          if (throwOnQuery) throw new Error("d1 down");
-          return row;
-        },
-      }),
-    }),
-  } as unknown as D1Database;
+function fakePlane(row: Record<string, number> | null, throwOnQuery = false): Hyperdrive {
+  return fakeHyperdrive(throwOnQuery ? new Error("database down") : row);
 }
 
 function envWithLimits(
   row: Record<string, number> | null = { submissions_per_hour: 2, monthly_readings: 3 },
   throwOnQuery = false,
 ): Env {
-  return { CONTROL_PLANE: fakeD1(row, throwOnQuery) } as Env;
+  return { HYPERDRIVE: fakePlane(row, throwOnQuery) } as Env;
 }
 
 async function post(guard: TenantUsageGuard, body: unknown): Promise<Record<string, unknown>> {
@@ -110,7 +105,7 @@ describe("TenantUsageGuard", () => {
     expect(map.has(`m:${utcMonthKey(NOW)}`)).toBe(false);
   });
 
-  it("reserves distinct hourly and monthly reading slots only up to the D1 limits", async () => {
+  it("reserves distinct hourly and monthly reading slots only up to the tenant limits", async () => {
     const map = new Map<string, unknown>();
     const guard = new TenantUsageGuard(
       guardState(memoryStorage(false, map)),
@@ -205,6 +200,44 @@ describe("TenantUsageGuard", () => {
       ok: false,
       reason: "missing_limits",
     });
+  });
+
+  // One limits read serves every RPC within GUARD_POLICY_CACHE_MS, a missing
+  // row is never cached, and purge_tenant forgets what the instance knew.
+  it("reuses the limits row within the configured TTL and forgets it on purge", async () => {
+    const answers: (Record<string, number> | null)[] = [null, { submissions_per_hour: 20, monthly_readings: 20, max_concurrent_work: 1 }];
+    let reads = 0;
+    const env = {
+      GUARD_POLICY_CACHE_MS: "60000",
+      HYPERDRIVE: fakeHyperdrive(() => {
+        reads += 1;
+        return answers[Math.min(reads, answers.length) - 1]!;
+      }),
+    } as Env;
+    const guard = new TenantUsageGuard(guardState(memoryStorage()), env);
+    const admit = { kind: "admit_request", tenantId: TENANT, nowMs: NOW };
+
+    expect(await post(guard, admit)).toMatchObject({ ok: false, reason: "missing_limits" });
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect((await post(guard, { kind: "acquire_lease", tenantId: TENANT, attemptId: "at_1", nowMs: NOW })).ok).toBe(true);
+    expect(reads).toBe(2);
+
+    expect(await post(guard, { kind: "purge_tenant", tenantId: TENANT })).toEqual({ ok: true });
+    expect((await post(guard, admit)).ok).toBe(true);
+    expect(reads).toBe(3);
+  });
+
+  it("reads the limits row on every RPC when no TTL is configured", async () => {
+    let reads = 0;
+    const guard = new TenantUsageGuard(
+      guardState(memoryStorage()),
+      { HYPERDRIVE: fakeHyperdrive(() => { reads += 1; return { submissions_per_hour: 20, monthly_readings: 20 }; }) } as Env,
+    );
+    const admit = { kind: "admit_request", tenantId: TENANT, nowMs: NOW };
+    await post(guard, admit);
+    await post(guard, admit);
+    expect(reads).toBe(2);
   });
 
   it("alarm expires a held reservation and restores the monthly count", async () => {

@@ -82,28 +82,43 @@ describe("cloud-agent-install", () => {
     expect(founderBootstrap).not.toHaveBeenCalled();
   });
 
-  it("runs founder-bootstrap when CLOUD_AGENT_FOUNDER_BOOTSTRAP=1", async () => {
+  it.each<[string, Record<string, string>, number]>([
+    ["runs it on the paired staging database", { STAGING_DATABASE_URL: "postgres://staging" }, 1],
+    ["runs it on the laptop alias", { NEON_REHEARSAL_DATABASE_URL: "postgres://rehearsal" }, 1],
+    // Bare DATABASE_URL names no deployed target; bootstrap is optional, so
+    // the install skips it rather than failing.
+    ["skips it without failing when only DATABASE_URL is set", {}, 0],
+  ])("CLOUD_AGENT_FOUNDER_BOOTSTRAP=1 %s", async (_name, dbEnv, calls) => {
     const founderBootstrap = vi.fn().mockResolvedValue({ exitCode: 0 });
+    const logs: string[] = [];
 
     const code = await runCloudAgentInstall({
       envVars: {
         AUTH_ROOT_SECRET: "aa",
         READER_API_TOKEN: "tok",
         CLOUD_AGENT_FOUNDER_BOOTSTRAP: "1",
+        DATABASE_URL: "postgres://local",
+        ...dbEnv,
       },
       writeFile: () => {},
       chmod: () => {},
-      log: () => {},
+      log: (line) => logs.push(line),
       run: async () => 0,
       founderBootstrap,
     });
 
     expect(code).toBe(0);
-    expect(founderBootstrap).toHaveBeenCalledOnce();
-    const [, deps] = founderBootstrap.mock.calls[0] as [
-      unknown,
+    expect(founderBootstrap).toHaveBeenCalledTimes(calls);
+    if (calls === 0) {
+      expect(logs.join("\n")).toMatch(/set STAGING_DATABASE_URL or NEON_REHEARSAL_DATABASE_URL/);
+      return;
+    }
+    const [args, deps] = founderBootstrap.mock.calls[0] as [
+      { env: string; databaseUrlEnv?: string },
       { envVars: Record<string, string | undefined> },
     ];
+    // The bootstrap resolves the database through the pairing itself.
+    expect(args).toEqual({ execute: true, env: "staging", confirmProduction: false });
     expect(deps.envVars.FOUNDER_EMAIL).toBe(resolveFounderEmail({}));
   });
 
@@ -116,6 +131,7 @@ describe("cloud-agent-install", () => {
         READER_API_TOKEN: "tok",
         FOUNDER_EMAIL: "founder@example.com",
         CLOUD_AGENT_FOUNDER_BOOTSTRAP: "1",
+        STAGING_DATABASE_URL: "postgres://staging",
       },
       writeFile: () => {},
       chmod: () => {},
@@ -165,8 +181,31 @@ describe("cloud-agent-install", () => {
     });
 
     expect(code).toBe(0);
-    expect(runs).toEqual(expectedRuns);
+    expect(runs.filter((call) => call.startsWith("bd ") || call.startsWith("npm "))).toEqual(expectedRuns);
     expect(logs.some((line) => line.includes("warning: beads"))).toBe(warns);
+  });
+
+  it.each([
+    ["starts the compose Postgres", {}, 0, ["docker compose up -d --wait postgres"], "Postgres ready"],
+    ["warns without failing when Docker cannot start it", {}, 1, ["docker compose up -d --wait postgres"], "warning: could not start Postgres"],
+    ["leaves a supplied TEST_DATABASE_URL alone", { TEST_DATABASE_URL: "postgres://ci" }, 0, [], "not starting Postgres"],
+  ])("postgres setup %s", async (_name, envVars, dockerCode, expectedRuns, logged) => {
+    const runs: string[] = [];
+    const logs: string[] = [];
+    const code = await runCloudAgentInstall({
+      envVars,
+      writeFile: () => {},
+      chmod: () => {},
+      log: (line) => logs.push(line),
+      run: async (command, args) => {
+        const call = [command, ...args].join(" ");
+        runs.push(call);
+        return command === "docker" ? dockerCode : 0;
+      },
+    });
+    expect(code).toBe(0);
+    expect(runs.filter((call) => call.startsWith("docker "))).toEqual(expectedRuns);
+    expect(logs.some((line) => line.includes(logged))).toBe(true);
   });
 
   it("installs the SPA without leaving cwd in web/", () => {

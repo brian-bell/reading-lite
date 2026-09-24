@@ -1,9 +1,10 @@
 import { z } from "zod";
 import type { ProcessReadingArgs } from "../attempt-ownership";
-import { buildKeyPrefix } from "../modules/stores/reading-store";
+import { buildKeyPrefix } from "../modules/stores/layout";
 import { parseReadingId, sha256Hex } from "../services";
-import { ManifestSchema, ProcessingAttemptTriggerSchema, SourceTypeSchema } from "../schemas/manifest";
+import { ProcessingAttemptTriggerSchema, SourceTypeSchema } from "../schemas/manifest";
 import type { ControlPlaneDb } from "./db";
+import { toTimestamp } from "./pg-time";
 import { parseSessionId, parseTenantId, parseTokenId, type TenantContext, type TenantId } from "./ids";
 import type { AuthenticatedPrincipal } from "./principal";
 
@@ -43,7 +44,6 @@ const ProcessReadingArgsSchema = z
     attemptId: z.string().min(1).optional(),
     attemptStartedAt: z.string().min(1).optional(),
     trigger: ProcessingAttemptTriggerSchema.optional(),
-    preserveReadyManifest: ManifestSchema.optional(),
     sourceTypeOnFailure: SourceTypeSchema.optional(),
     email: z.boolean().optional(),
   })
@@ -126,21 +126,12 @@ export async function admitProcessReadingEnvelope(
   }
 
   if (envelope.actor.kind === "api_token") {
-    const token = await db.first<{
-      id: string;
-      user_id: string;
-      expires_at_ms: number;
-      revoked_at_ms: number | null;
-    }>(
-      "SELECT id, user_id, expires_at_ms, revoked_at_ms FROM api_tokens WHERE id = ?",
+    const token = await db.first<{ id: string; user_id: string; usable: boolean }>(
+      "SELECT id, user_id, (revoked_at IS NULL AND expires_at > ?) AS usable FROM api_tokens WHERE id = ?",
+      toTimestamp(nowMs),
       envelope.actor.credentialId,
     );
-    if (
-      !token ||
-      token.user_id !== user.id ||
-      token.revoked_at_ms != null ||
-      token.expires_at_ms <= nowMs
-    ) {
+    if (!token || token.user_id !== user.id || !token.usable) {
       return { ok: false, reason: "token_unusable" };
     }
     const requiredScope =
@@ -156,22 +147,15 @@ export async function admitProcessReadingEnvelope(
   }
 
   if (envelope.actor.kind === "session") {
-    const session = await db.first<{
-      user_id: string;
-      revoked_at_ms: number | null;
-      idle_expires_at_ms: number;
-      absolute_expires_at_ms: number;
-    }>(
-      "SELECT user_id, revoked_at_ms, idle_expires_at_ms, absolute_expires_at_ms FROM sessions WHERE id = ?",
+    const now = toTimestamp(nowMs);
+    const session = await db.first<{ user_id: string; usable: boolean }>(
+      `SELECT user_id, (revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?) AS usable
+       FROM sessions WHERE id = ?`,
+      now,
+      now,
       envelope.actor.credentialId,
     );
-    if (
-      !session ||
-      session.user_id !== user.id ||
-      session.revoked_at_ms != null ||
-      session.idle_expires_at_ms <= nowMs ||
-      session.absolute_expires_at_ms <= nowMs
-    ) {
+    if (!session || session.user_id !== user.id || !session.usable) {
       return { ok: false, reason: "token_unusable" };
     }
   }

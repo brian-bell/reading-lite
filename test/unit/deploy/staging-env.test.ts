@@ -23,16 +23,6 @@ describe("staging environment scripts", () => {
         args: ["r2", "bucket", "create", "reading-lite-staging"],
       },
       {
-        label: "Create staging Vectorize index",
-        args: [
-          "vectorize",
-          "create",
-          "reading-lite-staging",
-          "--dimensions=1536",
-          "--metric=cosine",
-        ],
-      },
-      {
         label: "Create staging queue",
         args: ["queues", "create", "reading-lite-staging"],
       },
@@ -63,10 +53,6 @@ describe("staging environment scripts", () => {
       {
         label: "Create staging refresh dead-letter queue",
         args: ["queues", "create", "reading-lite-staging-refresh-dlq"],
-      },
-      {
-        label: "Create staging D1 control plane",
-        args: ["d1", "create", "reading-lite-control-staging"],
       },
     ]);
   });
@@ -142,18 +128,28 @@ describe("staging environment scripts", () => {
         args: ["queues", "delete", "reading-lite-staging-refresh-dlq"],
       },
       {
-        label: "Delete staging Vectorize index",
-        args: ["vectorize", "delete", "reading-lite-staging", "--force"],
-      },
-      {
-        label: "Delete staging D1 control plane",
-        args: ["d1", "delete", "reading-lite-control-staging", "--skip-confirmation"],
-      },
-      {
         label: "Delete staging R2 bucket",
         args: ["r2", "bucket", "delete", "reading-lite-staging"],
       },
     ]);
+  });
+
+  // Setup and teardown stay mirror images: every Cloudflare resource setup
+  // creates, teardown deletes, and nothing else. The staging database is in
+  // neither list — setup migrates it and teardown retains it.
+  it("tears down exactly the Cloudflare resources setup creates", () => {
+    const created = buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES).map(({ args }) => {
+      const at = args.indexOf("create");
+      return `${args.slice(0, at).join(" ")} ${args[at + 1]}`;
+    });
+    const deleted = buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES)
+      .filter(({ args }) => args.includes("delete") && args[0] !== "delete")
+      .map(({ args }) => {
+        const at = args.indexOf("delete");
+        return `${args.slice(0, at).join(" ")} ${args[at + 1]}`;
+      });
+    expect(created).toHaveLength(new Set(created).size);
+    expect(new Set(deleted)).toEqual(new Set(created));
   });
 
   it("marks setup and teardown commands as idempotent", () => {
@@ -278,7 +274,6 @@ describe("staging environment scripts", () => {
   });
 
   it.each([
-    ["vectorize", 'vectorize.index.duplicate_name - Index name "reading-lite-staging" [code: 3002]'],
     ["queues", "Queue name 'reading-lite-staging' is already taken. [code: 11009]"],
   ])("accepts an existing %s resource during staging setup", async (kind, stderr) => {
     const command = buildStagingSetupCommands(DEFAULT_STAGING_RESOURCES).find(c => c.args[0] === kind)!;
@@ -286,24 +281,6 @@ describe("staging environment scripts", () => {
       runner: async () => ({ code: 1, stdout: "", stderr }),
       log: () => {},
     })).toBe(0);
-  });
-
-  it("continues when Vectorize reports an index was already deleted", async () => {
-    const commands = buildStagingTeardownCommands(DEFAULT_STAGING_RESOURCES);
-    const vectorizeCommand = commands.find((command) =>
-      command.args.includes("vectorize"),
-    );
-    expect(vectorizeCommand).toBeDefined();
-    const code = await runWranglerCommands([vectorizeCommand!], {
-      log: () => {},
-      runner: async () => ({
-        code: 1,
-        stdout: "",
-        stderr: 'vectorize.index.deleted - Index name "reading-lite-staging" [code: 3005]',
-      }),
-    });
-
-    expect(code).toBe(0);
   });
 
   it("continues when a queue exists but its Worker consumer is absent", async () => {

@@ -9,7 +9,7 @@
 // an unsupported payload, a budget denial, and an unreachable authority all
 // throw SpendAdmissionError before the provider request is made.
 
-import { controlPlaneForBucket, CONTROL_PLANE_BY_BUCKET } from "../account-lib/control-plane";
+import { OPERATOR_DATABASES, type OperatorDatabaseTarget } from "../pg-lib/operator-db";
 import type { OperatorTenant } from "../corpus-lib/tenant";
 import { parseTenantId } from "../../src/control-plane/ids";
 import { createPaidFetch, type SpendRpc } from "../../src/control-plane/paid-dispatch";
@@ -74,11 +74,11 @@ export function resolveBatchBillingTenant(
 
 /** The spend authority that goes with a data bucket; no guess for an unknown one. */
 export function spendEnvironmentForBucket(bucket: string): PolicyEnvironment {
-  const target = controlPlaneForBucket(bucket);
+  const target: OperatorDatabaseTarget | undefined = OPERATOR_DATABASES[bucket];
   if (target === undefined) {
     throw new UsageError(
       `no spend authority is mapped to bucket '${bucket}'. Known buckets: ` +
-        `${Object.keys(CONTROL_PLANE_BY_BUCKET).join(", ")}`,
+        `${Object.keys(OPERATOR_DATABASES).join(", ")}`,
     );
   }
   return target.env;

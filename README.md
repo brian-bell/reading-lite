@@ -63,7 +63,7 @@ both for you.
 Local R2 starts empty. Local development has no Queue or Vectorize binding, so
 submit, import, and reprocess return 503, and vector similarity returns no
 matches. List, detail, content, lookup, and `q` text search work with
-[seeded local data](docs/operations.md#seeding-local-r2). Integration tests cover
+[seeded local data](docs/operations.md#seeding-local-data). Integration tests cover
 the processing pipeline with queue, Vectorize, and provider fakes.
 
 The legacy `web/` SPA (`cd web && npm ci && npm run dev`, on `:5173`) stays

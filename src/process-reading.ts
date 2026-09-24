@@ -1,20 +1,9 @@
 import { retryDepsFromEnv } from "./modules/http-retry";
-import {
-  buildKeyPrefix,
-  PointerExistsError,
-  readingStoreFor,
-  type ReadingStore,
-} from "./modules/stores/reading-store";
-import {
-  SimilarityStore,
-  SIMILAR_TOP_K,
-  SIMILARITY_FLOOR,
-  aboveFloor,
-  excludeSelf,
-  similarityStoreFor,
-  summarizeSimilarity,
-} from "./modules/stores/similarity-store";
-import { ReadingVisibility } from "./reading-visibility";
+import { buildKeyPrefix, rawExtFromContentType } from "./modules/stores/layout";
+import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimilarity } from "./modules/stores/similarity";
+import { attemptIoFor, type AttemptIo } from "./attempt-io";
+import { sqlSessionFor } from "./modules/db/sql";
+import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import {
   extractFromUrl,
   sourceDateFromExtractOrPrior,
@@ -31,19 +20,14 @@ import {
   summarizeCheckpoint,
 } from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
-import { tenantIsActive, tenantIsDeleting } from "./control-plane/account-delete";
-import { fromD1 } from "./control-plane/db";
+import { relationshipTargetIds } from "./modules/relationship-targets";
+import { tenantIsActive } from "./control-plane/account-delete";
 import { redactEmailsInText } from "./control-plane/email";
 import {
   itemRequestsImmediateEmail,
   resolveImmediateNotification,
 } from "./control-plane/reading-notification";
-import {
-  failedManifest,
-  readyManifest,
-  rollForward,
-} from "./modules/manifest-drafting";
-import { normalizeTags } from "./modules/tags";
+import { failedManifest, readyManifest } from "./modules/manifest-drafting";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
@@ -69,11 +53,6 @@ import { recoverProcessingLeases } from "./control-plane/processing-lease-recove
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
-import {
-  vectorLedgerFor,
-  VectorLedgerWriteError,
-  type VectorLedger,
-} from "./control-plane/vector-ledger";
 import type { Env } from "./index";
 import type { Services } from "./services";
 import { sha256Hex } from "./services";
@@ -92,13 +71,23 @@ export async function processReading(
   services: Services,
   tenant: TenantContext,
 ): Promise<void> {
-  const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  const similarity = similarityStoreFor(env.READINGS_INDEX, tenant, env);
-  // The vector ledger travels with the vector store, and for the same reason:
-  // an id recorded before every upsert is what keeps the vector addressable
-  // once the reading's R2 objects are gone (issue #195 S3). Null without a
-  // control plane, which is also the only configuration with no wipe to feed.
-  const ledger = vectorLedgerFor(env, tenant);
+  // A connection idle across the attempt's provider calls is replaced, not
+  // trusted: see sqlSession.
+  const sql = sqlSessionFor(env);
+  try {
+    await runAttempt(args, env, services, tenant, attemptIoFor(sql, env, tenant, args));
+  } finally {
+    await sql.end();
+  }
+}
+
+async function runAttempt(
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+  tenant: TenantContext,
+  io: AttemptIo,
+): Promise<void> {
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
   const tenantId = String(tenant.tenantId);
@@ -110,19 +99,13 @@ export async function processReading(
   let source_date: string | undefined;
 
   try {
-    // A purged reading must not get ANY object recreated — not even this
-    // attempt log — so a stale queued message for it is dropped whole, before
-    // any write or upstream spend. Conflict/takeover cases below still log
-    // their attempt for diagnostics. A confirmed tombstone still sweeps
-    // leftover attempt/checkpoint objects from a prior crashed delivery.
-    // The purge check returns why: a confirmed tombstone is latched so a
-    // later HEAD throw cannot skip the sweep (same class as
-    // commitTerminalManifest's tombstone latch).
-    const purged = await readingWasPurged(reader, args);
-    if (purged) {
-      await maybeSweepConfirmedTombstone(reader, args, {
-        alreadyConfirmed: purged === "tombstone",
-      });
+    // A purged reading has no row, and nothing may be recreated for it, so a
+    // stale queued message is dropped whole, before any write or upstream
+    // spend. Conflict/takeover cases below still log their attempt for
+    // diagnostics. Content a prior crashed delivery of this attempt captured
+    // is swept: nothing references it.
+    if ((await io.readManifest()) === null) {
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
       // A purged target cannot finish processing. Retire the attempt and
       // recover leftover capacity, retrying any unconfirmed cleanup.
@@ -130,21 +113,20 @@ export async function processReading(
       return;
     }
     // Account-deletion suppress (195a): a tenant already marked deleting must
-    // not spend or write. A confirmed missing user is the same skip. A D1
-    // lookup failure here is not inactive — it throws RateLimitedError so the
-    // queue retries while extract/embed can still do useful work. After a
-    // terminal CAS, lookup throws fail-open instead (see
-    // tenantStillAllowsVisibility): retry cannot republish once
-    // active_attempt is cleared.
-    if (!(await tenantAllowsSpend(env, tenantId))) {
+    // not spend or write. A confirmed missing user is the same skip. A lookup
+    // failure here is not inactive — it throws RateLimitedError so the queue
+    // retries while extract/embed can still do useful work. This gate saves
+    // the spend; publish decides visibility for real, under the tenant lock
+    // inside its own transaction.
+    if (!(await tenantAllowsSpend(io, tenantId))) {
       await releaseReadingSlot(env, tenantId, opId);
       return;
     }
-    await writeAttemptSafe(reader, args.keyPrefix, attempt);
-    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeSweepConfirmedTombstone(reader, args);
+    await writeAttemptSafe(io, attempt);
+    if (!(await readingCanWriteAttemptArtifacts(io, args))) {
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
-      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
+      await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;
     }
     // The attempt is live: hold its slot for the whole defer/retry window.
@@ -161,32 +143,27 @@ export async function processReading(
       anthropicModel: env.ANTHROPIC_MODEL,
     });
 
-    const extracted = await extractSource(args, env, services, reader, attempt);
+    const extracted = await extractSource(args, env, services, io, attempt);
 
-    await runStage(attempt, reader, args.keyPrefix, services, "write_raw", async () => {
-      if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
-      await reader.writeRaw(
-        args.keyPrefix,
-        extToken(extracted.content_type),
-        extracted.raw,
-        extracted.content_type,
-      );
+    await runStage(attempt, io, services, "write_raw", async () => {
+      if (!(await readingCanWriteAttemptArtifacts(io, args))) return;
+      await io.writeRaw(rawExtFromContentType(extracted.content_type), extracted.raw, extracted.content_type);
     });
     if (extracted.markdown) {
-      await runStage(attempt, reader, args.keyPrefix, services, "write_extracted", async () => {
-        if (!(await readingCanWriteAttemptArtifacts(reader, args))) return;
-        await reader.writeExtracted(args.keyPrefix, extracted.markdown!);
+      await runStage(attempt, io, services, "write_extracted", async () => {
+        if (!(await readingCanWriteAttemptArtifacts(io, args))) return;
+        await io.writeExtracted(extracted.markdown!);
       });
     }
 
-    const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${extToken(extracted.content_type)})`;
+    const promptText = extracted.markdown ?? `(non-text content; raw bytes saved at raw.${rawExtFromContentType(extracted.content_type)})`;
 
     // Foreign active_attempt must drop without taking a lease. Re-check after
     // extract (unpaid) and before the first paid dispatch.
-    if (!(await readingCanWriteAttemptArtifacts(reader, args))) {
-      await maybeSweepConfirmedTombstone(reader, args);
+    if (!(await readingCanWriteAttemptArtifacts(io, args))) {
+      await io.discardUnreferencedContent().catch((err) => console.error(err));
       await releaseReadingSlot(env, tenantId, opId);
-      await releaseOrphanedLeasesIfReadingTerminal(reader, args, env, tenantId);
+      await releaseOrphanedLeasesIfReadingTerminal(io, args, env, tenantId);
       return;
     }
 
@@ -194,7 +171,7 @@ export async function processReading(
     // prior here, before leases and paid stages. Skip that read when the
     // extract already produced a date. Hoisted so a later markFailed can stamp
     // a date this attempt already holds without a second (fallible) read.
-    source_date = await sourceDateForReadyDraft(extracted, reader, args);
+    source_date = await sourceDateForReadyDraft(extracted, io);
 
     const result = await acquireProcessingLeases(env, tenantId, opId, clock());
     // A retired attempt can be redelivered after recovery crashed before its
@@ -202,7 +179,7 @@ export async function processReading(
     const retired = !result.ok && result.reason === "stale_fence";
     const acquired = retired ? "already_running" : throwIfDeferred(result);
     if (acquired === "already_running") {
-      await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, retired);
+      await recoverOrphanedLeases(io, args, env, tenantId, services, attempt, clock, retired);
       return;
     }
     leases = acquired;
@@ -225,10 +202,10 @@ export async function processReading(
         readingSlotConsumed = true;
       },
     });
-    let checkpoint = (await reader.readProcessingCheckpoint(args.keyPrefix, opId)) ?? {};
+    let checkpoint = (await io.readCheckpoint()) ?? {};
 
     // Embed the extracted text to get top-K similar.
-    const queryEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_source", async () => {
+    const queryEmbed = await runStage(attempt, io, services, "embed_source", async () => {
       if (checkpoint.embed_source) return checkpoint.embed_source;
       const result = await embed(truncateForEmbed(promptText), {
         fetch: paidFetch("embed_source"),
@@ -236,7 +213,7 @@ export async function processReading(
         retry,
       });
       checkpoint = { ...checkpoint, embed_source: result };
-      await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+      await io.writeCheckpoint(checkpoint);
       return result;
     });
 
@@ -247,10 +224,10 @@ export async function processReading(
       similarContext = cachedSummary.similar_context;
       similaritySnapshot = cachedSummary.similarity_snapshot;
     } else {
-      const similar = await runStage(attempt, reader, args.keyPrefix, services, "query_similar", () =>
+      const similar = await runStage(attempt, io, services, "query_similar", () =>
         // Over-fetch by one: on a reprocess this reading's own vector is already
         // indexed and would otherwise consume a slot (see excludeSelf).
-        similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
+        io.similarity.query(queryEmbed.embedding, SIMILAR_TOP_K + 1),
       );
       // Exclude self once. The snapshot then measures the UNFLOORED
       // neighbourhood, while only the prompt context is floored.
@@ -273,11 +250,7 @@ export async function processReading(
       similaritySnapshot = summarizeSimilarity(neighbours, services.now());
     }
 
-    const llm = await runStage(
-      attempt,
-      reader,
-      args.keyPrefix,
-      services,
+    const llm = await runStage(attempt, io, services,
       "summarize",
       async () => {
         if (cachedSummary) {
@@ -315,14 +288,14 @@ export async function processReading(
           ...checkpoint,
           summarize: summarizeCheckpoint(result, similarContext, similaritySnapshot),
         };
-        await reader.writeProcessingCheckpoint(args.keyPrefix, opId, checkpoint);
+        await io.writeCheckpoint(checkpoint);
         return result;
       },
     );
 
     // Embed the TL;DR for the persistent vector (more representative than the full text).
     await presentLeaseBeforePaidDispatch(env, acquired, clock);
-    const tldrEmbed = await runStage(attempt, reader, args.keyPrefix, services, "embed_summary", () =>
+    const tldrEmbed = await runStage(attempt, io, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: paidFetch("embed_summary"),
         apiKey: env.OPENAI_API_KEY,
@@ -364,38 +337,15 @@ export async function processReading(
       },
       services.now(),
     );
-    await writeAttemptSafe(reader, args.keyPrefix, attempt);
+    await writeAttemptSafe(io, attempt);
 
-    const { published } = await commitTerminalManifest(
-      reader,
-      similarity,
-      args,
-      finalManifest,
-      {
-        claimMissingPointer: true,
-        defensive: false,
-        ledger,
-        tenantAllowsVisibility: () => tenantConfirmedAllowsVisibility(env, tenantId),
-        tenantConfirmedDeleting: () => tenantConfirmedDeleting(env, tenantId),
-        vector: {
-          embedding: tldrEmbed.embedding,
-          meta: {
-            url: args.url,
-            title: llm.reading.title,
-            tldr: llm.reading.tldr,
-            tags: normalizeTags(llm.reading.tags),
-            created_at: args.createdAt,
-          },
-        },
-        instrument: (stage, fn) =>
-          runStage(attempt, reader, args.keyPrefix, services, stage, fn),
-      },
+    const { published } = await runStage(attempt, io, services, "write_manifest", () =>
+      publishReady(io, args, finalManifest, tldrEmbed.embedding),
     );
 
     if (published && itemRequestsImmediateEmail(args)) {
       await sendReadingEmailAndLog(
-        reader,
-        args,
+        io,
         env,
         services,
         attempt,
@@ -420,7 +370,7 @@ export async function processReading(
         // recovery's terminality and write-confirmation rules before acking.
         // A stale fence alone does not prove retirement or holder death.
         try {
-          await recoverOrphanedLeases(reader, args, env, tenantId, services, attempt, clock, false);
+          await recoverOrphanedLeases(io, args, env, tenantId, services, attempt, clock, false);
         } catch (err) {
           await refreshReadingSlot(env, tenantId, opId, clockNow);
           if (err instanceof DeferPaidWorkError) throw err;
@@ -436,35 +386,31 @@ export async function processReading(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, source_date);
+        await markFailed(io, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, source_date);
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
       throw e instanceof DeferPaidWorkError ? e : new DeferPaidWorkError();
     }
-    if (e instanceof VectorLedgerWriteError) {
-      // Fail closed on a ledger write, but do not destroy anything to do it.
-      // The summarization is paid for and checkpointed; marking the reading
-      // failed would throw that away over a control-plane blip. Requeue on the
-      // same terms as a 429 instead: the retry re-uses the cached summary
+    if (e instanceof PublishCommitError) {
+      // Fail closed on the publish transaction, but do not destroy anything to
+      // do it. The summarization is paid for and checkpointed; marking the
+      // reading failed would throw that away over a database blip. Requeue on
+      // the same terms as a 429 instead: the retry re-uses the cached summary
       // rather than re-spending.
       //
-      // The retry genuinely republishes because of WHERE the throw comes from.
-      // `commitTerminalManifest` writes the ledger row ahead of the terminal
-      // manifest, so at this point nothing terminal has landed: the manifest is
-      // still pending, `active_attempt` is still this attempt's, and no vector
-      // was upserted. The redelivery re-runs the whole terminal commit. (From
-      // inside `ReadingVisibility.publish` it could not: `readyManifest` clears
-      // `active_attempt`, so the retry would find `canWriteManifest === false`
-      // and do nothing. Covered by the acceptance test in
-      // `test/integration/account-delete-visibility.test.ts`.)
+      // The retry genuinely republishes because the transaction rolled back:
+      // nothing terminal landed, the reading is still pending, and
+      // `active_attempt` is still this attempt's. An error that repeats on
+      // every delivery still ends visibly, through the queue's retry limit and
+      // markDeadLettered.
       console.error(
         JSON.stringify({
-          event: "reading_ledger_write_failed",
+          event: "reading_publish_commit_failed",
           reading_id: args.id,
           tenant_id: tenantId,
           message: e.message,
-          note: "terminal commit failed closed on the vector ledger; requeuing without marking the reading failed",
+          note: "publish transaction rolled back; requeuing without marking the reading failed",
         }),
       );
       if (leases) await pauseOrReleaseProcessingLeases(env, leases, clockNow);
@@ -487,7 +433,7 @@ export async function processReading(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(reader, args, services, attempt, e, env, tenantId, source_date);
+    await markFailed(io, args, services, attempt, e, env, tenantId, source_date);
   }
 }
 
@@ -519,7 +465,7 @@ async function recoverLeasesOrDefer(
 }
 
 async function recoverOrphanedLeases(
-  reader: ReadingStore,
+  io: AttemptIo,
   args: ProcessReadingArgs,
   env: Env,
   tenantId: string,
@@ -529,7 +475,7 @@ async function recoverOrphanedLeases(
   retired: boolean,
 ): Promise<void> {
   let manifest: Manifest | null;
-  try { manifest = await reader.readManifest(args.keyPrefix); }
+  try { manifest = await io.readManifest(); }
   catch { throw new LiveHolderDeferError(); }
   if (manifestIsProductionTerminal(manifest)) {
     await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
@@ -541,26 +487,27 @@ async function recoverOrphanedLeases(
   await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args),
     retired ? "retired_attempt" : "defer_expired");
   await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
-  await markFailed(reader, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, manifest.source_date);
-  // markFailed is defensive elsewhere and can swallow an R2 write failure.
+  await markFailed(io, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, manifest.source_date);
+  // markFailed is defensive elsewhere and can swallow a write failure.
   // Retirement must keep its recovery delivery until terminalization sticks.
   try {
-    const current = await reader.readManifest(args.keyPrefix);
+    const current = await io.readManifest();
+    // No row: the reading was purged, which retires the attempt too.
+    if (!current) return;
     if (manifestIsProductionTerminal(current)) return;
-    if (current && attemptOwnership(current, args).hasConflict) return;
-    if (!current && await confirmedPurgeTombstone(reader, args.id)) return;
+    if (attemptOwnership(current, args).hasConflict) return;
   } catch { /* Unconfirmed terminalization must be retried. */ }
   throw new LiveHolderDeferError();
 }
 
 async function releaseOrphanedLeasesIfReadingTerminal(
-  reader: ReadingStore,
+  io: AttemptIo,
   args: ProcessReadingArgs,
   env: Env,
   tenantId: string,
 ): Promise<void> {
   let manifest: Manifest | null;
-  try { manifest = await reader.readManifest(args.keyPrefix); }
+  try { manifest = await io.readManifest(); }
   catch { throw new LiveHolderDeferError(); }
   if (manifestIsProductionTerminal(manifest)) {
     await recoverLeasesOrDefer(env, tenantId, resolveAttemptId(args), "terminal_manifest");
@@ -596,8 +543,7 @@ function deferLoopExceeded(args: ProcessReadingArgs, now: number): boolean {
 
 
 async function sendReadingEmailAndLog(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
+  io: AttemptIo,
   env: Env,
   services: Services,
   attempt: ProcessingAttempt,
@@ -608,19 +554,19 @@ async function sendReadingEmailAndLog(
   const startedAt = services.now();
   let recipient: string | undefined;
   try {
-    // Recipient lookup belongs in this try: a thrown D1/settings read after
-    // commitTerminalManifest must not reach processReading's outer catch and
-    // overwrite the published ready manifest.
-    const decision = await resolveImmediateNotification(
-      fromD1(env.CONTROL_PLANE),
-      env,
-      String(tenant.tenantId),
-    );
+    // Recipient lookup belongs in this try: a thrown users/settings read after
+    // publication must not reach processReading's outer catch.
+    const decision = await resolveImmediateNotification(io.controlPlane, env, String(tenant.tenantId));
     if (decision.kind === "skip") return;
     recipient = decision.to;
 
-    // Tenant-scoped list index: connection titles/links stay in this tenant.
-    const listIndex = await reader.readListIndex();
+    // Tenant-scoped rows: connection titles/links stay in this tenant. Only
+    // the targets this reading names are read.
+    const targetIds = relationshipTargetIds(manifest);
+    const listIndex = {
+      version: 1 as const,
+      items: targetIds.length === 0 ? [] : await io.store.relationshipTargets(targetIds),
+    };
     await sendReadingEmail(
       { manifest, webBaseUrl: env.WEB_BASE_URL, listIndex },
       {
@@ -663,7 +609,7 @@ async function sendReadingEmailAndLog(
       error,
     });
   }
-  await writeAttemptSafe(reader, args.keyPrefix, attempt);
+  await writeAttemptSafe(io, attempt);
 }
 
 function redactSendEmailError(error: ManifestError, known: readonly string[]): ManifestError {
@@ -697,74 +643,46 @@ export async function markDeadLettered(
   services: Services,
   tenant: TenantContext,
 ): Promise<void> {
-  const reader = readingStoreFor(env.READINGS_BUCKET, tenant, env);
-  // Only a read that successfully resolves to null is evidence of absence. A
-  // throwing read (R2 error, corrupt JSON, schema drift) is an object that may
-  // well exist — the DLQ message is acked either way, so skipping on a failed
-  // read would silently strand the reading; fall through and mark, as the
-  // pre-guard behavior did.
+  const sql = sqlSessionFor(env);
+  try {
+    await markDeadLetteredWith(attemptIoFor(sql, env, tenant, args), args, env, services, tenant);
+  } finally {
+    await sql.end();
+  }
+}
+
+async function markDeadLetteredWith(
+  io: AttemptIo,
+  args: ProcessReadingArgs,
+  env: Env,
+  services: Services,
+  tenant: TenantContext,
+): Promise<void> {
   let existing: Manifest | null = null;
   let confirmedAbsent = false;
   try {
-    existing = await reader.readManifest(args.keyPrefix);
+    existing = await io.readManifest();
     confirmedAbsent = existing === null;
   } catch (e) {
     console.error(e);
   }
 
-  // A manifest absent from the admitted tenant's namespace means this tenant
-  // never owned the reading the job describes: activation always writes the
-  // pending manifest before enqueueing, so absence signals a mismatched
-  // envelope or a reading an operator has since deleted. Writing a marker here
-  // would materialize envelope-controlled metadata as a visible row in the
-  // tenant's list (or resurrect deleted data), so the mark requires the
-  // manifest to exist. A URL stranded this way stays recoverable: its damaged
-  // by-url pointer is repaired by the next submit/import.
   const tenantId = String(tenant.tenantId);
   const opId = resolveAttemptId(args);
 
-  // Purge tombstone before confirmed-absent: after purge deletes the
-  // manifest, a DLQ still has to reap attempt/checkpoint residue. Checking
-  // absence first would skip the sweep once by-id is gone.
-  if (await confirmedPurgeTombstone(reader, args.id)) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
-    await releaseReadingSlot(env, tenantId, opId);
-    return;
-  }
-
-  // Confirmed-absent: this attempt will never commit. Release a still-held
-  // reservation (idempotent if already consumed/released).
+  // No row: the reading was purged. Nothing may be recreated for it; sweep
+  // what this attempt captured and let the slot go.
   if (confirmedAbsent) {
+    await io.discardUnreferencedContent().catch((e) => console.error(e));
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
 
-  // Account-deletion suppress (195a): do not write a failed list row after
-  // the tenant is already deleting. handleDeadLetter always acks and never
-  // retries, so a lookup throw must fail-open and proceed to markFailed —
-  // treating it as inactive would strand pending+running. Only skip on a
-  // confirmed inactive/missing user.
-  if (!(await tenantConfirmedAllowsVisibility(env, tenantId))) {
+  if (!(await tenantConfirmedAllowsVisibility(io, tenantId))) {
     await releaseReadingSlot(env, tenantId, opId);
     return;
   }
 
-  // A rate-limited message can sit in the retry→DLQ pipeline for many minutes.
-  // If the original pending attempt was flipped stale by PENDING_TTL_SECONDS in
-  // that window and a *newer* attempt took over the reading (or already brought
-  // it back to `ready`), this dead-lettered message is stale: marking it failed
-  // — and especially rolling back to its preserveReadyManifest snapshot — would
-  // clobber the newer attempt's data. Only act if we still own the active
-  // attempt.
-  //
-  // This narrows, but doesn't fully close, the window: a brand-new reprocess
-  // landing between this read and markFailed's write would still be clobbered.
-  // That residual race is last-writer-wins (the repo's documented stance) and
-  // benign — the loser is a reading that is being reprocessed anyway and stays
-  // re-submittable through its existing by-url ownership claim.
-  // Strict active-only ownership: a newer attempt taking over (active flipped to
-  // a different id) means this DLQ message is stale and must not clobber it.
-  // (null here is the read-error path, where ownership cannot be judged.)
   if (existing && !attemptOwnership(existing, args).isActive) {
     await releaseReadingSlot(env, tenantId, opId);
     return;
@@ -772,15 +690,13 @@ export async function markDeadLettered(
 
   const attempt = newProcessingAttempt(args, services);
   if (existing?.active_attempt?.stage) attempt.stage = existing.active_attempt.stage;
-  await markFailed(reader, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId, existing?.source_date);
-  // RateLimitedError keeps the slot held through retries; exhausting them is
-  // the definitive pre-summarization failure that must release it. release is
-  // a no-op if summarization already committed the reservation.
+  // The only caller that marks a job dead: the reading DLQ.
+  await markFailed(io, args, services, attempt, new QueueRetriesExhaustedError(), env, tenantId, existing?.source_date, "dead");
   await releaseReadingSlot(env, tenantId, opId);
 }
 
 async function markFailed(
-  reader: ReadingStore,
+  io: AttemptIo,
   args: ProcessReadingArgs,
   services: Services,
   attempt: ProcessingAttempt,
@@ -788,14 +704,16 @@ async function markFailed(
   env: Env,
   tenantId: string,
   sourceDate?: string,
+  jobState: "done" | "dead" = "done",
 ): Promise<void> {
   console.error(e);
-  // Same no-recreate gate as markDeadLettered: a mid-flight purge after
-  // processReading's opening readingWasPurged check must not write an attempt
-  // log or failed manifest under the prefix. Sweep residue already written.
-  // Fail-open on a throwing HEAD.
-  if (await confirmedPurgeTombstone(reader, args.id)) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
+  // A mid-flight purge after the opening check must not get anything recreated
+  // for the reading. The row is gone, so there is nothing to mark; sweep the
+  // content this attempt captured. A read that throws is not evidence of a
+  // purge, so it falls through and the commit below decides under the lock.
+  const purged = await io.readManifest().then((current) => current === null, () => false);
+  if (purged) {
+    await io.discardUnreferencedContent().catch((err) => console.error(err));
     await releaseReadingSlot(env, tenantId, resolveAttemptId(args));
     return;
   }
@@ -804,33 +722,10 @@ async function markFailed(
   attempt.status = "failed";
   attempt.finished_at = failedAt;
   attempt.error = error;
-  await writeAttemptSafe(reader, args.keyPrefix, attempt);
+  await writeAttemptSafe(io, attempt);
 
-  const tenantAllowsVisibility = () => tenantConfirmedAllowsVisibility(env, tenantId);
-  // Both commits below pass `similarity: null`, where the fence and the ordinary
-  // removal do the same thing (list row only — the failure-path asymmetry). This
-  // is passed for uniformity, not because the failure path is fenced; its only
-  // effect there is one more D1 read on a compensation that was already rare.
-  const confirmedDeleting = () => tenantConfirmedDeleting(env, tenantId);
-
-  if (args.preserveReadyManifest?.status === "ready") {
-    // preserveReadyManifest is the snapshot the router captured BEFORE writing
-    // a pending+running manifest for the reprocess attempt. On failure we roll
-    // forward to that snapshot so the user keeps the previously-ready data.
-    const manifest = rollForward(args.preserveReadyManifest, attempt, services.now());
-    // similarity: null → list-only visibility (the failure-path asymmetry).
-    await commitTerminalManifest(reader, null, args, manifest, {
-      claimMissingPointer: false,
-      allowLastAttempt: true,
-      defensive: true,
-      tenantAllowsVisibility,
-      tenantConfirmedDeleting: confirmedDeleting,
-    });
-    return;
-  }
-
-  const sourceTypeOnFailure = await resolveSourceTypeOnFailure(reader, args);
-  const sourceDateOnFailure = sourceDate ?? await sourceDateFromPrior(reader, args);
+  const sourceTypeOnFailure = await resolveSourceTypeOnFailure(io, args);
+  const sourceDateOnFailure = sourceDate ?? await sourceDateFromPrior(io);
   // content omitted → the empty-content placeholder with content_status
   // "failed": on this path extraction may never have happened.
   const manifest = failedManifest(
@@ -844,19 +739,25 @@ async function markFailed(
     services.now(),
   );
   // We're already on the failure path inside the queue consumer — a transient
-  // R2 hiccup here has nowhere to bubble to (dispatchQueueMessage will ack
-  // either way). The defensive write logs and moves on; the index TTL annotator
-  // will eventually flip stale pending entries even if both writes drop.
-  await commitTerminalManifest(reader, null, args, manifest, {
-    claimMissingPointer: false,
-    allowLastAttempt: true,
-    defensive: true,
-    tenantAllowsVisibility,
-    tenantConfirmedDeleting: confirmedDeleting,
-  });
-  // Intentionally do NOT change the by-url pointer here. URL submission claims
-  // ownership eagerly; a failed owner stays re-submittable because POST
-  // resolves failed ownership by reprocessing this same reading id.
+  // database error here has nowhere to bubble to (dispatchQueueMessage will
+  // ack either way). Log and move on; the TTL annotator will eventually flip a
+  // stale pending reading even if this write drops.
+  //
+  // A published reading is not failed by this: PgReadingWriter.fail keeps its
+  // revision, summary and embedding and only records the attempt. That is
+  // what makes a failed reprocess leave the previous content and summary
+  // intact together.
+  //
+  // URL ownership is untouched. A failed owner stays re-submittable because a
+  // resubmit resolves failed ownership by reprocessing this same reading id.
+  try {
+    await io.writer.fail(args, manifest, { allowLastAttempt: true, now: services.now(), jobState });
+    // Kept only while the reading points at it: a published reading kept its
+    // revision, and a never-published one serves this attempt's bytes.
+    await io.discardUnreferencedContent();
+  } catch (err) {
+    console.error(err);
+  }
 }
 
 /** Ready-draft publication date: a fresh extract is authoritative; the prior
@@ -864,12 +765,11 @@ async function markFailed(
  *  precedence and the skip-prior-read short-circuit without the full pipeline. */
 export async function sourceDateForReadyDraft(
   extracted: Pick<ExtractedContent, "source_date">,
-  reader: Pick<ReadingStore, "readManifest">,
-  args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
+  io: Pick<AttemptIo, "readManifest">,
 ): Promise<string | undefined> {
   return sourceDateFromExtractOrPrior(
     extracted.source_date,
-    extracted.source_date === undefined ? await sourceDateFromPrior(reader, args) : undefined,
+    extracted.source_date === undefined ? await sourceDateFromPrior(io) : undefined,
   );
 }
 
@@ -877,25 +777,22 @@ export async function sourceDateForReadyDraft(
  *  so tests can pin prior-read errors without running the full process
  *  pipeline. A throw is not "no stored date", but rethrowing it would land
  *  in markFailed and write a dateless failed terminal — strictly worse than
- *  proceeding undated on failed-prior reprocess / import-over. */
+ *  proceeding undated on failed-prior reprocess / import-over. A published
+ *  reading keeps its row's date through a reprocess, so the row is the only
+ *  source there is. */
 export async function sourceDateFromPrior(
-  reader: Pick<ReadingStore, "readManifest">,
-  args: Pick<ProcessReadingArgs, "keyPrefix" | "preserveReadyManifest">,
+  io: Pick<AttemptIo, "readManifest">,
 ): Promise<string | undefined> {
-  let current: Manifest | null;
   try {
-    current = await reader.readManifest(args.keyPrefix);
+    return (await io.readManifest())?.source_date;
   } catch (error) {
-    const preserved = args.preserveReadyManifest?.source_date;
-    if (preserved !== undefined) return preserved;
     console.error(error);
     return undefined;
   }
-  return current?.source_date ?? args.preserveReadyManifest?.source_date;
 }
 
 async function resolveSourceTypeOnFailure(
-  reader: ReadingStore,
+  io: AttemptIo,
   args: ProcessReadingArgs,
 ): Promise<"url" | "markdown"> {
   if (args.sourceTypeOnFailure) return args.sourceTypeOnFailure;
@@ -904,7 +801,7 @@ async function resolveSourceTypeOnFailure(
   // do not carry the snapshot. A reprocess pending manifest retains the prior
   // source type, so recover it only while this attempt still owns that manifest.
   if (args.trigger === "reprocess") {
-    const current = await reader.readManifest(args.keyPrefix).catch(() => null);
+    const current = await io.readManifest().catch(() => null);
     if (current && attemptOwnership(current, args).isActive) {
       return current.source_type ?? "url";
     }
@@ -929,22 +826,18 @@ async function extractSource(
   args: ProcessReadingArgs,
   env: Env,
   services: Services,
-  reader: ReadingStore,
+  io: AttemptIo,
   attempt: ProcessingAttempt,
 ): Promise<ExtractedContent> {
   const source = args.source;
   if (source?.kind === "markdown") {
-    return runStage(
-      attempt,
-      reader,
-      args.keyPrefix,
-      services,
+    return runStage(attempt, io, services,
       "prepare_markdown",
       () => extractedFromMarkdown(source, nowMs(services)),
     );
   }
 
-  return runStage(attempt, reader, args.keyPrefix, services, "fetch_source", () =>
+  return runStage(attempt, io, services, "fetch_source", () =>
     extractFromUrl(args.url, {
       fetch: services.fetch,
       lookup: services.lookup,
@@ -979,455 +872,59 @@ function sourceTypeForArgs(args: ProcessReadingArgs): "url" | "markdown" {
   return args.source?.kind === "markdown" ? "markdown" : "url";
 }
 
-interface TerminalWriteState {
-  canWriteManifest: boolean;
-  canPublishVisibility: boolean;
-  canRemoveVisibility: boolean;
-  manifestEtag?: string;
-}
-
-export interface CommitTerminalOpts {
-  claimMissingPointer: boolean;
-  // The durable vector-id ledger (issue #195 S3). Passed wherever a vector may
-  // be written or deleted; omitted on the pure-failure paths, which pass a null
-  // similarity store and touch no vector at all.
-  ledger?: VectorLedger | null;
-  allowLastAttempt?: boolean;
-  // false: write throws propagate (success path → outer catch marks failed).
-  // true: throws are swallowed + logged (failure path has nowhere to bubble).
-  defensive: boolean;
-  // Provided only when publishing a vector; omitted on failure paths.
-  vector?: {
-    embedding: number[];
-    meta: { url: string; title: string; tldr: string; tags: string[]; created_at: string };
-  };
-  // The success path passes a runStage-bound closure so each sub-write still logs
-  // a stage event; failure paths omit it and write plainly.
-  instrument?: <T>(stage: ProcessingStage, fn: () => Promise<T>) => Promise<T>;
-  // Rechecked immediately before visibility publish / restore, and again
-  // immediately after those writes (issue 195a). Per-reading purge tombstones
-  // (#179) share one confirmed-tombstone latch for the call, including the
-  // checks immediately before by-url reclaim, the terminal write / markLive,
-  // and publish. A confirmed tombstone skips reclaim and the terminal write
-  // and sweeps prefix objects (attempt residue or a terminal that raced
-  // purge) before list/vector/by-url compensate, including when
-  // canWriteManifest is already false after purge removed the manifest. A confirmed false after
-  // publish/restore compensates with remove and
-  // releases by-url if this reading still owns the slot. A lookup throw is
-  // not confirmed inactive: fail-open (publish/keep) because readyManifest
-  // already cleared active_attempt and a retry cannot republish — unless this
-  // call already confirmed a tombstone, which stays latched. Omit
-  // tenantAllowsVisibility to keep the historical default (allow publish).
-  tenantAllowsVisibility?: () => Promise<boolean>;
-  // Narrower than `!tenantAllowsVisibility()`: true only for a tenant confirmed
-  // `deleting`, which is the only status an account wipe runs for and therefore
-  // the only one that justifies the fence's ungated vector delete. A `suspended`
-  // tenant, a confirmed-missing row, or a failed lookup all take the ordinary
-  // gated removal instead. Omit to keep the historical behavior (never fence).
-  tenantConfirmedDeleting?: () => Promise<boolean>;
-}
-
-// The single home of the terminal-write ordering invariant: CAS-write the
-// manifest, then reconcile list + vector visibility, restoring on a lost CAS.
-// All three call sites (success, markFailed preserve, markFailed normal) funnel
-// through here so none of them re-spells the ordering or touches the private
-// TerminalWriteState booleans.
+// Publication. Attempt ownership, URL ownership, the revision, the summary,
+// the relationships, the embedding AND the tenant's eligibility are one
+// transaction in PgReadingWriter.publish (slice 1c.3): `users` is in the same
+// database, so publish locks the tenant row FOR SHARE and reads `status`
+// there. `DELETE /api/account` waits behind that lock, so there is no window
+// between the check and the commit to compensate for — an ineligible tenant's
+// reading commits with no embedding and is never searchable, and the account
+// wipe removes it with the rest of the account.
 //
-// `similarity` is null on the failure paths, which encodes the deliberate
-// success/failure asymmetry: success removal clears list AND vector, failure
-// removal clears list only (see plan 006 for the related cleanup-gate bug).
+// Once publish commits, `active_attempt` is cleared and no retry can
+// republish.
 //
 // Returns `published` so the caller can gate post-commit side effects (the
-// success path only emails when the reading became publicly visible). `committed`
-// is observability for tests (the plan's documented contract); production callers
-// gate on `published` only, so don't treat `committed` as a load-bearing signal.
-export async function commitTerminalManifest(
-  reader: ReadingStore,
-  similarity: SimilarityStore | null,
+// success path only emails when the reading became searchable).
+async function publishReady(
+  io: AttemptIo,
   args: ProcessReadingArgs,
   manifest: Manifest,
-  opts: CommitTerminalOpts,
+  embedding: number[],
 ): Promise<{ committed: boolean; published: boolean }> {
-  const run =
-    opts.instrument ?? (<T>(_stage: ProcessingStage, fn: () => Promise<T>) => fn());
-  const visibility = new ReadingVisibility(reader, similarity, opts.ledger ?? null);
-  // Confirmed-tombstone compensate always sweeps the reading prefix, then
-  // list/vector/by-url. writeAttemptSafe and stage instrumentation can
-  // recreate attempt objects even when this CAS does not land; a successful
-  // CAS that raced purge recreates the terminal object. Ordinary (non-
-  // tombstone) visibility compensate does not sweep.
-  const compensateFence = (tombstone: boolean) =>
-    tombstone
-      ? compensateTombstonePrefixAndVisibility(visibility, reader, args, opts)
-      : compensateVisibility(visibility, reader, args, opts, { tombstone: false });
-
-  // Purge-tombstone checks share one latch for this call. A confirmed HEAD
-  // must not be undone by a later throw: fail-open after skip-markLive would
-  // upsert a vector with no live ledger row (publish does not markLive). The
-  // same latch gates by-url reclaim inside terminalWriteState: claiming a
-  // pointer purge already released would pin the URL to a ghost reading.
-  const tombstoneAllows = purgeTombstoneAllows(reader, args);
-  const state = await terminalWriteState(reader, args, {
-    claimMissingPointer: opts.claimMissingPointer,
-    allowLastAttempt: opts.allowLastAttempt,
-    tombstoneAllows,
+  const content = io.capturedContent();
+  if (!content) throw new Error("publishReady: the attempt captured no content");
+  const out = await io.writer.publish(args, manifest, {
+    keyPrefix: args.keyPrefix,
+    content,
+    embedding,
+    claimMissingUrl: true,
   });
-  // Active-attempt conflict: a foreign attempt owns the reading. No writes, no
-  // restore — the other attempt owns visibility too. This unifies the two old
-  // call sites: the success path already early-returned here, but the failure
-  // path used to fall through writeManifestForTerminalState (which returns false
-  // on conflict) into a list re-sync (now ReadingVisibility.restoreIfOwner) of
-  // the foreign row.
-  // That re-sync was a no-op on data the owning attempt maintains anyway;
-  // skipping it is intentional (plan 005, case 2).
-  // After purge removes the manifest and by-id/list, this attempt cannot
-  // write a terminal object but may already have written attempt/checkpoint
-  // residue during a long stage. Sweep that prefix when a tombstone is
-  // confirmed. A foreign live attempt without a tombstone is left alone.
-  if (!state.canWriteManifest) {
-    if (!(await tombstoneAllows())) {
-      await reconcileVisibility(true, () => compensateFence(true));
-    }
-    return { committed: false, published: false };
+  if (!out.committed) {
+    // Purged, or another attempt owns the reading: nothing references what
+    // this one captured.
+    await io.discardUnreferencedContent().catch((err) => console.error(err));
+  } else if (out.superseded) {
+    // The previous revision's row went with the commit; its bytes go now.
+    // Best effort: the reading is published either way, and a leftover
+    // object is unreachable until the account wipe sweeps the prefix.
+    await io.discardSupersededContent(out.superseded).catch((err) => console.error(err));
   }
-
-  // Confirmed tombstone before the terminal write: do not recreate a ready (or
-  // failed) object under a prefix purge is sweeping. Sweep prefix objects
-  // (attempt residue) then list/vector/by-url. Defensive so a compensate throw
-  // cannot reach markFailed and recreate objects that way either.
-  if (!(await tombstoneAllows())) {
-    await reconcileVisibility(true, () => compensateFence(true));
-    return { committed: false, published: false };
-  }
-
-  // Ledger the reading BEFORE the terminal manifest write, not inside the
-  // visibility publish that follows it.
-  //
-  // The ordering the ledger needs is only "row before upsert", and doing it
-  // here satisfies that a fortiori: row, then manifest, then upsert. What the
-  // earlier placement could not do was FAIL usefully. `readyManifest` clears
-  // `active_attempt`, so once the terminal manifest is committed no retry can
-  // republish — `readingCanWriteAttemptArtifacts` returns early and
-  // `terminalWriteState` computes `canWriteManifest === false`. A ledger error
-  // thrown after that point left a reading permanently `ready` and listed with
-  // no vector and no ledger row, while the retry it triggered quietly did
-  // nothing. Thrown from here, `active_attempt` is still live, so the ordinary
-  // retry re-runs the whole terminal commit and republishes for real.
-  //
-  // The cost is a row for a reading whose manifest CAS then loses to a foreign
-  // attempt: an id recorded for a vector this attempt never wrote. That is the
-  // documented safe direction — one no-op `deleteByIds` that clears on the
-  // first confirmation — and the same trade the wipe's own seed step makes.
-  //
-  // Deliberately NOT wrapped in `run`: the stage instrument writes one attempt
-  // object per call, and this write has no stage of its own — the `upsert_vector`
-  // event still comes from the upsert it precedes. Wrapping it would add a
-  // second event for a stage that then runs anyway.
-  //
-  // Tombstone already confirmed false above; a later HEAD throw stays latched.
-  if (opts.vector && similarity && opts.ledger) {
-    await opts.ledger.markLive([args.id], Date.now());
-  }
-
-  const written = await run("write_manifest", () =>
-    opts.defensive
-      ? writeTerminalManifestDefensively(reader, args, manifest, state)
-      : writeManifestForTerminalState(reader, args, manifest, state),
-  );
-  if (!written) {
-    // Manifest not written despite owning the attempt: a lost CAS (etag changed
-    // mid-flight) on either path, or — on the defensive path only — a swallowed
-    // write throw. Restore the current list visibility so we don't leave a
-    // half-published row behind — unless the tenant-deletion fence or a
-    // per-reading purge tombstone forbids resurrection (issue 195a / #179).
-    const tombstone = !(await tombstoneAllows());
-    if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
-      await reconcileVisibility(opts.defensive, () =>
-        visibility.restoreIfOwner(args),
-      );
-      // Deletion can land between the pre-restore check and the list write.
-      // Compensate in this same consumer; do not wait on DELETE /api/account
-      // or a retried purge.
-      const tombstoneAfter = !(await tombstoneAllows());
-      if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
-        // Tombstone compensate must stay defensive even on the success path
-        // (`opts.defensive === false`): a throw here would reach markFailed
-        // and recreate attempt/manifest objects under a purged prefix.
-        await reconcileVisibility(tombstoneAfter ? true : opts.defensive, () =>
-          compensateFence(tombstoneAfter),
-        );
-      }
-    } else if (tombstone) {
-      await reconcileVisibility(true, () => compensateFence(true));
-    }
-    return { committed: false, published: false };
-  }
-
-  // Recheck immediately after the terminal CAS. A tombstone that landed
-  // between the pre-write HEAD and this write recreates objects under a
-  // prefix purge already swept. Visibility compensate cannot reap those
-  // objects, and by-id is usually already gone, so DELETE /api/readings/:id
-  // returns not_found. Defensive: a throw must not reach markFailed.
-  if (!(await tombstoneAllows())) {
-    await reconcileVisibility(true, () => compensateFence(true));
-    return { committed: true, published: false };
-  }
-
-  // The terminal object is committed. Visibility throws must not reach
-  // processReading's outer catch: markFailed(allowLastAttempt) would overwrite
-  // ready with failed. Same class of bug sendReadingEmailAndLog already avoids.
-  if (state.canPublishVisibility) {
-    // Recheck immediately before publish: an in-flight consumer can pause
-    // between terminal CAS and this write. Account deletion marks
-    // users.status=deleting as the durable fence (195a). Per-reading purge
-    // writes index/deleted/{id} and this path rechecks it here (#179).
-    const tombstone = !(await tombstoneAllows());
-    if (!tombstone && (await tenantStillAllowsVisibility(opts))) {
-      const published = await reconcileVisibility(true, () =>
-        visibility.publish(manifest, args, opts.vector, { instrument: run }),
-      );
-      // Check-then-publish is still a race; recheck after the writes and
-      // compensate in this same consumer if the tenant is now deleting or the
-      // reading now has a purge tombstone. On a confirmed-`deleting` tenant
-      // (or a confirmed tombstone) that compensation deletes the vector
-      // directly rather than routing through the list row: an account wipe may
-      // already have deleted `index/list.json`, and a vector left behind after
-      // that is unaddressable, because R2 is the only source of reading ids.
-      // Ordinary `remove` skips the vector when the list row is already gone;
-      // `removeForDeletedTenant` does not.
-      const tombstoneAfter = !(await tombstoneAllows());
-      if (tombstoneAfter || !(await tenantStillAllowsVisibility(opts))) {
-        await reconcileVisibility(true, () => compensateFence(tombstoneAfter));
-        return { committed: true, published: false };
-      }
-      return { committed: true, published };
-    }
-    await reconcileVisibility(true, () => compensateFence(tombstone));
-    return { committed: true, published: false };
-  }
-
-  // Unpublish because this reading is not the by-url owner, not because of any
-  // tenant status — but it routes through the same helper, which falls back to
-  // the gated `remove` unless the tenant is confirmed `deleting` or a purge
-  // tombstone is confirmed. On a deleting tenant this branch strands a vector
-  // exactly like the others do: the wipe may already have taken
-  // `index/list.json`, and `remove` gives up when there is no row to remove.
-  if (state.canRemoveVisibility) {
-    const tombstone = !(await tombstoneAllows());
-    await reconcileVisibility(true, () => compensateFence(tombstone));
-  }
-  return { committed: true, published: false };
+  return out;
 }
 
-// Visibility reconciliation honors `defensive`: log-and-continue so a transient
-// R2 hiccup cannot clobber a committed terminal object (or, on the failure
-// path, bubble out of a consumer that will ack either way). Before the
-// terminal CAS, the success path still lets throws propagate to the outer catch.
-async function reconcileVisibility(
-  defensive: boolean,
-  fn: () => Promise<void>,
-): Promise<boolean> {
-  if (!defensive) {
-    await fn();
-    return true;
-  }
-  try {
-    await fn();
-    return true;
-  } catch (e) {
-    // The defensive policy exists for writes a later pass repairs: a list row
-    // that did not land is re-appended by the next terminal write, a vector
-    // that did not upsert is restored by `ops corpus backfill-vectors`. Both
-    // are visible and both self-heal, so swallowing them is right — the
-    // manifest is already committed and failing the reading over them would
-    // throw away paid work for a repairable gap.
-    //
-    // A LEDGER write is not in that class. Nothing repairs it on its own and
-    // nothing reports it, so it fails closed and the delivery retries (see the
-    // outer catch, which requeues without marking the reading failed — the
-    // cached summarization means the retry costs nothing).
-    //
-    // The publish half no longer reaches here: `commitTerminalManifest` writes
-    // the `live` row before the terminal manifest, outside this wrapper and
-    // outside the defensive policy, precisely so its failure is retryable. What
-    // still arrives here is the removal verbs' `delete_submitted` stamp. Losing
-    // that stamp leaves the row `live` for a vector already deleted, which the
-    // wipe re-submits harmlessly — but it is still an unreported divergence in
-    // the tenant's vector record, so it takes the same fail-closed treatment.
-    if (e instanceof VectorLedgerWriteError) throw e;
-    console.error(e);
-    return false;
-  }
-}
+const TENANT_STATUS_LOOKUP_URL = "postgres://control-plane/users.status";
 
-// The removal a compensating consumer performs. `deleting` is the only status
-// an account wipe runs for, so it is the only tenant status where the list row
-// and manifest the ordinary gates read may already be gone — and therefore the
-// only one where dropping the vector ungated is right. A confirmed purge
-// tombstone is the per-reading equivalent: the list row may already be gone
-// because purge removed it, so ordinary `remove` would skip the vector.
-// Tombstone compensation also releases this reading's by-url pointer when it
-// still owns the slot: list+vector-only cleanup would leave a ghost owner
-// that later submit treats as a live reading. Tenant-deletion still uses
-// `removeForDeletedTenant` alone (wipe owns that prefix).
-// Every other reason visibility stopped being allowed (suspended, a
-// confirmed-missing row, or a lookup we could not confirm) takes the gated
-// removal this code has always used.
-async function compensateVisibility(
-  visibility: ReadingVisibility,
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  opts: CommitTerminalOpts,
-  fence: { tombstone: boolean },
-): Promise<void> {
-  if (fence.tombstone) {
-    // By-url first (ghost owner), but a pointer-delete throw must not skip
-    // list / vector / ledger compensate. Same class as prefix-delete finally.
-    try {
-      await releaseByUrlIfOwned(reader, args);
-    } finally {
-      await visibility.removeForDeletedTenant(args);
-    }
-    return;
-  }
-  if (await tenantConfirmedDeletingForOpts(opts)) {
-    await visibility.removeForDeletedTenant(args);
-    return;
-  }
-  await visibility.remove(args);
-}
-
-// Confirmed-tombstone compensate: drop prefix objects (manifest, attempts,
-// raw/extracted) then list/vector/by-url. Used after a terminal CAS that
-// raced purge, and on skip-write / lost-CAS — writeAttemptSafe and stage
-// instrumentation can recreate attempt objects even when this CAS does not
-// land, and by-id is usually already gone so those objects are unreapable.
-async function compensateTombstonePrefixAndVisibility(
-  visibility: ReadingVisibility,
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  opts: CommitTerminalOpts,
-): Promise<void> {
-  // Objects first (unreapable residue), but a prefix-delete throw must not
-  // skip by-url / list / vector / ledger compensate. The caller still wraps
-  // this in defensive reconcileVisibility.
-  try {
-    await reader.deleteReadingObjects(args.keyPrefix);
-  } finally {
-    await compensateVisibility(visibility, reader, args, opts, { tombstone: true });
-  }
-}
-
-// markFailed / markDeadLettered skip recreating a failed manifest. They still
-// drop attempt residue already written under a prefix purge can no longer
-// address once by-id is gone. Throws are logged so slot release still runs.
-async function sweepTombstonePrefixDefensively(
-  reader: ReadingStore,
-  keyPrefix: string,
-): Promise<void> {
-  try {
-    await reader.deleteReadingObjects(keyPrefix);
-  } catch (error) {
-    console.error(error);
-  }
-}
-
-// Confirmed tombstone only — a live foreign attempt can also make
-// readingCanWriteAttemptArtifacts false, and must not lose its prefix.
-// `alreadyConfirmed` skips a second HEAD: fail-open on a throw would undo
-// a confirmation the caller already has (commitTerminalManifest latches
-// the same way).
-async function maybeSweepConfirmedTombstone(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  opts: { alreadyConfirmed?: boolean } = {},
-): Promise<void> {
-  if (opts.alreadyConfirmed || (await confirmedPurgeTombstone(reader, args.id))) {
-    await sweepTombstonePrefixDefensively(reader, args.keyPrefix);
-  }
-}
-
-// Drop the by-url pointer only while it still names this reading. A slot
-// already claimed by a later submit is left alone. R2 has no conditional
-// delete, so the same check-then-delete race purge accepts applies here.
-async function releaseByUrlIfOwned(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<void> {
-  let stored: Awaited<ReturnType<ReadingStore["readByUrlPointer"]>> = null;
-  try {
-    stored = await reader.readByUrlPointer(args.urlHash);
-  } catch (err) {
-    console.error(err);
-    return;
-  }
-  if (!stored || stored.id !== args.id) return;
-  await reader.deleteByUrlPointer(args.urlHash);
-}
-
-// Unconfirmed is not confirmed: a lookup throw falls back to the gated removal
-// rather than the fence. Deleting a vector we should have kept is the worse of
-// the two errors, and a wipe that is genuinely running re-derives this reading's
-// id from R2 on its own pass anyway.
-async function tenantConfirmedDeletingForOpts(opts: CommitTerminalOpts): Promise<boolean> {
-  if (!opts.tenantConfirmedDeleting) return false;
-  try {
-    return await opts.tenantConfirmedDeleting();
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
-}
-
-async function tenantStillAllowsVisibility(opts: CommitTerminalOpts): Promise<boolean> {
-  if (!opts.tenantAllowsVisibility) return true;
-  try {
-    return await opts.tenantAllowsVisibility();
-  } catch (error) {
-    // After a terminal CAS, RateLimitedError retry cannot publish: the ready
-    // (or failed) manifest already cleared active_attempt, so
-    // readingCanWriteAttemptArtifacts is false on redelivery. A lookup throw
-    // is not confirmed inactive — fail-open (allow publish / keep).
-    console.error(error);
-    return true;
-  }
-}
-
-// Confirmed purge tombstone, latched for one commitTerminalManifest call.
-// Lookup throw → not confirmed, fail-open (allow publish / keep), same as
-// tenantStillAllowsVisibility after a terminal CAS — unless a HEAD in this
-// call already confirmed the tombstone. That confirmation must stick: a
-// later throw must not fail-open after skip-markLive and upsert a vector
-// with no live ledger row.
-function purgeTombstoneAllows(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): () => Promise<boolean> {
-  let confirmed = false;
-  return async () => {
-    try {
-      if (await reader.hasPurgeTombstone(args.id)) confirmed = true;
-    } catch (error) {
-      console.error(error);
-    }
-    return !confirmed;
-  };
-}
-
-// Fail-open when the worker has no D1 binding (unit tests that stub Env).
-const TENANT_STATUS_LOOKUP_URL = "d1://control-plane/users.status";
-
-async function lookupTenantActive(env: Env, tenantId: string): Promise<boolean> {
-  if (!env.CONTROL_PLANE) return true;
-  return tenantIsActive(fromD1(env.CONTROL_PLANE), tenantId);
+async function lookupTenantActive(io: AttemptIo, tenantId: string): Promise<boolean> {
+  return tenantIsActive(io.controlPlane, tenantId);
 }
 
 // Pre-spend only. Confirmed deleting/missing → false (skip). Lookup failure →
 // RateLimitedError so dispatchQueueMessage retries while extract/embed can
 // still do useful work.
-async function tenantAllowsSpend(env: Env, tenantId: string): Promise<boolean> {
+async function tenantAllowsSpend(io: AttemptIo, tenantId: string): Promise<boolean> {
   try {
-    return await lookupTenantActive(env, tenantId);
+    return await lookupTenantActive(io, tenantId);
   } catch (error) {
     console.error(error);
     if (error instanceof RateLimitedError) throw error;
@@ -1435,176 +932,29 @@ async function tenantAllowsSpend(env: Env, tenantId: string): Promise<boolean> {
   }
 }
 
-// Post-CAS and DLQ mark path. Confirmed deleting/missing → false. Lookup
-// throw → true (fail-open): the DLQ never retries, and a post-CAS retry
-// cannot republish.
-async function tenantConfirmedAllowsVisibility(env: Env, tenantId: string): Promise<boolean> {
+// The DLQ mark path, its only caller: publication decides eligibility inside
+// its own transaction now. Confirmed deleting/missing → false. Lookup throw →
+// true (fail-open), because the DLQ never retries.
+async function tenantConfirmedAllowsVisibility(io: AttemptIo, tenantId: string): Promise<boolean> {
   try {
-    return await lookupTenantActive(env, tenantId);
+    return await lookupTenantActive(io, tenantId);
   } catch (error) {
     console.error(error);
     return true;
   }
 }
 
-// Confirmed `deleting` only. Fail-closed for the fence: no D1 binding (unit
-// tests that stub Env) means "not confirmed", so the caller keeps the ordinary
-// ownership gates.
-async function tenantConfirmedDeleting(env: Env, tenantId: string): Promise<boolean> {
-  if (!env.CONTROL_PLANE) return false;
-  return tenantIsDeleting(fromD1(env.CONTROL_PLANE), tenantId);
-}
-
-async function terminalWriteState(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  opts: {
-    claimMissingPointer: boolean;
-    allowLastAttempt?: boolean;
-    tombstoneAllows?: () => Promise<boolean>;
-  },
-): Promise<TerminalWriteState> {
-  const stored = await reader.readManifestWithEtag(args.keyPrefix);
-  const manifest = stored?.manifest ?? null;
-  // A missing manifest is writable only while the reading still exists (a
-  // liveness witness survives); after a purge nothing may be recreated. See
-  // missingManifestStillLive.
-  const missingButLive =
-    manifest === null && (await missingManifestStillLive(reader, args));
-  const owner = attemptOwnership(manifest, args);
-  const activeAttemptMatches =
-    owner.isActive || owner.isLegacyPending || (opts.allowLastAttempt === true && owner.isLast);
-  const activeAttemptConflict = owner.hasConflict;
-  let ownsUrl = false;
-  let ownerAllowsVisibility = false;
-  const existing = await reader.readByUrlPointer(args.urlHash);
-  if (existing) {
-    ownsUrl = existing.id === args.id && existing.key_prefix === args.keyPrefix;
-    ownerAllowsVisibility = ownsUrl;
-  } else if (opts.claimMissingPointer && activeAttemptMatches) {
-    // Do not reclaim a slot purge already released. A confirmed tombstone
-    // here latches for the rest of the commit so a later throw cannot
-    // fail-open into writeByUrlPointer.
-    const tombstoneBlocksClaim =
-      opts.tombstoneAllows !== undefined && !(await opts.tombstoneAllows());
-    if (!tombstoneBlocksClaim) {
-      try {
-        await reader.writeByUrlPointer(
-          args.urlHash,
-          { id: args.id, key_prefix: args.keyPrefix },
-          { ifNotExists: true },
-        );
-        ownsUrl = true;
-        ownerAllowsVisibility = true;
-      } catch (err) {
-        if (!(err instanceof PointerExistsError)) throw err;
-        const claimed = await reader.readByUrlPointer(args.urlHash);
-        ownsUrl = claimed?.id === args.id && claimed.key_prefix === args.keyPrefix;
-        ownerAllowsVisibility = ownsUrl;
-      }
-    }
-  } else {
-    ownerAllowsVisibility = true;
-  }
-
-  return {
-    canWriteManifest: activeAttemptMatches || missingButLive,
-    canPublishVisibility: ownerAllowsVisibility && activeAttemptMatches,
-    canRemoveVisibility: !activeAttemptConflict && (activeAttemptMatches || !manifest),
-    ...(stored ? { manifestEtag: stored.etag } : {}),
-  };
-}
-
-// The liveness witnesses consulted when a manifest is ABSENT: the by-id
-// pointer (DELETE /api/readings/:id removes it last, precisely so it outlives
-// everything else) and the reading's own list row (a stale legacy job whose
-// manifest was never written still owns a row + vector it must be allowed to
-// write-then-clean — see the stale-job tests). When neither survives, the
-// reading was purged, and recreating any object for it would resurrect
-// deleted data — the same absent-manifest rule markDeadLettered applies to
-// the DLQ.
-async function missingManifestStillLive(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<boolean> {
-  if ((await reader.readByIdPointer(args.id)) !== null) return true;
-  return (await reader.findListIndexItem(args.id)) !== null;
-}
-
-// Confirmed tombstone only. A throwing HEAD is not evidence of purge —
-// fail-open so a transient R2 error does not drop a live reading (or, on
-// the DLQ, strand a pending one).
-async function confirmedPurgeTombstone(
-  reader: ReadingStore,
-  id: string,
-): Promise<boolean> {
-  try {
-    return await reader.hasPurgeTombstone(id);
-  } catch (e) {
-    console.error(e);
-    return false;
-  }
-}
-
-// Confirmed tombstone, or a CONFIRMED-absent manifest with no surviving
-// liveness witness. A throwing tombstone or manifest read is never treated
-// as absence. Distinguishes tombstone from absent so a later HEAD throw
-// cannot undo a confirmation and skip the prefix sweep.
-async function readingWasPurged(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-): Promise<"tombstone" | "absent" | false> {
-  if (await confirmedPurgeTombstone(reader, args.id)) return "tombstone";
-  let manifestAbsent = false;
-  try {
-    manifestAbsent = (await reader.readManifest(args.keyPrefix)) === null;
-  } catch (e) {
-    console.error(e);
-  }
-  if (!manifestAbsent) return false;
-  return (await missingManifestStillLive(reader, args)) ? false : "absent";
-}
-
+// May this attempt still write for the reading? Only while it is the active
+// attempt (or the reading is a legacy pending one with none). No row means the
+// reading was purged.
 async function readingCanWriteAttemptArtifacts(
-  reader: ReadingStore,
+  io: AttemptIo,
   args: ProcessReadingArgs,
 ): Promise<boolean> {
-  const manifest = await reader.readManifest(args.keyPrefix);
-  if (!manifest) {
-    // The manifest vanished (or never existed): writable only while the
-    // reading still exists at all — see missingManifestStillLive.
-    return missingManifestStillLive(reader, args);
-  }
+  const manifest = await io.readManifest();
+  if (!manifest) return false;
   const owner = attemptOwnership(manifest, args);
   return owner.isActive || owner.isLegacyPending;
-}
-
-async function writeManifestForTerminalState(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  manifest: Manifest,
-  state: TerminalWriteState,
-): Promise<boolean> {
-  if (!state.canWriteManifest) return false;
-  if (state.manifestEtag) {
-    return reader.replaceManifestIfCurrent(args.keyPrefix, state.manifestEtag, manifest);
-  }
-  await reader.writeManifest(args.keyPrefix, manifest);
-  return true;
-}
-
-async function writeTerminalManifestDefensively(
-  reader: ReadingStore,
-  args: ProcessReadingArgs,
-  manifest: Manifest,
-  state: TerminalWriteState,
-): Promise<boolean> {
-  try {
-    return await writeManifestForTerminalState(reader, args, manifest, state);
-  } catch (writeErr) {
-    console.error(writeErr);
-    return false;
-  }
 }
 
 export function newAttemptId(services: Services): string {
@@ -1646,8 +996,7 @@ function newProcessingAttempt(args: ProcessReadingArgs, services: Services): Pro
 
 async function runStage<T>(
   attempt: ProcessingAttempt,
-  reader: ReadingStore,
-  keyPrefix: string,
+  io: AttemptIo,
   services: Services,
   stage: ProcessingStage,
   fn: () => Promise<T>,
@@ -1655,11 +1004,11 @@ async function runStage<T>(
   const startedAt = services.now();
   attempt.stage = stage;
   attempt.events.push({ stage, status: "started", at: startedAt });
-  // We deliberately don't write the attempt here — it doubles R2 PUTs per
+  // We deliberately don't write the attempt here — it doubles the writes per
   // stage. Both the started and the succeeded/failed event are flushed at the
   // end of the stage in a single put, so diagnostic readers still see both
   // entries per stage. The trade-off is reduced visibility while a stage is
-  // in-flight; for that, fall back to the manifest's active_attempt.stage.
+  // in-flight; for that, fall back to the reading's active_attempt.stage.
   try {
     const out = await fn();
     const finishedAt = services.now();
@@ -1670,7 +1019,7 @@ async function runStage<T>(
       at: finishedAt,
       ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
     });
-    await writeAttemptSafe(reader, keyPrefix, attempt);
+    await writeAttemptSafe(io, attempt);
     return out;
   } catch (e) {
     const failedAt = services.now();
@@ -1682,18 +1031,14 @@ async function runStage<T>(
       ...(durationMs === undefined ? {} : { duration_ms: durationMs }),
       error: errorFromUnknown(e, stage, failedAt),
     });
-    await writeAttemptSafe(reader, keyPrefix, attempt);
+    await writeAttemptSafe(io, attempt);
     throw e;
   }
 }
 
-async function writeAttemptSafe(
-  reader: ReadingStore,
-  keyPrefix: string,
-  attempt: ProcessingAttempt,
-): Promise<void> {
+async function writeAttemptSafe(io: AttemptIo, attempt: ProcessingAttempt): Promise<void> {
   try {
-    await reader.writeAttempt(keyPrefix, attempt);
+    await io.writeAttempt(attempt);
   } catch (e) {
     console.error(e);
   }
@@ -1750,16 +1095,6 @@ function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const n = Number(value);
   return Number.isFinite(n) && Number.isInteger(n) ? n : fallback;
-}
-
-function extToken(contentType: string): string {
-  const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
-  if (major === "text/html" || major === "application/xhtml+xml") return "html";
-  if (major === "text/markdown") return "md";
-  if (major === "application/pdf") return "pdf";
-  if (major === "application/json") return "json";
-  if (major.startsWith("text/")) return "txt";
-  return "bin";
 }
 
 export const EMBED_MAX_CHARS = 8000;

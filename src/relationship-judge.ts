@@ -2,7 +2,10 @@
  * attempt or writes a failed manifest. Paid dispatch uses the same leases and
  * spend admission as reading processing; the latest-job checkpoint prevents
  * another delivery repeating an uncertain charge. Only relationship fields and
- * an existing list row's novelty verdict are published, guarded by manifest CAS.
+ * the novelty verdict are published, in one compare-and-replace under the
+ * reading's row lock. A reading's version token is the hash of the manifest its
+ * rows project, which is what the R2 etag used to be; the D1 checkpoint keeps
+ * calling it an etag.
  * Running predicates overlay applyStaleness: a zombie (TTL-expired) attempt is
  * not running. In-TTL running defers with DeferPaidWorkError before any D1
  * checkpoint so consumeRelationshipRefresh re-enqueues the same identity.
@@ -11,12 +14,15 @@ import type { Env } from "./index";
 import { sha256Hex, type Services } from "./services";
 import type { RefreshEnvelope } from "./relationship-refresh";
 import { activeRefreshFounder } from "./relationship-refresh";
-import { fromD1 } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readRefreshJob, markRefreshDispatched, saveRefreshResult, markRefreshRateLimited, type SavedRefreshResult } from "./control-plane/relationship-refresh-jobs";
-import { readingStoreFor } from "./modules/stores/reading-store";
-import { similarityStoreFor } from "./modules/stores/similarity-store";
+import { withSqlSession, type Sql } from "./modules/db/sql";
+import type { TenantContext } from "./control-plane/ids";
+import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
+import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
+import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { buildReportReading, diffNeighbourhood, resolveJudgedAt, REFRESH_CANDIDATE_TOP_K } from "./modules/refresh-neighbours";
 import { judgeRelationships } from "./modules/relationship-judgement";
 import { buildRelationshipJudgementInput, mergeRelationshipJudgement } from "./modules/relationship-judgement/refresh";
@@ -29,9 +35,22 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   if (env.RELATIONSHIP_REFRESH !== "1") return;
   const tenant = await activeRefreshFounder(env);
   if (!tenant || tenant.tenantId !== job.tenantId) return;
+  await withSqlSession(env, (sql) => judgeWith(sql, tenant, job, env, services));
+}
+
+async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: Env, services: Services): Promise<void> {
   const runAt = new Date(job.runAt).toISOString();
-  const db = fromD1(env.CONTROL_PLANE);
-  const store = readingStoreFor(env.READINGS_BUCKET, tenant, env);
+  const db = fromSql(sql);
+  const rows = pgReadingStoreFor(sql, tenant);
+  const writer = pgReadingWriterFor(sql, tenant);
+  const versionOf = (manifest: Manifest) => sha256Hex(JSON.stringify(manifest));
+  const store = {
+    findListIndexItem: async (id: string) => (await rows.relationshipTargets([id]))[0] ?? null,
+    readManifestWithEtag: async (id: string) => {
+      const found = await rows.loadReadingById(id);
+      return found ? { manifest: found.manifest, etag: await versionOf(found.manifest) } : null;
+    },
+  };
   const ttl = pendingTtlSeconds(env.PENDING_TTL_SECONDS);
   const running = (manifest: Manifest) => effectivelyRunning(manifest, ttl, services.now());
   const deferRunning = (reason: "target_running" | "neighbour_running", neighbourId?: string): never => {
@@ -52,7 +71,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   const liveTarget = async (deferIfRunning = false) => {
     const row = await store.findListIndexItem(job.readingId);
     if (!row || row.status !== "ready" || row.key_prefix !== job.keyPrefix) return null;
-    const stored = await store.readManifestWithEtag(job.keyPrefix);
+    const stored = await store.readManifestWithEtag(job.readingId);
     if (!stored || stored.manifest.id !== job.readingId || stored.manifest.status !== "ready") return null;
     if (running(stored.manifest)) {
       if (deferIfRunning) deferRunning("target_running");
@@ -64,7 +83,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
     for (const version of versions) {
       const row = await store.findListIndexItem(version.id);
       if (!row || row.status !== "ready" || row.key_prefix !== version.key_prefix) return false;
-      const stored = await store.readManifestWithEtag(row.key_prefix);
+      const stored = await store.readManifestWithEtag(version.id);
       if (!stored || stored.manifest.id !== version.id || stored.manifest.status !== "ready") return false;
       if (running(stored.manifest)) {
         if (deferIfRunning) deferRunning("neighbour_running", version.id);
@@ -84,10 +103,10 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   if (checkpoint && checkpoint.run_at > runAt) return;
 
   const stillCurrent = async (etag: string, deferIfRunning = false) =>
-    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId && (await liveTarget(deferIfRunning))?.etag === etag;
+    env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env, db))?.tenantId === tenant.tenantId && (await liveTarget(deferIfRunning))?.etag === etag;
   const publish = async (saved: SavedRefreshResult, sourceEtag: string) => {
     const current = await liveTarget();
-    if (!current || (await activeRefreshFounder(env))?.tenantId !== tenant.tenantId) return;
+    if (!current || (await activeRefreshFounder(env, db))?.tenantId !== tenant.tenantId) return;
     // The hash identifies our exact committed manifest after a crash, without
     // retaining a copy of the summary in the D1 checkpoint.
     if (await sha256Hex(JSON.stringify(current.manifest)) !== saved.manifest_hash) {
@@ -95,12 +114,10 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
       if (current.etag !== sourceEtag) return;
       const candidate = ManifestSchema.parse({ ...current.manifest, ...saved.patch });
       if (await sha256Hex(JSON.stringify(candidate)) !== saved.manifest_hash) throw new Error("invalid refresh checkpoint identity");
-      if (!await store.replaceManifestIfCurrent(job.keyPrefix, sourceEtag, candidate)) return;
+      if (!await writer.replacePublishedIf(job.readingId, async m => await versionOf(m) === sourceEtag, candidate)) return;
     }
-    const committed = await liveTarget();
-    if (!committed || await sha256Hex(JSON.stringify(committed.manifest)) !== saved.manifest_hash) return;
-    await store.patchListNoveltyIf(job.readingId, saved.patch.novelty_verdict, async row =>
-      row.status === "ready" && row.key_prefix === job.keyPrefix && await stillCurrent(committed.etag));
+    // The list row is the reading row, so the novelty verdict landed with the
+    // relationships: there is no second write to reconcile.
   };
   if (checkpoint?.run_at === runAt) {
     if (checkpoint.result) { await publish(checkpoint.result, checkpoint.source_etag); return; }
@@ -112,8 +129,8 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
     logNoop("already_computed");
     return;
   }
-  const list = (await store.readListIndex())?.items ?? [];
-  const matches = await similarityStoreFor(env.READINGS_INDEX, tenant, env).queryByVectorId(job.readingId, REFRESH_CANDIDATE_TOP_K);
+  const list = await rows.allListItems();
+  const matches = await pgSimilarityStoreFor(sql, tenant).queryByVectorId(job.readingId, REFRESH_CANDIDATE_TOP_K);
   if (matches === null) {
     logNoop("not_ready");
     return;
@@ -133,7 +150,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
       logNoop("not_ready", { neighbourId: neighbour.id });
       return;
     }
-    const stored = await store.readManifestWithEtag(row.key_prefix);
+    const stored = await store.readManifestWithEtag(neighbour.id);
     if (!stored || stored.manifest.id !== neighbour.id || stored.manifest.status !== "ready") {
       logNoop("not_ready", { neighbourId: neighbour.id });
       return;
@@ -154,7 +171,7 @@ export async function processRelationshipJudge(job: JudgeJob, env: Env, services
   if (!await stillCurrent(original.etag, true)) {
     // Gate/founder loss soft-acks; etag drift is a terminal noop. In-TTL
     // running already threw from liveTarget(true) inside stillCurrent.
-    if (env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env))?.tenantId === tenant.tenantId) {
+    if (env.RELATIONSHIP_REFRESH === "1" && (await activeRefreshFounder(env, db))?.tenantId === tenant.tenantId) {
       logNoop("etag_changed");
     }
     return;

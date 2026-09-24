@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { importBookmarksCommand, type ImportBookmarksDeps } from "../../../scripts/ops-lib/commands/import-bookmarks";
 import { importRedditCommand, type ImportRedditDeps } from "../../../scripts/ops-lib/commands/import-reddit";
 import { importYoutubeCommand, type ImportYoutubeDeps } from "../../../scripts/ops-lib/commands/import-youtube";
-import { readingListCheckCommand, type ReadingListCheckDeps } from "../../../scripts/ops-lib/commands/reading-list-check";
 import {
   readingListProcessCommand,
   type ReadingListProcessDeps,
@@ -220,43 +219,9 @@ describe("ops import youtube", () => {
   });
 });
 
-describe("ops reading-list check", () => {
-  const ENTRIES = JSON.stringify([{ url: "https://a.example/one" }, { url: "https://a.example/two" }]);
-  const LIST_INDEX = JSON.stringify({
-    items: [{ id: "rd_1", url: "https://a.example/one", status: "ready", key_prefix: "readings/rd_1", created_at: "2026-08-01T00:00:00Z" }],
-  });
-
-  function makeDeps() {
-    const { io: cio, out, err } = io();
-    const state = { writes: [] as string[] };
-    const deps: ReadingListCheckDeps = {
-      io: cio,
-      readFile: async () => ENTRIES,
-      writeFileAtomic: async (p) => {
-        state.writes.push(p);
-      },
-      fetchListIndex: async () => LIST_INDEX,
-    };
-    return { deps, out, err, state };
-  }
-
-  it("plan mode reads the corpus but writes nothing", async () => {
-    const { deps, out, state } = makeDeps();
-    const code = await readingListCheckCommand.run(["--file", "list.json"], deps);
-    expect(code).toBe(0);
-    expect(state.writes).toHaveLength(0);
-    const summary = JSON.parse(out.join("\n"));
-    expect(summary.executed).toBe(false);
-    expect(summary.corpus_urls).toBe(1);
-  });
-
-  it("--execute writes the annotated list", async () => {
-    const { deps, state } = makeDeps();
-    const code = await readingListCheckCommand.run(["--file", "list.json", "--execute"], deps);
-    expect(code).toBe(0);
-    expect(state.writes).toHaveLength(1);
-  });
-});
+// `ops reading-list check` is covered end to end against real rows in
+// test/unit/scripts/ops-corpus-pg.test.ts: its corpus lookup is a database
+// read now, not a wrangler shim worth stubbing here.
 
 describe("ops reading-list process", () => {
   const ENTRIES = JSON.stringify([

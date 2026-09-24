@@ -8,10 +8,12 @@ credential selection, retry policy, and incremental scope in detail.
 
 A full scan measures every ready reading; the paid passes judge only eligible
 readings and pairs. It does not re-extract content, replace embeddings, or
-re-summarize readings. Connection refresh writes `connections`,
-`novelty_verdict`, `connections_computed_at`, and
-`connections_neighbourhood_ids`, then merges verdicts into the list. Tensions
-write directional entries and remembered pair judgements on both manifests.
+re-summarize readings. Connection refresh writes `connections`, `novelty_verdict`,
+`connections_computed_at` and `connections_neighbourhood_ids` — the
+relationship rows and the revision's summary flags, in one transaction, so the
+verdict lands with the relationships it was judged beside. Tensions write
+directional entries and remembered pair judgements to both readings, also in
+one transaction.
 
 ## Prepare and estimate
 
@@ -48,7 +50,11 @@ prd() (
 wr() { node node_modules/wrangler/wrangler-dist/cli.js "$@"; }
 ```
 
-`prd` supplies R2, Vectorize, and provider credentials to corpus commands.
+`prd` supplies the database connection string, R2, and provider credentials to
+corpus commands. Each refresh pass resolves its database from `--bucket`
+(`scripts/pg-lib/operator-db.ts`), so a credentials file that exports
+`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` is what points them at
+production.
 `wr` uses the operator's existing Wrangler authentication for queue control;
 a corpus token may lack Queue permissions. The direct Wrangler entrypoint also
 uses the same wrangler-dist entrypoint as `scripts/lib/wrangler-cli.ts`.
@@ -57,8 +63,8 @@ Generate a read-only full report and plan both paid passes:
 
 ```zsh
 prd npm run ops -- corpus refresh-neighbours \
-  --tenant "$TENANT" --bucket reading-lite --vectorize reading-lite \
-  --full --via direct --out "$RUN_DIR/refresh-report-preparation.json" \
+  --tenant "$TENANT" --bucket reading-lite \
+  --full --out "$RUN_DIR/refresh-report-preparation.json" \
   2>&1 | tee "$RUN_DIR/neighbours-plan.log"
 
 prd npm run ops -- corpus refresh-connections \
@@ -147,52 +153,49 @@ block below: resume only queues recorded as enabled in
 `$RUN_DIR/queue-delivery-before.json`. Do not resume a queue that was already
 paused, and do not resume if that capture is missing or incomplete.
 
-Capture the live `index/list.json` and every ready manifest before writes,
+Capture the live corpus listing and every ready reading before writes,
 including verdicts, computation timestamps, neighbourhood IDs, and tension
-history. Retain failed list rows as well to verify they remain unchanged.
-Use the read-only R2 inventory client with the verified tenant prefix; the
-following function saves private snapshots and refuses pending readings or a
-list that changes during capture. It does not replace the drain checks above.
+history. Retain failed rows as well to verify they remain unchanged.
+The following function reads through the same store the passes read, saves
+private snapshots, and refuses pending readings or a listing that changes
+during capture. It does not replace the drain checks above.
 
 ```zsh
 capture() {
   prd node --import tsx --input-type=module - "$1" <<'JS'
-import { loadDotVars } from './scripts/lib/dotvars.ts';
-import { r2InventoryClientFromVars, refreshS3RequestDeps } from './scripts/lib/cf-clients.ts';
-import { ManifestSchema } from './src/schemas/manifest.ts';
+import { requireOperatorTenant } from './scripts/ops-lib/tenant-flag.ts';
+import { resolveOperatorDatabaseUrl, withOperatorSql } from './scripts/pg-lib/operator-db.ts';
+import { listItems, operatorReadings, requireTenantRows } from './scripts/pg-lib/operator-corpus.ts';
 import { writeFileSync } from 'node:fs';
 const label = process.argv[2];
 if (!/^[a-z0-9-]+$/.test(label ?? '')) throw new Error('capture label required');
-const vars = { ...loadDotVars('.dev.vars'), ...loadDotVars('.prd.vars'),
-  ...loadDotVars('.corpus.vars'), ...process.env };
 if (!/^usr_[a-zA-Z0-9-]+$/.test(process.env.TENANT ?? '')) throw new Error('invalid tenant');
-const client = r2InventoryClientFromVars(vars, 'reading-lite', fetch, refreshS3RequestDeps());
-const root = `u/${process.env.TENANT}/`;
-const raw = await client.get(root + 'index/list.json');
-if (raw === null) throw new Error('list missing');
-const items = JSON.parse(raw).items;
-if (items.some(x => x.status === 'pending')) throw new Error('pending readings');
-const rows = items.filter(x => x.status === 'ready');
-const manifests = [];
-let next = 0;
-await Promise.all(Array.from({ length: 4 }, async () => {
-  while (next < rows.length) {
-    const row = rows[next++];
-    const body = await client.get(`${root}${row.key_prefix}/manifest.json`);
-    if (body === null) throw new Error(`missing ${row.id}`);
-    const manifest = JSON.parse(body);
-    ManifestSchema.parse(manifest);
-    if (manifest.id !== row.id || manifest.status !== 'ready') throw new Error(`changed ${row.id}`);
-    manifests.push(manifest);
+const tenant = requireTenantRows(requireOperatorTenant(process.env.TENANT));
+const { url } = resolveOperatorDatabaseUrl({ bucket: 'reading-lite' });
+await withOperatorSql(url, async (sql) => {
+  const store = operatorReadings(sql, tenant);
+  const items = await listItems(store);
+  if (items.some(x => x.status === 'pending')) throw new Error('pending readings');
+  const rows = items.filter(x => x.status === 'ready');
+  const manifests = [];
+  for (const row of rows) {
+    const found = await store.loadReadingById(row.id);
+    if (!found) throw new Error(`missing ${row.id}`);
+    if (found.manifest.status !== 'ready') throw new Error(`changed ${row.id}`);
+    manifests.push(found.manifest);
   }
-}));
-if (raw !== await client.get(root + 'index/list.json')) throw new Error('list changed during capture');
-manifests.sort((a, b) => a.id.localeCompare(b.id));
-const dir = process.env.RUN_DIR;
-writeFileSync(`${dir}/list-${label}.json`, raw, { mode: 0o600, flag: 'wx' });
-writeFileSync(`${dir}/manifests-${label}.json`, JSON.stringify(manifests, null, 2),
-  { mode: 0o600, flag: 'wx' });
-console.log(`Captured ${items.length} rows and ${manifests.length} ready manifests.`);
+  const after = await listItems(store);
+  if (JSON.stringify(after) !== JSON.stringify(items)) {
+    throw new Error('listing changed during capture');
+  }
+  manifests.sort((a, b) => a.id.localeCompare(b.id));
+  const dir = process.env.RUN_DIR;
+  writeFileSync(`${dir}/list-${label}.json`, JSON.stringify({ items }, null, 2),
+    { mode: 0o600, flag: 'wx' });
+  writeFileSync(`${dir}/manifests-${label}.json`, JSON.stringify(manifests, null, 2),
+    { mode: 0o600, flag: 'wx' });
+  console.log(`Captured ${items.length} rows and ${manifests.length} ready readings.`);
+});
 JS
 }
 capture before
@@ -208,8 +211,8 @@ report rather than reusing the preparation report:
 
 ```zsh
 prd npm run ops -- corpus refresh-neighbours \
-  --tenant "$TENANT" --bucket reading-lite --vectorize reading-lite \
-  --full --via direct --execute --sole-writer \
+  --tenant "$TENANT" --bucket reading-lite \
+  --full --execute --sole-writer \
   --out "$RUN_DIR/refresh-report.json" \
   2>&1 | tee "$RUN_DIR/neighbours-execute.log"
 ```
@@ -271,8 +274,8 @@ prd npm run ops -- corpus refresh-tensions \
   --tenant "$TENANT" --bucket reading-lite --report "$RUN_DIR/refresh-report.json" \
   2>&1 | tee "$RUN_DIR/tensions-acceptance.log"
 prd npm run ops -- corpus refresh-neighbours \
-  --tenant "$TENANT" --bucket reading-lite --vectorize reading-lite \
-  --full --via direct --out "$RUN_DIR/refresh-report-after.json" \
+  --tenant "$TENANT" --bucket reading-lite \
+  --full --out "$RUN_DIR/refresh-report-after.json" \
   2>&1 | tee "$RUN_DIR/neighbours-after.log"
 ```
 
@@ -286,8 +289,9 @@ Compare the captured data by reading ID:
 - Corpus/list membership and unrelated fields remain unchanged, including
   summaries, source metadata, status, and ingest/attempt timestamps.
 - Refreshed connections and neighbourhood IDs stay within the original report's
-  allowed neighbours; list verdicts match manifests.
-- Both manifests remember each tension judgement at the same timestamp.
+  allowed neighbours. The verdict is a column of the judged reading, so it
+  cannot disagree with the relationships written beside it.
+- Both readings remember each tension judgement at the same timestamp.
   Positive entries have inverse kinds and matching reasons/computation times;
   `none` has no tension entry on either side.
 - Record verdict transitions, separating first judgements from previously judged

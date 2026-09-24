@@ -16,8 +16,11 @@ import {
 import { parseTenantId, parseTokenId, parseUserId } from "../../../src/control-plane/ids";
 import { createApiTokenPrincipal, createSessionPrincipal } from "../../../src/control-plane/principal";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
-import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { buildKeyPrefix } from "../../../src/modules/stores/layout";
+import { useControlPlane } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
@@ -153,7 +156,7 @@ const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 
 async function seededFounder() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   const founder = await bootstrapFounder(db, {
     email: "founder@example.com",
     legacyToken: "test-token",
@@ -163,7 +166,7 @@ async function seededFounder() {
     newUserId: () => TENANT,
     newTokenId: () => TOKEN,
   });
-  return { sqlite, db, founder };
+  return { raw, db, founder };
 }
 
 function founderEnvelope(
@@ -178,27 +181,24 @@ function founderEnvelope(
   };
 }
 
-function insertSession(
-  sqlite: ReturnType<typeof openMigratedControlPlane>["sqlite"],
+async function insertSession(
+  raw: ControlPlaneDb,
   input: { id: string; userId: string; nowMs: number },
-): void {
-  sqlite
-    .prepare(
-      `INSERT INTO sessions (
+): Promise<void> {
+  await raw.run(
+    `INSERT INTO sessions (
          id, user_id, secret_hmac, hash_key_version,
-         created_at_ms, authenticated_at_ms, last_seen_at_ms,
-         idle_expires_at_ms, absolute_expires_at_ms, created_from_claim_id
+         created_at, authenticated_at, last_seen_at,
+         idle_expires_at, absolute_expires_at, created_from_claim_id
        ) VALUES (?, ?, 'test-session-hmac', 1, ?, ?, ?, ?, ?, 'clm_envelope')`,
-    )
-    .run(
-      input.id,
-      input.userId,
-      input.nowMs,
-      input.nowMs,
-      input.nowMs,
-      input.nowMs + SESSION_IDLE_TTL_MS,
-      input.nowMs + SESSION_ABSOLUTE_TTL_MS,
-    );
+    input.id,
+    input.userId,
+    toTimestamp(input.nowMs),
+    toTimestamp(input.nowMs),
+    toTimestamp(input.nowMs),
+    toTimestamp(input.nowMs + SESSION_IDLE_TTL_MS),
+    toTimestamp(input.nowMs + SESSION_ABSOLUTE_TTL_MS),
+  );
 }
 
 describe("admitProcessReadingEnvelope", () => {
@@ -211,7 +211,7 @@ describe("admitProcessReadingEnvelope", () => {
   });
 
   it("rejects a missing or inactive tenant before processing", async () => {
-    const { sqlite, db } = await seededFounder();
+    const { raw, db } = await seededFounder();
     const missing = founderEnvelope({
       tenant: { tenantId: parseTenantId("usr_11111111-1111-4111-8111-111111111111")! },
     });
@@ -220,7 +220,7 @@ describe("admitProcessReadingEnvelope", () => {
       reason: "tenant_inactive",
     });
 
-    sqlite.prepare("UPDATE users SET status = 'suspended' WHERE id = ?").run(TENANT);
+    await raw.run("UPDATE users SET status = 'suspended' WHERE id = ?", TENANT);
     await expect(admitProcessReadingEnvelope(db, founderEnvelope(), NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "tenant_inactive",
@@ -228,21 +228,21 @@ describe("admitProcessReadingEnvelope", () => {
   });
 
   it("rejects a revoked, expired, or write-scopeless api_token", async () => {
-    const { sqlite, db } = await seededFounder();
-    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = ?").run(NOW_MS);
+    const { raw, db } = await seededFounder();
+    await raw.run("UPDATE api_tokens SET revoked_at = ?", toTimestamp(NOW_MS));
     await expect(admitProcessReadingEnvelope(db, founderEnvelope(), NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
     });
 
-    sqlite.prepare("UPDATE api_tokens SET revoked_at_ms = NULL, expires_at_ms = ?").run(NOW_MS - 1);
+    await raw.run("UPDATE api_tokens SET revoked_at = NULL, expires_at = ?", toTimestamp(NOW_MS - 1));
     await expect(admitProcessReadingEnvelope(db, founderEnvelope(), NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
     });
 
-    sqlite.prepare("UPDATE api_tokens SET expires_at_ms = ?").run(NOW_MS + 60_000);
-    sqlite.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope = 'readings:write'").run(TOKEN);
+    await raw.run("UPDATE api_tokens SET expires_at = ?", toTimestamp(NOW_MS + 60_000));
+    await raw.run("DELETE FROM api_token_scopes WHERE token_id = ? AND scope = 'readings:write'", TOKEN);
     await expect(admitProcessReadingEnvelope(db, founderEnvelope(), NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
@@ -250,8 +250,8 @@ describe("admitProcessReadingEnvelope", () => {
   });
 
   it("admits an api_token with readings:import for an import job", async () => {
-    const { sqlite, db, founder } = await seededFounder();
-    sqlite.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:import'").run(TOKEN);
+    const { raw, db, founder } = await seededFounder();
+    await raw.run("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:import'", TOKEN);
     await expect(
       admitProcessReadingEnvelope(
         db,
@@ -279,8 +279,8 @@ describe("admitProcessReadingEnvelope", () => {
   });
 
   it("admits a live session actor for the same active tenant", async () => {
-    const { sqlite, db, founder } = await seededFounder();
-    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    const { raw, db, founder } = await seededFounder();
+    await insertSession(raw, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
     await expect(
       admitProcessReadingEnvelope(
         db,
@@ -294,31 +294,28 @@ describe("admitProcessReadingEnvelope", () => {
   });
 
   it("rejects a revoked, idle-expired, or absolute-expired session actor", async () => {
-    const { sqlite, db } = await seededFounder();
-    insertSession(sqlite, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
+    const { raw, db } = await seededFounder();
+    await insertSession(raw, { id: SESSION, userId: TENANT, nowMs: NOW_MS });
     const sessionEnvelope = founderEnvelope({
       actor: { kind: "session", credentialId: SESSION },
     });
 
-    sqlite.prepare("UPDATE sessions SET revoked_at_ms = ? WHERE id = ?").run(NOW_MS, SESSION);
+    await raw.run("UPDATE sessions SET revoked_at = ? WHERE id = ?", toTimestamp(NOW_MS), SESSION);
     await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
     });
 
-    sqlite
-      .prepare("UPDATE sessions SET revoked_at_ms = NULL, idle_expires_at_ms = ? WHERE id = ?")
-      .run(NOW_MS, SESSION);
+    await raw.run("UPDATE sessions SET revoked_at = NULL, idle_expires_at = ? WHERE id = ?", toTimestamp(NOW_MS), SESSION);
     await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
     });
 
-    sqlite
-      .prepare(
-        "UPDATE sessions SET idle_expires_at_ms = ?, absolute_expires_at_ms = ? WHERE id = ?",
-      )
-      .run(NOW_MS + SESSION_IDLE_TTL_MS, NOW_MS, SESSION);
+    await raw.run(
+      "UPDATE sessions SET idle_expires_at = ?, absolute_expires_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS + SESSION_IDLE_TTL_MS), toTimestamp(NOW_MS), SESSION,
+    );
     await expect(admitProcessReadingEnvelope(db, sessionEnvelope, NOW_MS)).resolves.toEqual({
       ok: false,
       reason: "token_unusable",
@@ -336,13 +333,13 @@ function fakeMessage(body: unknown) {
 
 function throwingDb(): ControlPlaneDb {
   const boom = async () => {
-    throw new Error("D1 must not be touched before envelope validation");
+    throw new Error("the database must not be touched before envelope validation");
   };
-  return { first: boom, all: boom, batch: boom, run: boom };
+  return { first: boom, all: boom, batch: boom, run: boom, transaction: boom };
 }
 
 describe("consumeProcessReadingMessage", () => {
-  it("acks unversioned messages with a redacted high-severity log and never touches D1 or processing", async () => {
+  it("acks unversioned messages with a redacted high-severity log and never touches the database or processing", async () => {
     const msg = fakeMessage(job());
     const process = vi.fn();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -403,8 +400,8 @@ describe("consumeProcessReadingMessage", () => {
   });
 
   it("acks an inactive-tenant envelope without processing", async () => {
-    const { sqlite, db } = await seededFounder();
-    sqlite.prepare("UPDATE users SET status = 'deleting' WHERE id = ?").run(TENANT);
+    const { raw, db } = await seededFounder();
+    await raw.run("UPDATE users SET status = 'deleting' WHERE id = ?", TENANT);
     const msg = fakeMessage(founderEnvelope());
     const process = vi.fn();
 

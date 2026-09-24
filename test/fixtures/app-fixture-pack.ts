@@ -2,7 +2,7 @@
 //
 // `app/`'s Playwright suite runs the built frontend Worker against a stub
 // backend, so it needs the fixture pack (#366) without the backend Worker, R2,
-// or D1. This module projects the pack the way `GET /api/readings/:id` does —
+// or PostgreSQL. This module projects the pack the way `GET /api/readings/:id` does —
 // through the real `applyStaleness` and `projectRelationshipTargets` — into a
 // plain JSON document that `scripts/emit-app-fixture-pack.ts` writes to
 // app/e2e/fixtures/fixture-pack.json and the stub serves verbatim.
@@ -19,12 +19,6 @@ import { projectRelationshipTargets, relationshipTargetIds } from "../../src/mod
 import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 import type { GetReadingDiagnosticsResponse, GetReadingResponse, ListIndex } from "../../src/schemas/api";
-import {
-  ByUrlPointerSchema,
-  ProcessingAttemptSchema,
-  type ByUrlPointer,
-  type ProcessingAttempt,
-} from "../../src/schemas/manifest";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID } from "./local-seed";
 
 /** Seed clock for the snapshot, and the browser clock the suite pins. */
@@ -72,9 +66,10 @@ export interface AppFixturePack {
   contents: Record<string, string>;
   /**
    * `GET /api/readings/:id/diagnostics` bodies, keyed by reading id (#373).
-   * Assembled the way src/router.ts assembles them, from the seed's pointers,
-   * objects, and attempt logs; `uploaded` is the seed clock, since local R2's
-   * upload time is whenever the seed ran.
+   * Assembled the way src/router.ts assembles them from rows: the reading is
+   * its own by-id pointer and its URL's owner, `objects` is its captured
+   * content, and `attempts` its log, newest first. `uploaded` is the seed
+   * clock, since local R2's upload time is whenever the seed ran.
    */
   diagnostics: Record<string, GetReadingDiagnosticsResponse>;
   /**
@@ -83,7 +78,7 @@ export interface AppFixturePack {
    * endpoint 404s for the rest, and so does the browser stub.
    */
   raws: Record<string, RawCapture>;
-  /** The tenant's `index/list.json`, as the list route reads it. */
+  /** The tenant's list rows, newest first, as the list route serves them. */
   list_index: ListIndex;
   /** Referenced by `attention` but never written: the removed-target card. */
   removed_target_id: string;
@@ -97,6 +92,7 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
   const raws: Record<string, RawCapture> = {};
   const fixtures: AppFixtureEntry[] = [];
   const bodyByKey = new Map(plan.objects.map((object) => [object.key, object.body]));
+  const urlOwners = new Map(plan.fixtures.filter((f) => f.ownsUrl).map((f) => [f.manifest.url_hash, f]));
   const encoder = new TextEncoder();
 
   for (const fixture of plan.fixtures) {
@@ -115,18 +111,16 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
 
     const objectsPrefix = layout.readingObjectsPrefix(fixture.keyPrefix);
     const owned = plan.objects.filter((object) => object.key.startsWith(objectsPrefix));
-    const attemptsPrefix = layout.attemptsPrefix(fixture.keyPrefix);
-    // The endpoint's final ordering (ReadingStore.listAttempts sorts its
-    // shortlist by started_at, newest first). Its 20-attempt shortlist by
-    // upload time is not modelled: no fixture has more than two attempts.
-    const attempts: ProcessingAttempt[] = owned
-      .filter((object) => object.key.startsWith(attemptsPrefix))
-      .map((object) => ProcessingAttemptSchema.parse(JSON.parse(object.body)))
-      .sort((a, b) => (a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0));
-    // Pointer verdicts as src/router.ts computes them, from the seed's own
-    // pointer objects rather than assumed healthy.
-    const byId = pointerAt(bodyByKey.get(layout.byIdKey(fixture.id)));
-    const byUrl = pointerAt(bodyByKey.get(layout.byUrlKey(fixture.manifest.url_hash)));
+    // PgReadingWriter.listAttempts orders by started_at, newest first. Its
+    // 20-attempt limit is not modelled: no fixture has more than two attempts.
+    const attempts = [...fixture.attempts].sort((a, b) =>
+      a.started_at < b.started_at ? 1 : a.started_at > b.started_at ? -1 : 0,
+    );
+    // As src/router.ts computes them: the row is its own by-id pointer, and
+    // the by-url one is whichever reading owns the URL.
+    const pointer = { id: fixture.id, key_prefix: fixture.keyPrefix };
+    const owner = urlOwners.get(fixture.manifest.url_hash);
+    const byUrl = owner === undefined ? undefined : { id: owner.id, key_prefix: owner.keyPrefix };
     const indexItem = plan.listIndex.items.find((item) => item.id === fixture.id);
     diagnostics[fixture.id] = {
       id: fixture.id,
@@ -135,14 +129,14 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
       index_item: indexItem ? applyStaleness(indexItem, PENDING_TTL_SECONDS, nowIso) : null,
       pointers: {
         by_id: {
-          exists: byId !== undefined,
-          ...(byId ? { pointer: byId } : {}),
-          matches_manifest: byId?.id === fixture.id && fixture.manifest.id === fixture.id,
+          exists: true,
+          pointer,
+          matches_manifest: fixture.manifest.id === fixture.id,
         },
         by_url: {
           exists: byUrl !== undefined,
           ...(byUrl ? { pointer: byUrl } : {}),
-          matches_manifest: byUrl?.id === fixture.manifest.id && byUrl?.key_prefix === fixture.keyPrefix,
+          matches_manifest: byUrl?.id === fixture.id && byUrl.key_prefix === fixture.keyPrefix,
         },
       },
       objects: owned.map((object) => ({
@@ -168,11 +162,6 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     list_index: plan.listIndex,
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
   };
-}
-
-/** A seeded pointer object, when the seed wrote one. */
-function pointerAt(body: string | undefined): ByUrlPointer | undefined {
-  return body === undefined ? undefined : ByUrlPointerSchema.parse(JSON.parse(body));
 }
 
 /** The file's exact bytes, so the emitter and the drift test agree. */

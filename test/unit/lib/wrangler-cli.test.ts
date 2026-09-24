@@ -55,9 +55,9 @@ describe("wrangler CLI launcher", () => {
     const viaBin = rewriteWranglerCommand("wrangler", ["whoami"]);
     expect(viaBin).toEqual(wranglerSpawnArgs(["whoami"]));
 
-    const viaNpx = rewriteWranglerCommand("npx", ["wrangler", "d1", "migrations", "apply", "reading-lite-control-dev", "--local"]);
+    const viaNpx = rewriteWranglerCommand("npx", ["wrangler", "r2", "object", "get", "reading-lite/index/list.json"]);
     expect(viaNpx).toEqual(
-      wranglerSpawnArgs(["d1", "migrations", "apply", "reading-lite-control-dev", "--local"]),
+      wranglerSpawnArgs(["r2", "object", "get", "reading-lite/index/list.json"]),
     );
 
     expect(rewriteWranglerCommand(process.execPath, ["-e", "0"])).toEqual({
@@ -77,13 +77,9 @@ describe("wrangler CLI launcher", () => {
   it("is imported by every default wrangler spawner the ops CLI uses", () => {
     const spawners = [
       "scripts/corpus-lib/wrangler-r2.ts",
-      "scripts/corpus-lib/wrangler-put.ts",
-      "scripts/check-corpus-lib/fetch-index.ts",
       "scripts/ops-lib/commands/deploy-worker.ts",
       "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",
-      "scripts/lib/founder-bootstrap.ts",
-      "scripts/dev-setup.ts",
     ];
     for (const file of spawners) {
       const src = readFileSync(path.join(process.cwd(), file), "utf8");

@@ -1,11 +1,11 @@
-// The wipe record's lease and write-once rules, tested as the D1 helper they
-// are rather than through a whole account wipe.
+// The wipe record's lease and write-once rules, tested as the helper they are
+// rather than through a whole account wipe.
 //
-// F8, restated for D1: at-least-once delivery plus cron overlap means two
-// deliveries can be live on one tenant. The lease is a version, so the loser's
-// conditional UPDATE changes zero rows — it stands down and says so instead of
+// F8: at-least-once delivery plus cron overlap means two deliveries can be
+// live on one tenant. The lease is a version, so the loser's conditional
+// UPDATE changes zero rows: it stands down and says so instead of
 // last-write-wins clobbering the winner's cursor. (The orphan guard on the
-// first insert is covered in wipe-progress-orphan.test.ts.)
+// first insert is covered in test/integration/account-wipe.test.ts.)
 
 import { describe, expect, it } from "vitest";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
@@ -18,7 +18,9 @@ import {
   WipeProgressWriter,
   type WipeProgress,
 } from "../../../src/control-plane/wipe-progress";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane } from "../../helpers/control-plane-pg";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-09-03T12:00:00.000Z");
@@ -26,7 +28,7 @@ const USER = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TENANT = parseTenantId(USER)!;
 
 async function seeded() {
-  const { db } = openMigratedControlPlane();
+  const { db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "founder@example.com",
     legacyToken: "test-token",
@@ -43,7 +45,6 @@ async function seeded() {
 async function seedProgress(db: Awaited<ReturnType<typeof seeded>>["db"], partial: Partial<WipeProgress>) {
   await new WipeProgressWriter(db, TENANT, null).write({
     ...emptyWipeProgress(NOW_MS),
-    seedCompletedAtMs: NOW_MS,
     ...partial,
   });
   const stored = await readWipeProgress(db, TENANT);
@@ -54,7 +55,7 @@ async function seedProgress(db: Awaited<ReturnType<typeof seeded>>["db"], partia
 describe("WipeProgressWriter lease", () => {
   it("lets one of two concurrent writers win the lease and tells the other", async () => {
     const { db } = await seeded();
-    const stored = await seedProgress(db, { phase: "vectors" });
+    const stored = await seedProgress(db, { phase: "rows" });
 
     // Both deliveries read the same row, so both hold the same lease version.
     const winner = new WipeProgressWriter(db, TENANT, stored);
@@ -62,7 +63,7 @@ describe("WipeProgressWriter lease", () => {
 
     await winner.write({ ...stored, phase: "objects", objectsDeleted: 7 });
     await expect(
-      loser.write({ ...stored, phase: "vectors", objectsDeleted: 0 }),
+      loser.write({ ...stored, phase: "rows", objectsDeleted: 0 }),
     ).rejects.toBeInstanceOf(AccountWipeProgressConflictError);
 
     // The winner's state stands, untouched by the loser's attempt.

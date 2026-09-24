@@ -25,7 +25,7 @@
  * Digest DLQ handling lives next to this module so it can mark the ledger
  * failed without touching reading manifests.
  */
-import { fromD1, type ControlPlaneDb } from "./control-plane/db";
+import { fromSql, type ControlPlaneDb } from "./control-plane/db";
 import {
   digestEnvelopeV1,
   logDigestEnvelopeRejected,
@@ -58,7 +58,8 @@ import {
   type DigestScheduleSettings,
 } from "./modules/digest-schedule";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
-import { readingStoreFor } from "./modules/stores/reading-store";
+import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
+import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
@@ -82,10 +83,8 @@ export function isDigestDlq(name: string): boolean {
 }
 
 export interface DigestEnv {
-  CONTROL_PLANE: D1Database;
   DIGEST_JOBS?: Queue<DigestEnvelopeV1>;
-  READINGS_BUCKET?: R2Bucket;
-  TENANT_DATA_PLANE?: string;
+  HYPERDRIVE: Hyperdrive;
   RESEND_API_KEY?: string;
   EMAIL_FROM: string;
   EMAIL_TO?: string;
@@ -113,7 +112,7 @@ export async function listEnabledDigestUsers(db: ControlPlaneDb): Promise<Enable
        JOIN users u ON u.id = s.user_id
       WHERE s.digest_cadence IN ('daily', 'weekly')
         AND u.status = 'active'
-        AND u.email_verified_at_ms IS NOT NULL
+        AND u.email_verified_at IS NOT NULL
       ORDER BY s.user_id`
   );
 }
@@ -182,7 +181,14 @@ export async function fanOutDueDigests(
     console.warn(JSON.stringify({ event: "digest_fanout_skipped", reason: "queue_unbound" }));
     return { enqueued: 0 };
   }
-  const db = fromD1(env.CONTROL_PLANE);
+  return withSqlSession(env, (sql) => fanOutWith(fromSql(sql), queue, deps));
+}
+
+async function fanOutWith(
+  db: ControlPlaneDb,
+  queue: Queue<DigestEnvelopeV1>,
+  deps: { nowMs: number },
+): Promise<{ enqueued: number }> {
   const now = new Date(deps.nowMs);
   const pendingIds = new Set(
     (await listPendingDigestDeliveries(db))
@@ -249,12 +255,28 @@ export async function fanOutDueDigests(
   return { enqueued };
 }
 
+// One session for the job: the ledger, the recipient and the library all read
+// through it, and it survives the mail send between them (see sqlSession).
 export async function processDigestJob(
   envelope: DigestEnvelopeV1,
   env: DigestEnv,
   deps: DigestJobDeps,
 ): Promise<void> {
-  const db = fromD1(env.CONTROL_PLANE);
+  const sql = sqlSessionFor(env);
+  try {
+    await processDigestJobWith(sql, envelope, env, deps);
+  } finally {
+    await sql.end();
+  }
+}
+
+async function processDigestJobWith(
+  sql: Sql,
+  envelope: DigestEnvelopeV1,
+  env: DigestEnv,
+  deps: DigestJobDeps,
+): Promise<void> {
+  const db = fromSql(sql);
   const key: DigestDeliveryKey = {
     userId: envelope.userId,
     cadence: envelope.cadence,
@@ -297,13 +319,8 @@ export async function processDigestJob(
     await finalizeDigestDelivery(db, key, { status: "skipped", reason: "missing_user" }, deps.nowMs);
     return;
   }
-  if (!env.READINGS_BUCKET) {
-    throw new Error("READINGS_BUCKET is not configured");
-  }
-
-  const reader = readingStoreFor(env.READINGS_BUCKET, { tenantId }, env);
-  const listIndex = await reader.readListIndex();
-  const items = selectDigestReadings(listIndex?.items ?? [], window);
+  const library = await pgReadingStoreFor(sql, { tenantId }).allListItems();
+  const items = selectDigestReadings(library, window);
   if (items.length === 0) {
     await finalizeDigestDelivery(
       db,
@@ -330,7 +347,7 @@ export async function processDigestJob(
         cadence: envelope.cadence,
         items,
         webBaseUrl: env.WEB_BASE_URL ?? "",
-        titleById: buildTitleById(listIndex),
+        titleById: buildTitleById({ version: 1, items: library }),
       },
       {
         fetch: deps.fetch ?? globalThis.fetch.bind(globalThis),
@@ -398,15 +415,14 @@ export async function handleDigestDeadLetter(
   try {
     const parsed = parseDigestEnvelope(msg.body);
     if (parsed.ok) {
-      await finalizeDigestDelivery(
-        fromD1(env.CONTROL_PLANE),
-        {
-          userId: parsed.envelope.userId,
-          cadence: parsed.envelope.cadence,
-          periodKey: parsed.envelope.period_key,
-        },
-        { status: "failed" },
-        deps.nowMs,
+      const { envelope } = parsed;
+      await withSqlSession(env, (sql) =>
+        finalizeDigestDelivery(
+          fromSql(sql),
+          { userId: envelope.userId, cadence: envelope.cadence, periodKey: envelope.period_key },
+          { status: "failed" },
+          deps.nowMs,
+        ),
       );
     }
   } catch (error) {
@@ -425,13 +441,13 @@ async function sendTimeVerdict(
   | { kind: "skip"; reason: DigestSkipReason }
   | { kind: "send"; settings: DigestScheduleSettings; to: string; from: string }
 > {
-  const user = await db.first<{ status: string; email_verified_at_ms: number | null }>(
-    "SELECT status, email_verified_at_ms FROM users WHERE id = ?",
+  const user = await db.first<{ status: string; email_verified_at: string | null }>(
+    "SELECT status, email_verified_at FROM users WHERE id = ?",
     envelope.userId,
   );
   if (!user) return { kind: "skip", reason: "missing_user" };
   if (user.status !== "active") return { kind: "skip", reason: "inactive_user" };
-  if (user.email_verified_at_ms == null) return { kind: "skip", reason: "unverified_email" };
+  if (user.email_verified_at == null) return { kind: "skip", reason: "unverified_email" };
 
   const settings = await db.first<DigestScheduleSettings>(
     `SELECT digest_cadence, time_zone, digest_hour_local, digest_weekday

@@ -9,18 +9,28 @@ import { UsageError } from "../../../scripts/ops-lib/contract";
 
 function fixture() {
   const sql = new Database(":memory:");
-  sql.exec(`CREATE TABLE system_policy (id INTEGER PRIMARY KEY, policy_version INTEGER, paid_work_enabled INTEGER, daily_spend_microdollars INTEGER, catalog_version INTEGER, updated_at_ms INTEGER, signup_mode TEXT);
-    INSERT INTO system_policy VALUES (1, 3, 1, 1000000, 1, 0, 'closed');
-    CREATE TABLE tenant_limits (tenant_id TEXT PRIMARY KEY, policy_version INTEGER, daily_spend_microdollars INTEGER, updated_at_ms INTEGER);
-    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, 0);
-    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440001', 11, 300000, 0);`);
+  // Column names mirror db/migrations/0003_control_plane.sql, which is what the
+  // command now writes against: `updated_at`, not the D1-era `updated_at_ms`.
+  // SQLite has no timestamptz, so the Date the command binds lands as text —
+  // enough to pin the column name and the versioned CAS, which is what this
+  // suite is for.
+  sql.exec(`CREATE TABLE system_policy (id INTEGER PRIMARY KEY, policy_version INTEGER, paid_work_enabled INTEGER, daily_spend_microdollars INTEGER, catalog_version INTEGER, updated_at TEXT, signup_mode TEXT);
+    INSERT INTO system_policy VALUES (1, 3, 1, 1000000, 1, '2026-01-01T00:00:00.000Z', 'closed');
+    CREATE TABLE tenant_limits (tenant_id TEXT PRIMARY KEY, policy_version INTEGER, daily_spend_microdollars INTEGER, updated_at TEXT);
+    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, '2026-01-01T00:00:00.000Z');
+    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440001', 11, 300000, '2026-01-01T00:00:00.000Z');`);
   const db: ControlPlaneDb = {
+    transaction: (work) => work(db),
     first: async <T>(query: string, ...args: unknown[]) =>
       (sql.prepare(query).get(...args) as T) ?? null,
     all: async <T>(query: string, ...args: unknown[]) =>
       sql.prepare(query).all(...args) as T[],
     run: vi.fn(async (query: string, ...args: unknown[]) => ({
-      changes: sql.prepare(query).run(...args).changes,
+      // better-sqlite3 binds no Date objects; the real driver does. ISO text
+      // keeps the fixture honest about the column being a timestamp.
+      changes: sql
+        .prepare(query)
+        .run(...args.map((a) => (a instanceof Date ? a.toISOString() : a))).changes,
     })),
     batch: async () => {
       throw new Error("unexpected batch");
@@ -28,7 +38,7 @@ function fixture() {
   };
   const deps: PolicyDeps = {
     io: { stdout: vi.fn(), stderr: vi.fn() },
-    connect: vi.fn(() => db),
+    connect: vi.fn(() => ({ db, close: async () => {} })),
     now: () => 123,
   };
   const row = () =>
@@ -53,7 +63,7 @@ describe("system policy", () => {
       policy_version: 4,
       paid_work_enabled: 0,
       signup_mode: "closed",
-      updated_at_ms: 123,
+      updated_at: new Date(123).toISOString(),
     });
     await expect(
       systemPolicyCommand.run([...base, ...execute], deps),

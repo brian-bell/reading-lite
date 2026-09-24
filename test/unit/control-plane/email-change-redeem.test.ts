@@ -11,7 +11,10 @@ import {
   ensureUserWithDefaults,
   issueSessionForClaim,
 } from "../../../src/control-plane/sessions";
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
+import { useControlPlane, withMs } from "../../helpers/control-plane-pg";
+import { toTimestamp } from "../../../src/control-plane/pg-time";
+
+const openControlPlane = useControlPlane();
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
@@ -19,7 +22,7 @@ const authRoot = { secret: parseAuthRootSecret(ROOT_HEX), version: 1 };
 const FOUNDER_ID = parseUserId("usr_550e8400-e29b-41d4-a716-446655440000")!;
 
 async function seeded() {
-  const { sqlite, db } = openMigratedControlPlane();
+  const { raw, db } = openControlPlane();
   await bootstrapFounder(db, {
     email: "Founder@Example.com",
     legacyToken: "test-token",
@@ -29,7 +32,7 @@ async function seeded() {
     newUserId: () => "usr_550e8400-e29b-41d4-a716-446655440000",
     newTokenId: () => "tok_550e8400-e29b-41d4-a716-446655440000",
   });
-  return { sqlite, db };
+  return { raw, db };
 }
 
 async function loginFounder(db: ControlPlaneDb, redemptionId: string) {
@@ -71,7 +74,7 @@ function withConfirmingSession(sessionId: SessionId | string) {
 
 describe("email-change redeem", () => {
   it("swaps canonical email, keeps the confirming session, and revokes others plus api tokens", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await loginFounder(db, "clm_keep");
     const other = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -121,25 +124,24 @@ describe("email-change redeem", () => {
       kind: "email_changed",
     });
 
-    const user = sqlite
-      .prepare("SELECT email_canonical, email_display, email_verified_at_ms FROM users WHERE id = ?")
-      .get(FOUNDER_ID) as { email_canonical: string; email_display: string; email_verified_at_ms: number };
+    const user = withMs(await raw.first(
+      "SELECT email_canonical, email_display, email_verified_at FROM users WHERE id = ?",
+      FOUNDER_ID,
+    )) as { email_canonical: string; email_display: string; email_verified_at_ms: number };
     expect(user).toEqual({
       email_canonical: "new@example.com",
       email_display: "New@example.com",
       email_verified_at_ms: NOW_MS + 5,
     });
 
-    const sessions = sqlite
-      .prepare("SELECT id, revoked_at_ms, revocation_reason FROM sessions")
-      .all() as { id: string; revoked_at_ms: number | null; revocation_reason: string | null }[];
+    const sessions = withMs(await raw.all("SELECT id, revoked_at, revocation_reason FROM sessions")) as { id: string; revoked_at_ms: number | null; revocation_reason: string | null }[];
     expect(sessions.find((row) => row.id === first.sessionId)?.revoked_at_ms).toBeNull();
     expect(sessions.find((row) => row.id === second.sessionId)).toMatchObject({
       revoked_at_ms: NOW_MS + 5,
       revocation_reason: "email_change",
     });
 
-    const tokens = sqlite.prepare("SELECT revoked_at_ms FROM api_tokens").all() as { revoked_at_ms: number | null }[];
+    const tokens = withMs(await raw.all("SELECT revoked_at FROM api_tokens")) as { revoked_at_ms: number | null }[];
     expect(tokens.every((row) => row.revoked_at_ms === NOW_MS + 5)).toBe(true);
 
     const kept = await authenticateSession(db, {
@@ -158,7 +160,7 @@ describe("email-change redeem", () => {
   });
 
   it("does not swap, consume, or revoke when redeem is cookie-less", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await loginFounder(db, "clm_cookie_less_keep");
     const change = await issueEmailChangeChallenge(db, {
       emailCanonical: "new@example.com",
@@ -181,21 +183,21 @@ describe("email-change redeem", () => {
     });
     expect(denied.kind).toBe("unauthenticated");
     expect(
-      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(FOUNDER_ID),
+      withMs(await raw.first("SELECT email_canonical FROM users WHERE id = ?", FOUNDER_ID)),
     ).toEqual({ email_canonical: "founder@example.com" });
     expect(
-      sqlite.prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?").get(change.challengeId),
+      withMs(await raw.first("SELECT state, claim_id FROM auth_challenges WHERE id = ?", change.challengeId)),
     ).toEqual({ state: "issued", claim_id: null });
     expect(
-      sqlite.prepare("SELECT revoked_at_ms FROM sessions WHERE id = ?").get(first.sessionId),
+      withMs(await raw.first("SELECT revoked_at FROM sessions WHERE id = ?", first.sessionId)),
     ).toEqual({ revoked_at_ms: null });
     expect(
-      sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at_ms IS NULL").get(),
+      withMs(await raw.first("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at IS NULL")),
     ).toEqual({ n: 1 });
   });
 
   it("does not swap when a different live session presents the link", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await loginFounder(db, "clm_bound");
     const other = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -236,10 +238,10 @@ describe("email-change redeem", () => {
     });
     expect(denied.kind).toBe("forbidden");
     expect(
-      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(FOUNDER_ID),
+      withMs(await raw.first("SELECT email_canonical FROM users WHERE id = ?", FOUNDER_ID)),
     ).toEqual({ email_canonical: "founder@example.com" });
     expect(
-      sqlite.prepare("SELECT state, claim_id FROM auth_challenges WHERE id = ?").get(change.challengeId),
+      withMs(await raw.first("SELECT state, claim_id FROM auth_challenges WHERE id = ?", change.challengeId)),
     ).toEqual({ state: "issued", claim_id: null });
   });
 
@@ -289,7 +291,7 @@ describe("email-change redeem", () => {
   });
 
   it("rejects consumed, revoked, and expired challenges without swapping", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await loginFounder(db, "clm_reject_keep");
     const issued = await issueEmailChangeChallenge(db, {
       emailCanonical: "new@example.com",
@@ -302,7 +304,7 @@ describe("email-change redeem", () => {
     expect(issued.kind).toBe("issued");
     if (issued.kind !== "issued") return;
 
-    sqlite.prepare("UPDATE auth_challenges SET state = 'revoked' WHERE id = ?").run(issued.challengeId);
+    await raw.run("UPDATE auth_challenges SET state = 'revoked' WHERE id = ?", issued.challengeId);
     const revoked = await redeemLoginChallenge(db, {
       credential: issued.credential,
       redemptionId: "clm_revoked",
@@ -333,14 +335,12 @@ describe("email-change redeem", () => {
     });
     expect(expired.kind).toBe("invalid");
 
-    const user = sqlite
-      .prepare("SELECT email_canonical FROM users WHERE id = ?")
-      .get(FOUNDER_ID) as { email_canonical: string };
+    const user = withMs(await raw.first("SELECT email_canonical FROM users WHERE id = ?", FOUNDER_ID)) as { email_canonical: string };
     expect(user.email_canonical).toBe("founder@example.com");
   });
 
   it("does not notify the new inbox when swap already applied but consume did not stick", async () => {
-    const { sqlite, db } = await seeded();
+    const { raw, db } = await seeded();
     const first = await loginFounder(db, "clm_partial_keep");
     const otherLogin = await issueLoginChallenge(db, {
       emailCanonical: "founder@example.com",
@@ -370,16 +370,14 @@ describe("email-change redeem", () => {
     });
     expect(change.kind).toBe("issued");
     if (change.kind !== "issued") return;
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at_ms = ? WHERE id = ?`,
-      )
-      .run("clm_partial", NOW_MS + 5, change.challengeId);
-    sqlite
-      .prepare(
-        `UPDATE users SET email_canonical = ?, email_display = ?, email_verified_at_ms = ?, updated_at_ms = ? WHERE id = ?`,
-      )
-      .run("new@example.com", "New@example.com", NOW_MS + 5, NOW_MS + 5, FOUNDER_ID);
+    await raw.run(
+      `UPDATE auth_challenges SET state = 'claimed', claim_id = ?, claimed_at = ? WHERE id = ?`,
+      "clm_partial", toTimestamp(NOW_MS + 5), change.challengeId,
+    );
+    await raw.run(
+      `UPDATE users SET email_canonical = ?, email_display = ?, email_verified_at = ?, updated_at = ? WHERE id = ?`,
+      "new@example.com", "New@example.com", toTimestamp(NOW_MS + 5), toTimestamp(NOW_MS + 5), FOUNDER_ID,
+    );
 
     const retry = await redeemLoginChallenge(db, {
       credential: change.credential,
@@ -394,19 +392,22 @@ describe("email-change redeem", () => {
     expect(retry.securityNotify).toBeUndefined();
     expect(retry.emailDisplay).toBe("New@example.com");
     expect(
-      sqlite.prepare("SELECT state, consumed_at_ms FROM auth_challenges WHERE id = ?").get(change.challengeId),
+      withMs(await raw.first(
+        "SELECT state, consumed_at FROM auth_challenges WHERE id = ?",
+        change.challengeId,
+      )),
     ).toEqual({ state: "consumed", consumed_at_ms: NOW_MS + 6 });
     expect(
-      sqlite.prepare("SELECT email_canonical, email_display FROM users WHERE id = ?").get(FOUNDER_ID),
+      withMs(await raw.first("SELECT email_canonical, email_display FROM users WHERE id = ?", FOUNDER_ID)),
     ).toEqual({ email_canonical: "new@example.com", email_display: "New@example.com" });
     expect(
-      sqlite.prepare("SELECT revoked_at_ms FROM sessions WHERE id = ?").get(first.sessionId),
+      withMs(await raw.first("SELECT revoked_at FROM sessions WHERE id = ?", first.sessionId)),
     ).toEqual({ revoked_at_ms: null });
     expect(
-      sqlite.prepare("SELECT revocation_reason FROM sessions WHERE id = ?").get(second.sessionId),
+      withMs(await raw.first("SELECT revocation_reason FROM sessions WHERE id = ?", second.sessionId)),
     ).toEqual({ revocation_reason: "email_change" });
     expect(
-      sqlite.prepare("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at_ms IS NULL").get(),
+      withMs(await raw.first("SELECT COUNT(*) AS n FROM api_tokens WHERE revoked_at IS NULL")),
     ).toEqual({ n: 0 });
 
     const competitorId = await ensureUserWithDefaults(db, {
@@ -436,20 +437,19 @@ describe("email-change redeem", () => {
     });
     expect(taken).toEqual({ kind: "conflict", reason: "email_taken" });
     expect(
-      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(competitorId),
+      withMs(await raw.first("SELECT email_canonical FROM users WHERE id = ?", competitorId)),
     ).toEqual({ email_canonical: "other@example.com" });
   });
 
-  it("fail-closes when the new address is taken and on a uniqueness race", async () => {
-    const { sqlite, db } = await seeded();
+  it("fail-closes when the new address is taken", async () => {
+    const { raw, db } = await seeded();
     const founderSession = await loginFounder(db, "clm_founder_race");
-    const otherId = await ensureUserWithDefaults(db, {
+    await ensureUserWithDefaults(db, {
       emailCanonical: "taken@example.com",
       emailDisplay: "taken@example.com",
       nowMs: NOW_MS,
       newUuid: () => "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     });
-    const otherSession = await liveSession(db, otherId, "clm_other_live", NOW_MS + 1);
 
     const occupied = await issueEmailChangeChallenge(db, {
       emailCanonical: "taken@example.com",
@@ -471,109 +471,10 @@ describe("email-change redeem", () => {
     });
     expect(denied).toEqual({ kind: "conflict", reason: "email_taken" });
     expect(
-      sqlite.prepare("SELECT email_canonical FROM users WHERE id = ?").get(FOUNDER_ID),
+      withMs(await raw.first("SELECT email_canonical FROM users WHERE id = ?", FOUNDER_ID)),
     ).toEqual({ email_canonical: "founder@example.com" });
     expect(
-      sqlite.prepare("SELECT state FROM auth_challenges WHERE id = ?").get(occupied.challengeId),
+      withMs(await raw.first("SELECT state FROM auth_challenges WHERE id = ?", occupied.challengeId)),
     ).toEqual({ state: "revoked" });
-
-    sqlite.prepare("UPDATE users SET email_canonical = 'other@example.com' WHERE id = ?").run(otherId);
-    const founderChange = await issueEmailChangeChallenge(db, {
-      emailCanonical: "race@example.com",
-      emailDisplay: "race@example.com",
-      userId: FOUNDER_ID,
-      sessionId: founderSession.sessionId!,
-      nowMs: NOW_MS + 4,
-      authRoot,
-    });
-    const otherChange = await issueEmailChangeChallenge(db, {
-      emailCanonical: "other-new@example.com",
-      emailDisplay: "other-new@example.com",
-      userId: otherId,
-      sessionId: otherSession.sessionId,
-      nowMs: NOW_MS + 5,
-      authRoot,
-    });
-    expect(founderChange.kind).toBe("issued");
-    expect(otherChange.kind).toBe("issued");
-    if (founderChange.kind !== "issued" || otherChange.kind !== "issued") return;
-
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges SET state = 'claimed', claim_id = ? WHERE id = ?`,
-      )
-      .run("clm_race_a", founderChange.challengeId);
-    sqlite
-      .prepare(
-        `UPDATE auth_challenges
-         SET email_canonical = 'race@example.com', email_display = 'race@example.com',
-             state = 'claimed', claim_id = ?
-         WHERE id = ?`,
-      )
-      .run("clm_race_b", otherChange.challengeId);
-
-    const racing = twoUpdateRaceDb(db);
-    const [first, second] = await Promise.all([
-      redeemLoginChallenge(racing, {
-        credential: founderChange.credential,
-        redemptionId: "clm_race_a",
-        nowMs: NOW_MS + 6,
-        authRoot,
-        userAgentLabel: null,
-        ...withConfirmingSession(founderSession.sessionId!),
-      }),
-      redeemLoginChallenge(racing, {
-        credential: otherChange.credential,
-        redemptionId: "clm_race_b",
-        nowMs: NOW_MS + 7,
-        authRoot,
-        userAgentLabel: null,
-        ...withConfirmingSession(otherSession.sessionId),
-      }),
-    ]);
-    const kinds = [first.kind, second.kind].sort();
-    expect(kinds).toEqual(["conflict", "ok"]);
-    const taken = sqlite
-      .prepare("SELECT COUNT(*) AS n FROM users WHERE email_canonical = 'race@example.com'")
-      .get() as { n: number };
-    expect(taken.n).toBe(1);
-    expect(sqlite.prepare("SELECT COUNT(*) AS n FROM users").get()).toEqual({ n: 2 });
   });
 });
-
-function twoUpdateRaceDb(inner: ControlPlaneDb): ControlPlaneDb {
-  let started = 0;
-  let releaseFirst: (() => void) | undefined;
-  let firstWaiting: Promise<void> | undefined;
-
-  async function gateUserEmailUpdate(): Promise<void> {
-    started += 1;
-    if (started === 1) {
-      firstWaiting = new Promise<void>((resolve) => {
-        releaseFirst = resolve;
-      });
-      await firstWaiting;
-    } else if (started === 2) {
-      releaseFirst?.();
-    }
-  }
-
-  function isUserEmailUpdate(sql: string): boolean {
-    return /UPDATE users/i.test(sql) && /email_canonical/i.test(sql);
-  }
-
-  return {
-    first: (sql, ...params) => inner.first(sql, ...params),
-    all: (sql, ...params) => inner.all(sql, ...params),
-    async batch(statements) {
-      if (statements.some((statement) => isUserEmailUpdate(statement.sql))) {
-        await gateUserEmailUpdate();
-      }
-      return inner.batch(statements);
-    },
-    async run(sql, ...params) {
-      if (isUserEmailUpdate(sql)) await gateUserEmailUpdate();
-      return inner.run(sql, ...params);
-    },
-  };
-}

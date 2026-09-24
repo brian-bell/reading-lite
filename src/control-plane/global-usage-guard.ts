@@ -2,9 +2,11 @@ import { LeaseRecoveryRequestSchema, recoverLeasePair, type LeaseRecoveryRequest
 import { inspectGlobal } from "./operator-inspection";
 import { readSpendStatus } from "./spend-status";
 import type { Env } from "../index";
+import { withControlPlane } from "./db";
 import { GLOBAL_USAGE_GUARD_NAME, SPEND_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
+import { PolicyCache, policyCacheTtlMs } from "./policy-cache";
 import {
   acquireLease as acquireStoredLease,
   leaseStorageKey,
@@ -83,13 +85,17 @@ function positiveInt(value: unknown): number | null {
   return n;
 }
 
-async function loadGlobalConcurrency(env: Env): Promise<number | null> {
+// Cached per instance for GUARD_POLICY_CACHE_MS (policy-cache.ts): an
+// operator-set number. The spend policy below is not, because that read also
+// carries the tenant's deletion fence and the paid-work switch.
+async function loadGlobalConcurrency(env: Env, cache: PolicyCache): Promise<number | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT max_concurrent_work FROM system_policy WHERE id = 1`,
-    ).first<{ max_concurrent_work: number }>();
-    if (!row) return null;
-    return positiveInt(row.max_concurrent_work);
+    return await cache.get("system_policy:max_concurrent_work", async () => {
+      const row = await withControlPlane(env, (db) =>
+        db.first<{ max_concurrent_work: number }>("SELECT max_concurrent_work FROM system_policy WHERE id = 1"),
+      );
+      return row ? positiveInt(row.max_concurrent_work) : null;
+    });
   } catch {
     return null;
   }
@@ -99,14 +105,15 @@ type GlobalSpendPolicy = { dailySpendMicrodollars: number; tenantDailySpendMicro
 
 async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<GlobalSpendPolicy | "deleted" | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
-              tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
-       FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
-       WHERE u.id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: number }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: boolean }>(
+        `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
+                tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
+         FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
+         WHERE u.id = ?`,
+        tenantId,
+      ),
+    );
     if (!row) return null;
     if (row.status !== "active") return "deleted";
     const dailySpendMicrodollars = positiveInt(row.daily_spend_microdollars);
@@ -114,7 +121,7 @@ async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<Global
     const policyVersion = positiveInt(row.policy_version);
     const catalogVersion = Number(row.catalog_version);
     if (dailySpendMicrodollars === null || tenantDailySpendMicrodollars === null || policyVersion === null || !Number.isSafeInteger(catalogVersion) || catalogVersion < 0) return null;
-    return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === 1 };
+    return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === true };
   } catch {
     return null;
   }
@@ -123,9 +130,9 @@ async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<Global
 /** Account deletion fences mutations; pausing paid work still permits refunds. */
 async function tenantCanHoldSpend(env: Env, tenantId: string): Promise<boolean> {
   try {
-    const row = await env.CONTROL_PLANE.prepare("SELECT status FROM users WHERE id = ?")
-      .bind(tenantId)
-      .first<{ status: string }>();
+    const row = await withControlPlane(env, (db) =>
+      db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId),
+    );
     return row?.status === "active";
   } catch {
     return false;
@@ -195,10 +202,14 @@ function parseGuardBody(value: unknown): GuardBody | null {
 }
 
 export class GlobalUsageGuard implements DurableObject {
+  private readonly policy: PolicyCache;
+
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
-  ) {}
+  ) {
+    this.policy = new PolicyCache(policyCacheTtlMs(env));
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") {
@@ -288,7 +299,7 @@ export class GlobalUsageGuard implements DurableObject {
 
   private async acquireLease(body: AcquireLeaseBody): Promise<Response> {
     if (!parseTenantId(body.tenantId)) return json({ ok: false, reason: "missing_limits" });
-    const limit = await loadGlobalConcurrency(this.env);
+    const limit = await loadGlobalConcurrency(this.env, this.policy);
     if (limit === null) return json({ ok: false, reason: "missing_limits" });
     return jsonLease(
       await acquireStoredLease(this.state.storage, {

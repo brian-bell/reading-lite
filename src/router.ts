@@ -1,4 +1,3 @@
-import { deleteRefreshJob } from "./control-plane/relationship-refresh-jobs";
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
@@ -22,13 +21,15 @@ import {
   type GetReadingResponse,
 } from "./schemas/api";
 import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
-import { readingStoreFor, ReadingStore } from "./modules/stores/reading-store";
-import { similarityStoreFor } from "./modules/stores/similarity-store";
-import { ReadingClaim } from "./modules/reading-claim";
+import { sqlScope } from "./modules/db/request-sql";
+import type { Sql } from "./modules/db/sql";
+import { contentStoreFor, type ContentStore, type RawObject } from "./modules/stores/content-store";
+import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
+import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
+import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
-import { vectorLedgerFor } from "./control-plane/vector-ledger";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { applyStaleness, pendingTtlSeconds as parsePendingTtlSeconds } from "./modules/staleness";
 import {
@@ -55,7 +56,7 @@ import { handleGetSettings, handlePostSettings } from "./control-plane/settings-
 import { handleDeleteAccount } from "./control-plane/account-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
-import { fromD1 } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
@@ -64,13 +65,21 @@ export interface AppOptions {
   auth?: AuthRuntime;
 }
 
-function storeForPrincipal(env: Env, principal: AuthenticatedPrincipal): ReadingStore {
-  return readingStoreFor(env.READINGS_BUCKET, { tenantId: principal.tenantId }, env);
+// The three tenant-scoped stores behind every reading route: rows to read,
+// rows to write, and the R2 bytes the rows point at. Built from the principal's
+// validated tenant and the request's one PostgreSQL client.
+function storesFor(env: Env, principal: AuthenticatedPrincipal, sql: Sql) {
+  const tenant = { tenantId: principal.tenantId };
+  return {
+    store: pgReadingStoreFor(sql, tenant),
+    writer: pgReadingWriterFor(sql, tenant),
+    content: contentStoreFor(env.READINGS_BUCKET, tenant, env),
+  };
 }
 
-function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Services): ReadingIntake {
+function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Services, sql: Sql): ReadingIntake {
   return readingIntakeFor({
-    reader: storeForPrincipal(env, principal),
+    ...storesFor(env, principal, sql),
     queue: env.READING_JOBS ?? null,
     services,
     pendingTtlSeconds: pendingTtlSeconds(env),
@@ -85,6 +94,10 @@ export function createApp(opts: AppOptions = {}) {
   const app = new Hono<AppBindings>();
 
   app.use("*", corsMiddleware());
+  // One PostgreSQL client per request, shared by authentication and the
+  // handler, and closed once the response is built. It connects on first use,
+  // so /health and a refused preflight never open one.
+  app.use("*", sqlScope);
 
   app.onError((err, c) => {
     if (err instanceof HTTPException) return err.getResponse();
@@ -160,7 +173,7 @@ export function createApp(opts: AppOptions = {}) {
   // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
   app.get("/api/whoami", async (c) => {
     const principal = c.get("principal");
-    const user = await fromD1(c.env.CONTROL_PLANE).first<{ email_display: string }>(
+    const user = await fromSql(c.get("sql")).first<{ email_display: string }>(
       "SELECT email_display FROM users WHERE id = ?",
       String(principal.userId),
     );
@@ -191,7 +204,7 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    const intake = intakeFor(c.env, c.get("principal"), services);
+    const intake = intakeFor(c.env, c.get("principal"), services, c.get("sql"));
     const out = await intake.submit(parsed.data.url, { email: parsed.data.email ?? true });
     return respondIntake(c, out);
   });
@@ -202,7 +215,7 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    const intake = intakeFor(c.env, c.get("principal"), services);
+    const intake = intakeFor(c.env, c.get("principal"), services, c.get("sql"));
     const out = await intake.importMarkdown(parsed.data.source_url, parsed.data.markdown, {
       title: parsed.data.title,
       email: parsed.data.email ?? false,
@@ -216,8 +229,8 @@ export function createApp(opts: AppOptions = {}) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
     }
     const { q, tag, offset, limit } = parsed.data;
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const out = await reader.listManifests({ q, tag, offset, limit });
+    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const out = await store.listManifests({ q, tag, offset, limit });
     const annotated = out.readings.map((item) =>
       applyStaleness(item, pendingTtlSeconds(c.env), services.now()),
     );
@@ -232,27 +245,12 @@ export function createApp(opts: AppOptions = {}) {
   app.get("/api/readings/lookup", requireScope("readings:read"), async (c) => {
     const url = c.req.query("url");
     if (!url) return c.json({ error: "missing url" }, 400);
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const claim = new ReadingClaim(reader, services);
-    // Read-only: a GET must be side-effect-free and cheap, so a lookup neither
-    // claims a cold pointerless legacy nor repairs a damaged pointer (both are
-    // R2 writes, and repair triggers a full-bucket deep scan). Only a live,
-    // valid pointer resolves; anything else is "not found", leaving repair to
-    // the next write (submit/import).
-    const owner = await claim.resolveOwner(url, {
-      claimColdLegacy: false,
-      repairDamaged: false,
-    });
-    switch (owner.kind) {
-      case "owned":
-        return c.json({ id: owner.pointer.id });
-      case "initializing": {
-        const res = toHttp({ kind: "initializing", id: owner.pointer.id });
-        return c.json(res.body, res.status);
-      }
-      case "unclaimed":
-        return c.json({ error: "not found" }, 404);
-    }
+    // Read-only: a GET must be side-effect-free and cheap. Owner resolution is
+    // one SELECT over the URL's unique row — no claims, repairs or scans — and
+    // an owner is never half-written, so the URL is either owned or not found.
+    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const owner = await store.findOwnerByUrl(url);
+    return owner ? c.json({ id: owner.id }) : c.json({ error: "not found" }, 404);
   });
 
   app.post("/api/readings/similar", requireScope("readings:write"), async (c) => {
@@ -261,28 +259,26 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    // `wrangler dev` runs without a Vectorize binding (no local emulator), so
-    // degrade to an empty result set rather than throwing a 500. In production
-    // the binding is always present.
-    if (!c.env.READINGS_INDEX) {
-      return c.json({ items: [] });
-    }
-    const similarity = similarityStoreFor(c.env.READINGS_INDEX, { tenantId: c.get("principal").tenantId }, c.env);
+    const similarity = pgSimilarityStoreFor(c.get("sql"), { tenantId: c.get("principal").tenantId });
     const items = await similarity.query(parsed.data.query_embedding, parsed.data.k);
     return c.json({ items });
   });
 
   app.get("/api/readings/:id/diagnostics", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const ptr = await reader.readByIdPointer(id);
-    if (!ptr) return c.json({ error: "not found" }, 404);
-    const manifest = await reader.readManifest(ptr.key_prefix);
-    if (!manifest) return c.json({ error: "not found" }, 404);
-    const byUrl = await reader.readByUrlPointer(manifest.url_hash);
-    const indexItem = await reader.findListIndexItem(id);
-    const objects = await reader.listReadingObjects(ptr.key_prefix);
-    const attempts = await reader.listAttempts(ptr.key_prefix, 20);
+    const { store, writer, content } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const found = await store.loadReadingById(id);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const manifest = found.manifest;
+    // The response keeps the pointer vocabulary its consumers parse. The by-id
+    // "pointer" is the row itself, and the by-url one is the URL's owner row.
+    const ptr = { id, key_prefix: found.keyPrefix };
+    const owner = await store.findOwnerByUrl(manifest.url);
+    const ownerRow = owner && owner.id !== id ? await store.loadReadingById(owner.id) : found;
+    const byUrl = owner && ownerRow ? { id: owner.id, key_prefix: ownerRow.keyPrefix } : null;
+    const [indexItem = null] = await store.relationshipTargets([id]);
+    const objects = await content.list(found.keyPrefix);
+    const attempts = await writer.listAttempts(id, 20);
     const ttl = pendingTtlSeconds(c.env);
     return c.json({
       id,
@@ -318,7 +314,7 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    const intake = intakeFor(c.env, c.get("principal"), services);
+    const intake = intakeFor(c.env, c.get("principal"), services, c.get("sql"));
     const out = await intake.reprocess(c.req.param("id"), {
       force: parsed.data.force,
       email: parsed.data.email ?? false,
@@ -330,18 +326,10 @@ export function createApp(opts: AppOptions = {}) {
   app.delete("/api/readings/:id", requireScope("readings:delete"), async (c) => {
     const id = c.req.param("id");
     const principal = c.get("principal");
-    const reader = storeForPrincipal(c.env, principal);
+    const { writer, content } = storesFor(c.env, principal, c.get("sql"));
     // One-reading purge inside a live tenant. Account deletion is
     // DELETE /api/account (195a) — do not fold that workflow in here.
-    // Null without a Vectorize binding (local dev): the purge is R2-only there,
-    // matching the rest of the router's degrade-in-dev stance.
-    const similarity = c.env.READINGS_INDEX
-      ? similarityStoreFor(c.env.READINGS_INDEX, { tenantId: principal.tenantId }, c.env)
-      : null;
-    const ledger = vectorLedgerFor(c.env, { tenantId: principal.tenantId });
-    const out = await purgeReading({ reader, similarity, ledger,
-      deleteRefreshCheckpoint: readingId => deleteRefreshJob(fromD1(c.env.CONTROL_PLANE), principal.tenantId, readingId),
-    }, id, {
+    const out = await purgeReading({ writer, content }, id, {
       pendingTtlSeconds: pendingTtlSeconds(c.env),
       now: services.now(),
     });
@@ -357,17 +345,17 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const found = await reader.loadReadingById(id);
+    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const found = await store.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     const ttl = pendingTtlSeconds(c.env);
     const now = services.now();
-    // Read-time only: one tenant-scoped list-index read, skipped when there is
-    // nothing to resolve. Never written back to the manifest.
+    // Read-time only: one keyed read of the target rows, skipped when there is
+    // nothing to resolve. Never written back to the reading.
     const targetIds = relationshipTargetIds(found.manifest);
     const relationship_targets = targetIds.length === 0
       ? {}
-      : projectRelationshipTargets(targetIds, await reader.readListIndex(), ttl, now);
+      : projectRelationshipTargets(targetIds, { version: 1, items: await store.relationshipTargets(targetIds) }, ttl, now);
     const body: GetReadingResponse = {
       ...applyStaleness(found.manifest, ttl, now),
       relationship_targets,
@@ -377,14 +365,14 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const found = await reader.loadReadingById(id);
+    const { store, content } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const found = await store.loadReadingById(id);
     if (!found) return c.json({ error: "not found" }, 404);
     if (found.manifest.content_status !== "captured") {
       return c.json({ error: "extracted markdown not available" }, 404);
     }
-    const obj = await reader.readExtracted(found.keyPrefix);
-    if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
+    const obj = await readContent(store, content, id, (keys) => keys.extractedKey);
+    if (!obj) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
       headers: { "content-type": "text/markdown; charset=utf-8" },
@@ -393,12 +381,9 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/api/readings/:id/content/raw", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
-    const reader = storeForPrincipal(c.env, c.get("principal"));
-    const found = await reader.loadReadingById(id);
-    if (!found) return c.json({ error: "not found" }, 404);
-    const ext = extFromContentType(found.manifest.content_type);
-    const obj = await reader.readRaw(found.keyPrefix, ext);
-    if (!obj || !obj.body) return c.json({ error: "not found" }, 404);
+    const { store, content } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const obj = await readContent(store, content, id, (keys) => keys.rawKey);
+    if (!obj) return c.json({ error: "not found" }, 404);
     return new Response(obj.body, {
       status: 200,
       headers: { "content-type": obj.contentType },
@@ -406,6 +391,31 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   return app;
+}
+
+// A content read: the row's keys (never a spelling derived from key_prefix; a
+// published reading's content is under its revision, an imported one's is
+// not), then the object. The two steps are not atomic. A reprocess that
+// publishes in between commits new keys and deletes the superseded object
+// (AttemptIo.discardSupersededContent), so a key resolved just before that can
+// point at nothing. A missing object is therefore resolved once more: the keys
+// changed, and the current object is served; or they did not, and the content
+// is genuinely gone.
+async function readContent(
+  store: PgReadingStore,
+  content: ContentStore,
+  id: string,
+  pick: (keys: ContentKeys) => string | null,
+): Promise<RawObject | null> {
+  const first = await store.contentKeys(id);
+  const firstKey = first ? pick(first) : null;
+  const obj = firstKey ? await content.get(firstKey) : null;
+  if (obj?.body) return obj;
+  const again = await store.contentKeys(id);
+  const againKey = again ? pick(again) : null;
+  if (!againKey || againKey === firstKey) return null;
+  const retried = await content.get(againKey);
+  return retried?.body ? retried : null;
 }
 
 // The 503 bodies the SPA and operator tooling match on — one message per
@@ -416,7 +426,6 @@ const UNAVAILABLE_MESSAGES: Record<
 > = {
   queue_unbound: "queue binding READING_JOBS is not configured",
   claim_contention: "could not claim url ownership under contention",
-  owner_resolution_contention: "could not resolve url ownership under contention",
   activation_failed: "reading setup failed",
   queue_send_failed: "queue send failed",
 };
@@ -431,7 +440,7 @@ const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 400 | 404 | 409 | 429 | 503;
+  status: 200 | 202 | 400 | 403 | 404 | 409 | 429 | 503;
   headers?: Record<string, string>;
 } {
   switch (out.kind) {
@@ -447,15 +456,6 @@ function toHttp(out: IntakeOutcome): {
       };
     case "existing":
       return { body: out.manifest, status: 200 };
-    case "initializing":
-      return {
-        body: {
-          error: "reading owner is still initializing",
-          id: out.id,
-          poll: `/api/readings/${out.id}`,
-        },
-        status: 409,
-      };
     case "conflict":
       return {
         body: {
@@ -491,6 +491,11 @@ function toHttp(out: IntakeOutcome): {
         status: 429,
         headers: { "Retry-After": "5" },
       };
+    // The account was marked deleting after this request authenticated; the
+    // claim transaction saw it under the tenant lock and wrote nothing. Same
+    // 403 body the authenticated seam gives a tenant that is not active.
+    case "tenant_inactive":
+      return { body: { error: "forbidden" }, status: 403 };
   }
 }
 
@@ -520,16 +525,6 @@ function respondIntake(c: Context<AppBindings>, out: IntakeOutcome): Response {
   const mapped = toHttp(out);
   if (mapped.headers) return c.json(mapped.body, mapped.status, mapped.headers);
   return c.json(mapped.body, mapped.status);
-}
-
-function extFromContentType(contentType: string): string {
-  const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
-  if (major === "text/html" || major === "application/xhtml+xml") return "html";
-  if (major === "text/markdown") return "md";
-  if (major === "application/pdf") return "pdf";
-  if (major === "application/json") return "json";
-  if (major.startsWith("text/")) return "txt";
-  return "bin";
 }
 
 function pendingTtlSeconds(env: Env): number {

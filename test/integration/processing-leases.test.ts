@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
@@ -12,23 +12,18 @@ import {
 import { processReading, type ProcessReadingArgs, type ProcessReadingSource } from "../../src/process-reading";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
+import { PgReadingWriter } from "../../src/modules/stores/postgres/reading-writer";
 import type { Manifest } from "../../src/schemas/manifest";
-import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot, testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
 <p>This is a paragraph with enough words to be picked up by readability as the main content body of the article.</p>
 <p>This is a second paragraph that adds more content so the article passes the readability character threshold.</p>
 </article></main></body></html>`;
-
-function installVectorizeStub(): void {
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert: vi.fn(async () => ({ mutationId: "m" })),
-    deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
-    query: vi.fn(async () => ({ count: 0, matches: [] })),
-  } as unknown as VectorizeIndex;
-}
 
 async function clearBucket() {
   const list = await env.READINGS_BUCKET.list();
@@ -37,9 +32,6 @@ async function clearBucket() {
   }
 }
 
-beforeEach(() => {
-  installVectorizeStub();
-});
 afterEach(clearBucket);
 
 function embeddingResponse(): Response {
@@ -244,7 +236,6 @@ async function seedReading(
   const createdAt = "2026-09-03T00:00:00.000Z";
   const keyPrefix = buildKeyPrefix(opts.id, createdAt);
   const urlHash = await sha256Hex(opts.url);
-  const reader = testReadingStore(env, tenant);
   const status = opts.status ?? "pending";
   const manifest: Manifest = {
     id: opts.id,
@@ -275,9 +266,7 @@ async function seedReading(
     created_at: createdAt,
     updated_at: createdAt,
   };
-  await reader.writeManifest(keyPrefix, manifest);
-  await reader.writeByIdPointer(opts.id, { id: opts.id, key_prefix: keyPrefix });
-  await reader.writeByUrlPointer(urlHash, { id: opts.id, key_prefix: keyPrefix });
+  await testReadingsFor(tenant).seed(manifest, { keyPrefix });
   return {
     id: opts.id,
     url: opts.url,
@@ -397,7 +386,7 @@ describe("processing leases (Workers pool)", () => {
     expect(spendCalls).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
     expect(sendDelayed).not.toHaveBeenCalled();
     expect(msg.ack).toHaveBeenCalledOnce();
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "failed",
       error: { code: "ReadingReservationExpiredError", stage: "summarize", retryable: true },
     });
@@ -464,7 +453,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
       active_attempt: { id: "at_defer" },
     });
@@ -500,7 +489,7 @@ describe("processing leases (Workers pool)", () => {
       expect(msg.ack).toHaveBeenCalledOnce();
       expect(msg.retry).not.toHaveBeenCalled();
       expect(parked.started()).toBe(1);
-      await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
         status: "pending",
       });
     } finally {
@@ -546,7 +535,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     // The live reprocess holder keeps both rows.
@@ -594,7 +583,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "failed",
     });
     expect(
@@ -628,7 +617,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
       active_attempt: { id: "at_duphold" },
     });
@@ -680,7 +669,7 @@ describe("processing leases (Workers pool)", () => {
       expect(msg.ack).toHaveBeenCalledOnce();
       expect(msg.retry).not.toHaveBeenCalled();
       expect(parked.started()).toBe(1);
-      await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
         status: "pending",
         active_attempt: { id: "at_stale" },
       });
@@ -721,14 +710,13 @@ describe("processing leases (Workers pool)", () => {
       id: "rd_STALE_REPROCESS", url: "https://lease.test/stale-reprocess",
       attemptId: "at_stale_reprocess", status: "ready", omitActiveAttempt: true, source: PARKED_MARKDOWN,
     });
-    const reader = testReadingStore(env, tenant);
-    const prior = (await reader.readManifest(job.keyPrefix))!;
-    job.preserveReadyManifest = prior;
+    const reader = testReadingsFor(tenant);
+    const prior = (await reader.manifest(job.id))!;
     job.trigger = "reprocess";
     if (overdue) job.attemptStartedAt = new Date(
       Date.parse("2026-09-03T00:00:01.000Z") - PROCESSING_DEFER_MAX_AGE_MS - 1,
     ).toISOString();
-    await reader.writeManifest(job.keyPrefix, { ...prior, active_attempt: {
+    await reader.restate({ ...prior, active_attempt: {
       id: job.attemptId!, trigger: "reprocess", status: "running", stage: "queued",
       started_at: job.attemptStartedAt!,
     } });
@@ -743,15 +731,12 @@ describe("processing leases (Workers pool)", () => {
       await parked.waitUntilStarted();
       // The holder's injected clock is overdue relative to the guards. Retire
       // it while its provider response is stalled, before the recovery writer
-      // has terminalized the preserved-ready manifest.
+      // has terminalized the still-published reading.
       expect(await globalLease({ kind: "recover_leases", tenantId, attemptId: job.attemptId })).toMatchObject({ ok: true });
-      if (terminal) await reader.writeManifest(job.keyPrefix, prior);
+      if (terminal) await reader.restate(prior);
       if (outage) {
-        const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-        const spy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
-          if (key.endsWith("/manifest.json")) throw new Error("R2 outage");
-          return put(key, value, options);
-        });
+        // The terminal write is the failure transaction.
+        const spy = vi.spyOn(PgReadingWriter.prototype, "fail").mockRejectedValue(new Error("database outage"));
         restorePut = () => spy.mockRestore();
       }
       parked.release();
@@ -760,13 +745,13 @@ describe("processing leases (Workers pool)", () => {
       expect(summaryCalls(parked.fetchFn)).toBe(0);
       if (outage || !overdue) {
         expect(sendDelayed).toHaveBeenCalledOnce();
-        expect((await reader.readManifest(job.keyPrefix))!.active_attempt?.id).toBe(job.attemptId);
+        expect((await reader.manifest(job.id))!.active_attempt?.id).toBe(job.attemptId);
         restorePut();
         await processReading(job, env as unknown as Env, svc, tenant);
       } else {
         expect(sendDelayed).not.toHaveBeenCalled();
       }
-      const finished = (await reader.readManifest(job.keyPrefix))!;
+      const finished = (await reader.manifest(job.id))!;
       expect(finished).toMatchObject({ status: "ready", title: prior.title, tldr: prior.tldr });
       expect(finished.active_attempt).toBeUndefined();
       if (!terminal) expect(finished.last_attempt).toMatchObject({ id: job.attemptId, status: "failed" });
@@ -804,7 +789,7 @@ describe("processing leases (Workers pool)", () => {
     });
     await processReading(job, env as unknown as Env, services(fetchFn), tenant);
     expect(embedCalls(fetchFn)).toBeGreaterThan(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
   });
@@ -835,7 +820,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
     });
   });
@@ -860,7 +845,7 @@ describe("processing leases (Workers pool)", () => {
       tenant,
     );
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
       active_attempt: { id: "at_NEW" },
     });
@@ -890,7 +875,7 @@ describe("processing leases (Workers pool)", () => {
       (env as unknown as { GLOBAL_USAGE_GUARD?: DurableObjectNamespace }).GLOBAL_USAGE_GUARD = orig;
     }
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
       active_attempt: { id: "at_nodo" },
     });
@@ -908,7 +893,7 @@ describe("processing leases (Workers pool)", () => {
       url: "https://lease.test/nolimit",
       attemptId: "at_nolimit",
     });
-    await env.CONTROL_PLANE.prepare("DELETE FROM tenant_limits WHERE tenant_id = ?").bind(tenantId).run();
+    await testControlPlane(env).run("DELETE FROM tenant_limits WHERE tenant_id = ?", tenantId);
     const fetchFn = makeFetch();
     await expect(
       processReading(job, env as unknown as Env, services(fetchFn), tenant),
@@ -974,7 +959,7 @@ describe("processing leases (Workers pool)", () => {
     );
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
-    await expect(testReadingStore(env, tenant).readManifest(firstJob.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(firstJob.id)).resolves.toMatchObject({
       status: "failed",
     });
 
@@ -986,7 +971,7 @@ describe("processing leases (Workers pool)", () => {
     });
     await processReading(second, env as unknown as Env, services(secondFetch), tenant);
     expect(embedCalls(secondFetch)).toBeGreaterThan(0);
-    await expect(testReadingStore(env, tenant).readManifest(second.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(second.id)).resolves.toMatchObject({
       status: "ready",
     });
   });
@@ -1016,7 +1001,7 @@ describe("processing leases (Workers pool)", () => {
     const fetchFn = makeFetch();
     await processReading(job, env as unknown as Env, services(fetchFn), tenant);
     expect(embedCalls(fetchFn)).toBeGreaterThan(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(
@@ -1036,10 +1021,10 @@ describe("processing leases (Workers pool)", () => {
       max_concurrent_work: 2,
     });
     const tenant = tenantOf(tenantId);
-    const previous = await env.CONTROL_PLANE.prepare(
+    const previous = await testControlPlane(env).first<{ max_concurrent_work: number }>(
       "SELECT max_concurrent_work FROM system_policy WHERE id = 1",
-    ).first<{ max_concurrent_work: number }>();
-    await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = 1 WHERE id = 1").run();
+    );
+    await testControlPlane(env).run("UPDATE system_policy SET max_concurrent_work = 1 WHERE id = 1");
     let holderFence: string | undefined;
     try {
       const held = await globalLease({
@@ -1067,7 +1052,7 @@ describe("processing leases (Workers pool)", () => {
       expect(sendDelayed).toHaveBeenCalledOnce();
       expect(msg.ack).toHaveBeenCalledOnce();
       expect(embedCalls(fetchFn)).toBe(0);
-      await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+      await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
         status: "pending",
         active_attempt: { id: "at_foreign_job" },
       });
@@ -1081,28 +1066,42 @@ describe("processing leases (Workers pool)", () => {
           nowMs: Date.parse("2026-09-03T00:00:01.000Z"),
         });
       }
-      await env.CONTROL_PLANE.prepare("UPDATE system_policy SET max_concurrent_work = ? WHERE id = 1")
-        .bind(previous?.max_concurrent_work ?? 3)
-        .run();
+      await testControlPlane(env).run(
+        "UPDATE system_policy SET max_concurrent_work = ? WHERE id = 1",
+        previous?.max_concurrent_work ?? 3,
+      );
     }
   });
 
   it("does not re-pay summarize when lease unavailable hits after summarize succeeds", async () => {
-    // A neighbour missing url metadata must not break the checkpointed context.
-    (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-      upsert: vi.fn(async () => ({ mutationId: "m" })),
-      deleteByIds: vi.fn(async () => ({ mutationId: "m" })),
-      query: vi.fn(async () => ({
-        count: 1,
-        matches: [{ id: "rd_NEIGHBOUR", score: 0.9, metadata: { title: "Neighbour" } }],
-      })),
-    } as unknown as VectorizeIndex;
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 20,
       max_concurrent_work: 2,
     });
     const tenant = tenantOf(tenantId);
+    // A published neighbour, so the summarize checkpoint carries real context.
+    // Its vector is the stub embedding, which puts it at the top of the scan.
+    const neighbourUrl = "https://lease.test/neighbour";
+    await testReadingsFor(tenant).seed(
+      {
+        id: "rd_NEIGHBOUR",
+        url: neighbourUrl,
+        url_hash: await sha256Hex(neighbourUrl),
+        source_type: "url",
+        status: "ready",
+        title: "Neighbour",
+        tldr: "A neighbour.",
+        connections: [],
+        content_type: "text/html",
+        content_status: "captured",
+        content_bytes: 0,
+        content_sha256: "0".repeat(64),
+        created_at: "2026-09-02T00:00:00.000Z",
+        updated_at: "2026-09-02T00:00:00.000Z",
+      },
+      { embedding: new Array(1536).fill(0.1) },
+    );
     const job = await seedPending(tenant, {
       id: "rd_LEASE_SKIP_SUM",
       url: "https://lease.test/skip-sum",
@@ -1134,9 +1133,9 @@ describe("processing leases (Workers pool)", () => {
       expect(summaryCalls(fetchFn)).toBe(1);
       expect(embedCalls(fetchFn)).toBe(1);
       await expect(
-        testReadingStore(env, tenant).readProcessingCheckpoint(job.keyPrefix, "at_skip_sum"),
+        testReadingsFor(tenant).writer.readCheckpoint({ id: job.id, attemptId: "at_skip_sum" }),
       ).resolves.toMatchObject({
-        summarize: { similar_context: [{ id: "rd_NEIGHBOUR", url: "" }] },
+        summarize: { similar_context: [{ id: "rd_NEIGHBOUR", url: neighbourUrl }] },
       });
     } finally {
       restore();
@@ -1152,7 +1151,7 @@ describe("processing leases (Workers pool)", () => {
     }
     expect(summaryCalls(fetchFn)).toBe(1);
     expect(embedCalls(fetchFn)).toBe(2);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
   });
@@ -1206,7 +1205,7 @@ describe("processing leases (Workers pool)", () => {
     }
     await processReading(job, env as unknown as Env, svc, tenant);
     expect(summaryCalls(fetchFn)).toBe(1);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(
@@ -1273,7 +1272,7 @@ describe("processing leases (Workers pool)", () => {
     ).toMatchObject({ ok: true });
 
     await processReading(job, env as unknown as Env, services(fetchFn), tenant);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(
@@ -1315,7 +1314,7 @@ describe("processing leases (Workers pool)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "failed",
       error: { code: "ProcessingDeferExpiredError" },
     });
@@ -1370,10 +1369,11 @@ describe("orphaned in-flight lease recovery (#256)", () => {
       }
       return res;
     });
-    const put = env.READINGS_BUCKET.put.bind(env.READINGS_BUCKET);
-    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put").mockImplementation(async (key, value, options) => {
-      if (failure === "terminal_write" && key.endsWith("/manifest.json")) throw new Error("R2 outage");
-      return put(key, value, options);
+    // The terminal write is the failure transaction.
+    const failReading = PgReadingWriter.prototype.fail;
+    const putSpy = vi.spyOn(PgReadingWriter.prototype, "fail").mockImplementation(function (this: PgReadingWriter, ...args) {
+      if (failure === "terminal_write") throw new Error("database outage");
+      return failReading.apply(this, args);
     });
     if (failure !== "none") {
       // The retiring delivery is interrupted: it defers, and a later delivery
@@ -1383,7 +1383,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
           () => processReading(job, env as unknown as Env, services(fetchFn), tenant), { sendDelayed });
       } finally { restore(); putSpy.mockRestore(); }
       expect(sendDelayed).toHaveBeenCalledOnce();
-      expect(await testReadingStore(env, tenant).readManifest(job.keyPrefix)).toMatchObject({ status: "pending" });
+      expect(await testReadingsFor(tenant).manifest(job.id)).toMatchObject({ status: "pending" });
       expect(await holdTenantLease(tenantId, "at_ceiling")).toMatchObject({ ok: false, reason: "stale_fence" });
       expect(embedCalls(fetchFn)).toBe(0);
       sendDelayed.mockClear();
@@ -1400,7 +1400,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     expect(msg.ack).toHaveBeenCalledTimes(failure === "none" ? 1 : 2);
     expect(msg.retry).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "failed",
       error: { code: "ProcessingDeferExpiredError" },
     });
@@ -1460,7 +1460,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     expect(sendDelayed).toHaveBeenCalledOnce();
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "pending",
       active_attempt: { id: "at_ceiling_live" },
     });
@@ -1510,7 +1510,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     expect(msg.ack).toHaveBeenCalledOnce();
     expect(sendDelayed).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
@@ -1569,7 +1569,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
     expect(msg.ack).toHaveBeenCalledTimes(2);
     expect(sendDelayed).not.toHaveBeenCalled();
     expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(await holdTenantLease(tenantId, "at_term")).toMatchObject({ ok: false, reason: "stale_fence" });
@@ -1620,7 +1620,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
       await first.catch(() => {});
     }
     // The holder completes and releases on its own; no theft occurred.
-    await expect(testReadingStore(env, tenant).readManifest(job.keyPrefix)).resolves.toMatchObject({
+    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
     });
     expect(parked.started()).toBe(2);
@@ -1677,9 +1677,9 @@ describe("orphaned in-flight lease recovery (#256)", () => {
       attemptId: "at_conflict_mine",
       source: PARKED_MARKDOWN,
     });
-    const reader = testReadingStore(env, tenant);
-    const stored = await reader.readManifest(job.keyPrefix);
-    await reader.writeManifest(job.keyPrefix, {
+    const reader = testReadingsFor(tenant);
+    const stored = await reader.manifest(job.id);
+    await reader.restate({
       ...stored!,
       active_attempt: { ...stored!.active_attempt!, id: "at_conflict_foreign" },
     });
@@ -1715,8 +1715,7 @@ describe("orphaned in-flight lease recovery (#256)", () => {
       attemptId: "at_purged",
       source: PARKED_MARKDOWN,
     });
-    const reader = testReadingStore(env, tenant);
-    await reader.writePurgeTombstone(job.id);
+    await testReadingsFor(tenant).purge(job.id);
     const tenantHeld = await holdTenantLease(tenantId, "at_purged");
     const globalHeld = await globalLease({
       kind: "acquire_lease",

@@ -1,8 +1,13 @@
 // `ops staging teardown` — delete the Cloudflare staging Worker and isolated
-// staging resources: Queue, DLQ, Vectorize index, and R2 bucket (emptied via
+// staging resources: Queue, DLQ, and R2 bucket (emptied via
 // the S3-compatible API first). Hard-coded to staging resource names; the
 // shared command builder refuses production-looking names. Plan-first: a
 // mode-less run prints the deletion plan; --execute deletes.
+//
+// Cloudflare only. The staging PostgreSQL database (the Neon rehearsal
+// branch) is retained: setup migrates it but never creates it, so teardown
+// has no database step. The old staging D1 is retained too, as the #348
+// importer's source; #351 retires it.
 
 import { parseArgs } from "node:util";
 import {
@@ -17,7 +22,7 @@ export interface StagingTeardownDeps extends BaseDeps {
   // Resolves and validates the CORPUS_R2_* credentials, returning the
   // bucket-empty step. Called BEFORE any destructive command so a missing
   // .corpus.vars fails the run while staging is still intact, rather than
-  // after the Worker/queues/D1 are already gone.
+  // after the Worker/queues/index are already gone.
   resolveBucketEmptier: () => Promise<{ empty: () => Promise<void> }>;
 }
 
@@ -54,6 +59,7 @@ async function runStagingTeardown(argv: string[], deps: StagingTeardownDeps): Pr
   );
   io.stderr(`[${mode}] ${bucketDelete.label}`);
   io.stderr(`[${mode}] $ wrangler ${bucketDelete.args.join(" ")}`);
+  io.stderr(`[${mode}] The staging PostgreSQL database is retained; teardown never drops it.`);
 
   if (!execute) {
     io.stderr("\n[PLAN] not deleting resources. Pass --execute to apply.");
@@ -81,8 +87,14 @@ export const stagingTeardownCommand: CommandDefinition<StagingTeardownDeps> = {
   helpText: `Usage: npm run ops -- staging teardown [--execute]
 
 Deletes the Cloudflare staging Worker and isolated staging resources for
-reading-lite: reading, digest, wipe, and refresh Queue + DLQ pairs, D1, Vectorize index, and R2 bucket. Plans by default;
---execute deletes. Idempotent — "already gone" is treated as success.
+reading-lite: reading, digest, wipe, and refresh Queue + DLQ pairs and R2
+bucket — exactly the Cloudflare resources \`staging setup\`
+creates. Plans by default; --execute deletes. Idempotent — "already gone" is
+treated as success.
+
+The staging PostgreSQL database (the Neon rehearsal branch) is retained:
+setup migrates it but never creates it. The old staging D1 is retained as
+well; it is the #348 importer's source.
 
 This command is intentionally hard-coded to staging resource names and refuses
 production-looking names in the shared command builder. The bucket-empty step

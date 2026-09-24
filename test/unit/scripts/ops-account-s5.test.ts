@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   enumerateNamespace,
-  repairBareVector,
 } from "../../../scripts/account-lib/vectors";
 const tenant = "usr_11111111-1111-4111-8111-111111111111";
 const id = "rd_0123456789";
@@ -53,70 +52,6 @@ describe("namespace enumeration", () => {
     await expect(enumerateNamespace(c, tenant)).rejects.toThrow("cursor");
   });
 });
-describe("safe bare repair", () => {
-  it("ledgers before upsert and preserves the bare vector until a later verified run", async () => {
-    const c = client();
-    const ledger = vi.fn();
-    expect(
-      await repairBareVector(c, tenant, bare, {
-        status: "active",
-        legacy: false,
-        ledger,
-      }),
-    ).toBe("upsert_submitted");
-    expect(ledger).toHaveBeenCalledWith(id);
-    expect(ledger.mock.invocationCallOrder[0]).toBeLessThan(
-      c.upsert.mock.invocationCallOrder[0]!,
-    );
-    expect(c.delete).not.toHaveBeenCalled();
-  });
-  it("only deletes a duplicate when the composed vector preserves the full payload", async () => {
-    const c = client();
-    c.get.mockResolvedValue([bare, { ...bare, id: `${tenant}:${id}` }]);
-    expect(
-      await repairBareVector(c, tenant, bare, {
-        status: "active",
-        legacy: false,
-        ledger: vi.fn(),
-      }),
-    ).toBe("delete_submitted");
-    expect(c.delete).toHaveBeenCalledWith([id]);
-  });
-  it("refuses global, legacy, changed, or conflicting vectors without mutations", async () => {
-    for (const mode of ["global", "legacy", "changed", "conflict"]) {
-      const c = client();
-      c.get.mockResolvedValue(
-        mode === "global"
-          ? [{ ...bare, namespace: undefined }]
-          : mode === "changed"
-            ? [{ ...bare, values: [0, 1] }]
-            : mode === "conflict"
-              ? [bare, { ...bare, id: `${tenant}:${id}`, values: [0, 1] }]
-              : [bare],
-      );
-      await expect(
-        repairBareVector(c, tenant, bare, {
-          status: "active",
-          legacy: mode === "legacy",
-          ledger: vi.fn(),
-        }),
-      ).rejects.toThrow();
-      expect(c.delete).not.toHaveBeenCalled();
-      expect(c.upsert).not.toHaveBeenCalled();
-    }
-  });
-  it("deleting tenants remove only the namespaced bare vector and never resurrect a composed vector", async () => {
-    const c = client();
-    expect(
-      await repairBareVector(c, tenant, bare, {
-        status: "deleting",
-        legacy: false,
-        ledger: vi.fn(),
-      }),
-    ).toBe("delete_submitted");
-    expect(c.upsert).not.toHaveBeenCalled();
-  });
-});
 
 import { scanResidue } from "../../../scripts/account-lib/residue";
 import { accountWipeCommand } from "../../../scripts/ops-lib/commands/account-wipe";
@@ -127,6 +62,7 @@ function remoteFixture() {
       all: vi.fn().mockResolvedValue([]),
       run: vi.fn(),
       batch: vi.fn(),
+      transaction: vi.fn(),
     },
     storage: {
       listObjects: vi.fn().mockResolvedValue([]),
@@ -169,31 +105,30 @@ describe("residue sources and wipe gates", () => {
       detail: expect.objectContaining({ first_completed_at_ms: 42 }),
     });
   });
-  it("reports a listed reading missing its vector even without a ledger row", async () => {
+  it("keeps PostgreSQL residue after another source fails, and continues querying", async () => {
     const r = remoteFixture();
-    r.vectors.get.mockResolvedValue([]);
-    r.storage.get.mockResolvedValue(
-      JSON.stringify({
-        version: 1,
-        items: [
-          {
-            id,
-            key_prefix: `readings/2026/04/26T200000Z-${id}`,
-            url: "https://example.com",
-            status: "ready",
-            created_at: "2026-04-26T20:00:00.000Z",
-          },
-        ],
-      }),
-    );
+    r.db.all.mockImplementation(async (sql: string) => {
+      if (sql.includes("FROM readings WHERE")) throw Error("read unavailable");
+      if (sql.includes("FROM reading_embeddings WHERE")) return [{ n: 2 }];
+      return sql.includes("COUNT(*)") ? [{ n: 0 }] : [];
+    });
     const result = await scanResidue(r, tenant);
-    expect(
-      result.findings.find((f) => f.source === "listed_vectors")?.detail,
-    ).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ id, composed: "candidate_absent" }),
-      ]),
-    );
+    expect(result.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: "pg.readings", state: "unknown" }),
+      expect.objectContaining({ source: "pg.reading_embeddings", state: "residue", detail: { count: 2 } }),
+      expect.objectContaining({ source: "pg.users", state: "clear" }),
+    ]));
+    expect(result).toMatchObject({ residue: true, incomplete: true });
+    expect(r.storage.get).not.toHaveBeenCalled();
+  });
+  it.each(["success", "enumeration failure", "invalid audit tenant"])("closes the scan session after %s", async (scenario) => {
+    const r = { ...remoteFixture(), closeDb: vi.fn().mockResolvedValue(undefined) };
+    if (scenario === "enumeration failure") r.db.all.mockRejectedValue(Error("offline"));
+    if (scenario === "invalid audit tenant") r.db.all.mockResolvedValue([{ tenant_id: "invalid" }]);
+    const run = accountResidueScanCommand.run(["--all-deleted"], { io: { stdout: vi.fn(), stderr: vi.fn() }, connect: () => r });
+    if (scenario === "success") await expect(run).resolves.toBe(0);
+    else await expect(run).rejects.toThrow();
+    expect(r.closeDb).toHaveBeenCalledOnce();
   });
   it("plans without enqueue, requires matching confirmation, and rechecks deleting before execute", async () => {
     const r = remoteFixture();
@@ -225,248 +160,6 @@ describe("residue sources and wipe gates", () => {
   });
 });
 
-import { openMigratedControlPlane } from "../../helpers/control-plane-sqlite";
-import { insertMissingLedgerRows } from "../../../src/control-plane/vector-ledger";
-import { parseTenantId } from "../../../src/control-plane/ids";
-import { corpusSeedVectorLedgerCommand } from "../../../scripts/ops-lib/commands/corpus-seed-vector-ledger";
-import * as controlPlane from "../../../scripts/account-lib/control-plane";
-import { accountResidueScanCommand } from "../../../scripts/ops-lib/commands/account-residue-scan";
-import { accountAuditBareVectorsCommand } from "../../../scripts/ops-lib/commands/account-audit-bare-vectors";
-
-describe("S5 migrated database behavior", () => {
-  it("keeps wipe enqueue, residue reports and bare-vector repair scoped across populated tenants", async () => {
-    const other = "usr_22222222-2222-4222-8222-222222222222";
-    const { db, sqlite } = openMigratedControlPlane();
-    try {
-      for (const [selected, status] of [[tenant, "deleting"], [other, "active"]] as const) {
-        await db.run(
-          "INSERT INTO users (id, email_canonical, email_display, status, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, 1, 1)",
-          selected, `${selected}@example.com`, `${selected}@example.com`, status,
-        );
-        await insertMissingLedgerRows(db, parseTenantId(selected)!, [id], 1);
-      }
-      const r = remoteFixture();
-      const objects = new Map([
-        [`u/${tenant}/index/by-id/${id}`, "owner pointer"],
-        [`u/${other}/index/by-id/${id}`, "other pointer"],
-      ]);
-      const vectors = new Map([
-        [id, structuredClone(bare)],
-        [`${tenant}:${id}`, { ...bare, id: `${tenant}:${id}` }],
-        [`${other}:${id}`, { ...bare, id: `${other}:${id}`, namespace: other }],
-      ]);
-      r.storage.listObjects.mockImplementation(async (prefix: string) =>
-        [...objects.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
-      );
-      r.storage.get.mockImplementation(async (key: string) => objects.get(key) ?? null);
-      r.vectors.list.mockImplementation(async () => ({ vectors: [...vectors.keys()].map((id) => ({ id })), isTruncated: false }));
-      r.vectors.get.mockImplementation(async (ids: string[]) => ids.flatMap((id) => vectors.has(id) ? [vectors.get(id)!] : []));
-      r.vectors.delete.mockImplementation(async (ids: string[]) => { for (const id of ids) vectors.delete(id); });
-      r.probe.mockImplementation(async (namespace: string) => [...vectors.values()].filter((v) => v.namespace === namespace).map((v) => ({ id: v.id })));
-      const remote = { ...r, db };
-      const io = { stdout: vi.fn(), stderr: vi.fn() };
-      const beforeDb = sqlite.serialize();
-      const beforeObjects = structuredClone(objects);
-
-      expect(await accountWipeCommand.run(
-        ["--tenant", tenant, "--execute", "--confirm", tenant, "--queue-id", "fixture-queue"],
-        { io, connect: () => remote },
-      )).toBe(0);
-      expect(r.enqueue).toHaveBeenCalledWith(tenant, false, "fixture-queue");
-      await expect(accountWipeCommand.run(
-        ["--tenant", other, "--execute", "--confirm", other, "--queue-id", "fixture-queue"],
-        { io, connect: () => remote },
-      )).rejects.toThrow("deleting");
-      expect(r.enqueue).toHaveBeenCalledTimes(1);
-
-      for (const selected of [tenant, other]) {
-        io.stdout.mockClear();
-        expect(await accountResidueScanCommand.run(["--tenant", selected], { io, connect: () => remote })).toBe(1);
-        const report = JSON.parse(io.stdout.mock.calls[0]![0]);
-        expect(report.tenant).toBe(selected);
-        expect(report.findings.find((f: { source: string }) => f.source === "vector_ledger").detail).toEqual([
-          expect.objectContaining({ tenant_id: selected, reading_id: id }),
-        ]);
-        expect(report.findings.find((f: { source: string }) => f.source === "r2").detail).toEqual([{ key: `u/${selected}/index/by-id/${id}` }]);
-        expect(report.findings.find((f: { source: string }) => f.source === "d1.users").detail).toEqual({ count: 1 });
-        expect(report.findings.find((f: { source: string }) => f.source === "namespace_inventory").detail.ids).toEqual(
-          selected === tenant ? [id, `${tenant}:${id}`] : [`${other}:${id}`],
-        );
-      }
-      expect(sqlite.serialize()).toEqual(beforeDb);
-      expect(objects).toEqual(beforeObjects);
-
-      const beforeOtherVector = structuredClone(vectors.get(`${other}:${id}`));
-      expect(await accountAuditBareVectorsCommand.run(
-        ["--namespace", tenant, "--execute", "--confirm", tenant, "--sole-writer"],
-        { io, connect: () => remote, now: () => 2 },
-      )).toBe(1); // Mutation submitted; a later scan confirms it.
-      expect(vectors.has(id)).toBe(false);
-      expect(vectors.get(`${other}:${id}`)).toEqual(beforeOtherVector);
-      expect(vectors.get(`${tenant}:${id}`)).toEqual({ ...bare, id: `${tenant}:${id}` });
-      expect(r.vectors.upsert).not.toHaveBeenCalled();
-      expect(sqlite.serialize()).toEqual(beforeDb);
-      expect(objects).toEqual(beforeObjects);
-    } finally {
-      sqlite.close();
-    }
-  });
-
-  it("queries every teardown table and retains submitted purge rows without changing history", async () => {
-    const { db, sqlite } = openMigratedControlPlane();
-    try {
-      await insertMissingLedgerRows(db, parseTenantId(tenant)!, [id], 1);
-      await db.run(
-        "UPDATE vector_ledger SET state='delete_submitted', deleted_at_ms=2, absent_streak=1, last_absent_at_ms=3",
-      );
-      await db.run(
-        "INSERT INTO account_deletions (tenant_id, completed_at_ms, residue, first_completed_at_ms, first_residue, torn_down_at_ms) VALUES (?, 4, 0, 2, 1, 5)",
-        tenant,
-      );
-      const r = remoteFixture();
-      r.vectors.list.mockResolvedValue({ vectors: [], isTruncated: false });
-      r.vectors.get.mockResolvedValue([]);
-      const result = await scanResidue({ ...r, db }, tenant);
-      expect(
-        result.findings
-          .filter((f) => f.source.startsWith("d1."))
-          .every((f) => f.state === "clear"),
-      ).toBe(true);
-      expect(
-        result.findings.find((f) => f.source === "vector_ledger"),
-      ).toMatchObject({
-        state: "residue",
-        detail: [
-          expect.objectContaining({
-            state: "delete_submitted",
-            absent_streak: 1,
-          }),
-        ],
-      });
-      expect(
-        await db.first("SELECT first_residue FROM account_deletions"),
-      ).toEqual({ first_residue: 1 });
-      const io = { stdout: vi.fn(), stderr: vi.fn() };
-      expect(
-        await accountResidueScanCommand.run(["--all-deleted"], {
-          io,
-          connect: () => ({ ...r, db }),
-        }),
-      ).toBe(1);
-      expect(io.stdout.mock.calls[0]?.[0]).toContain(tenant);
-    } finally {
-      sqlite.close();
-    }
-  });
-  it("the actual operator seeder preserves every field of an in-flight confirmation row", async () => {
-    const { db, sqlite } = openMigratedControlPlane();
-    const spy = vi
-      .spyOn(controlPlane, "controlPlaneDbForBucket")
-      .mockReturnValue(db);
-    try {
-      await insertMissingLedgerRows(db, parseTenantId(tenant)!, [id], 1);
-      await db.run(
-        "UPDATE vector_ledger SET state='delete_submitted', deleted_at_ms=2, absent_streak=1, last_absent_at_ms=3",
-      );
-      const before = await db.first("SELECT * FROM vector_ledger");
-      const deps = corpusSeedVectorLedgerCommand.defaultDeps({
-        stdout: vi.fn(),
-        stderr: vi.fn(),
-      });
-      deps.createStorage = async () => ({
-        listObjectKeys: async (prefix) =>
-          prefix.endsWith("by-id/") ? [`u/${tenant}/index/by-id/${id}`] : [],
-        get: async () => null,
-      });
-      expect(
-        await corpusSeedVectorLedgerCommand.run(
-          ["--tenant", tenant, "--execute"],
-          deps,
-        ),
-      ).toBe(0);
-      expect(await db.first("SELECT * FROM vector_ledger")).toEqual(before);
-    } finally {
-      spy.mockRestore();
-      sqlite.close();
-    }
-  });
-});
-describe("audit command safety and reports", () => {
-  it("reports duplicate pairs and executes nothing in plan mode", async () => {
-    const r = remoteFixture();
-    r.db.first.mockResolvedValue({ status: "active" });
-    r.storage.get.mockImplementation(async (key: string) =>
-      key.startsWith("u/")
-        ? JSON.stringify({
-            version: 1,
-            items: [
-              {
-                id,
-                key_prefix: `readings/2026/04/26T200000Z-${id}`,
-                url: "https://example.com",
-                status: "ready",
-                created_at: "2026-04-26T20:00:00.000Z",
-              },
-            ],
-          })
-        : null,
-    );
-    r.vectors.list.mockResolvedValue({
-      vectors: [{ id }, { id: `${tenant}:${id}` }],
-      isTruncated: false,
-    });
-    r.vectors.get.mockImplementation(async (ids: string[]) =>
-      [bare, { ...bare, id: `${tenant}:${id}` }].filter((v) =>
-        ids.includes(v.id),
-      ),
-    );
-    const io = { stdout: vi.fn(), stderr: vi.fn() };
-    expect(
-      await accountAuditBareVectorsCommand.run(["--namespace", tenant], {
-        io,
-        connect: () => r,
-        now: () => 1,
-      }),
-    ).toBe(1);
-    expect(JSON.parse(io.stdout.mock.calls[0]![0]).pairs).toEqual([
-      { reading: id, bareNamespace: tenant, protected: false },
-    ]);
-    expect(JSON.parse(io.stdout.mock.calls[0]![0]).plan[0].action).toBe(
-      "delete_verified_duplicate",
-    );
-    expect(r.vectors.delete).not.toHaveBeenCalled();
-    expect(r.db.run).not.toHaveBeenCalled();
-  });
-  it("blocks all execution on legacy membership or incomplete hydration", async () => {
-    for (const mode of ["legacy", "unknown"]) {
-      const r = remoteFixture();
-      if (mode === "legacy")
-        r.storage.listObjects.mockImplementation(async (prefix: string) =>
-          prefix === "index/by-id/" ? [{ key: `index/by-id/${id}` }] : [],
-        );
-      else r.vectors.get.mockResolvedValue([]);
-      await expect(
-        accountAuditBareVectorsCommand.run(
-          [
-            "--namespace",
-            tenant,
-            "--execute",
-            "--confirm",
-            tenant,
-            "--sole-writer",
-          ],
-          {
-            io: { stdout: vi.fn(), stderr: vi.fn() },
-            connect: () => r,
-            now: () => 1,
-          },
-        ),
-      ).rejects.toThrow("execution refused");
-      expect(r.vectors.delete).not.toHaveBeenCalled();
-      expect(r.vectors.upsert).not.toHaveBeenCalled();
-    }
-  });
-});
 
 import { accountRemote } from "../../../scripts/account-lib/remote";
 describe("REST wire contract", () => {
@@ -578,52 +271,7 @@ describe("REST wire contract", () => {
   });
 });
 
-it("refuses active unlisted readings and pending purge ledger entries before repair", async () => {
-  for (const purging of [false, true]) {
-    const r = remoteFixture();
-    r.db.first.mockResolvedValue({ status: "active" });
-    if (purging) {
-      r.db.all.mockResolvedValue([{ reading_id: id }]);
-      r.storage.get.mockImplementation(async (key: string) =>
-        key.startsWith("u/")
-          ? JSON.stringify({
-              version: 1,
-              items: [
-                {
-                  id,
-                  key_prefix: `readings/2026/04/26T200000Z-${id}`,
-                  url: "https://example.com",
-                  status: "ready",
-                  created_at: "2026-04-26T20:00:00.000Z",
-                },
-              ],
-            })
-          : null,
-      );
-    }
-    await expect(
-      accountAuditBareVectorsCommand.run(
-        [
-          "--namespace",
-          tenant,
-          "--execute",
-          "--confirm",
-          tenant,
-          "--sole-writer",
-        ],
-        {
-          io: { stdout: vi.fn(), stderr: vi.fn() },
-          connect: () => r,
-          now: () => 1,
-        },
-      ),
-    ).rejects.toThrow("unsafe plan");
-    expect(r.vectors.upsert).not.toHaveBeenCalled();
-    expect(r.vectors.delete).not.toHaveBeenCalled();
-    expect(r.db.run).not.toHaveBeenCalled();
-  }
-});
-
+import { accountResidueScanCommand } from "../../../scripts/ops-lib/commands/account-residue-scan";
 import { makeR2Client, makeR2RestClient } from "../../../scripts/lib/cf-clients";
 
 
@@ -643,15 +291,6 @@ describe("S5 real listing adapter failure propagation", () => {
     const report = JSON.parse(io.stdout.mock.calls[0]![0]);
     expect(report.incomplete).toBe(true);
     expect(report.findings.find((f: { source: string }) => f.source === "r2").state).toBe("unknown");
-    // Only listing is real: ordinary object reads stay injected and local.
-    r.storage.get = vi.fn().mockResolvedValue(null);
-    await expect(accountAuditBareVectorsCommand.run([
-      "--namespace", tenant, "--execute", "--confirm", tenant, "--sole-writer",
-    ], { io, connect: () => r, now: () => 1 })).rejects.toThrow(/R2 LIST/);
-    expect(r.vectors.delete).not.toHaveBeenCalled();
-    expect(r.vectors.upsert).not.toHaveBeenCalled();
-    expect(r.db.run).not.toHaveBeenCalled();
-    expect(r.db.batch).not.toHaveBeenCalled();
   });
 });
 

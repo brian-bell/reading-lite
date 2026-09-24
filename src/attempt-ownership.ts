@@ -24,7 +24,6 @@ export interface ProcessReadingArgs {
   attemptId?: string;
   attemptStartedAt?: string;
   trigger?: ProcessingAttemptTrigger;
-  preserveReadyManifest?: Manifest;
   // Reprocess snapshots the prior source type so a failed supplied-markdown
   // attempt cannot claim durable markdown before its terminal write succeeds.
   // Optional for backwards compatibility with in-flight queue messages.
@@ -38,7 +37,11 @@ export interface ProcessReadingArgs {
 // (newProcessingAttempt, which stamps active_attempt.id) and every ownership gate
 // (via attemptOwnership) derive identity through this one function, so the stored
 // id and the id the gates compare against can never drift.
-export function resolveAttemptId(args: ProcessReadingArgs): string {
+// What identifies an attempt. ProcessReadingArgs satisfies it; the PostgreSQL
+// writer passes just this.
+export type AttemptRef = Pick<ProcessReadingArgs, "id" | "attemptId">;
+
+export function resolveAttemptId(args: AttemptRef): string {
   return args.attemptId ?? `at_${args.id}`;
 }
 
@@ -60,7 +63,7 @@ type AttemptOwnershipSource = Pick<Manifest, "active_attempt" | "last_attempt" |
 
 export function attemptOwnership(
   source: AttemptOwnershipSource | null,
-  args: ProcessReadingArgs,
+  args: AttemptRef,
 ): AttemptOwnership {
   const attemptId = resolveAttemptId(args);
   const activeAttemptId = source?.active_attempt?.id;

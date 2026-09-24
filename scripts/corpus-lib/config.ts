@@ -1,6 +1,8 @@
+import { resolveOperatorDatabaseUrl } from "../pg-lib/operator-db";
+import { requireTenantRows } from "../pg-lib/operator-corpus";
 import { operatorTenantSelector, type OperatorTenant } from "./tenant";
 import { loadDotVars } from "../lib/dotvars";
-import type { R2Config, VectorizeConfig } from "../lib/cf-clients";
+import type { R2Config } from "../lib/cf-clients";
 import {
   parseSummarizerProvider,
   type SummarizerProvider,
@@ -52,18 +54,14 @@ export interface BatchConfig {
   r2: R2Config;
   /**
    * Tenant key root every batch R2 client is wrapped with (withKeyRoot):
-   * "" for the pre-tenant global layout, u/{tenantId}/ for one tenant.
+   * u/{tenantId}/ for the selected tenant; global has no PostgreSQL rows.
    */
   keyRoot: string;
   /** The validated --tenant selector ('global' or usr_…), for sidecar stamping. */
   tenantSelector: string;
-  /**
-   * The resolved selector itself, so a caller that needs more than the key root
-   * and the string form — the vector ledger needs the tenant id, and needs to
-   * know `global` is not one — does not have to re-parse it (issue #195 S3).
-   */
+  /** The tenant whose rows and content this batch addresses. */
   tenant: OperatorTenant;
-  vectorize: VectorizeConfig;
+  databaseUrl: string;
   anthropicApiKey: string;
   anthropicModel: string;
   openaiApiKey: string;
@@ -73,13 +71,14 @@ export interface BatchConfig {
   summarizerProvider: SummarizerProvider;
 }
 
-// Credentials for the bulk batch path. R2 (S3) + Vectorize come from .corpus.vars
-// (CORPUS_*); provider keys/models come from .dev.vars/.prd.vars (the same
+// Credentials for the bulk batch path. R2 (S3) comes from .corpus.vars
+// (CORPUS_*); PostgreSQL uses the bucket-paired direct connection variable.
+// Provider keys/models come from .dev.vars/.prd.vars (the same
 // names the worker uses). OpenAI is always required for embeddings. Anthropic
 // is required only for a new Anthropic run or a sidecar-pinned Anthropic resume.
 // A flat var map is injected so this is testable; production reads env + files.
 export function resolveBatchConfig(
-  flags: { bucket?: string; resumeProvider?: SummarizerProvider; tenant: OperatorTenant },
+  flags: { bucket?: string; databaseUrlEnv?: string; resumeProvider?: SummarizerProvider; tenant: OperatorTenant },
   deps?: { vars?: Record<string, string | undefined> },
 ): BatchConfig {
   const vars =
@@ -107,7 +106,7 @@ export function resolveBatchConfig(
   const secretAccessKey = need("CORPUS_R2_SECRET_KEY");
   const bucket =
     flags.bucket ?? vars.CORPUS_R2_BUCKET ?? vars.READING_LITE_BUCKET ?? DEFAULT_BUCKET;
-  const cfApiToken = need("CORPUS_CF_API_TOKEN");
+  requireTenantRows(flags.tenant);
   const anthropicApiKey = vars.ANTHROPIC_API_KEY ?? "";
   if (summarizerProvider === "anthropic" && !anthropicApiKey) {
     missing.push("ANTHROPIC_API_KEY");
@@ -120,17 +119,14 @@ export function resolveBatchConfig(
     );
   }
 
+  const databaseUrl = resolveOperatorDatabaseUrl({ bucket, databaseUrlEnv: flags.databaseUrlEnv, env: vars }).url;
+
   return {
     r2: { accountId, accessKeyId, secretAccessKey, bucket },
     keyRoot: flags.tenant.keyRoot,
     tenantSelector: operatorTenantSelector(flags.tenant),
     tenant: flags.tenant,
-    vectorize: {
-      accountId: vars.CORPUS_VECTORIZE_ACCOUNT_ID ?? accountId,
-      index: vars.CORPUS_VECTORIZE_INDEX ?? bucket,
-      apiToken: cfApiToken,
-      ...(flags.tenant.namespace === undefined ? {} : { namespace: flags.tenant.namespace }),
-    },
+    databaseUrl,
     anthropicApiKey,
     anthropicModel: vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
     openaiApiKey,

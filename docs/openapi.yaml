@@ -19,8 +19,8 @@ info:
     expects (`usr_…` or `global`). When present, a mismatch returns 412 before
     any store write.
 
-    Local `wrangler dev` has no Queue or Vectorize binding: submit/reprocess/
-    import return 503, and similar returns an empty list.
+    Local `wrangler dev` has no Queue binding: submit/reprocess/import return
+    503. Reads, search and similarity run against local PostgreSQL.
   contact:
     url: https://github.com/brian-bell/reading-lite
 servers:
@@ -105,11 +105,12 @@ paths:
         (revoked cookies/tokens 401). Queue, DLQ, digest, and notification
         paths refuse to resurrect data for a deleting tenant.
 
-        Cron starts the tenant R2 and Vectorize wipe after a seven-day grace.
-        Vector deletion propagates asynchronously. Once the wipe completes and
+        Cron starts the tenant wipe after a seven-day grace: the tenant's
+        reading rows (embeddings with them), then its R2 prefix. Once the wipe
+        completes and
         the prefix is confirmed empty, cron writes an audit record, purges
-        tenant Durable Object state, rechecks the prefix, and deletes D1 child
-        rows before the user. No D1 relationship cascades. Global incurred
+        tenant Durable Object state, rechecks the prefix, and deletes child
+        rows before the user. No relationship cascades. Global incurred
         spend and unconfirmed vector-ledger rows survive teardown.
         The founder and staging fixtures have no deletion exemption.
         Retained global corpus data is outside the tenant wipe. See
@@ -222,7 +223,7 @@ paths:
         gesture. Idempotent for the same `redemption_id`; a competing claimant
         fails. Sets a durable host-only `__Host-session` cookie
         (`Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=7776000`) so login
-        survives browser restart. D1 still enforces a 30-day inactivity
+        survives browser restart. The control plane still enforces a 30-day inactivity
         timeout and 90-day absolute expiry. If the request already carries a
         live session cookie for the same user, login redemption refreshes
         `authenticated_at_ms` on that row instead of inserting another session.
@@ -280,7 +281,7 @@ paths:
       summary: Revoke the current browser session and clear the cookie
       security: []
       description: |
-        Same-origin. Revokes the D1 session and expires `__Host-session`.
+        Same-origin. Revokes the stored session and expires `__Host-session`.
         Cookie callers must send `X-CSRF-Token`; a missing or invalid token
         returns 403 without clearing the cookie.
       parameters:
@@ -659,7 +660,7 @@ paths:
       operationId: listReadings
       summary: List readings (newest first)
       description: |
-        Server-side filter against denormalized `index/list.json`. `q` is a
+        Server-side filter over the tenant's reading rows. `q` is a
         case-insensitive substring across title, tldr, url, and keywords.
         `tag` is an exact case-insensitive match on tags only.
       security:
@@ -813,8 +814,8 @@ paths:
       operationId: lookupReadingByUrl
       summary: Resolve the owner id for a URL
       description: |
-        Side-effect-free. Only a live, valid by-url pointer resolves. Does not
-        claim cold legacy pointers or repair damaged ones.
+        Side-effect-free. Resolves the tenant's URL-ownership row; never claims
+        a URL or writes anything.
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -846,12 +847,6 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
-        "409":
-          description: Owner pointer still initializing
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InitializingConflict"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
@@ -864,8 +859,8 @@ paths:
       operationId: querySimilarReadings
       summary: Top-K similar readings by embedding
       description: |
-        Queries Vectorize. Without a Vectorize binding (local dev), returns
-        `{ "items": [] }`.
+        Exact cosine similarity over the tenant's embeddings in PostgreSQL
+        (pgvector).
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -929,8 +924,9 @@ paths:
       operationId: deleteReading
       summary: Purge a reading
       description: |
-        Visibility-first purge: Vectorize vector, owned by-url pointer, list
-        row, R2 objects under the prefix, by-id pointer last. 409 while an
+        Deletes the reading's row in one transaction (its URL ownership,
+        revisions, relationships, embedding, attempts and jobs cascade), then
+        the R2 objects under its prefix. 409 while an
         attempt is actively running (stale attempts past the pending TTL do
         not block). Inbound `connections` on other readings may still name the
         deleted id.
@@ -1128,7 +1124,8 @@ components:
       type: http
       scheme: bearer
       description: |
-        Founder legacy bearer (or session token) looked up in D1. Runtime auth
+        Founder legacy bearer (or session token) looked up in the control
+        plane. Runtime auth
         does not fall back to the `READER_API_TOKEN` secret itself.
 
   parameters:
@@ -1174,6 +1171,9 @@ components:
       description: |
         Authenticated but lacking scope, forbidden principal, or invalid
         cookie CSRF token (session stays; SPA must not treat this as logout).
+        On a write, also an account that stopped being active after the
+        request authenticated: the claim saw it under the tenant lock and
+        committed nothing.
       content:
         application/json:
           schema:
@@ -1235,14 +1235,12 @@ components:
             error: auth misconfigured
     IntakeConflict:
       description: |
-        Owner still initializing, active attempt in progress, or markdown
-        content unavailable for the requested operation.
+        Active attempt in progress, or markdown content unavailable for the
+        requested operation.
       content:
         application/json:
           schema:
-            oneOf:
-              - $ref: "#/components/schemas/InitializingConflict"
-              - $ref: "#/components/schemas/ErrorMessage"
+            $ref: "#/components/schemas/ErrorMessage"
     Unavailable:
       description: |
         Queue unbound, claim/activation contention, or queue send failure
@@ -1298,20 +1296,6 @@ components:
           const: expected tenant mismatch
         acting_tenant:
           type: string
-
-    InitializingConflict:
-      type: object
-      additionalProperties: false
-      required: [error, id, poll]
-      properties:
-        error:
-          type: string
-          const: reading owner is still initializing
-        id:
-          type: string
-        poll:
-          type: string
-          description: Relative poll path, e.g. `/api/readings/{id}`
 
     UnavailableError:
       type: object
@@ -1896,7 +1880,7 @@ components:
           minLength: 1
         vector_delete_requested:
           type: boolean
-          description: Vectorize deleteByIds was issued (existence not reported)
+          description: Always true; the embedding row is deleted with the reading. Kept for the report contract.
         list_row_removed:
           type: boolean
         by_url_released:

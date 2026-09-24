@@ -1,10 +1,8 @@
-import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   ProcessingCheckpointSchema,
   type ProcessingCheckpoint,
 } from "../../../src/modules/processing-checkpoint";
-import { ReadingStore, buildKeyPrefix } from "../../../src/modules/stores/reading-store";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
 
 const summarizeWithNeighbour = (url: string): ProcessingCheckpoint => ({
@@ -38,32 +36,12 @@ const summarizeWithNeighbour = (url: string): ProcessingCheckpoint => ({
   },
 });
 
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
-}
-
-beforeEach(clearBucket);
-afterEach(clearBucket);
-
 describe("ProcessingCheckpointSchema", () => {
-  it("accepts a neighbour whose url is empty, matching SimilarityStore query", () => {
+  it("accepts a neighbour whose url is empty", () => {
     const parsed = ProcessingCheckpointSchema.safeParse(summarizeWithNeighbour(""));
     expect(parsed.success).toBe(true);
     if (parsed.success) {
       expect(parsed.data.summarize?.similar_context[0]?.url).toBe("");
     }
-  });
-});
-
-describe("ReadingStore processing checkpoints", () => {
-  it("round-trips a summarize checkpoint whose neighbour url is empty", async () => {
-    const store = new ReadingStore(env.READINGS_BUCKET);
-    const prefix = buildKeyPrefix("rd_CKPT", "2026-09-03T00:00:00.000Z");
-    const checkpoint = summarizeWithNeighbour("");
-    await store.writeProcessingCheckpoint(prefix, "at_ckpt", checkpoint);
-    await expect(store.readProcessingCheckpoint(prefix, "at_ckpt")).resolves.toEqual(checkpoint);
   });
 });

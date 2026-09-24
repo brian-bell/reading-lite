@@ -1,28 +1,38 @@
 import { env as testEnv } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AttemptIo } from "../../../src/attempt-io";
 import { processReading } from "../../../src/process-reading";
 import type { Env } from "../../../src/index";
+import { PgReadingWriter } from "../../../src/modules/stores/postgres/reading-writer";
+import type { Manifest } from "../../../src/schemas/manifest";
 import type { Services } from "../../../src/services";
-import { founderTenant, PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
+import { insertActiveUser } from "../../helpers/control-plane-db";
+import { axisVector, mintTenant } from "../../helpers/pg-fixtures";
+import { PUBLIC_LOOKUP } from "../../helpers/tenant-fixtures";
+import { testReadingsFor, type TestReadings } from "../../helpers/test-readings";
+
+const ID = "rd_TEST";
+const KEY_PREFIX = "readings/2026/04/26T200000Z-rd_TEST";
+// No attemptId on the message, so the attempt is `at_${id}`.
+const ATTEMPT_ID = "at_rd_TEST";
+const OWN_PREFIX = `${KEY_PREFIX}/revisions/${ATTEMPT_ID}`;
 
 function args() {
   return {
-    id: "rd_TEST",
+    id: ID,
     url: "https://example.com/x",
     urlHash: "a".repeat(64),
     createdAt: "2026-04-26T20:00:00.000Z",
-    keyPrefix: "readings/2026/04/26T200000Z-rd_TEST",
+    keyPrefix: KEY_PREFIX,
   };
 }
 
-function envWith(bucket: R2Bucket): Env {
+function env(): Env {
   return {
-    READINGS_BUCKET: bucket,
+    READINGS_BUCKET: testEnv.READINGS_BUCKET,
+    HYPERDRIVE: testEnv.HYPERDRIVE,
+    TENANT_DATA_PLANE: "1",
     GLOBAL_USAGE_GUARD: testEnv.GLOBAL_USAGE_GUARD,
-    READINGS_INDEX: {
-      upsert: vi.fn(),
-      query: vi.fn(),
-    } as unknown as VectorizeIndex,
     READER_API_TOKEN: "x",
     ANTHROPIC_API_KEY: "x",
     OPENAI_API_KEY: "x",
@@ -34,24 +44,22 @@ function envWith(bucket: R2Bucket): Env {
   } as unknown as Env;
 }
 
-function services(): Services {
+// The source fetch fails, so every attempt here ends in markFailed.
+function services(onFetch: () => Promise<void> = async () => undefined): Services {
   return {
     fetch: vi.fn(async () => {
+      await onFetch();
       throw new Error("network down");
     }) as unknown as typeof fetch,
     lookup: PUBLIC_LOOKUP,
     now: () => "2026-04-26T20:00:01.000Z",
-    newId: () => "rd_TEST",
+    newId: () => ID,
   };
 }
 
-// Activation always writes the pending manifest before enqueueing, and the
-// consumer refuses to write anything for a reading with no stored trace (the
-// purge guard) — so the realistic consumer state is a bucket that serves the
-// pending manifest and fails only on the writes under test.
-function manifestGet() {
+function pending(over: Partial<Manifest> = {}): Manifest {
   const a = args();
-  const body = JSON.stringify({
+  return {
     id: a.id,
     url: a.url,
     url_hash: a.urlHash,
@@ -62,313 +70,147 @@ function manifestGet() {
     content_sha256: "0".repeat(64),
     created_at: a.createdAt,
     updated_at: a.createdAt,
-  });
-  return vi.fn(async (key: string) => {
-    if (key !== `${a.keyPrefix}/manifest.json`) return null;
-    return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-  });
+    ...over,
+  };
 }
 
-describe("processReading — markFailed is defensive against R2 outages", () => {
-  it("does not propagate when writeManifest in markFailed throws", async () => {
-    // Extractor throws (services.fetch fails) → markFailed runs → writeManifest
-    // throws on a totally broken bucket. processReading must swallow + log;
-    // the request already returned 202 and there's nothing for the caller to
-    // do with a thrown promise from waitUntil.
-    const bucket = {
-      get: manifestGet(),
-      put: vi.fn(async () => {
-        throw new Error("R2 outage");
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
+// Intake always commits the pending reading before enqueueing, so that is the
+// state a consumer finds. Each test gets its own tenant, an active user.
+async function seeded(manifest: Manifest | null = pending()): Promise<TestReadings> {
+  const readings = testReadingsFor(await mintTenant());
+  await insertActiveUser(testEnv, String(readings.tenant.tenantId));
+  if (manifest) await readings.seed(manifest, { keyPrefix: KEY_PREFIX });
+  return readings;
+}
 
+async function objectKeys(readings: TestReadings): Promise<string[]> {
+  return (await readings.content.list(KEY_PREFIX)).map((object) => object.key.slice(object.key.indexOf(KEY_PREFIX)));
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe("processReading — markFailed is defensive against a database outage", () => {
+  it("does not propagate when the failure write throws", async () => {
+    // Extractor throws (services.fetch fails) → markFailed runs → its write
+    // throws. processReading must swallow + log: the queue consumer acks either
+    // way and there is nothing for a caller to do with a rejected promise.
+    const readings = await seeded();
+    vi.spyOn(PgReadingWriter.prototype, "fail").mockRejectedValue(new Error("database outage"));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(args(), envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-    expect(consoleErr).toHaveBeenCalled();
-    consoleErr.mockRestore();
+
+    await expect(processReading(args(), env(), services(), readings.tenant)).resolves.toBeUndefined();
+
+    expect(consoleErr.mock.calls.some(([first]) => String(first).includes("database outage"))).toBe(true);
+    // The TTL annotator flips a stale pending reading; nothing else is lost.
+    expect((await readings.manifest(ID))?.status).toBe("pending");
   });
 
-  it("does not propagate when appendOrReplaceListIndexItem in markFailed throws", async () => {
-    // writeManifest succeeds (put for manifest.json works), but the index
-    // append fails. markFailed must not bubble that out either.
-    const bucket = {
-      get: manifestGet(),
-      put: vi.fn(async (key: string) => {
-        if (key === "index/list.json") throw new Error("R2 partial outage");
-      }),
-      head: vi.fn(async () => null),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
+  it("recreates nothing when the reading is purged mid-flight", async () => {
+    const readings = await seeded();
+    await readings.content.put(`${OWN_PREFIX}/raw.html`, "residue of a crashed delivery", "text/html");
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(args(), envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-    expect(consoleErr).toHaveBeenCalled();
-    consoleErr.mockRestore();
-  });
-
-  it("does not write attempt or failed manifest when a purge tombstone appears mid-flight", async () => {
-    const a = args();
-    const tombstoneKey = `index/deleted/${a.id}`;
-    let tombstoneHeads = 0;
-    const put = vi.fn(async (_key: string, _body?: string) => undefined);
-    const bucket = {
-      get: manifestGet(),
-      put,
-      head: vi.fn(async (key: string) => {
-        if (key !== tombstoneKey) return null;
-        tombstoneHeads += 1;
-        return tombstoneHeads > 1 ? { key } : null;
+    // The purge lands while the attempt is fetching its source.
+    await processReading(
+      args(),
+      env(),
+      services(async () => {
+        await readings.writer.purge(ID, () => false);
       }),
-      delete: vi.fn(),
-      list: vi.fn(async () => ({ objects: [], truncated: false })),
-    } as unknown as R2Bucket;
+      readings.tenant,
+    );
 
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-    consoleErr.mockRestore();
-
-    expect(tombstoneHeads).toBeGreaterThan(1);
-    expect(put.mock.calls.some(([key]) => String(key).endsWith("manifest.json"))).toBe(false);
-    const attemptBodies = put.mock.calls
-      .filter(([key]) => String(key).includes("/attempts/"))
-      .map(([, body]) => JSON.parse(String(body)));
-    expect(attemptBodies.length).toBeGreaterThan(0);
-    expect(attemptBodies.every((body: { status?: string }) => body.status !== "failed")).toBe(true);
-  });
-
-  it("sweeps prefix residue and does not recreate failed objects when a purge tombstone appears mid-flight", async () => {
-    const a = args();
-    const tombstoneKey = `index/deleted/${a.id}`;
-    const store = new Map<string, string>([
-      [`${a.keyPrefix}/manifest.json`, JSON.stringify({
-        id: a.id,
-        url: a.url,
-        url_hash: a.urlHash,
-        status: "pending",
-        content_type: "application/octet-stream",
-        content_status: "captured",
-        content_bytes: 0,
-        content_sha256: "0".repeat(64),
-        created_at: a.createdAt,
-        updated_at: a.createdAt,
-      })],
-      [`${a.keyPrefix}/extracted.md`, "# leftover after purge sweep"],
-    ]);
-    let tombstoneHeads = 0;
-    const bucket = {
-      get: vi.fn(async (key: string) => {
-        const body = store.get(key);
-        if (body === undefined) return null;
-        return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        store.set(key, String(value));
-      }),
-      head: vi.fn(async (key: string) => {
-        if (key !== tombstoneKey) return store.has(key) ? { key } : null;
-        tombstoneHeads += 1;
-        return tombstoneHeads > 1 ? { key } : null;
-      }),
-      delete: vi.fn(async (keys: string | string[]) => {
-        for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
-      }),
-      list: vi.fn(async (opts?: { prefix?: string }) => {
-        const prefix = opts?.prefix ?? "";
-        return {
-          objects: [...store.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
-          truncated: false,
-        };
-      }),
-    } as unknown as R2Bucket;
-
-    const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-    consoleErr.mockRestore();
-
-    expect(tombstoneHeads).toBeGreaterThan(1);
-    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
-    const puts = (bucket.put as ReturnType<typeof vi.fn>).mock.calls;
-    expect(
-      puts
-        .filter(([key]) => String(key).endsWith("manifest.json"))
-        .every(([, body]) => JSON.parse(String(body)).status !== "failed"),
-    ).toBe(true);
-    expect(
-      puts
-        .filter(([key]) => String(key).includes("/attempts/"))
-        .every(([, body]) => JSON.parse(String(body)).status !== "failed"),
-    ).toBe(true);
+    expect(await readings.manifest(ID)).toBeNull();
+    expect(await readings.ids()).toEqual([]);
+    expect(await readings.sql.query("SELECT 1 FROM reading_attempts WHERE tenant_id = $1", [String(readings.tenant.tenantId)])).toEqual([]);
+    // And what this attempt had captured is swept: nothing references it.
+    expect(await objectKeys(readings)).toEqual([]);
   });
 });
 
-function pendingBody() {
-  const a = args();
-  return JSON.stringify({
-    id: a.id,
-    url: a.url,
-    url_hash: a.urlHash,
-    status: "pending",
-    content_type: "application/octet-stream",
-    content_status: "captured",
-    content_bytes: 0,
-    content_sha256: "0".repeat(64),
-    created_at: a.createdAt,
-    updated_at: a.createdAt,
-  });
-}
+describe("processReading — content sweep on early return", () => {
+  it("sweeps this attempt's residue when the reading was purged before the delivery", async () => {
+    const readings = await seeded(null);
+    await readings.content.put(`${OWN_PREFIX}/raw.html`, "residue", "text/html");
+    await readings.content.put(`${OWN_PREFIX}/extracted.md`, "residue", "text/markdown");
 
-function memoryBucket(
-  init: Array<[string, string]>,
-  hooks: {
-    head?: (key: string, store: Map<string, string>) => Promise<{ key: string } | null>;
-    onPut?: (key: string, store: Map<string, string>) => void;
-  } = {},
-) {
-  const store = new Map<string, string>(init);
-  const tombstoneKey = `index/deleted/${args().id}`;
-  return {
-    store,
-    tombstoneKey,
-    bucket: {
-      get: vi.fn(async (key: string) => {
-        const body = store.get(key);
-        if (body === undefined) return null;
-        return { text: async () => body, json: async () => JSON.parse(body), etag: "e1" };
-      }),
-      put: vi.fn(async (key: string, value: unknown) => {
-        store.set(key, String(value));
-        hooks.onPut?.(key, store);
-      }),
-      head: vi.fn(async (key: string) => {
-        if (hooks.head) return hooks.head(key, store);
-        return store.has(key) ? { key } : null;
-      }),
-      delete: vi.fn(async (keys: string | string[]) => {
-        for (const key of Array.isArray(keys) ? keys : [keys]) store.delete(key);
-      }),
-      list: vi.fn(async (opts?: { prefix?: string }) => {
-        const prefix = opts?.prefix ?? "";
-        return {
-          objects: [...store.keys()].filter((key) => key.startsWith(prefix)).map((key) => ({ key })),
-          truncated: false,
-        };
-      }),
-    } as unknown as R2Bucket,
-  };
-}
+    await processReading(args(), env(), services(), readings.tenant);
 
-describe("processReading — tombstone prefix sweep on early return", () => {
-  it("sweeps prior residue when readingWasPurged sees a confirmed tombstone", async () => {
-    const a = args();
-    const { store, bucket } = memoryBucket([
-      [`${a.keyPrefix}/extracted.md`, "# leftover from a crashed delivery"],
-      [
-        `${a.keyPrefix}/attempts/at_old.json`,
-        JSON.stringify({
-          id: "at_old",
-          trigger: "submit",
-          status: "running",
-          started_at: a.createdAt,
-          reading_id: a.id,
-          url: a.url,
-          url_hash: a.urlHash,
-          key_prefix: a.keyPrefix,
-          events: [],
-        }),
-      ],
-      [`index/deleted/${a.id}`, ""],
-    ]);
-
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-
-    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
-    expect((bucket.put as ReturnType<typeof vi.fn>).mock.calls.some(([key]) => String(key).includes("/attempts/"))).toBe(false);
+    expect(await objectKeys(readings)).toEqual([]);
+    expect(await readings.ids()).toEqual([]);
   });
 
-  it("sweeps after a confirmed tombstone even if a later HEAD would throw", async () => {
-    const a = args();
-    const tombstoneKey = `index/deleted/${a.id}`;
-    let tombstoneHeads = 0;
-    const { store, bucket } = memoryBucket(
-      [
-        [`${a.keyPrefix}/extracted.md`, "# leftover from a crashed delivery"],
-        [
-          `${a.keyPrefix}/attempts/at_old.json`,
-          JSON.stringify({
-            id: "at_old",
-            trigger: "submit",
-            status: "running",
-            started_at: a.createdAt,
-            reading_id: a.id,
-            url: a.url,
-            url_hash: a.urlHash,
-            key_prefix: a.keyPrefix,
-            events: [],
-          }),
-        ],
-      ],
+  it("sweeps only its own content when another attempt owns the reading", async () => {
+    const foreign = { id: "at_FOREIGN", trigger: "reprocess" as const, status: "running" as const, started_at: "2026-04-26T20:00:00.500Z" };
+    const readings = await seeded(pending({ active_attempt: foreign }));
+    await readings.content.put(`${OWN_PREFIX}/raw.html`, "mine", "text/html");
+    await readings.content.put(`${KEY_PREFIX}/revisions/at_FOREIGN/raw.html`, "theirs", "text/html");
+
+    await processReading(args(), env(), services(), readings.tenant);
+
+    expect(await objectKeys(readings)).toEqual([`${KEY_PREFIX}/revisions/at_FOREIGN/raw.html`]);
+    expect((await readings.manifest(ID))?.active_attempt?.id).toBe("at_FOREIGN");
+  });
+
+  // The hazard the sweep must never trip: a message redelivered after its
+  // attempt already published takes the same "may not write" exit, and that
+  // attempt's revision prefix IS the published content.
+  it("never sweeps the content of a revision this attempt already published", async () => {
+    const readings = await seeded(null);
+    const running = { id: ATTEMPT_ID, trigger: "submit" as const, status: "running" as const, started_at: "2026-04-26T20:00:00.000Z" };
+    await readings.writer.claimUrl(pending({ active_attempt: running }), KEY_PREFIX, { summary: running, payload: args() });
+    await readings.content.put(`${OWN_PREFIX}/raw.html`, "<p>published</p>", "text/html");
+    await readings.content.put(`${OWN_PREFIX}/extracted.md`, "published", "text/markdown");
+    const published = await readings.writer.publish(
+      args(),
+      pending({
+        status: "ready",
+        title: "Published",
+        tldr: "Published",
+        connections: [],
+        summary_markdown: "## Summary",
+        content_type: "text/html",
+        last_attempt: { ...running, status: "succeeded", finished_at: "2026-04-26T20:00:01.000Z" },
+      }),
       {
-        head: async (key, store) => {
-          if (key !== tombstoneKey) return store.has(key) ? { key } : null;
-          tombstoneHeads += 1;
-          if (tombstoneHeads === 1) return { key };
-          throw new Error("R2 hiccup");
-        },
+        keyPrefix: KEY_PREFIX,
+        content: { rawKey: `${OWN_PREFIX}/raw.html`, extractedKey: `${OWN_PREFIX}/extracted.md` },
+        embedding: axisVector(1),
+        claimMissingUrl: true,
       },
     );
+    expect(published).toEqual({ committed: true, published: true, superseded: null });
 
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+    // The queue redelivers the message (the consumer crashed before its ack).
+    await processReading(args(), env(), services(), readings.tenant);
 
-    expect(tombstoneHeads).toBe(1);
-    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
+    expect((await readings.manifest(ID))?.status).toBe("ready");
+    expect(await readings.extractedText(ID)).toBe("published");
+    expect(await readings.rawText(ID)).toBe("<p>published</p>");
   });
 
-  it("sweeps this delivery's attempt residue when canWrite is false after writeAttemptSafe", async () => {
-    const a = args();
-    const tombstoneKey = `index/deleted/${a.id}`;
-    let tombstoneHeads = 0;
-    const { store, bucket } = memoryBucket([[`${a.keyPrefix}/manifest.json`, pendingBody()]], {
-      head: async (key, store) => {
-        if (key !== tombstoneKey) return store.has(key) ? { key } : null;
-        tombstoneHeads += 1;
-        return tombstoneHeads > 1 ? { key } : null;
+  // The sweep is housekeeping. A transient error in it must not reach the
+  // failure path, which would stamp the published attempt's last_attempt failed.
+  it("leaves a published reading's attempt succeeded when the sweep throws on redelivery", async () => {
+    const readings = await seeded(null);
+    const running = { id: ATTEMPT_ID, trigger: "submit" as const, status: "running" as const, started_at: "2026-04-26T20:00:00.000Z" };
+    await readings.writer.claimUrl(pending({ active_attempt: running }), KEY_PREFIX, { summary: running, payload: args() });
+    const succeeded = { ...running, status: "succeeded" as const, finished_at: "2026-04-26T20:00:01.000Z" };
+    await readings.writer.publish(
+      args(),
+      pending({ status: "ready", title: "Published", tldr: "Published", connections: [], summary_markdown: "## Summary", last_attempt: succeeded }),
+      {
+        keyPrefix: KEY_PREFIX,
+        content: { rawKey: `${OWN_PREFIX}/raw.html`, extractedKey: `${OWN_PREFIX}/extracted.md` },
+        embedding: axisVector(1),
+        claimMissingUrl: true,
       },
-      onPut: (key, store) => {
-        if (key.includes("/attempts/")) store.delete(`${a.keyPrefix}/manifest.json`);
-      },
-    });
+    );
+    vi.spyOn(AttemptIo.prototype, "discardUnreferencedContent").mockRejectedValue(new Error("R2 blip"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
+    await processReading(args(), env(), services(), readings.tenant);
 
-    expect(tombstoneHeads).toBeGreaterThan(1);
-    expect([...store.keys()].some((key) => key.startsWith(`${a.keyPrefix}/`))).toBe(false);
-  });
-
-  it("does not sweep when canWrite is false without a tombstone (foreign attempt)", async () => {
-    const a = args();
-    const { store, bucket } = memoryBucket([
-      [
-        `${a.keyPrefix}/manifest.json`,
-        JSON.stringify({
-          ...JSON.parse(pendingBody()),
-          active_attempt: {
-            id: "at_OTHER",
-            trigger: "submit",
-            status: "running",
-            started_at: a.createdAt,
-          },
-        }),
-      ],
-      [`${a.keyPrefix}/extracted.md`, "# owned by the other attempt"],
-    ]);
-
-    await expect(processReading(a, envWith(bucket), services(), founderTenant())).resolves.toBeUndefined();
-
-    expect(store.get(`${a.keyPrefix}/extracted.md`)).toBe("# owned by the other attempt");
-    expect(store.has(`${a.keyPrefix}/manifest.json`)).toBe(true);
+    expect(await readings.manifest(ID)).toMatchObject({ status: "ready", last_attempt: { id: ATTEMPT_ID, status: "succeeded" } });
   });
 });

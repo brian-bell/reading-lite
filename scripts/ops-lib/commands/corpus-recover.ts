@@ -10,15 +10,12 @@
 // realtime or batch action path unchanged, including the --sole-writer
 // acknowledgement that --batch --execute still requires.
 
+import { withBatchCorpus } from "../../corpus-lib/batch/postgres";
 import { parseArgs } from "node:util";
 import type { ExtractedContent } from "../../../src/modules/extractor/index";
 import { DEFAULT_API_BASE, resolveApiTarget, resolveBatchConfig, resolveBucket, type ApiTarget, type BatchConfig } from "../../corpus-lib/config";
 import { operatorTenantSelector, type OperatorTenant } from "../../corpus-lib/tenant";
 import { requireOperatorTenant } from "../tenant-flag";
-import {
-  assertOperatorLedgerAvailable,
-  operatorVectorLedger,
-} from "../../account-lib/operator-ledger";
 import {
   classifyOutcome,
   readingApiFor,
@@ -29,7 +26,14 @@ import { planByAction, recoveryAction } from "../../corpus-lib/policy";
 import { verifyRealtimeTenant } from "../../corpus-lib/realtime-tenant";
 import { shouldPauseAfter } from "../../corpus-lib/throttle";
 import { tallyByIds } from "../../corpus-lib/audit";
-import type { R2Deps } from "../../corpus-lib/wrangler-r2";
+import {
+  DATABASE_URL_ENV_FLAG_HELP,
+  openOperatorSql,
+  resolveOperatorDatabaseUrl,
+  withOperatorSql,
+  type OpenOperatorSql,
+} from "../../pg-lib/operator-db";
+import { operatorReadings, requireTenantRows } from "../../pg-lib/operator-corpus";
 import type { BatchRunResult } from "../../corpus-lib/batch/run";
 import type { PersistedSidecar } from "../../corpus-lib/batch/types";
 import { sidecarPath } from "../../corpus-lib/batch/sidecar";
@@ -57,7 +61,10 @@ export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
   ) => Pick<ReadingApi, "reprocess" | "importMarkdown" | "whoami">;
   // Realtime local-extract (browser-header fetch wired in by defaultDeps).
   extract: (url: string) => Promise<ExtractedContent>;
-  readListIndex: (deps: R2Deps) => Promise<ListItem[]>;
+  // --monitor polls the tenant's readings; the recovery writes themselves go
+  // through the hosted API, not this session.
+  openSql: OpenOperatorSql;
+  env: Record<string, string | undefined>;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   batch: {
@@ -65,6 +72,7 @@ export interface CorpusRecoverDeps extends BaseDeps, OperatorPaidFetchDeps {
     clearSidecar: (path: string) => Promise<void>;
     resolveConfig: (flags: {
       bucket?: string;
+      databaseUrlEnv?: string;
       resumeProvider?: PersistedSidecar["provider"];
       tenant: OperatorTenant;
     }) => BatchConfig;
@@ -94,6 +102,7 @@ interface Args {
   // resolveBatchConfig can fall back to CORPUS_R2_BUCKET (an alternate bucket)
   // rather than being masked by the default production bucket.
   bucketFlag?: string;
+  databaseUrlEnv?: string;
 }
 
 const ONLY_ACTIONS: RecoveryAction[] = ["reprocess", "local-extract", "skip", "none"];
@@ -111,6 +120,7 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
         only: { type: "string" },
         limit: { type: "string" },
         bucket: { type: "string" },
+        "database-url-env": { type: "string" },
         url: { type: "string" },
         token: { type: "string" },
         monitor: { type: "boolean", default: false },
@@ -140,6 +150,9 @@ function parseRecoverArgs(argv: string[], io: CommandIo): Args {
     limit: values.limit ? Number(values.limit) : Infinity,
     bucket: resolveBucket(values.bucket),
     ...(values.bucket === undefined ? {} : { bucketFlag: values.bucket }),
+    ...(values["database-url-env"] === undefined
+      ? {}
+      : { databaseUrlEnv: values["database-url-env"] }),
     url: values.url,
     token: values.token,
     monitor: values.monitor === true,
@@ -195,6 +208,21 @@ function describeError(out: ReadingApiOutcome): string {
 async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promise<number> {
   const args = parseRecoverArgs(argv, deps.io);
   const tenant = requireOperatorTenant(args.tenant);
+  if (args.batch) requireTenantRows(tenant);
+  // Resolved up front, not at the monitor loop: --monitor runs after every paid
+  // reprocess, so a selector that cannot name rows — or an unset connection
+  // variable, which is sourced from a dotfile and easy to forget — must refuse
+  // before the spending, not after it.
+  const monitorTarget = args.monitor
+    ? {
+        tenant: requireTenantRows(tenant),
+        url: resolveOperatorDatabaseUrl({
+          bucket: args.bucket,
+          ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
+          env: deps.env,
+        }).url,
+      }
+    : null;
   const doc = JSON.parse(await deps.readFile(args.index)) as {
     rows: AuditRow[];
     tenant?: string;
@@ -348,14 +376,24 @@ async function runCorpusRecover(argv: string[], deps: CorpusRecoverDeps): Promis
 
   if (args.monitor && touched.length > 0) {
     deps.io.stderr(`\nMonitoring ${touched.length} readings...`);
-    for (let i = 0; i < 60; i++) {
-      const items = await deps.readListIndex({ bucket: args.bucket, keyRoot: tenant.keyRoot, remote: true });
-      const t = tallyByIds(items, touched);
-      const ts = new Date(deps.now()).toISOString().slice(11, 19);
-      deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
-      if (t.pending === 0) break;
-      await deps.sleep(15_000);
-    }
+    const { tenant: monitored, url } = monitorTarget!;
+    // One session for the whole poll, closed however the loop ends.
+    await withOperatorSql(
+      url,
+      async (sql) => {
+        const store = operatorReadings(sql, monitored);
+        for (let i = 0; i < 60; i++) {
+          // Only the touched rows, keyed: the tally is about them, not the corpus.
+          const items = (await store.relationshipTargets(touched)) as ListItem[];
+          const t = tallyByIds(items, touched);
+          const ts = new Date(deps.now()).toISOString().slice(11, 19);
+          deps.io.stderr(`  ${ts} ready=${t.ready} pending=${t.pending} failed=${t.failed} absent=${t.absent}`);
+          if (t.pending === 0) break;
+          await deps.sleep(15_000);
+        }
+      },
+      deps.openSql,
+    );
   }
 
   printSummary(deps.io, { executed: true, reprocessed, extracted, inProgress, errors, touched });
@@ -433,10 +471,8 @@ async function runBatchMode(
       ...(args.bucketFlag === undefined ? {} : { bucket: args.bucketFlag }),
       ...(existing === null ? {} : { resumeProvider: existing.provider }),
       tenant,
+      ...(args.databaseUrlEnv === undefined ? {} : { databaseUrlEnv: args.databaseUrlEnv }),
     });
-    // Refuse a tenant/bucket pair the vector ledger cannot serve, before the
-    // batch is submitted rather than at the first upsert (issue #195 S3).
-    assertOperatorLedgerAvailable(cfg.tenant, cfg.r2.bucket);
   } catch (e) {
     deps.io.stderr(e instanceof Error ? e.message : String(e));
     return 2;
@@ -500,10 +536,8 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         maxBytes: 30_000_000,
       });
     },
-    readListIndex: async (r2Deps) => {
-      const { readListIndex } = await import("../../corpus-lib/wrangler-r2");
-      return readListIndex(r2Deps);
-    },
+    openSql: openOperatorSql,
+    env: process.env,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),
     openSpend: async (env) => (await import("../../system-lib/spend")).openRemoteOperatorSpend(env),
@@ -521,7 +555,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
       execute: async (rows, cfg, scPath, paid) => {
         const { randomUUID } = await import("node:crypto");
         const { runBatch } = await import("../../corpus-lib/batch/run");
-        const { makeR2Client, makeVectorizeClient, withKeyRoot } = await import("../../lib/cf-clients");
+        const { makeR2Client, withKeyRoot } = await import("../../lib/cf-clients");
         const { makeAnthropicBatchClient, makeOpenAIBatchClient, makeOpenAIEmbedClient } =
           await import("../../corpus-lib/batch/clients");
         const { loadSidecar, saveSidecar, clearSidecar, saveInputJsonl, loadInputJsonl } =
@@ -533,18 +567,9 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
         const browserFetch = makeBrowserFetch(fetchFn);
         const lookup = (hostname: string) => dnsLookup(hostname, { all: true });
         const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-        return runBatch(rows, {
-        // Ledger every vector this batch writes (issue #195 S3). Resolved from
-        // the run's own tenant and bucket; the no-op for --tenant global, which
-        // no account wipe addresses.
-        ledger: operatorVectorLedger({ tenant: cfg.tenant, bucket: cfg.r2.bucket, execute: true }),
-        // So write-phase composes the ADR 0002 tenant-scoped vector id, like
-        // every other writer. Undefined for --tenant global.
-        ...(cfg.vectorize.namespace === undefined
-          ? {}
-          : { vectorNamespace: cfg.vectorize.namespace }),
+        return withBatchCorpus(cfg.databaseUrl, requireTenantRows(cfg.tenant), (corpus) => runBatch(rows, {
           r2: withKeyRoot(makeR2Client(cfg.r2, fetchFn), cfg.keyRoot),
-          vectorize: makeVectorizeClient(cfg.vectorize, fetchFn),
+          corpus,
           ...(cfg.anthropicApiKey
             ? { batch: makeAnthropicBatchClient({ fetch: fetchFn, apiKey: cfg.anthropicApiKey }) }
             : {}),
@@ -573,7 +598,7 @@ function defaultDeps(io: CommandIo): CorpusRecoverDeps {
           loadInputJsonl: () => loadInputJsonl(scPath),
           sidecarFilePath: scPath,
           log: (line) => io.stderr(line),
-        });
+        }));
       },
     },
   };
@@ -594,7 +619,9 @@ Options:
   --execute         Actually perform the actions (otherwise prints the plan).
   --only <action>   Restrict to one action: reprocess | local-extract | skip.
   --limit <n>       Cap how many rows to act on.
-  --bucket <name>   R2 bucket for --monitor reads. Default: reading-lite.
+  --bucket <name>   Data bucket; selects the database --monitor polls and the
+                    bucket --batch writes. Default: reading-lite.
+${DATABASE_URL_ENV_FLAG_HELP}
   --tenant <selector>  REQUIRED: tenant id (usr_…) or 'global' for the pre-tenant
                        layout. Scopes this command's direct R2 reads and the batch
                        path. Realtime API writes act as the bearer token's tenant,
@@ -612,15 +639,14 @@ Options:
                     configured provider's Batch API (OpenAI by default, or
                     Anthropic) instead of the realtime queue. --wave is ignored.
                     Resumes an in-flight batch from ./index.batch.json. Needs R2
-                    + Vectorize creds and OPENAI_API_KEY for embeddings;
+                    + a bucket-paired direct PostgreSQL connection and OPENAI_API_KEY;
                     ANTHROPIC_API_KEY only for an Anthropic start/resume.
                     Sidecars pin provider/model/effort; there is no fallback.
                     --execute admits the batch's maximum against the billing
                     tenant's and the global daily caps before claiming anything,
                     and settles actual usage from the results.
   ${BILLING_TENANT_FLAG_HELP}
-                    --batch only. Defaults to a usr_… --tenant; required with
-                    --tenant global. A resume settles against the tenant its
+                    --batch only. Defaults to --tenant; global is refused. A resume settles against the tenant its
                     batch was admitted under.
   --sole-writer     Required with --batch --execute: assert the realtime writer
                     is paused/drained. Eager by-url claims are defense-in-depth,

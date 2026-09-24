@@ -4,6 +4,7 @@ import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { mintReadingId, type Services } from "../../src/services";
 import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
+import { testControlPlane } from "../helpers/control-plane-db";
 
 function services(): Services {
   return {
@@ -99,9 +100,10 @@ describe("ingress submission quotas", () => {
       submissions_per_hour: 20,
       monthly_readings: 20,
     });
-    await (env as unknown as Env).CONTROL_PLANE.prepare("DELETE FROM tenant_limits WHERE tenant_id = ?")
-      .bind(tenantId)
-      .run();
+    await testControlPlane((env as unknown as Env)).run(
+      "DELETE FROM tenant_limits WHERE tenant_id = ?",
+      tenantId,
+    );
     const res = await post(token, "https://quota.test/no-limits");
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "usage guard unavailable" });

@@ -1,26 +1,36 @@
 #!/usr/bin/env tsx
-// Seed the local fixture pack (issue #366) into the local R2 bucket that
-// `npm run dev` reads, so Phase 3 slices can develop and check every accepted
-// reading state without paid processing. See docs/operations.md#seeding-local-r2
-// and docs/design/connected/fixture-pack.md for the state each fixture
-// represents.
+// Seed the local fixture pack (issue #366) into the local PostgreSQL and R2
+// that `npm run dev` reads, so frontend work can develop and check every
+// accepted reading state without paid processing. See
+// docs/operations.md#seeding-local-data and docs/design/connected/fixture-pack.md
+// for the state each fixture represents.
 //
-// Objects are written with the wrangler CLI's `r2 object put --local`, which
-// targets the same on-disk store `.wrangler/state/v3/r2` that the dev server
-// binds (verified against wrangler 4.130; the older "different local store"
-// caveat no longer holds). Local dev leaves TENANT_DATA_PLANE unset, so the
-// local founder account reads global-rooted keys — exactly the keys this
-// seeder writes. Seeding overwrites index/list.json with the pack's rows only:
-// any other local reading keeps its objects but drops out of the list.
+// Reading state is rows (ADR 0005); R2 gets only the captured content the rows
+// point at, written first. Objects go through the wrangler CLI's
+// `r2 object put --local`, which targets the same on-disk store
+// `.wrangler/state/v3/r2` that the dev server binds (verified against wrangler
+// 4.130). Local dev leaves TENANT_DATA_PLANE unset, so the local founder reads
+// global-rooted keys — exactly the keys this seeder writes.
+//
+// The rows go through the shared manifest-to-rows mapping, under the local
+// founder's tenant id, with deterministic vectors so similarity has something
+// to find, plus each fixture's attempt log. The tenant's existing reading rows
+// are deleted first, so leftover local or retired-fixture readings drop out;
+// their R2 objects stay. Rows are tenant-scoped even though local R2 keys are
+// global-rooted.
 
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { buildLocalSeed, type LocalSeedObject } from "../test/fixtures/local-seed";
+import { buildLocalSeed, type LocalSeedObject, type LocalSeedPlan } from "../test/fixtures/local-seed";
+import { canonicalizeEmail } from "../src/control-plane/email";
+import { sqlFromConnectionString, type SqlQuery } from "../src/modules/db/sql";
+import { loadDotVars } from "./lib/dotvars";
+import type { ProcessingAttempt } from "../src/schemas/manifest";
+import { localSeedAttempts, localSeedRows } from "./pg-lib/local-seed-rows";
+import { localDatabase, migrateLocalPostgres } from "./pg-lib/local-postgres";
+import { upsertAttempt, writeReadingRows, type ReadingRows } from "./pg-lib/manifest-rows";
 import { mapWithConcurrency } from "./lib/concurrency";
 import { spawnWrangler } from "./lib/wrangler-cli";
-import { isObjectNotFound } from "./corpus-lib/wrangler-r2";
-import { LIST_INDEX_KEY } from "../src/modules/stores/layout";
-import { ListIndexSchema } from "../src/schemas/api";
 
 // bucket_name of the READINGS_BUCKET binding in wrangler.toml (local dev).
 const BUCKET = "reading-lite";
@@ -63,55 +73,75 @@ function putObject(object: LocalSeedObject): Promise<PutResult> {
   });
 }
 
-/** Verification read-back; a transient wrangler/SQLite error is retried. */
-export type ReadResult =
-  | { kind: "found"; body: string }
-  | { kind: "missing" }
-  | { kind: "error"; output: string };
+/** What the seed read back from PostgreSQL after it committed. */
+export interface PostgresSeedResult {
+  tenantId: string;
+  readings: number;
+  attempts: number;
+  embeddings: number;
+}
 
-function readObject(key: string): Promise<ReadResult> {
-  return new Promise((resolve) => {
-    const child = spawnWrangler([
-      "r2", "object", "get", `${BUCKET}/${key}`,
-      "--local",
-      "--pipe",
+// seed:local replaces the tenant's readings: deleting a reading cascades its
+// attempts, URL claim and embedding. Relationship refresh jobs reference only
+// the tenant, so they are cleared explicitly, as purge does, or a stale job
+// would outlive its reading. A reseed starts clean.
+export async function replaceTenantReadings(
+  tx: SqlQuery,
+  tenantId: string,
+  rows: ReadingRows[],
+  attempts: readonly ProcessingAttempt[] = [],
+): Promise<void> {
+  await tx.query("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
+  await tx.query("DELETE FROM readings WHERE tenant_id = $1", [tenantId]);
+  for (const reading of rows) await writeReadingRows(tx, reading);
+  for (const attempt of attempts) await upsertAttempt(tx, tenantId, attempt);
+}
+
+// Local rows belong to the founder that npm run dev bootstrapped into the
+// same local database.
+async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResult> {
+  const envVars = { ...loadDotVars(".dev.vars"), ...process.env };
+  const email = envVars.FOUNDER_EMAIL;
+  if (!email) throw new Error("FOUNDER_EMAIL is not set in .dev.vars");
+
+  const { url } = localDatabase(envVars);
+  await migrateLocalPostgres(url);
+  const sql = sqlFromConnectionString(url);
+  try {
+    const [founder] = await sql.query<{ id: string }>("SELECT id FROM users WHERE email_canonical = $1", [
+      canonicalizeEmail(email),
     ]);
-    let out = "";
-    let err = "";
-    child.stdout?.on("data", (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on("data", (d: Buffer) => { err += d.toString(); });
-    child.on("error", (e) => {
-      resolve({ kind: "error", output: String(e) });
-    });
-    child.on("close", (code) => {
-      if (code === 0) return resolve({ kind: "found", body: out });
-      if (isObjectNotFound(err)) return resolve({ kind: "missing" });
-      resolve({ kind: "error", output: err.trim() || `wrangler exited ${code}` });
-    });
-    if (child.stdin) child.stdin.end();
-  });
+    if (!founder) throw new Error("no local founder for " + email + "; run npm run dev once first");
+    const tenantId = founder.id;
+    const rows = localSeedRows(plan, tenantId);
+    await sql.transaction((tx) => replaceTenantReadings(tx, tenantId, rows, localSeedAttempts(plan)));
+    const [counts] = await sql.query<{ readings: number; attempts: number; embeddings: number }>(
+      `SELECT (SELECT count(*) FROM readings WHERE tenant_id = $1)::int AS readings,
+              (SELECT count(*) FROM reading_attempts WHERE tenant_id = $1)::int AS attempts,
+              (SELECT count(*) FROM reading_embeddings WHERE tenant_id = $1)::int AS embeddings`,
+      [tenantId],
+    );
+    return { tenantId, ...counts! };
+  } finally {
+    await sql.end();
+  }
 }
 
 export async function runSeed(
   deps: {
+    seedPostgres?: (plan: LocalSeedPlan) => Promise<PostgresSeedResult>;
     put?: (object: LocalSeedObject) => Promise<PutResult>;
-    read?: (key: string) => Promise<ReadResult>;
     log?: (line: string) => void;
     nowIso?: () => string;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<number> {
   const put = deps.put ?? putObject;
-  const read = deps.read ?? readObject;
   const log = deps.log ?? ((line: string) => console.log(line));
   const nowIso = deps.nowIso ?? (() => new Date().toISOString());
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
 
   const plan = buildLocalSeed(nowIso());
-  // Write index/list.json last so it never lists a reading whose objects are
-  // not in place yet.
-  const listObject = plan.objects.find((o) => o.key === LIST_INDEX_KEY);
-  const putObjects = plan.objects.filter((o) => o.key !== LIST_INDEX_KEY);
 
   const putWithRetry = async (object: LocalSeedObject): Promise<PutResult> => {
     let result = await put(object);
@@ -122,17 +152,9 @@ export async function runSeed(
     return result;
   };
 
-  const readWithRetry = async (key: string): Promise<ReadResult> => {
-    let result = await read(key);
-    for (let attempt = 1; attempt < PUT_ATTEMPTS && result.kind === "error"; attempt++) {
-      await sleep(RETRY_DELAY_MS * attempt);
-      result = await read(key);
-    }
-    return result;
-  };
-
-  log(`Seeding ${plan.fixtures.length} fixture readings (${plan.objects.length} objects) into local R2 bucket "${BUCKET}"…`);
-  const results = await mapWithConcurrency(putObjects, PUT_CONCURRENCY, putWithRetry);
+  // Content first: a row must never point at bytes that are not there yet.
+  log(`Seeding ${plan.fixtures.length} fixture readings: ${plan.objects.length} content objects into local R2 bucket "${BUCKET}"…`);
+  const results = await mapWithConcurrency(plan.objects, PUT_CONCURRENCY, putWithRetry);
   const failures = results.filter((r) => !r.ok);
   if (failures.length > 0) {
     for (const failure of failures) {
@@ -140,38 +162,26 @@ export async function runSeed(
     }
     return 1;
   }
-  log(`Wrote ${putObjects.length} objects.`);
+  log(`Wrote ${plan.objects.length} objects.`);
 
-  const listResult = listObject === undefined ? null : await putWithRetry(listObject);
-  if (listResult !== null && !listResult.ok) {
-    console.error(`put failed: ${LIST_INDEX_KEY}\n${listResult.output}`);
-    return 1;
-  }
-
-  const verifyRead = await readWithRetry(LIST_INDEX_KEY);
-  if (verifyRead.kind !== "found") {
-    console.error(
-      `verification failed: could not read ${LIST_INDEX_KEY} back from local R2 (${verifyRead.kind})`,
-    );
-    return 1;
-  }
-  let list: ReturnType<typeof ListIndexSchema.parse>;
+  let seeded: PostgresSeedResult;
   try {
-    list = ListIndexSchema.parse(JSON.parse(verifyRead.body));
-  } catch {
-    console.error(`verification failed: ${LIST_INDEX_KEY} did not parse after the write`);
+    seeded = await (deps.seedPostgres ?? seedLocalPostgres)(plan);
+  } catch (error) {
+    console.error(`PostgreSQL seed failed: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
-  const missing = plan.listIndex.items.filter(
-    (item) => !list.items.some((row) => row.id === item.id),
-  );
-  if (missing.length > 0) {
+  // Similarity needs a vector per ready fixture; a mapping that stops producing
+  // them would otherwise leave local similarity silently empty.
+  const ready = plan.fixtures.filter((fixture) => fixture.manifest.status === "ready").length;
+  if (seeded.embeddings !== ready) {
     console.error(
-      `verification failed: ${missing.length} fixture rows missing from ${LIST_INDEX_KEY}`,
+      `verification failed: PostgreSQL holds ${seeded.embeddings} vectors for tenant ${seeded.tenantId}; ` +
+        `the pack has ${ready} ready readings`,
     );
     return 1;
   }
-  log(`Verified ${LIST_INDEX_KEY}: ${list.items.length} rows (${plan.listIndex.items.length} fixture rows).`);
+  log(`Seeded PostgreSQL: ${seeded.readings} readings, ${seeded.attempts} attempts, ${seeded.embeddings} vectors for tenant ${seeded.tenantId}.`);
 
   const pending = plan.fixtures.find((f) => f.name === "pending");
   log("");

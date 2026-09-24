@@ -1,6 +1,7 @@
 import { REFRESH_CRON, scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
 import type { TenantContext } from "./control-plane/ids";
-import { fromD1 } from "./control-plane/db";
+import { fromSql, type ControlPlaneDb } from "./control-plane/db";
+import { withSqlSession } from "./modules/db/sql";
 import type { DigestEnvelopeV1 } from "./control-plane/digest-envelope";
 import {
   admitEnvelopeOrReject,
@@ -27,15 +28,15 @@ import {
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
-import { VectorLedgerWriteError } from "./control-plane/vector-ledger";
+import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import { DeferPaidWorkError } from "./control-plane/processing-leases";
 import { PROCESSING_DEFER_DELAY_SECONDS } from "./control-plane/constants";
 import { defaultServices } from "./services";
 
 export interface Env {
   READINGS_BUCKET: R2Bucket;
-  READINGS_INDEX: VectorizeIndex;
-  CONTROL_PLANE: D1Database;
+  // PostgreSQL through Hyperdrive (ADR 0005): readings and the control plane.
+  HYPERDRIVE: Hyperdrive;
   // Optional so the router can return a clear 503 when the binding is missing
   // (e.g. wrangler dev without a queue binding) instead of a runtime crash.
   READING_JOBS?: Queue<ProcessReadingEnvelopeV1>;
@@ -48,7 +49,7 @@ export interface Env {
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;
-  // Imported once into D1 as the founder legacy token. Not a runtime auth fallback.
+  // Imported once as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
   AUTH_ROOT_KEY_VERSION?: string;
@@ -66,6 +67,11 @@ export interface Env {
   AUTH_RATE_IP_MAX?: string;
   AUTH_RATE_GLOBAL_WINDOW_MS?: string;
   AUTH_RATE_GLOBAL_MAX?: string;
+  // How long a usage guard instance may reuse a tenant_limits or
+  // system_policy concurrency row (src/control-plane/policy-cache.ts). Unset
+  // or invalid means every RPC reads it afresh, which the test environment
+  // relies on.
+  GUARD_POLICY_CACHE_MS?: string;
   ANTHROPIC_API_KEY?: string;
   OPENAI_API_KEY: string;
   X_API_BEARER_TOKEN?: string;
@@ -108,15 +114,15 @@ const RATE_LIMIT_MAX_DELAY_MS = 300_000;
 // Cloudflare Queues caps msg.retry({delaySeconds}) at 12 hours.
 const QUEUE_MAX_DELAY_SECONDS = 43_200;
 /**
- * How long to wait before retrying a delivery that failed closed on a vector
- * ledger write.
+ * How long to wait before retrying a delivery whose publish transaction
+ * failed and rolled back.
  *
- * A control-plane blip, not an upstream refusing us, so there is no
- * `Retry-After` to honour and no reason to back off for minutes. Long enough
- * that a redeploy or a D1 hiccup has passed, short enough that the reading is
- * in search promptly.
+ * A database blip, not an upstream refusing us, so there is no `Retry-After`
+ * to honour and no reason to back off for minutes. Long enough that a redeploy
+ * or a connection hiccup has passed, short enough that the reading is in
+ * search promptly.
  */
-const LEDGER_WRITE_RETRY_DELAY_SECONDS = 30;
+const PUBLISH_RETRY_DELAY_SECONDS = 30;
 
 // Messages that exhaust their retries on the main queue land here (see
 // dead_letter_queue in wrangler.toml). The same worker consumes it.
@@ -149,19 +155,19 @@ export async function dispatchQueueMessage(
       msg.retry({ delaySeconds: rateLimitedDelaySeconds(e, msg.attempts) });
       return;
     }
-    if (e instanceof VectorLedgerWriteError) {
-      // The terminal commit fails closed on a ledger write (issue #195 S3), and
-      // unlike the application errors below it did NOT write a failed manifest
+    if (e instanceof PublishCommitError) {
+      // The publish transaction failed and rolled back, and unlike the
+      // application errors below the consumer did NOT mark the reading failed
       // before throwing — deliberately, because the summarization is paid for
-      // and checkpointed. Acking here would leave the reading pending with no
-      // vector and nothing to notice it. Retry instead: the ledger row is
-      // written ahead of the terminal manifest, so `active_attempt` is still
-      // live and the redelivery re-runs the whole terminal commit for real (the
-      // acceptance test in `test/integration/account-delete-visibility.test.ts`
-      // proves the republish, not just the throw). The processing checkpoint
-      // means it re-uses the cached summary, so it costs a D1 write and
-      // nothing else.
-      msg.retry({ delaySeconds: LEDGER_WRITE_RETRY_DELAY_SECONDS });
+      // and checkpointed. Acking here would leave the reading pending with
+      // nothing to notice it. Retry instead: nothing terminal landed, so
+      // `active_attempt` is still live and the redelivery re-runs the whole
+      // publish for real (the acceptance test in
+      // `test/integration/account-delete-visibility.test.ts` proves the
+      // republish, not just the throw). The processing checkpoint means it
+      // re-uses the cached summary, so it costs one transaction and nothing
+      // else.
+      msg.retry({ delaySeconds: PUBLISH_RETRY_DELAY_SECONDS });
       return;
     }
     // processReading writes a failed manifest before throwing for application
@@ -180,7 +186,7 @@ export async function dispatchQueueMessage(
 export async function handleDeadLetter(
   msg: Message<unknown>,
   deps: {
-    db: ReturnType<typeof fromD1>;
+    db: ControlPlaneDb;
     nowMs: number;
     mark: (body: ProcessReadingArgs, tenant: TenantContext) => Promise<void>;
   },
@@ -279,32 +285,36 @@ export default {
       }
       return;
     }
-    if (batch.queue === DEAD_LETTER_QUEUE) {
-      const db = fromD1(env.CONTROL_PLANE);
-      const nowMs = Date.now();
+    // One session per batch for envelope admission; each job opens its own
+    // for the attempt (see processReading).
+    await withSqlSession(env, async (sql) => {
+      const db = fromSql(sql);
+      if (batch.queue === DEAD_LETTER_QUEUE) {
+        const nowMs = Date.now();
+        for (const msg of batch.messages) {
+          await handleDeadLetter(msg, {
+            db,
+            nowMs,
+            mark: (body, tenant) => markDeadLettered(body, env, services, tenant),
+          });
+        }
+        return;
+      }
       for (const msg of batch.messages) {
-        await handleDeadLetter(msg, {
+        await consumeProcessReadingMessage(msg, {
           db,
-          nowMs,
-          mark: (body, tenant) => markDeadLettered(body, env, services, tenant),
+          nowMs: Date.now(),
+          process: (job, tenant) =>
+            dispatchQueueMessage(msg, () => processReading(job, env, services, tenant), {
+              sendDelayed: async (body, delaySeconds) => {
+                const queue = env.READING_JOBS;
+                if (!queue) throw new Error("READING_JOBS unbound");
+                await queue.send(body as ProcessReadingEnvelopeV1, { delaySeconds });
+              },
+            }),
         });
       }
-      return;
-    }
-    for (const msg of batch.messages) {
-      await consumeProcessReadingMessage(msg, {
-        db: fromD1(env.CONTROL_PLANE),
-        nowMs: Date.now(),
-        process: (job, tenant) =>
-          dispatchQueueMessage(msg, () => processReading(job, env, services, tenant), {
-            sendDelayed: async (body, delaySeconds) => {
-              const queue = env.READING_JOBS;
-              if (!queue) throw new Error("READING_JOBS unbound");
-              await queue.send(body as ProcessReadingEnvelopeV1, { delaySeconds });
-            },
-          }),
-      });
-    }
+    });
   },
 };
 

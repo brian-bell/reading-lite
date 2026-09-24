@@ -2,22 +2,23 @@ import type { MiddlewareHandler } from "hono";
 import { authenticateRequest } from "./control-plane/authenticate";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { cookieCsrfRequired, verifyCsrfToken } from "./control-plane/csrf";
-import { fromD1 } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import { isTrustedFrontendRead } from "./control-plane/frontend-read-trust";
 import { cookieAuthAllowed } from "./control-plane/origin";
 import { principalHasScope, type ApiScope, type AuthenticatedPrincipal } from "./control-plane/principal";
 import { principalHasRecentAuth } from "./control-plane/recent-auth";
 import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "./schemas/api";
 import type { Env } from "./index";
+import type { SqlVariables } from "./modules/db/request-sql";
 
 export type AppBindings = {
   Bindings: Env;
-  Variables: { principal: AuthenticatedPrincipal };
+  Variables: { principal: AuthenticatedPrincipal } & SqlVariables;
 };
 
 export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBindings> => {
   return async (c, next) => {
-    if (!c.env.CONTROL_PLANE || !c.env.AUTH_ROOT_SECRET) {
+    if (!c.env.HYPERDRIVE || !c.env.AUTH_ROOT_SECRET) {
       return jsonNoStore(c, { error: "auth misconfigured" }, 500);
     }
 
@@ -38,7 +39,7 @@ export const requirePrincipal = (nowMs: () => number): MiddlewareHandler<AppBind
         webBaseUrl: c.env.WEB_BASE_URL,
       });
 
-    const verdict = await authenticateRequest(fromD1(c.env.CONTROL_PLANE), {
+    const verdict = await authenticateRequest(fromSql(c.get("sql")), {
       authorization: c.req.header("authorization"),
       cookieHeader: c.req.header("cookie"),
       cookieAllowed,

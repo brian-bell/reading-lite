@@ -1,6 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fromD1 } from "../../src/control-plane/db";
 import { consumeProcessReadingMessage, type ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { ApiScope } from "../../src/control-plane/principal";
@@ -8,10 +7,7 @@ import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import {
-  buildKeyPrefix,
-  manifestToIndexItem,
-} from "../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { Manifest } from "../../src/schemas/manifest";
 import { CONTENT_CHUNK_BYTES } from "../../src/mcp/format";
 import {
@@ -20,47 +16,13 @@ import {
   insertSecondTenant,
   OTHER_TOKEN_SECRET,
   PUBLIC_LOOKUP,
-  testReadingStore,
 } from "../helpers/tenant-fixtures";
+import { testReadingsFor } from "../helpers/test-readings";
+import { testControlPlane } from "../helpers/control-plane-db";
+import { toTimestamp } from "../../src/control-plane/pg-time";
 
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
-
-type AnyMock = ReturnType<typeof vi.fn>;
-function installVectorizeStub(): {
-  upsert: AnyMock;
-  query: AnyMock;
-  deleteByIds: AnyMock;
-} {
-  const vectors = new Map<string, { values: number[]; namespace?: string }>();
-  const upsert = vi.fn(async (vs: VectorizeVector[]) => {
-    for (const v of vs) {
-      vectors.set(v.id, {
-        values: v.values as number[],
-        ...(v.namespace === undefined ? {} : { namespace: v.namespace }),
-      });
-    }
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const deleteByIds = vi.fn(async (ids: string[]) => {
-    for (const id of ids) vectors.delete(id);
-    return { mutationId: "m" } as VectorizeAsyncMutation;
-  });
-  const query = vi.fn(async (_v: number[], opts: VectorizeQueryOptions) => {
-    const k = opts.topK ?? 5;
-    const matches = Array.from(vectors.entries())
-      .filter(([, v]) => v.namespace === opts.namespace)
-      .slice(0, k)
-      .map(([id, v]) => ({ id, score: 0.9, values: v.values, metadata: {} }));
-    return { count: matches.length, matches } as unknown as VectorizeMatches;
-  });
-  (env as unknown as { READINGS_INDEX: VectorizeIndex }).READINGS_INDEX = {
-    upsert,
-    deleteByIds,
-    query,
-  } as unknown as VectorizeIndex;
-  return { upsert, query, deleteByIds };
-}
 
 let queuedEnvelopes: ProcessReadingEnvelopeV1[] = [];
 let queuedJobs: ProcessReadingArgs[] = [];
@@ -83,7 +45,7 @@ async function drainQueue(services: Services): Promise<void> {
     await consumeProcessReadingMessage(
       { body: envelope, ack() {} },
       {
-        db: fromD1((env as unknown as Env).CONTROL_PLANE),
+        db: testControlPlane((env as unknown as Env)),
         nowMs: Date.now(),
         process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
       },
@@ -169,17 +131,15 @@ async function clearBucket() {
 }
 
 beforeEach(() => {
-  installVectorizeStub();
   installQueueStub();
 });
 afterEach(clearBucket);
 
 async function founderUserId(): Promise<string> {
-  const row = await (env as unknown as Env).CONTROL_PLANE.prepare(
+  const row = await testControlPlane((env as unknown as Env)).first<{ id: string }>(
     "SELECT id FROM users WHERE email_canonical = ?",
-  )
-    .bind("founder@test.example")
-    .first<{ id: string }>();
+    "founder@test.example",
+  );
   if (!row) throw new Error("founder user missing");
   return row.id;
 }
@@ -192,19 +152,17 @@ async function insertScopedToken(secret: string, scopes: readonly ApiScope[]): P
     await deriveHmacKey({ secret: parseAuthRootSecret(workerEnv.AUTH_ROOT_SECRET), version: 1 }, "api_token"),
     secret,
   );
-  await workerEnv.CONTROL_PLANE.prepare(
+  await testControlPlane(workerEnv).run(
     `INSERT INTO api_tokens (
-       id, user_id, name, format, secret_hmac, hash_key_version, created_at_ms, expires_at_ms
+       id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at
      ) VALUES (?, ?, 'scoped', 'legacy', ?, 1, ?, ?)`,
-  )
-    .bind(tokenId, userId, secretHmac, Date.now(), Date.now() + 60_000)
-    .run();
+    tokenId, userId, secretHmac, toTimestamp(Date.now()), toTimestamp(Date.now() + 60_000),
+  );
   for (const scope of scopes) {
-    await workerEnv.CONTROL_PLANE.prepare(
+    await testControlPlane(workerEnv).run(
       "INSERT INTO api_token_scopes (token_id, scope) VALUES (?, ?)",
-    )
-      .bind(tokenId, scope)
-      .run();
+      tokenId, scope,
+    );
   }
   return secret;
 }
@@ -290,7 +248,7 @@ async function seedReady(opts: {
   tenant?: ReturnType<typeof founderTenant>;
   connections?: Manifest["connections"];
 }): Promise<void> {
-  const store = testReadingStore(env, opts.tenant ?? founderTenant());
+  const store = testReadingsFor(opts.tenant ?? founderTenant());
   const created_at = opts.createdAt ?? "2026-04-26T20:00:00.000Z";
   const prefix = buildKeyPrefix(opts.id, created_at);
   const url_hash = await sha256Hex(opts.url);
@@ -315,11 +273,7 @@ async function seedReady(opts: {
     fetched_at: created_at,
     ...(opts.connections ? { connections: opts.connections } : {}),
   };
-  await store.writeManifest(prefix, manifest);
-  await store.writeByIdPointer(opts.id, { id: opts.id, key_prefix: prefix });
-  await store.writeByUrlPointer(url_hash, { id: opts.id, key_prefix: prefix });
-  await store.writeExtracted(prefix, opts.markdown);
-  await store.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, prefix));
+  await store.seed(manifest, { keyPrefix: prefix, extracted: opts.markdown });
 }
 
 describe("POST /mcp", () => {
@@ -651,7 +605,6 @@ describe("POST /mcp", () => {
 
 });
 
-
 // #198: exercise the MCP dispatch boundary itself, including content/diagnostic
 // tools and polling; HTTP-only coverage cannot catch a lost dispatch principal.
 describe("MCP adversarial tenant matrix", () => {
@@ -752,8 +705,10 @@ describe("MCP adversarial tenant matrix", () => {
     const before = await snapshot();
     for (const token of [secret, OTHER_TOKEN_SECRET]) {
       if (token === OTHER_TOKEN_SECRET) {
-        await env.CONTROL_PLANE.prepare("DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:read'")
-          .bind("tok_11111111-1111-4111-8111-111111111111").run();
+        await testControlPlane(env).run(
+          "DELETE FROM api_token_scopes WHERE token_id = ? AND scope != 'readings:read'",
+          "tok_11111111-1111-4111-8111-111111111111",
+        );
       }
       const denied = await callTool(app, name, args, { token });
       expect(denied.payload.http_status).toBe(403);

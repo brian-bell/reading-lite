@@ -4,9 +4,13 @@ import {
   PHASE_PLANNING_READS,
   createRefreshTimer,
   printTiming,
-  timedNeighboursR2,
+  timedNeighboursStore,
   timedRefreshStorage,
 } from "../../../scripts/ops-lib/refresh-timing";
+import {
+  REFRESH_STATE_VERSION,
+  REVERSE_TOP_K,
+} from "../../../scripts/corpus-lib/refresh-scope";
 
 /** A fake clock that advances a fixed step on every read. */
 function fakeClock(stepMs: number, startMs = 1_000) {
@@ -84,14 +88,14 @@ describe("refresh timing block", () => {
 });
 
 describe("timed storage wrappers", () => {
-  it("attributes tier-1 storage calls to their phases and passes arguments through", async () => {
+  it("attributes tier-1 store calls to their phases and passes arguments through", async () => {
     const timer = createRefreshTimer(fakeClock(1));
     const calls: string[] = [];
-    const r2 = timedNeighboursR2(
+    const store = timedNeighboursStore(
       {
-        readListIndex: async () => {
-          calls.push("readListIndex");
-          return { items: [] };
+        listItems: async () => {
+          calls.push("listItems");
+          return [];
         },
         readRefreshState: async () => {
           calls.push("readRefreshState");
@@ -100,81 +104,76 @@ describe("timed storage wrappers", () => {
         writeRefreshState: async (state) => {
           calls.push(`writeRefreshState:${state.last_run_at}`);
         },
-        readManifest: async (keyPrefix) => {
-          calls.push(`readManifest:${keyPrefix}`);
-          return { id: "rd_a" };
+        readManifest: async (id) => {
+          calls.push(`readManifest:${id}`);
+          return { id };
         },
-        queryByVectorId: async (index, id, topK, namespace, opts) => {
-          calls.push(`query:${index}:${id}:${topK}:${namespace}:${opts?.metadata ?? "default"}`);
+        queryByVectorId: async (id, topK) => {
+          calls.push(`query:${id}:${topK}`);
           return [];
         },
-        putManifest: async (keyPrefix) => {
-          calls.push(`putManifest:${keyPrefix}`);
-        },
-        mergeListRows: async () => {
-          calls.push("mergeListRows");
+        setSimilarity: async (id) => {
+          calls.push(`setSimilarity:${id}`);
+          return true;
         },
       },
       timer,
     );
-    const deps = { bucket: "b", keyRoot: "", remote: true };
 
-    await r2.readListIndex(deps);
-    await r2.readRefreshState(deps);
-    await r2.queryByVectorId("idx", "usr:rd_a", 100, "usr", { metadata: false });
-    await r2.queryByVectorId("idx", "usr:rd_a", 6, "usr");
-    expect(await r2.readManifest("readings/2026/rd_a", deps)).toEqual({ id: "rd_a" });
-    await r2.putManifest("readings/2026/rd_a", {}, deps);
-    await r2.mergeListRows([{ id: "rd_a" }], deps);
-    await r2.writeRefreshState(
-      { version: 2, last_run_at: "2026-08-22T12:00:00.000Z", list_ids: ["rd_a"] },
-      deps,
+    await store.listItems();
+    await store.readRefreshState();
+    // The scoping topK is what makes a query a reverse one; any other is a
+    // measurement.
+    await store.queryByVectorId("rd_a", REVERSE_TOP_K);
+    await store.queryByVectorId("rd_a", 6);
+    expect(await store.readManifest("rd_a")).toEqual({ id: "rd_a" });
+    await store.setSimilarity("rd_a", { count: 0, computed_at: "2026-08-22T12:00:00.000Z" });
+    await store.writeRefreshState(
+      { version: REFRESH_STATE_VERSION, last_run_at: "2026-08-22T12:00:00.000Z", list_ids: ["rd_a"] },
+      "2026-08-22T12:00:00.000Z",
     );
 
     expect(calls).toEqual([
-      "readListIndex",
+      "listItems",
       "readRefreshState",
-      "query:idx:usr:rd_a:100:usr:false",
-      "query:idx:usr:rd_a:6:usr:default",
-      "readManifest:readings/2026/rd_a",
-      "putManifest:readings/2026/rd_a",
-      "mergeListRows",
+      `query:rd_a:${REVERSE_TOP_K}`,
+      "query:rd_a:6",
+      "readManifest:rd_a",
+      "setSimilarity:rd_a",
       "writeRefreshState:2026-08-22T12:00:00.000Z",
     ]);
     const block = timer.format();
     expect(block).toContain("list read");
     expect(block).toContain("run marker");
     expect(block).toContain("reverse query");
-    expect(block).toContain("vectorize query");
-    expect(block).toContain("manifest read");
-    expect(block).toContain("manifest write");
-    expect(block).toContain("list write");
+    expect(block).toContain("similarity query");
+    expect(block).toContain("reading read");
+    expect(block).toContain("reading write");
   });
 
-  it("splits tier-2/3 manifest reads between planning and execute", async () => {
+  it("splits tier-2/3 reading reads between planning and execute", async () => {
     const timer = createRefreshTimer(fakeClock(1));
     let phase = PHASE_PLANNING_READS;
     const storage = timedRefreshStorage(
       {
-        readListIndex: async () => [],
-        readManifest: async () => ({ manifest: { id: "rd_a" }, etag: "e" }),
-        putManifestIfMatch: async () => true,
-        mergeListRows: async () => {},
+        listItems: async () => [],
+        readManifest: async (id) => ({ manifest: { id }, version: "v" }),
+        replaceRelationships: async () => ({ replaced: true, skippedTargets: [] }),
       },
       timer,
       () => phase,
     );
 
-    await storage.readListIndex();
-    await storage.readManifest("readings/2026/rd_a");
-    await storage.readManifest("readings/2026/rd_b");
+    await storage.listItems();
+    await storage.readManifest("rd_a");
+    await storage.readManifest("rd_b");
     phase = PHASE_MANIFEST_READ;
-    await storage.readManifest("readings/2026/rd_a");
-    await storage.putManifestIfMatch("readings/2026/rd_a", {}, "e");
+    await storage.readManifest("rd_a");
+    await storage.replaceRelationships([]);
 
     const block = timer.format();
     expect(block).toMatch(/planning reads\s+2 calls/);
-    expect(block).toMatch(/manifest read\s+1 call\s/);
-    expect(block).toMatch(/manifest write\s+1 call\s/);
+    expect(block).toMatch(/reading read\s+1 call\s/);
+    expect(block).toMatch(/reading write\s+1 call\s/);
   });
 });

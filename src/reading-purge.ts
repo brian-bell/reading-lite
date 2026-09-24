@@ -1,72 +1,44 @@
-import { ZodError } from "zod";
-import type { ReadingStore } from "./modules/stores/reading-store";
-import type { SimilarityStore } from "./modules/stores/similarity-store";
-import type { VectorLedger } from "./control-plane/vector-ledger";
+import type { ContentStore } from "./modules/stores/content-store";
+import type { PgReadingWriter } from "./modules/stores/postgres/reading-writer";
 import { effectivelyRunning } from "./modules/staleness";
-import { sha256Hex } from "./services";
-import type { Manifest } from "./schemas/manifest";
 
-// The purge counterpart to ReadingVisibility: deletes a reading everywhere it
-// exists — Vectorize vector, index/list.json row, by-url ownership pointer,
-// every R2 object under its id-scoped prefix, the hosted refresh checkpoint,
-// and the by-id pointer.
+// Deletes a reading everywhere it exists: its PostgreSQL rows (the reading,
+// its URL ownership, revisions, relationships, embedding, attempts and jobs,
+// by cascade, and its hosted refresh checkpoint, which has no foreign key to
+// hang off), and every R2 object under its key_prefix.
 //
 // Two invariants shape the ordering:
 //
-// 1. No step may leave the reading visible or unrecoverable if the worker dies
-//    between steps: vector → owned by-url pointer → list row → objects →
-//    final sweep → by-id pointer. The pointer precedes the row because the row
-//    is the URL-identity fallback a retry needs to release the slot when the
-//    manifest is corrupt or gone. The by-id pointer goes LAST: it is what lets
-//    a re-issued DELETE for the same id resolve the key prefix and finish a
-//    partial purge, so it must outlive every other artifact.
+// 1. Rows first, objects second. The row delete is one transaction, so the
+//    reading stops being listed, readable, searchable and the owner of its URL
+//    at a single instant, and a worker that dies afterwards leaves only
+//    unreferenced bytes. The reverse order would leave a listed reading whose
+//    content 404s.
 //
-//    The in-flight-consumer race (issue #179): TTL staleness is a read-time
-//    verdict, not proof the queue consumer stopped, so a still-running >TTL
-//    attempt that pauses between its terminal manifest CAS and its visibility
-//    publish could republish a row/vector after every sweep. Account deletion
-//    (DELETE /api/account, issue 195a) closes that race at tenant scope by
-//    rechecking users.status immediately before publish; this purge closes it
-//    at reading scope by writing `index/deleted/{id}` before any corpus
-//    delete, which `commitTerminalManifest` rechecks at the same sites.
+//    The row delete is also the deletion fence (the in-flight-consumer race,
+//    issue #179). TTL staleness is a read-time verdict, not proof the queue
+//    consumer stopped, so a still-running >TTL attempt can reach its terminal
+//    commit after this purge. That commit locks the reading row, finds none,
+//    and writes nothing; the attempt log's foreign key refuses to be recreated
+//    the same way. There is no tombstone to keep, latch or fail open on.
 //
-//    Three properties of that tombstone to keep in mind:
+//    What a late consumer CAN still do is write content objects under its own
+//    revision prefix after the sweep below. It deletes that prefix itself when
+//    its commit reports the reading gone (process-reading.ts), and the second
+//    sweep here covers an attempt that was mid-put during the first.
 //
-//    - IRREVOCABLE. Nothing unsets it: writing it commits this reading to
-//      deletion. A purge that dies right after the put leaves a doomed-but-
-//      present reading — still listed and readable, but any consumer touch
-//      sweeps its prefix instead of writing. The caller got a 5xx and the
-//      re-issued DELETE finishes the job; until then the reading is in a
-//      committed-to-die state, never a recovered one.
-//    - RETAINED FOREVER, deliberately. The consumer that needs it may wake
-//      hours later from the retry/DLQ pipeline, and there is no cheap upper
-//      bound on that, so no step of this purge deletes it. Growth is bounded
-//      by purge count (an empty object per purged reading, same order as the
-//      ledger's `delete_submitted` residue). It lives under the tenant key
-//      root, so the account wipe's objects phase deletes it with everything
-//      else and teardown's confirmed-empty gate is not blocked — pinned by
-//      the tombstone test in test/integration/account-wipe.test.ts.
-//    - FAIL-OPEN ON READ ERRORS. A consumer whose tombstone HEAD throws
-//      publishes anyway (mistaking an outage for a purge would drop live
-//      readings), so the original race survives exactly while R2 HEADs are
-//      erroring — accepted, same trade as 195a's tenant recheck. Once a HEAD
-//      confirms the tombstone, that verdict is latched for the rest of the
-//      call and a later throw cannot undo it.
+//    A purge that dies between the rows and the objects cannot be resumed by
+//    re-issuing the DELETE: the id no longer resolves, so the retry is a 404.
+//    The leftover bytes are unreachable through the API and are removed with
+//    the tenant's prefix by the account wipe. That is the price of making the
+//    visible half atomic.
 //
-// 2. The by-url pointer records *ownership*, not readiness, and an
-//    orphan-duplicate's URL hashes to the same slot as its surviving copy. The
-//    pointer is deleted only when the stored pointer's id equals the purged
-//    reading's id — the same rule the offline tooling encodes in
-//    scripts/corpus-lib/delete-plan.ts (byUrlPointerKeyIfOwned).
-//
-// Every step is idempotent, so the endpoint doubles as its own repair tool: a
-// purge that lost its manifest (or any other artifact) earlier still completes.
+// 2. URL ownership is a row owned by the reading, so it is released exactly
+//    when this reading owned it. Purging an orphan duplicate cascades nothing
+//    from the surviving copy's URL row.
 
 export interface PurgeReport {
   id: string;
-  // True when a vector delete was issued (Vectorize's deleteByIds does not
-  // report whether the vector existed); false when no similarity store is
-  // bound (local dev) and the vector — if any — was left untouched.
   vector_delete_requested: boolean;
   list_row_removed: boolean;
   by_url_released: boolean;
@@ -79,31 +51,8 @@ export type PurgeOutcome =
   | { kind: "purged"; report: PurgeReport };
 
 export interface PurgeDeps {
-  reader: ReadingStore;
-  // Null when no Vectorize binding exists (local dev): the purge is R2-only.
-  similarity: SimilarityStore | null;
-  // The durable vector-id ledger (issue #195 S3). Null in the same
-  // configurations `similarity` is, plus one with no control plane bound.
-  //
-  // FOR S5's RESIDUE SCAN: on a tenant that is never wiped, the row this writes
-  // is permanent — nothing clears a `delete_submitted` row except an account
-  // wipe's confirmation pass or a republish of the same reading. So a live
-  // tenant accumulates one row per purged reading, forever. Harmless (it is a
-  // reading id the tenant owned, in their own control-plane row) and bounded by
-  // purge count, but it is unbounded in time and it lengthens the eventual
-  // wipe's confirmation work. The residue scan is the natural place to report
-  // and retire rows whose vector it can confirm gone.
-  //
-  // A purge marks the row `delete_submitted` rather than removing it, and that
-  // is deliberate: `deleteByIds` is asynchronous and confirms nothing, so a
-  // purge whose vector delete did not take is precisely the unaddressable-vector
-  // case (review finding F3). Keeping the id is the only thing that leaves it
-  // addressable. The row clears when a wipe's confirmation pass says something
-  // definite about it, or when a later republish of the same reading marks it
-  // live again.
-  ledger?: VectorLedger | null;
-  // Hosted relationship refresh keeps a latest-job checkpoint in D1.
-  deleteRefreshCheckpoint?: (id: string) => Promise<void>;
+  writer: PgReadingWriter;
+  content: ContentStore;
 }
 
 export async function purgeReading(
@@ -111,161 +60,37 @@ export async function purgeReading(
   id: string,
   opts: { pendingTtlSeconds: number; now: string },
 ): Promise<PurgeOutcome> {
-  const pointer = await deps.reader.readByIdPointer(id);
-  if (!pointer) return { kind: "not_found" };
-  // Destructive-safety: never follow a damaged by-id pointer into another
-  // reading's prefix. Activation writes {id, key_prefix ending in "-{id}"}
-  // (the buildKeyPrefix contract); anything else is damage, and a purge must
-  // refuse rather than delete objects this id does not own.
-  if (pointer.id !== id || !pointer.key_prefix.endsWith(`-${id}`)) {
-    return { kind: "not_found" };
-  }
+  // Refuse while an attempt is effectively running: purging under a live
+  // consumer wastes its paid work. Decided under the row lock, so a purge and
+  // an activation cannot both win.
+  const purged = await deps.writer.purge(id, (row) =>
+    effectivelyRunning(row, opts.pendingTtlSeconds, opts.now),
+  );
+  if (purged.kind === "not_found") return { kind: "not_found" };
+  if (purged.kind === "conflict") return { kind: "conflict", reason: "active_attempt" };
 
-  // A missing or CORRUPT manifest must not block the purge — that is exactly
-  // the partial state a re-issued delete exists to clean up. A transiently
-  // FAILING read is neither: treating it as absence would skip the
-  // active-attempt guard on a reading that may be live, so it aborts the purge
-  // (the caller retries) instead.
-  let manifest: Manifest | null = null;
+  // The rows are gone, so the reading is purged whatever happens to its
+  // objects: a retry of the DELETE would only find a 404. An R2 failure here
+  // is logged with the prefix for an operator sweep and never fails the
+  // request (invariant 1 above).
+  let objectsDeleted = 0;
   try {
-    manifest = await deps.reader.readManifest(pointer.key_prefix);
+    objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
+    // Second pass: an attempt that was mid-put during the first.
+    objectsDeleted += await deps.content.deletePrefix(purged.keyPrefix);
   } catch (err) {
-    if (!isCorruptStoredObjectError(err)) throw err;
+    console.error(`purge ${id}: rows deleted, object sweep failed under ${purged.keyPrefix}/`, err);
   }
-  if (manifest && hasRunningAttempt(manifest, opts)) {
-    return { kind: "conflict", reason: "active_attempt" };
-  }
-
-  // Fence first: a still-running >TTL attempt can pause between its terminal
-  // CAS and visibility publish. This object must exist before any delete so
-  // that consumer rechecks skip (and compensate) rather than republishing.
-  // Fail closed — a thrown put leaves the corpus untouched. Retry overwrites
-  // the same key.
-  await deps.reader.writePurgeTombstone(id);
-
-  // Read the list row before removing it: it is the URL fallback for releasing
-  // the by-url slot when the manifest is already gone.
-  const row = await deps.reader.findListIndexItem(id);
-
-  if (deps.similarity) {
-    await deps.similarity.delete(id);
-    // After the delete: `deleted_at_ms` dates the submission, and the ledger's
-    // +120s first-confirmation delay is measured from it. Off the injected
-    // clock, like everything else here.
-    await deps.ledger?.markDeleteSubmitted([id], ledgerStamp(opts.now));
-  }
-
-  // Pointer before list row: when the manifest is corrupt or missing, the row
-  // is the ONLY recoverable source of the URL hash, so it must survive until
-  // the owned by-url slot is released — otherwise a transient failure here
-  // would strand the pointer beyond what a retry can repair. The brief window
-  // this leaves (row without pointer, re-adoptable by a racing submit's
-  // cold-path scan) is closed by the final sweep below plus the consumer's
-  // purge guard.
-  const byUrlReleased = await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
-
-  let listRowRemoved = false;
-  await deps.reader.removeListIndexItemIf(id, (item) => {
-    listRowRemoved = listRowRemoved || item.id === id;
-    return item.id === id;
-  });
-
-  let objectsDeleted = await deps.reader.deleteReadingObjects(pointer.key_prefix);
-
-  // Final sweep for the narrow race where a live in-flight attempt — TTL
-  // staleness is a read-time verdict, not proof the worker stopped —
-  // republished state between the steps above. Every op is idempotent, and
-  // the sweep runs BEFORE the by-id delete so a failure anywhere in it leaves
-  // the retry locator intact. A commit landing after this pass is the
-  // accepted last-writer-wins residue (the repo's documented stance, same
-  // class as delete-plan.ts's orphan attempt JSONs): invisible-or-repairable —
-  // the consumer's purge guard refuses retries, attempt-log writes dangle
-  // nothing, and a stray pointer/row is reclaimed by the next submit's
-  // ownership repair or corpus tooling.
-  objectsDeleted += await deps.reader.deleteReadingObjects(pointer.key_prefix);
-  // The sweep re-issues the vector delete but NOT the ledger write. The row was
-  // recorded before the first delete and carries this same stamp, so a second
-  // write would change nothing — while adding a failure point after the objects
-  // are already gone, where a D1 blip would throw out of
-  // `DELETE /api/readings/:id` with the by-id pointer still present. The
-  // invariant that matters is already satisfied: the id was in the ledger
-  // before anything was deleted.
-  if (deps.similarity) await deps.similarity.delete(id);
-  await deps.reader.removeListIndexItemIf(id, (item) => item.id === id);
-  await releaseByUrlSlotIfOwned(deps.reader, id, manifest, row?.url);
-
-  await deps.deleteRefreshCheckpoint?.(id);
-
-  // Last, so every earlier step can be re-driven by re-issuing the DELETE.
-  await deps.reader.deleteByIdPointer(id);
 
   return {
     kind: "purged",
     report: {
       id,
-      vector_delete_requested: deps.similarity !== null,
-      list_row_removed: listRowRemoved,
-      by_url_released: byUrlReleased,
+      // The embedding row goes with the reading; kept for the report contract.
+      vector_delete_requested: true,
+      list_row_removed: true,
+      by_url_released: purged.urlReleased,
       objects_deleted: objectsDeleted,
     },
   };
-}
-
-function hasRunningAttempt(
-  manifest: Manifest,
-  opts: { pendingTtlSeconds: number; now: string },
-): boolean {
-  // The same read-time staleness rule reprocess applies: a zombie attempt past
-  // TTL reads as failed and must not block the purge forever.
-  return effectivelyRunning(manifest, opts.pendingTtlSeconds, opts.now);
-}
-
-/**
- * The purge's clock as a ledger stamp.
- *
- * Guarded rather than trusted. `deleted_at_ms` is bound straight into D1, and a
- * `NaN` from an unparseable `opts.now` would be rejected by the binding — after
- * `similarity.delete` has already been submitted, which is exactly the
- * unaddressable-vector case the ledger exists to prevent. Every current caller
- * passes `services.now()`, so this only ever fires on a future one.
- */
-function ledgerStamp(now: string): number {
-  const parsed = Date.parse(now);
-  return Number.isFinite(parsed) ? parsed : Date.now();
-}
-
-async function releaseByUrlSlotIfOwned(
-  reader: ReadingStore,
-  id: string,
-  manifest: Manifest | null,
-  rowUrl: string | undefined,
-): Promise<boolean> {
-  const urlHash =
-    manifest?.url_hash ?? (rowUrl === undefined ? null : await sha256Hex(rowUrl));
-  if (urlHash === null) return false;
-  // An unparseable pointer is left alone, like delete-plan's rule — but a
-  // transiently failing read aborts (per the same contract there): mistaking
-  // it for absence would strand an owned pointer while the rest is purged.
-  let stored: Awaited<ReturnType<ReadingStore["readByUrlPointer"]>> = null;
-  try {
-    stored = await reader.readByUrlPointer(urlHash);
-  } catch (err) {
-    if (!isCorruptStoredObjectError(err)) throw err;
-  }
-  if (!stored || stored.id !== id) return false;
-  // R2 has no conditional delete, so the ownership check and the delete are
-  // two operations: a submit that claims the freed slot inside that gap could
-  // lose its fresh pointer to a concurrently re-issued purge. That loss is
-  // the missing-pointer damage class resolveOwner's cold-path claim already
-  // repairs on the next write (the new reading keeps its list row), so it is
-  // accepted as self-healing rather than paid for with a reservation protocol.
-  await reader.deleteByUrlPointer(urlHash);
-  return true;
-}
-
-// The two ways a stored JSON object reads as corrupt rather than unavailable:
-// JSON.parse throws SyntaxError, schema validation throws ZodError. Anything
-// else is infrastructure and must propagate.
-function isCorruptStoredObjectError(err: unknown): boolean {
-  return err instanceof SyntaxError || err instanceof ZodError;
 }

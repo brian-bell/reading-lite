@@ -1,11 +1,8 @@
 import { sourceDateFromExtractOrPrior } from "../../../src/modules/extractor/source-date";
 import { ManifestSchema, type Manifest } from "../../../src/schemas/manifest";
-import { manifestToIndexItem } from "../../../src/modules/stores/reading-store";
-import type { ListIndexItem } from "../../../src/schemas/api";
+import type { BatchCorpus } from "./postgres";
+import { rawExtFromContentType } from "../../../src/modules/stores/layout";
 import type { R2Client } from "../../lib/cf-clients";
-import { mergeListIndex } from "./list-index-write";
-import { serializeReadingPointer, type ReadingPointer } from "./pointers";
-import { getByUrl } from "./r2-reads";
 import { r2KeyLayout } from "../../../src/modules/stores/layout";
 import type {
   ActivatingSidecar,
@@ -23,7 +20,8 @@ import type { BatchSpendIdentity } from "./spend";
 const layout = r2KeyLayout();
 
 export interface ActivationDeps {
-  r2: Pick<R2Client, "get" | "put" | "putIfAbsent" | "delete">;
+  r2: Pick<R2Client, "put" | "delete">;
+  corpus: BatchCorpus;
   model?: string;
   // `spend` is the operation admitted before activation; the activating
   // sidecar is the first pending sidecar, so it carries it.
@@ -46,193 +44,101 @@ export interface ActivationResult {
   skipped: WriteReportRow[];
 }
 
-export async function activateFreshTargets(
+export const activateFreshTargets = activateTargets;
+export const activateRecoverTargets = activateTargets;
+
+async function activateTargets(
   targets: ExtractedTarget[],
   deps: ActivationDeps,
 ): Promise<ActivationResult> {
-  const freshTargets = targets.filter((t) => t.freshActivation);
-  if (freshTargets.length === 0) return { activated: targets, skipped: [] };
-
-  await deps.saveSidecar(activatingSidecar(freshTargets, activationIdentity(deps)));
-
-  const activated: ExtractedTarget[] = [];
-  const skipped: WriteReportRow[] = [];
-  const touched = [];
-
-  for (const target of targets) {
-    const policy = target.freshActivation;
-    if (!policy) {
-      activated.push(target);
-      continue;
-    }
-
-    if (policy.kind === "occupied-needs-repair") {
-      skipped.push({ id: target.target.readingId, status: "skipped", reason: policy.reason });
-      continue;
-    }
-
-    const pointer = serializeReadingPointer(target.target.readingId, target.target.keyPrefix);
-    const pointerKey = layout.byUrlKey(target.target.urlHash);
-
-    if (policy.kind === "create-new") {
-      const claimed = await deps.r2.putIfAbsent(pointerKey, pointer, { contentType: "application/json" });
-      if (!claimed) {
-        skipped.push({
-          id: target.target.readingId,
-          status: "skipped",
-          reason: "by-url slot already owned at batch submit",
-        });
-        continue;
-      }
-    } else if (policy.kind === "create-existing-failed") {
-      const before = await readManifest(deps.r2, policy.expected.keyPrefix);
-      if (!isExpectedFailed(before, policy.expected)) {
-        skipped.push({
-          id: policy.expected.id,
-          status: "skipped",
-          reason: "planned failed reading changed before by-url claim",
-        });
-        continue;
-      }
-      const claimed = await deps.r2.putIfAbsent(pointerKey, pointer, { contentType: "application/json" });
-      if (!claimed) {
-        skipped.push({
-          id: policy.expected.id,
-          status: "skipped",
-          reason: "by-url slot already owned at batch submit",
-        });
-        continue;
-      }
-      const after = await readManifest(deps.r2, policy.expected.keyPrefix);
-      if (!isExpectedFailed(after, policy.expected)) {
-        throw new Error(`batch activation claimed ${policy.expected.id}, but its manifest changed before pending write`);
-      }
-    } else {
-      const currentPointer = await readPointer(deps.r2, pointerKey);
-      const currentManifest = await readManifest(deps.r2, policy.expected.keyPrefix);
-      if (!pointerEquals(currentPointer, policy.expected.id, policy.expected.keyPrefix)) {
-        skipped.push({ id: policy.expected.id, status: "skipped", reason: "by-url pointer changed before activation" });
-        continue;
-      }
-      if (!isExpectedFailed(currentManifest, policy.expected)) {
-        skipped.push({ id: policy.expected.id, status: "skipped", reason: "planned failed reading changed before activation" });
-        continue;
-      }
-      const finalPointer = await readPointer(deps.r2, pointerKey);
-      const finalManifest = await readManifest(deps.r2, policy.expected.keyPrefix);
-      if (
-        !pointerEquals(finalPointer, policy.expected.id, policy.expected.keyPrefix) ||
-        !isExpectedFailed(finalManifest, policy.expected)
-      ) {
-        throw new Error(`batch activation lost the ${policy.expected.id} ownership revalidation race`);
-      }
-    }
-
-    const item = await commitPendingActivation(target, buildPendingManifest(target, deps.now()), deps.r2);
-    touched.push(item);
-    activated.push({ ...target, contentAlreadyWritten: true });
-  }
-
-  if (touched.length > 0) await mergeListIndex({ r2: deps.r2, log: deps.log }, touched);
-
-  return { activated, skipped };
-}
-
-// The recover-batch sibling of activateFreshTargets. For a recover target the
-// by-url slot is usually *already held* (realtime-failed readings own by-url;
-// batch-failed ones don't), so the eager "claim" is really a failed→pending flip.
-// Recover carries no create-* policy: every target is treated uniformly, the
-// claim is idempotent for an already-owned reading, and write-phase leaves the
-// claim on failure (no releaseByUrlOnFailure) so a failed recover URL stays
-// re-submittable by both recover (resolves via row.key_prefix) and the online
-// reprocess path (ownedManifestMatches is status-agnostic).
-export async function activateRecoverTargets(
-  targets: ExtractedTarget[],
-  deps: ActivationDeps,
-): Promise<ActivationResult> {
-  if (targets.length === 0) return { activated: [], skipped: [] };
-
+  if (!targets.length) return { activated: [], skipped: [] };
   await deps.saveSidecar(activatingSidecar(targets, activationIdentity(deps)));
-
   const activated: ExtractedTarget[] = [];
   const skipped: WriteReportRow[] = [];
-  const touched = [];
-
   for (const target of targets) {
-    const { readingId: id, keyPrefix, url, urlHash } = target.target;
-    const pointerKey = layout.byUrlKey(urlHash);
-    const pointer = serializeReadingPointer(id, keyPrefix);
-
-    const lookup = await getByUrl(deps.r2, urlHash);
-    if (lookup === "damaged") {
-      skipped.push({ id, status: "skipped", reason: "by-url pointer is damaged" });
+    const t = target.target;
+    const policy = target.freshActivation;
+    const current = await deps.corpus.readManifest(t.keyPrefix);
+    const owner = await deps.corpus.getByUrl(t.urlHash);
+    const isNew = policy?.kind === "create-new";
+    if (
+      policy?.kind === "occupied-needs-repair" ||
+      (owner && owner.id !== t.readingId) ||
+      (isNew
+        ? current !== null
+        : !current ||
+          current.id !== t.readingId ||
+          current.url !== t.url ||
+          current.url_hash !== t.urlHash) ||
+      (policy && !isNew && current?.status !== "failed")
+    ) {
+      skipped.push({
+        id: t.readingId,
+        status: "skipped",
+        reason: "reading ownership changed before activation",
+      });
       continue;
     }
-    // Track whether *this run* created the by-url claim, so a later revalidation
-    // skip can release exactly the pointer it wrote (and only that one).
-    let createdClaim = false;
-    if (lookup === null) {
-      const claimed = await deps.r2.putIfAbsent(pointerKey, pointer, { contentType: "application/json" });
-      if (claimed) {
-        createdClaim = true;
-      } else {
-        const after = await getByUrl(deps.r2, urlHash);
-        if (!(after && after !== "damaged" && after.id === id && after.key_prefix === keyPrefix)) {
-          skipped.push({ id, status: "skipped", reason: "by-url claimed by another writer" });
-          continue;
-        }
-        // Lost the race but the winner wrote our identical pointer — not ours to
-        // release (another writer owns it), so leave createdClaim false.
+    let content = await deps.corpus.contentKeys(t.keyPrefix);
+    if (target.fresh) {
+      const fresh = target.fresh;
+      content = {
+        rawKey: layout.revisionRawKey(
+          t.keyPrefix,
+          t.attemptId,
+          rawExtFromContentType(fresh.content_type),
+        ),
+        extractedKey: layout.revisionExtractedKey(t.keyPrefix, t.attemptId),
+      };
+      try {
+        await deps.r2.put(content.rawKey, fresh.raw, {
+          contentType: fresh.content_type,
+        });
+        await deps.r2.put(content.extractedKey!, target.markdown, {
+          contentType: "text/markdown; charset=utf-8",
+        });
+      } catch (error) {
+        await deps.corpus.discardContent(t, content, (key) =>
+          deps.r2.delete(key),
+        );
+        throw error;
       }
-    } else if (lookup.id !== id || lookup.key_prefix !== keyPrefix) {
-      // A live pointer to a *different* reading — never clobber another owner.
-      skipped.push({ id, status: "skipped", reason: "by-url owned by a different reading" });
+    }
+    if (!content)
+      throw new Error(`batch content keys missing for ${t.readingId}`);
+    const draft = policy
+      ? buildPendingManifest(target, deps.now())
+      : buildRecoverPendingManifest(target, current!, deps.now());
+    // A reprocess leaves the published revision visible until success.
+    const pending =
+      current?.status === "ready"
+        ? ManifestSchema.parse({
+            ...current,
+            active_attempt: draft.active_attempt,
+            updated_at: draft.updated_at,
+          })
+        : draft;
+    if (!(await deps.corpus.activate(pending, t.keyPrefix, content, current))) {
+      // Only a confirmed refusal is safe to clean up. An ambiguous commit
+      // keeps the activating sidecar and bytes for manual reconciliation.
+      if (target.fresh)
+        await deps.corpus.discardContent(t, content, (key) =>
+          deps.r2.delete(key),
+        );
+      skipped.push({
+        id: t.readingId,
+        status: "skipped",
+        reason: "reading changed during activation",
+      });
       continue;
     }
-    // else: the pointer already equals ours — idempotent owns-slot branch, proceed
-    // without a claim write (both writers serialize identically).
-
-    // Revalidate the live manifest is still this reading, regardless of status:
-    // a ready force-reprocess, a failed reading, or our own batch-marked pending on
-    // a re-run all pass. Re-flip safety of our own pending rests on --sole-writer.
-    const m = await readManifest(deps.r2, keyPrefix);
-    if (!(m && m.id === id && m.url === url && m.url_hash === urlHash)) {
-      // Release a claim *this run* just created so a never-activated reading
-      // doesn't strand a stale by-url pointer (when every target skips, the
-      // sidecar is cleared and no later write phase repairs it).
-      if (createdClaim) await releaseClaimIfOwned(deps.r2, urlHash, id, keyPrefix);
-      skipped.push({ id, status: "skipped", reason: "reading changed before activation" });
-      continue;
-    }
-
-    const pendingManifest = buildRecoverPendingManifest(target, m, deps.now());
-    const item = await commitPendingActivation(target, pendingManifest, deps.r2);
-    touched.push(item);
     activated.push({
       ...target,
-      target: { ...target.target, manifest: pendingManifest },
+      target: { ...t, manifest: policy ? draft : pending },
       contentAlreadyWritten: true,
     });
   }
-
-  if (touched.length > 0) await mergeListIndex({ r2: deps.r2, log: deps.log }, touched);
-
   return { activated, skipped };
-}
-
-// The per-target write tail both activation paths share once they decide to
-// activate: persist fresh content (no-op when reused), write the pending
-// manifest, write the by-id pointer, and return the list-index row to merge.
-async function commitPendingActivation(
-  target: ExtractedTarget,
-  manifest: Manifest,
-  r2: Pick<R2Client, "put">,
-): Promise<ListIndexItem> {
-  const { readingId: id, keyPrefix } = target.target;
-  await writeFreshContent(target, r2);
-  await r2.put(layout.manifestKey(keyPrefix), JSON.stringify(manifest), { contentType: "application/json" });
-  await r2.put(layout.byIdKey(id), serializeReadingPointer(id, keyPrefix), { contentType: "application/json" });
-  return manifestToIndexItem(manifest, keyPrefix);
 }
 
 type ActivationIdentity = NonNullable<ActivationDeps["identity"]>;
@@ -320,10 +226,17 @@ function buildPendingManifest(target: ExtractedTarget, now: string): Manifest {
 // fresh-wins / prior-fills-gap rule as sidecarTargetFor and is persisted here
 // so an activating-window crash + extracted.md reuse (no `fresh` object) still
 // feeds the new date to the sidecar.
-function buildRecoverPendingManifest(target: ExtractedTarget, m: Manifest, now: string): Manifest {
+function buildRecoverPendingManifest(
+  target: ExtractedTarget,
+  m: Manifest,
+  now: string,
+): Manifest {
   const fresh = target.fresh;
   const markdownBytes = new TextEncoder().encode(target.markdown).byteLength;
-  const sourceDate = sourceDateFromExtractOrPrior(fresh?.source_date, m.source_date);
+  const sourceDate = sourceDateFromExtractOrPrior(
+    fresh?.source_date,
+    m.source_date,
+  );
   return ManifestSchema.parse({
     id: target.target.readingId,
     url: target.target.url,
@@ -356,10 +269,7 @@ function preservedReadySnapshotField(m: Manifest): Partial<Manifest> {
 
 function readySnapshotForActivation(m: Manifest): Manifest | undefined {
   if (m.status === "ready") return withoutNestedReadySnapshot(m);
-  if (
-    m.status !== "pending" ||
-    m.active_attempt?.trigger !== "reprocess"
-  ) {
+  if (m.status !== "pending" || m.active_attempt?.trigger !== "reprocess") {
     return undefined;
   }
   const preserved = parsePreservedReadySnapshot(m.preserve_ready_manifest);
@@ -368,83 +278,11 @@ function readySnapshotForActivation(m: Manifest): Manifest | undefined {
 
 function parsePreservedReadySnapshot(value: unknown): Manifest | undefined {
   const parsed = ManifestSchema.safeParse(value);
-  return parsed.success && parsed.data.status === "ready" ? parsed.data : undefined;
+  return parsed.success && parsed.data.status === "ready"
+    ? parsed.data
+    : undefined;
 }
 
 function withoutNestedReadySnapshot(m: Manifest): Manifest {
   return ManifestSchema.parse({ ...m, preserve_ready_manifest: undefined });
-}
-
-// Delete a by-url pointer only when it still exactly matches the claim this run
-// wrote (mirrors write-phase.releaseByUrlIfOwned): a concurrent owner change must
-// not be clobbered by our rollback.
-async function releaseClaimIfOwned(
-  r2: Pick<R2Client, "get" | "delete">,
-  urlHash: string,
-  id: string,
-  keyPrefix: string,
-): Promise<void> {
-  const current = await getByUrl(r2, urlHash);
-  if (current && current !== "damaged" && current.id === id && current.key_prefix === keyPrefix) {
-    await r2.delete(layout.byUrlKey(urlHash));
-  }
-}
-
-async function writeFreshContent(
-  target: ExtractedTarget,
-  r2: Pick<R2Client, "put">,
-): Promise<void> {
-  const fresh = target.fresh;
-  if (!fresh) return;
-  await r2.put(layout.rawKey(target.target.keyPrefix, extToken(fresh.content_type)), fresh.raw, {
-    contentType: fresh.content_type,
-  });
-  if (fresh.markdown) {
-    await r2.put(layout.extractedKey(target.target.keyPrefix), fresh.markdown, {
-      contentType: "text/markdown; charset=utf-8",
-    });
-  }
-}
-
-async function readManifest(
-  r2: Pick<R2Client, "get">,
-  keyPrefix: string,
-): Promise<Manifest | null> {
-  const raw = await r2.get(layout.manifestKey(keyPrefix));
-  return raw ? ManifestSchema.parse(JSON.parse(raw)) : null;
-}
-
-async function readPointer(r2: Pick<R2Client, "get">, key: string): Promise<ReadingPointer | null> {
-  const raw = await r2.get(key);
-  if (!raw) return null;
-  const parsed = JSON.parse(raw) as Partial<ReadingPointer>;
-  if (typeof parsed.id !== "string" || typeof parsed.key_prefix !== "string") return null;
-  return { id: parsed.id, key_prefix: parsed.key_prefix };
-}
-
-function isExpectedFailed(
-  manifest: Manifest | null,
-  expected: { id: string; keyPrefix: string; url: string; urlHash: string; createdAt: string },
-): boolean {
-  return (
-    manifest?.status === "failed" &&
-    manifest.id === expected.id &&
-    manifest.url === expected.url &&
-    manifest.url_hash === expected.urlHash &&
-    manifest.created_at === expected.createdAt
-  );
-}
-
-function pointerEquals(pointer: ReadingPointer | null, id: string, keyPrefix: string): boolean {
-  return pointer?.id === id && pointer.key_prefix === keyPrefix;
-}
-
-function extToken(contentType: string): string {
-  const major = contentType.split(";", 1)[0]!.trim().toLowerCase();
-  if (major === "text/html" || major === "application/xhtml+xml") return "html";
-  if (major === "text/markdown") return "md";
-  if (major === "application/pdf") return "pdf";
-  if (major === "application/json") return "json";
-  if (major.startsWith("text/")) return "txt";
-  return "bin";
 }

@@ -1416,7 +1416,7 @@ describe("the Details section", () => {
     expect(within(section).getByText("By-id pointer").nextElementSibling?.textContent).toBe("OK");
     expect(within(section).getByText("By-URL pointer").nextElementSibling?.textContent).toBe("OK");
     expect(within(section).getByText("Library row").nextElementSibling?.textContent).toBe("ready");
-    expect(within(section).getByText("manifest.json")).toBeInTheDocument();
+    expect(within(section).getByText("raw.html")).toBeInTheDocument();
     expect(within(section).getByText("extracted.md")).toBeInTheDocument();
 
     const attempt = within(section).getByRole("article", { name: "Saved attempt" });

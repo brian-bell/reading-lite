@@ -1,11 +1,13 @@
 import { TenantRecoveryRequestSchema, tenantLeaseRecovery, type TenantRecoveryRequest } from "./processing-lease-recovery";
 import { inspectTenant } from "./operator-inspection";
 import type { Env } from "../index";
+import { withControlPlane } from "./db";
 import { bumpWindow } from "./auth-rate-guard";
 import { INGRESS_REQUEST_WINDOW_MS, READING_RESERVATION_LIVE_TTL_MS, READING_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { logUnboundGuardPurge } from "./global-usage-guard";
 import { parseTenantId } from "./ids";
+import { PolicyCache, policyCacheTtlMs } from "./policy-cache";
 import {
   acquireLease as acquireStoredLease,
   isLeaseKey,
@@ -163,36 +165,37 @@ function positiveInt(value: unknown): number | null {
   return n;
 }
 
-async function loadLimits(env: Env, tenantId: string): Promise<TenantIngressLimits | null> {
+type TenantLimitsRow = {
+  policy_version: number;
+  submissions_per_hour: number;
+  monthly_readings: number;
+  max_concurrent_work: number;
+};
+
+// The tenant's limits row: one read serves every limit this guard enforces,
+// and it is cached per instance for GUARD_POLICY_CACHE_MS (policy-cache.ts).
+// Anything that is not a row is null, never cached, and fails closed.
+async function loadTenantLimits(env: Env, cache: PolicyCache, tenantId: string): Promise<TenantLimitsRow | null> {
   try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT submissions_per_hour, monthly_readings
-       FROM tenant_limits WHERE tenant_id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ submissions_per_hour: number; monthly_readings: number }>();
-    if (!row) return null;
-    const submissionsPerHour = positiveInt(row.submissions_per_hour);
-    const monthlyReadings = positiveInt(row.monthly_readings);
-    if (submissionsPerHour === null || monthlyReadings === null) return null;
-    return { submissionsPerHour, monthlyReadings };
+    return await cache.get(`tenant_limits:${tenantId}`, async () =>
+      (await withControlPlane(env, (db) =>
+        db.first<TenantLimitsRow>(
+          "SELECT policy_version, submissions_per_hour, monthly_readings, max_concurrent_work FROM tenant_limits WHERE tenant_id = ?",
+          tenantId,
+        ),
+      )) ?? null,
+    );
   } catch {
     return null;
   }
 }
 
-async function loadConcurrencyLimit(env: Env, tenantId: string): Promise<number | null> {
-  try {
-    const row = await env.CONTROL_PLANE.prepare(
-      `SELECT max_concurrent_work FROM tenant_limits WHERE tenant_id = ?`,
-    )
-      .bind(tenantId)
-      .first<{ max_concurrent_work: number }>();
-    if (!row) return null;
-    return positiveInt(row.max_concurrent_work);
-  } catch {
-    return null;
-  }
+function ingressLimitsOf(row: TenantLimitsRow | null): TenantIngressLimits | null {
+  if (!row) return null;
+  const submissionsPerHour = positiveInt(row.submissions_per_hour);
+  const monthlyReadings = positiveInt(row.monthly_readings);
+  if (submissionsPerHour === null || monthlyReadings === null) return null;
+  return { submissionsPerHour, monthlyReadings };
 }
 
 function parseGuardBody(value: unknown): GuardBody | null {
@@ -276,10 +279,14 @@ async function decrementCounter(storage: DurableObjectStorage, key: string): Pro
 }
 
 export class TenantUsageGuard implements DurableObject {
+  private readonly policy: PolicyCache;
+
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: Env,
-  ) {}
+  ) {
+    this.policy = new PolicyCache(policyCacheTtlMs(env));
+  }
 
   async fetch(request: Request): Promise<Response> {
     if (request.method !== "POST") {
@@ -296,7 +303,7 @@ export class TenantUsageGuard implements DurableObject {
     return this.state.blockConcurrencyWhile(async () => {
       if (body.kind === "peek_lease" || body.kind === "retire_lease") return json(await tenantLeaseRecovery(this.state.storage, body));
       if (body.kind === "tenant_status") {
-        const limits = await this.env.CONTROL_PLANE.prepare("SELECT policy_version, submissions_per_hour, monthly_readings, max_concurrent_work FROM tenant_limits WHERE tenant_id = ?").bind(body.tenantId).first();
+        const limits = await loadTenantLimits(this.env, this.policy, body.tenantId);
         return json(await inspectTenant(this.state.storage, Date.now(), limits));
       }
       if (body.kind === "purge_tenant") return this.purgeTenant();
@@ -325,6 +332,7 @@ export class TenantUsageGuard implements DurableObject {
   private async purgeTenant(): Promise<Response> {
     await this.state.storage.deleteAll();
     await this.state.storage.deleteAlarm();
+    this.policy.clear();
     return json({ ok: true });
   }
 
@@ -436,7 +444,8 @@ export class TenantUsageGuard implements DurableObject {
     tenantId: string,
   ): Promise<{ ok: true; limit: number } | { ok: false; reason: "missing_limits" }> {
     if (!parseTenantId(tenantId)) return { ok: false, reason: "missing_limits" };
-    const limit = await loadConcurrencyLimit(this.env, tenantId);
+    const row = await loadTenantLimits(this.env, this.policy, tenantId);
+    const limit = row ? positiveInt(row.max_concurrent_work) : null;
     if (limit === null) return { ok: false, reason: "missing_limits" };
     return { ok: true, limit };
   }
@@ -445,7 +454,7 @@ export class TenantUsageGuard implements DurableObject {
     tenantId: string,
   ): Promise<{ ok: true; limits: TenantIngressLimits } | { ok: false; reason: "missing_limits" }> {
     if (!parseTenantId(tenantId)) return { ok: false, reason: "missing_limits" };
-    const limits = await loadLimits(this.env, tenantId);
+    const limits = ingressLimitsOf(await loadTenantLimits(this.env, this.policy, tenantId));
     if (!limits) return { ok: false, reason: "missing_limits" };
     return { ok: true, limits };
   }

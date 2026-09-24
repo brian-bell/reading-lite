@@ -3,14 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import type { ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
-import { mintReadingId, sha256Hex, type Services } from "../../src/services";
-import { buildKeyPrefix } from "../../src/modules/stores/reading-store";
+import { mintReadingId, type Services } from "../../src/services";
 import {
   decodeIntakeResponse,
   decodeWhoamiResponse,
   readingApiFor,
 } from "../../scripts/lib/reading-api";
-import { insertQuotaTenant, PUBLIC_LOOKUP, testReadingStore } from "../helpers/tenant-fixtures";
+import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 
 // Contract test for the operator-side Reading API client: the pure
 // decodeIntakeResponse must round-trip the REAL router's responses (toHttp's
@@ -100,22 +99,6 @@ describe("decodeIntakeResponse against the live router", () => {
       reason: "active_attempt",
       message: "reading already has an active attempt",
     });
-  });
-
-  it("409 initializing owner decodes to initializing with the owner's id", async () => {
-    // An initializing owner is a by-url pointer whose manifest is not written
-    // yet, still inside the grace window.
-    const url = "https://contract.test/initializing";
-    const owner = mintReadingId();
-    const store = testReadingStore(env as unknown as Env);
-    await store.writeByUrlPointer(await sha256Hex(url), {
-      id: owner,
-      key_prefix: buildKeyPrefix(owner, new Date().toISOString()),
-    });
-    const res = await post("/api/readings", { url, email: false });
-    expect(res.status).toBe(409);
-    const out = await decoded(res);
-    expect(out).toEqual({ kind: "initializing", id: owner });
   });
 
   it("404 reprocess of an unknown id decodes to not_found", async () => {

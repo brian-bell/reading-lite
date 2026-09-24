@@ -8,7 +8,7 @@
 //
 // The corpora are generated from a seeded PRNG rather than hand-written, and
 // scored by a fixed 1-D distance function, so the neighbourhoods are internally
-// consistent the way a real Vectorize index is: the same pair scores the same
+// consistent the way a real similarity scan is: the same pair scores the same
 // in a forward query and in a reverse one. That consistency is what makes B a
 // real test of the reverse bound rather than a test of the fixture.
 //
@@ -24,10 +24,16 @@ import {
 } from "../../../scripts/ops-lib/commands/corpus-refresh-neighbours";
 import type { CommandIo } from "../../../scripts/ops-lib/contract";
 import type { RefreshRow } from "../../../scripts/corpus-lib/refresh-neighbours";
-import { REVERSE_TOP_K, type RefreshState } from "../../../scripts/corpus-lib/refresh-scope";
+import {
+  REFRESH_STATE_VERSION,
+  REVERSE_TOP_K,
+  type RefreshState,
+} from "../../../scripts/corpus-lib/refresh-scope";
 import { REFRESH_CANDIDATE_TOP_K } from "../../../src/modules/refresh-neighbours";
-import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity-store";
+import { SIMILARITY_FLOOR, SIMILAR_TOP_K } from "../../../src/modules/stores/similarity";
 
+/** Every pass addresses one tenant's rows. */
+const TENANT = "usr_11111111-1111-4111-8111-111111111111";
 const T0 = "2026-08-01T00:00:00.000Z";
 const MARKER_AT = "2026-08-20T00:00:00.000Z";
 const T1 = "2026-08-25T00:00:00.000Z";
@@ -114,40 +120,35 @@ function makeDeps(corpus: Reading[], state: RefreshState | null) {
   const byId = new Map(corpus.map((reading) => [reading.id, reading]));
   const lines: string[] = [];
   const io: CommandIo = { stdout: (t) => lines.push(t), stderr: (t) => lines.push(t) };
-  const queried: Array<{ id: string; topK: number; metadata?: boolean }> = [];
+  const queried: Array<{ id: string; topK: number }> = [];
   const reports: string[] = [];
   const deps: CorpusRefreshNeighboursDeps = {
     io,
-    r2: {
-      readListIndex: async () => ({ items: corpus.map(listRow) }),
-      readRefreshState: async () => state,
-      writeRefreshState: async () => {},
-      readManifest: async (keyPrefix) => {
-        const id = keyPrefix.slice("readings/".length);
-        const reading = byId.get(id);
-        return reading === undefined ? null : manifest(reading);
-      },
-      queryByVectorId: async (_index, id, topK, _namespace, opts) => {
-        queried.push({
-          id,
-          topK,
-          ...(opts?.metadata === undefined ? {} : { metadata: opts.metadata }),
-        });
-        const self = byId.get(id);
-        if (self === undefined) return null;
-        return corpus
-          .map((other) => ({
-            id: other.id,
-            score: score(self, other),
-            title: `Title ${other.id}`,
-            created_at: other.createdAt,
-          }))
-          .sort((a, b) => b.score - a.score)
-          .slice(0, topK);
-      },
-      putManifest: async () => {},
-      mergeListRows: async () => {},
-    },
+    withStore: (_target, work) =>
+      work({
+        listItems: async () => corpus.map(listRow),
+        readRefreshState: async () => state,
+        writeRefreshState: async () => {},
+        readManifest: async (id) => {
+          const reading = byId.get(id);
+          return reading === undefined ? null : manifest(reading);
+        },
+        queryByVectorId: async (id, topK) => {
+          queried.push({ id, topK });
+          const self = byId.get(id);
+          if (self === undefined) return null;
+          return corpus
+            .map((other) => ({
+              id: other.id,
+              score: score(self, other),
+              title: `Title ${other.id}`,
+              created_at: other.createdAt,
+            }))
+            .sort((a, b) => b.score - a.score)
+            .slice(0, topK);
+        },
+        setSimilarity: async () => true,
+      }),
     now: () => Date.parse(NOW),
     mkdir: async () => {},
     writeFile: async (_path, body) => {
@@ -166,7 +167,7 @@ interface RunResult {
 
 async function run(corpus: Reading[], argv: string[], state: RefreshState | null): Promise<RunResult> {
   const { deps, queried, reports } = makeDeps(corpus, state);
-  const code = await corpusRefreshNeighboursCommand.run(["--tenant", "global", ...argv], deps);
+  const code = await corpusRefreshNeighboursCommand.run(["--tenant", TENANT, ...argv], deps);
   return {
     code,
     report: JSON.parse(reports[reports.length - 1]!),
@@ -220,7 +221,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const before = generateCorpus(rand, 4 + Math.floor(rand() * 8), T0);
       const after = mutate(before, rand);
       const marker: RefreshState = {
-        version: 2,
+        version: REFRESH_STATE_VERSION,
         last_run_at: MARKER_AT,
         list_ids: before.map((reading) => reading.id),
       };
@@ -260,7 +261,7 @@ describe("incremental tier-1 scope, on generated corpora", () => {
       const before = generateCorpus(rand, 6 + Math.floor(rand() * 6), T0);
       const after = mutate(before, rand);
       const incremental = await run(after, ["--since-last-run"], {
-        version: 2,
+        version: REFRESH_STATE_VERSION,
         last_run_at: MARKER_AT,
         list_ids: before.map((reading) => reading.id),
       });
@@ -269,22 +270,19 @@ describe("incremental tier-1 scope, on generated corpora", () => {
     expect(narrowed).toBeGreaterThan(0);
   });
 
-  it("never asks for metadata on a reverse query, and asks for topK 100", async () => {
+  it("asks for topK 100 on every reverse query", async () => {
     const rand = prng(7);
     const before = generateCorpus(rand, 6, T0);
     const after = mutate(before, rand);
     const { deps, queried } = makeDeps(after, {
-      version: 2,
+      version: REFRESH_STATE_VERSION,
       last_run_at: MARKER_AT,
       list_ids: before.map((reading) => reading.id),
     });
-    await corpusRefreshNeighboursCommand.run(["--tenant", "global", "--since-last-run"], deps);
+    await corpusRefreshNeighboursCommand.run(["--tenant", TENANT, "--since-last-run"], deps);
     const reverse = queried.filter((q) => q.topK !== REFRESH_CANDIDATE_TOP_K);
     expect(reverse.length).toBeGreaterThan(0);
-    for (const query of reverse) {
-      expect(query.topK).toBe(REVERSE_TOP_K);
-      expect(query.metadata).toBe(false);
-    }
+    for (const query of reverse) expect(query.topK).toBe(REVERSE_TOP_K);
   });
 });
 

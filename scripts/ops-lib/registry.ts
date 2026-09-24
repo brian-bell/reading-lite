@@ -6,7 +6,6 @@ import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
 import { accountResidueScanCommand } from "./commands/account-residue-scan";
-import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-vectors";
 // The single typed registry behind `npm run ops`. Root, group, and command
 // help all render from these definitions, so a command that is not registered
 // here does not exist as far as the operator interface is concerned. New
@@ -16,6 +15,9 @@ import { accountAuditBareVectorsCommand } from "./commands/account-audit-bare-ve
 import type { AnyCommand, CommandGroup } from "./contract";
 import { accountSweepWipePrefixCommand } from "./commands/account-sweep-wipe-prefix";
 import { corpusAuditCommand } from "./commands/corpus-audit";
+import { dbMigrateCommand } from "./commands/db-migrate";
+import { migrateExportCommand } from "./commands/migrate-export";
+import { migrateImportCommand } from "./commands/migrate-import";
 import { deployWipeCheckCommand } from "./commands/deploy-wipe-check";
 import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
@@ -26,19 +28,12 @@ import { founderBootstrapCommand } from "./commands/founder-bootstrap";
 import { stagingSetupCommand } from "./commands/staging-setup";
 import { stagingSmokeCommand } from "./commands/staging-smoke";
 import { stagingTeardownCommand } from "./commands/staging-teardown";
-import { corpusBackfillSimilarityCommand } from "./commands/corpus-backfill-similarity";
 import { corpusRefreshNeighboursCommand } from "./commands/corpus-refresh-neighbours";
 import { corpusRefreshConnectionsCommand } from "./commands/corpus-refresh-connections";
 import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions";
-import { corpusBackfillVectorsCommand } from "./commands/corpus-backfill-vectors";
-import { corpusBackfillSourceDateCommand } from "./commands/corpus-backfill-source-date";
-import { corpusDeleteOrphansCommand } from "./commands/corpus-delete-orphans";
 import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
-import { corpusNormalizeTagsCommand } from "./commands/corpus-normalize-tags";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
-import { corpusRebuildListCommand } from "./commands/corpus-rebuild-list";
-import { corpusSeedVectorLedgerCommand } from "./commands/corpus-seed-vector-ledger";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -62,6 +57,10 @@ export const defaultRegistry: Registry = {
     { name: "import", summary: "Imports into the reading API" },
     { name: "reading-list", summary: "Reading-list JSON export triage and submission" },
     { name: "deploy", summary: "Worker and Pages deployment" },
+    { name: "db", summary: "PostgreSQL schema migrations" },
+    // The one-time storage migration (reading-lite-gh348): legacy R2/D1/Vectorize
+    // library to PostgreSQL. Retired with the legacy stores in reading-lite-gh351.
+    { name: "migrate", summary: "One-time library export from the legacy stores and import into PostgreSQL" },
     { name: "staging", summary: "Staging environment lifecycle and smoke checks" },
     { name: "founder", summary: "Founder control-plane bootstrap" },
     { name: "extract", summary: "Local extraction agent and probe" },
@@ -80,17 +79,10 @@ export const defaultRegistry: Registry = {
     corpusIngestCommand,
     corpusDropCommand,
     corpusSweepCommand,
-    corpusDeleteOrphansCommand,
-    corpusBackfillSimilarityCommand,
     corpusRefreshNeighboursCommand,
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
-    corpusBackfillVectorsCommand,
-    corpusBackfillSourceDateCommand,
-    corpusNormalizeTagsCommand,
     corpusPurgeConnectionsCommand,
-    corpusRebuildListCommand,
-    corpusSeedVectorLedgerCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,
@@ -101,6 +93,9 @@ export const defaultRegistry: Registry = {
     deployReleaseCommand,
     stagingTokenRevocationCommand,
     deployWorkerCommand,
+    dbMigrateCommand,
+    migrateExportCommand,
+    migrateImportCommand,
     deployWipeCheckCommand,
     deployWebCommand,
     stagingPrepareContextCommand,
@@ -114,6 +109,5 @@ export const defaultRegistry: Registry = {
     accountSweepWipePrefixCommand,
     accountWipeCommand,
     accountResidueScanCommand,
-    accountAuditBareVectorsCommand,
   ],
 };

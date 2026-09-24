@@ -120,8 +120,8 @@ export function pointerVerdict(check: PointerCheck): "OK" | "Mismatch" | "Missin
 }
 
 /**
- * An object key relative to the reading's prefix: "manifest.json",
- * "attempts/at_….json". The endpoint's `key_prefix` is the stored, relative
+ * An object key relative to the reading's prefix: "raw.html",
+ * "revisions/at_…/extracted.md". The endpoint's `key_prefix` is the stored, relative
  * one, while object keys are absolute bucket keys that carry the tenant root
  * in front of it on the tenant data plane, so the prefix is looked for
  * anywhere in the key rather than at its start.

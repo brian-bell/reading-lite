@@ -1,11 +1,11 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { fromD1 } from "../../../src/control-plane/db";
 import { handleDeadLetter } from "../../../src/index";
-import { buildKeyPrefix } from "../../../src/modules/stores/reading-store";
+import { buildKeyPrefix } from "../../../src/modules/stores/layout";
 import type { ProcessReadingArgs } from "../../../src/process-reading";
+import { FOUNDER_TENANT_ID as TENANT } from "../../helpers/file-tenants";
+import { testControlPlane } from "../../helpers/control-plane-db";
 
-const TENANT = "usr_550e8400-e29b-41d4-a716-446655440000";
 const TOKEN = "tok_550e8400-e29b-41d4-a716-446655440000";
 const READING_ID = "rd_0123456789";
 const JOB_URL = "https://example.com/x";
@@ -40,7 +40,7 @@ function fakeMessage(
 
 function deadLetterDeps(mark: (body: ProcessReadingArgs, tenant: { tenantId: string }) => Promise<void>) {
   return {
-    db: fromD1(env.CONTROL_PLANE),
+    db: testControlPlane(env),
     nowMs: Date.now(),
     mark,
   };
@@ -69,9 +69,7 @@ describe("handleDeadLetter", () => {
   });
 
   it("acks without marking when the tenant is deleting", async () => {
-    await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'deleting' WHERE id = ?")
-      .bind(TENANT)
-      .run();
+    await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", TENANT);
     try {
       const msg = fakeMessage();
       const mark = vi.fn(async () => {});
@@ -79,9 +77,7 @@ describe("handleDeadLetter", () => {
       expect(mark).not.toHaveBeenCalled();
       expect(msg.ack).toHaveBeenCalledOnce();
     } finally {
-      await env.CONTROL_PLANE.prepare("UPDATE users SET status = 'active' WHERE id = ?")
-        .bind(TENANT)
-        .run();
+      await testControlPlane(env).run("UPDATE users SET status = 'active' WHERE id = ?", TENANT);
     }
   });
 
@@ -108,6 +104,9 @@ describe("handleDeadLetter", () => {
       all: async () => [],
       batch: async () => [],
       run: async () => ({ changes: 0 }),
+      transaction: async () => {
+        throw new Error("unused");
+      },
     };
     await handleDeadLetter(msg, { db, nowMs: Date.now(), mark });
     expect(mark).not.toHaveBeenCalled();
