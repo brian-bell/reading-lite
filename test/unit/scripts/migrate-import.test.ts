@@ -48,7 +48,9 @@ async function withDb<T>(url: string, work: (sql: Sql) => Promise<T>): Promise<T
   }
 }
 
-const ACCEPT = ["--accept", "malformed_manifest", "--accept", "tombstoned_manifest", "--accept", "unresolved_pending"];
+const ACCEPT = [
+  "--accept", "malformed_manifest", "--accept", "tombstoned_manifest", "--accept", "unresolved_pending", "--accept", "other_accounts",
+];
 
 async function runImport(url: string, args: string[], dir = snapshotDir) {
   const out: string[] = [];

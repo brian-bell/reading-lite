@@ -28,7 +28,8 @@ export interface ColumnSpec {
 
 export interface TableSpec {
   table: string;
-  // D1 ORDER BY: the primary key, so pages are stable and the snapshot is
+  // D1 ORDER BY: the primary key. Pages resume after the last key read
+  // (sources.ts), so it must be unique, and it keeps the snapshot
   // deterministic. auth_challenges orders by rowid, which it also exports.
   orderBy: string;
   // Extra D1 select expressions ahead of `*`.

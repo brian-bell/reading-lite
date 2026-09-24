@@ -2257,9 +2257,10 @@ against them. It fetches vectors from Vectorize by their composed
 never read, and the retired founder migration is not involved. It reads the D1
 control plane with `SELECT`s through `scripts/migrate-lib/wrangler-d1-source.toml`,
 which pins main's D1 ids because the candidate's `wrangler.toml` no longer
-binds D1. Every account's control-plane rows are exported, but only the named
-tenant's library. The report lists any other accounts as `other_accounts`.
-Freeze writers first. The export reads R2, D1 and Vectorize at different
+binds D1, and pages each table by its primary key, so a row written between
+two pages is never read twice or skipped. Every account's control-plane rows
+are exported, but only the named tenant's library, so each other account is a
+blocking `other_accounts` finding. Freeze writers first. The export reads R2, D1 and Vectorize at different
 moments and assumes nothing changes in between.
 
 Only the reading that owns its URL keeps a vector, as `PgReadingWriter.publish`
@@ -2314,6 +2315,7 @@ explicitly with `--accept <code>`:
 | `tombstoned_manifest` | Skips a reading whose purge left a tombstone but not its manifest. |
 | `unresolved_pending` | Imports a pending reading, or one with an active attempt, with its attempt summary and log but **no `reading_jobs` row**, so nothing runs it. Drain the queues before the final freeze so this list is empty. |
 | `unusable_vector` | Imports a ready reading without an embedding, which leaves it unsearchable. |
+| `other_accounts` | Imports another account's control-plane rows with no library: its legacy readings are not migrated, and it signs in to an empty library after cutover. |
 
 `duplicate_reading_id`, `url_hash_mismatch` (a manifest's `url_hash` is not
 the sha256 of its `url`, so the imported owner is one no lookup finds),

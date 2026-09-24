@@ -509,8 +509,9 @@ implement the mapping above. Decisions the mapping left open:
   mapping notes.
 - **Only one tenant's library, every account's control plane.** The export
   reads `u/{tenant}/` only, which is what excludes retained pre-tenant global
-  data. The control plane is one database, so all of it moves, and the report
-  names the other accounts.
+  data. The control plane is one database, so all of it moves. Each other
+  account is a blocking finding (`other_accounts`), because it would import
+  with no library; accepting it is the decision that its readings stay behind.
 
 ### Per-environment cutover flag
 

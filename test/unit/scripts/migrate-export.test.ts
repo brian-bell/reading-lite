@@ -66,7 +66,6 @@ describe("migrate export: collection", () => {
     ["vector_reembedded", "rd_READY0003"],
     ["vector_for_non_ready", "rd_FAIL00001"],
     ["ledger_live_without_ready_reading", "rd_FAIL00001"],
-    ["other_accounts", undefined],
     // Blocking.
     ["malformed_manifest", "rd_BAD000001"],
     ["tombstoned_manifest", "rd_TOMB00001"],
@@ -74,6 +73,14 @@ describe("migrate export: collection", () => {
   ])("reports %s (%s)", async (code, id) => {
     const { collection } = await exported();
     expect(findings(collection)).toContainEqual(expect.objectContaining({ code, ...(id ? { id } : {}) }));
+  });
+
+  it("blocks on each other account, which would import with no library behind it", async () => {
+    const { collection } = await exported();
+    expect(collection.report.blocking).toContainEqual(
+      expect.objectContaining({ code: "other_accounts", id: OTHER_TENANT, detail: expect.stringContaining("suspended") }),
+    );
+    expect(collection.report.blocking.filter((d) => d.code === "other_accounts")).toHaveLength(1);
   });
 
   it("gives the URL to its pointer's reading and reports the other holder", async () => {
@@ -117,7 +124,7 @@ describe("migrate export: collection", () => {
     expect(embeddings).toEqual({ rd_OWNER0001: "vectorize", rd_DUPVEC001: null, rd_DUPNOV001: null });
     expect(collection.reembed).toEqual([]);
     expect(collection.report.vectors.non_owner).toEqual(["rd_DUPVEC001"]);
-    expect(collection.report.blocking).toEqual([]);
+    expect(collection.report.blocking.filter((d) => d.code !== "other_accounts")).toEqual([]);
   });
 
   it("counts a vector recovered by the individual retry as found", async () => {
@@ -284,26 +291,89 @@ describe("migrate export: command", () => {
 });
 
 describe("migrate export: source adapters", () => {
+  // A fake D1 that answers the reader's SELECTs over a live table, honouring a
+  // keyset WHERE, LIMIT and OFFSET, so a write between pages behaves as D1's would.
+  function liveD1(table: { id: number }[], betweenPages: (page: number) => void = () => {}) {
+    const statements: string[] = [];
+    const run = async (args: string[]) => {
+      const sql = args[args.indexOf("--command") + 1]!;
+      statements.push(sql);
+      const after = /WHERE \(id\) > \((\d+)\)/.exec(sql)?.[1];
+      const offset = Number(/OFFSET (\d+)/.exec(sql)?.[1] ?? 0);
+      const limit = Number(/LIMIT (\d+)/.exec(sql)![1]);
+      const rows = [...table]
+        .sort((a, b) => a.id - b.id)
+        .filter((row) => after === undefined || row.id > Number(after))
+        .slice(offset, offset + limit);
+      betweenPages(statements.length);
+      return { code: 0, stdout: JSON.stringify([{ success: true, results: rows }]), stderr: "" };
+    };
+    return { run, statements };
+  }
+
   it("reads a D1 table in pages of SELECTs against the pinned source config", async () => {
-    const pages = [Array.from({ length: D1_PAGE_SIZE }, (_, i) => ({ id: i })), [{ id: D1_PAGE_SIZE }]];
+    const table = Array.from({ length: D1_PAGE_SIZE + 1 }, (_, i) => ({ id: i }));
     const calls: string[][] = [];
-    const read = wranglerD1Reader("production", async (args) => {
-      calls.push(args);
-      return { code: 0, stdout: JSON.stringify([{ success: true, results: pages[calls.length - 1] }]), stderr: "" };
-    });
-    expect(await read({ table: "users", orderBy: "id" })).toHaveLength(D1_PAGE_SIZE + 1);
-    expect(calls).toHaveLength(2);
+    const d1 = liveD1(table);
+    const read = wranglerD1Reader("production", async (args) => (calls.push(args), d1.run(args)));
+    expect(await read({ table: "users", orderBy: "id" })).toEqual(table);
     expect(calls[1]).toEqual(expect.arrayContaining(["--remote", "--env", "production", "--config", D1_SOURCE_CONFIG]));
-    expect(calls.map((args) => args[args.indexOf("--command") + 1])).toEqual([
-      `SELECT * FROM users ORDER BY id LIMIT ${D1_PAGE_SIZE} OFFSET 0`,
-      `SELECT * FROM users ORDER BY id LIMIT ${D1_PAGE_SIZE} OFFSET ${D1_PAGE_SIZE}`,
+    expect(d1.statements).toEqual([
+      `SELECT * FROM users ORDER BY id LIMIT ${D1_PAGE_SIZE}`,
+      `SELECT * FROM users WHERE (id) > (${D1_PAGE_SIZE - 1}) ORDER BY id LIMIT ${D1_PAGE_SIZE}`,
     ]);
+  });
+
+  it("continues each page after the last key read, so a row written between pages neither repeats nor drops a row", async () => {
+    const table = Array.from({ length: D1_PAGE_SIZE + 2 }, (_, i) => ({ id: 10 * (i + 1) }));
+    const original = [...table];
+    // After the first page, rows land behind the cursor and an already-read one is deleted.
+    const d1 = liveD1(table, (page) => {
+      if (page === 1) {
+        table.push({ id: 5 }, { id: 7 });
+        table.splice(0, 1);
+      }
+    });
+    const rows = await wranglerD1Reader("staging", d1.run)({ table: "users", orderBy: "id" });
+    expect(rows).toEqual(original);
+  });
+
+  it("pages a composite key with quoted text, and a rowid key through a cursor column it strips", async () => {
+    const statements: string[] = [];
+    const page = (n: number, row: (i: number) => Record<string, unknown>) =>
+      JSON.stringify([{ success: true, results: Array.from({ length: n }, (_, i) => row(i)) }]);
+    const composite = wranglerD1Reader("staging", async (args) => {
+      statements.push(args[args.indexOf("--command") + 1]!);
+      return { code: 0, stdout: page(statements.length === 1 ? D1_PAGE_SIZE : 0, (i) => ({ token_id: "o'k", scope: `s${i}` })), stderr: "" };
+    });
+    await composite({ table: "api_token_scopes", orderBy: "token_id, scope" });
+    expect(statements[1]).toBe(
+      `SELECT * FROM api_token_scopes WHERE (token_id, scope) > ('o''k', 's${D1_PAGE_SIZE - 1}') ORDER BY token_id, scope LIMIT ${D1_PAGE_SIZE}`,
+    );
+
+    statements.length = 0;
+    const byRowid = wranglerD1Reader("staging", async (args) => {
+      statements.push(args[args.indexOf("--command") + 1]!);
+      const n = statements.length === 1 ? D1_PAGE_SIZE : 1;
+      return { code: 0, stdout: page(n, (i) => ({ _d1_export_rowid: 100 + i, issue_seq: 100 + i, id: `c${i}` })), stderr: "" };
+    });
+    const rows = await byRowid({ table: "auth_challenges", orderBy: "rowid", selectExtra: "rowid AS issue_seq" });
+    expect(statements).toEqual([
+      `SELECT rowid AS issue_seq, rowid AS _d1_export_rowid, * FROM auth_challenges ORDER BY rowid LIMIT ${D1_PAGE_SIZE}`,
+      `SELECT rowid AS issue_seq, rowid AS _d1_export_rowid, * FROM auth_challenges WHERE (rowid) > (${100 + D1_PAGE_SIZE - 1}) ORDER BY rowid LIMIT ${D1_PAGE_SIZE}`,
+    ]);
+    expect(rows[0]).toEqual({ issue_seq: 100, id: "c0" });
   });
 
   it.each([
     ["a failed wrangler run", { code: 1, stdout: "", stderr: "auth" }, "wrangler d1 execute failed"],
     ["non-JSON output", { code: 0, stdout: "oops", stderr: "" }, "non-JSON"],
     ["no result set", { code: 0, stdout: JSON.stringify([{ success: false }]), stderr: "" }, "no result set"],
+    [
+      "a page ending on a key it cannot resume after",
+      { code: 0, stdout: JSON.stringify([{ success: true, results: Array.from({ length: D1_PAGE_SIZE }, () => ({ id: null })) }]), stderr: "" },
+      "cannot resume users after",
+    ],
   ])("fails closed on %s", async (_name, result, message) => {
     await expect(wranglerD1Reader("staging", async () => result)({ table: "users", orderBy: "id" })).rejects.toThrow(message);
   });

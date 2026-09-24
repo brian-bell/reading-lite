@@ -120,19 +120,42 @@ export const D1_SOURCE_CONFIG = fileURLToPath(new URL("./wrangler-d1-source.toml
 // bounded if auth_challenges has grown.
 export const D1_PAGE_SIZE = 500;
 
+// Selected alongside `*` when a table pages by rowid, which `*` does not
+// return, and stripped from every row before it leaves this module.
+const ROWID_CURSOR = "_d1_export_rowid";
+
+// A key value as a SQLite literal, for the WHERE that resumes after it. The
+// values come from D1's own rows, but they are quoted as data regardless.
+function keyLiteral(table: string, value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
+  throw new Error(`cannot resume ${table} after a ${value === null ? "NULL" : typeof value} key; its ORDER BY must be a unique non-null key`);
+}
+
 /**
  * Reads whole D1 tables with SELECTs built here from the table specs, and
  * nothing else: no statement text reaches wrangler from outside this module.
+ *
+ * Each page resumes after the last key the previous page returned, never at
+ * an OFFSET: every page is a separate wrangler call, and a row written or
+ * deleted between two of them would shift an OFFSET, repeating a row (a
+ * primary-key failure at import) or silently skipping one. A keyset read
+ * returns every row that exists throughout exactly once. It needs
+ * `spec.orderBy` to be a unique key, which every table spec's is.
  */
 export function wranglerD1Reader(env: SourceEnv, run: RunWrangler = runWranglerCaptured): ReadD1Table {
   return async (spec) => {
     if (!/^[A-Za-z0-9_]+$/.test(spec.table) || !/^[a-z_, ]+$/.test(spec.orderBy)) {
       throw new Error(`refusing an unexpected D1 table spec: ${JSON.stringify(spec)}`);
     }
+    const keys = spec.orderBy.split(",").map((key) => key.trim());
+    const byRowid = keys.includes("rowid");
+    const select = [spec.selectExtra, byRowid ? `rowid AS ${ROWID_CURSOR}` : undefined, "*"].filter(Boolean).join(", ");
     const rows: Record<string, unknown>[] = [];
-    for (let offset = 0; ; offset += D1_PAGE_SIZE) {
-      const select = spec.selectExtra ? `${spec.selectExtra}, *` : "*";
-      const sql = `SELECT ${select} FROM ${spec.table} ORDER BY ${spec.orderBy} LIMIT ${D1_PAGE_SIZE} OFFSET ${offset}`;
+    let after: string | null = null;
+    for (;;) {
+      const where = after === null ? "" : ` WHERE (${spec.orderBy}) > (${after})`;
+      const sql = `SELECT ${select} FROM ${spec.table}${where} ORDER BY ${spec.orderBy} LIMIT ${D1_PAGE_SIZE}`;
       const result = await run([
         "d1", "execute", "CONTROL_PLANE", "--remote", "--json",
         "--config", D1_SOURCE_CONFIG, "--env", env, "--command", sql,
@@ -141,7 +164,14 @@ export function wranglerD1Reader(env: SourceEnv, run: RunWrangler = runWranglerC
         throw new Error(`wrangler d1 execute failed for ${spec.table} (${result.code}): ${result.stderr.trim()}`);
       }
       const page = parseD1Json(result.stdout, spec.table);
-      rows.push(...page);
+      const last = page.at(-1);
+      if (last !== undefined && page.length === D1_PAGE_SIZE) {
+        after = keys.map((key) => keyLiteral(spec.table, last[key === "rowid" ? ROWID_CURSOR : key])).join(", ");
+      }
+      for (const row of page) {
+        if (byRowid) delete row[ROWID_CURSOR];
+        rows.push(row);
+      }
       if (page.length < D1_PAGE_SIZE) return rows;
     }
   };
