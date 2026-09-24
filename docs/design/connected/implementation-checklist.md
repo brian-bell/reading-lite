@@ -76,7 +76,8 @@ item on September 10, 2026.
 - [ ] Stand up `next.readinglite.ai`: add it to `PUBLIC_WEB_ORIGINS`, add the
   backend `/api/*` and `/health` routes and the frontend `/*` route, and verify
   route precedence. The first deploy needs separate authorization and passing
-  isolation and cache-header tests.
+  isolation and cache-header tests. *Superseded: the host was retired after the
+  apex cutover (reading-lite-gh335.2); do not re-add it.*
 - [ ] Implement backend-backed library search, tags, pagination, and return state.
 - [ ] Implement URL capture and Markdown import through existing intake outcomes.
 - [ ] Implement the approved bounded status refresh and manual fallback; ensure

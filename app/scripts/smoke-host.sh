@@ -2,7 +2,7 @@
 # Route-precedence smoke check for a host the frontend Worker serves (ADR 0003).
 # Run after every deploy or route change:
 #
-#   app/scripts/smoke-host.sh https://next-staging.readinglite.ai
+#   app/scripts/smoke-host.sh https://staging.readinglite.ai
 #
 # Passes only when the backend answers /health and a signed-out /api/whoami, and
 # the frontend (not Pages) answers /: its rendered HTML is private, no-store.

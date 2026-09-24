@@ -12,21 +12,19 @@
 // (.github/workflows/deploy-spa.yml); staging deploys by manual dispatch
 // (.github/workflows/deploy-app-staging.yml).
 //
-// Routes (ADR 0003, amended 2026-09-13): each deployed environment owns its
-// preview host, next-staging.readinglite.ai or next.readinglite.ai, with a
-// `host/*` route. The backend of the same environment keeps the more specific
-// /api/*, /health, and (on the public hosts) /mcp* routes there (root
-// wrangler.toml), and this Worker returns 404 for backend paths instead of
-// proxying them. test/frontend-routes.test.ts fails when a route has no
-// matching backend routes. Staging switched at Phase 4 parity (#339,
-// 2026-09-16): the staging frontend also owns staging.readinglite.ai/* and
-// staging.readinglite.app/*, ahead of the Pages custom domains still bound
-// there, which stay as the rollback target (delete the two routes to roll
-// back). Production switched at the Phase 5 cutover (reading-lite-gh340.4,
-// authorized 2026-09-19) the same way: the production frontend also owns
-// readinglite.ai/* and readinglite.app/*, ahead of the Pages custom domains
-// that stay bound and deployed as the rollback target (delete the two routes
-// to roll back).
+// Routes (ADR 0003): each deployed environment's frontend owns `host/*` on its
+// two public hosts. The backend of the same environment keeps the more
+// specific /api/*, /health, and /mcp* routes there (root wrangler.toml), and
+// this Worker returns 404 for backend paths instead of proxying them.
+// test/frontend-routes.test.ts fails when a route has no matching backend
+// routes. Staging switched at Phase 4 parity (#339, 2026-09-16) and owns
+// staging.readinglite.ai/* and staging.readinglite.app/*. Production switched
+// at the Phase 5 cutover (reading-lite-gh340.4, authorized 2026-09-19) and owns
+// readinglite.ai/* and readinglite.app/*. On both, the Pages custom domains
+// stay bound and deployed as the rollback target (delete the two routes to
+// roll back). The preview hosts next.readinglite.ai and
+// next-staging.readinglite.ai were retired after the cutover
+// (reading-lite-gh335.2).
 //
 // BACKEND binds the backend's read-only FrontendReads entrypoint (the repo
 // root's src/frontend-reads.ts), used for server renders; browser API calls go
@@ -58,7 +56,6 @@
       "workers_dev": false,
       "preview_urls": false,
       "routes": [
-        { "pattern": "next-staging.readinglite.ai/*", "zone_name": "readinglite.ai" },
         { "pattern": "staging.readinglite.ai/*", "zone_name": "readinglite.ai" },
         { "pattern": "staging.readinglite.app/*", "zone_name": "readinglite.app" }
       ],
@@ -69,7 +66,6 @@
       "workers_dev": false,
       "preview_urls": false,
       "routes": [
-        { "pattern": "next.readinglite.ai/*", "zone_name": "readinglite.ai" },
         { "pattern": "readinglite.ai/*", "zone_name": "readinglite.ai" },
         { "pattern": "readinglite.app/*", "zone_name": "readinglite.app" }
       ],

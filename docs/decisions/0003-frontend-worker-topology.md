@@ -1,7 +1,9 @@
 # ADR 0003: New frontend Worker topology, server reads, and rollout hosts
 
 - **Status:** Accepted; hosts and release amended 2026-09-13 (see
-  [Amendment](#amendment-2026-09-13-preview-hosts-from-phase-3))
+  [Amendment](#amendment-2026-09-13-preview-hosts-from-phase-3)); preview
+  hosts retired 2026-09-24 (see
+  [Retirement](#retirement-2026-09-24-preview-hosts))
 - **Date:** 2026-09-10
 - **Decision owners:** Brian Bell
 - **Task:** [#338](https://github.com/brian-bell/reading-lite/issues/338), under
@@ -133,10 +135,10 @@ bearer material enters browser storage.
 | Stage | Hosts | Notes |
 | --- | --- | --- |
 | Local | `localhost` | App dev server proxies `/api` to `wrangler dev` on :8787, as `web/` does; loopback requests already count as same-origin |
-| Phase 4 daily use | `next.readinglite.ai` (production) | Frontend `next.readinglite.ai/*`; backend `next.readinglite.ai/api/*` and `/health`; add `https://next.readinglite.ai` to `PUBLIC_WEB_ORIGINS`. Separate sign-in. Proxied DNS record required. Deploys need separate authorization |
+| Phase 4 daily use | `next.readinglite.ai` (production) | Frontend `next.readinglite.ai/*`; backend `next.readinglite.ai/api/*` and `/health`; add `https://next.readinglite.ai` to `PUBLIC_WEB_ORIGINS`. Separate sign-in. Proxied DNS record required. Deploys need separate authorization. **Retired 2026-09-24** (reading-lite-gh335.2) |
 | Staging switch | `staging.readinglite.ai`, `staging.readinglite.app` | Both hosts move together once Phase 4 reaches parity. This is the cutover and rollback rehearsal. Before then, staging runs only the old SPA. **Decided 2026-09-16** after the #412 daily-use review: the staging frontend owns `host/*` on both hosts, over the Pages custom domains that stay bound as the rollback target |
-| Staging preview (amended) | `next-staging.readinglite.ai` (staging) | Same shape as `next.readinglite.ai` on the staging Worker pair. Deployed from Phase 3 by manual dispatch. See the amendment |
-| Production cutover (Phase 5) | `readinglite.ai`, `readinglite.app` | Add frontend `/*` routes. Rollback deletes them. Retire `next.readinglite.ai` and its allowlist entry afterwards. **Authorized 2026-09-19** (reading-lite-gh340.4): the production frontend owns `host/*` on both apex hosts, over the Pages custom domains that stay bound and deployed as the rollback target |
+| Staging preview (amended) | `next-staging.readinglite.ai` (staging) | Same shape as `next.readinglite.ai` on the staging Worker pair. Deployed from Phase 3 by manual dispatch. See the amendment. **Retired 2026-09-24** (reading-lite-gh335.2) |
+| Production cutover (Phase 5) | `readinglite.ai`, `readinglite.app` | Add frontend `/*` routes. Rollback deletes them. Retire `next.readinglite.ai` and its allowlist entry afterwards (done 2026-09-24; see [Retirement](#retirement-2026-09-24-preview-hosts)). **Authorized 2026-09-19** (reading-lite-gh340.4): the production frontend owns `host/*` on both apex hosts, over the Pages custom domains that stay bound and deployed as the rollback target |
 
 Each environment's frontend binds only the backend Worker of the same
 environment. A CI check fails when a frontend environment's service binding
@@ -228,3 +230,17 @@ rollback are unchanged.
 - **Unchanged.** Both staging hosts still move to the new frontend at Phase 4
   parity as the cutover rehearsal, and the apex hosts cut over in Phase 5 with
   rollback by route deletion.
+
+## Retirement (2026-09-24): preview hosts
+
+The apex cutover went live on 2026-09-19 (reading-lite-gh340.4), so
+reading-lite-gh335.2 retires both preview hosts as this ADR planned. The
+frontend `host/*` routes, the backend `/api/*` and `/health` routes, the
+`PUBLIC_WEB_ORIGINS` entries, and the deploy workflows' smoke checks for
+`next.readinglite.ai` and `next-staging.readinglite.ai` are removed from the
+repository. Any magic link requested on either name now points at
+`WEB_BASE_URL`, so an email change started there cannot be confirmed and must
+be started again on a public host. The deploy token only adds routes, so the live routes and the
+two DNS records are deleted in the Cloudflare dashboard after the releases that
+drop them; see [New-frontend hosts](../operations.md#new-frontend-hosts).
+Each environment's frontend now serves only its two public hosts.

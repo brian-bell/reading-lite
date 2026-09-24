@@ -382,8 +382,8 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / Vectorize index | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2; local PostgreSQL through Hyperdrive | no Queue, no Vectorize |
-| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; new-frontend preview `next-staging.readinglite.ai` (`/api/*` `/health`); `reading-lite-staging.bbell.dev` retired |
-| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `readinglite.app`; new-frontend preview `next.readinglite.ai` (`/api/*` `/health`); `reading-lite.bbell.dev` retired |
+| staging | `reading-lite-staging` | `reading-lite-staging` | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; `next-staging.readinglite.ai` and `reading-lite-staging.bbell.dev` retired |
+| production | `reading-lite` | `reading-lite` | canonical `readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `readinglite.app`; `next.readinglite.ai` and `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -977,18 +977,39 @@ answers backend paths with 404 instead of proxying them.
 
 | Worker | Hosts | Pages |
 | --- | --- | --- |
-| `reading-lite-app` (production) | `readinglite.ai`, `readinglite.app` (apex cutover, reading-lite-gh340.4, 2026-09-19); preview `next.readinglite.ai` | Still bound on the apex hosts as the rollback target |
-| `reading-lite-app-staging` | `staging.readinglite.ai`, `staging.readinglite.app` (staging switch, #339, 2026-09-16); preview `next-staging.readinglite.ai` | Still bound on the staging hosts as the rollback target |
+| `reading-lite-app` (production) | `readinglite.ai`, `readinglite.app` (apex cutover, reading-lite-gh340.4, 2026-09-19) | Still bound on the apex hosts as the rollback target |
+| `reading-lite-app-staging` | `staging.readinglite.ai`, `staging.readinglite.app` (staging switch, #339, 2026-09-16) | Still bound on the staging hosts as the rollback target |
 
-The preview hosts have no Pages attachment and no `/mcp*` route. Each needs a
-proxied DNS record (`AAAA 100::`); `next-staging` is a first-level subdomain so
-the zone's Universal SSL certificate covers it. Their origins are in
-`PUBLIC_WEB_ORIGINS`, so a sign-in started there is mailed back there;
-other emitted links still follow `WEB_BASE_URL`. Sessions are host-scoped as
-elsewhere. Both preview hosts and their allowlist
-entries are to be retired now that the cutover is done. On any new host, the
-backend routes and allowlist entry must be live before the frontend route, or
-`/api/*` there reaches the frontend and returns 404.
+On any new host, the backend routes and `PUBLIC_WEB_ORIGINS` entry must be
+live before the frontend route, or `/api/*` there reaches the frontend and
+returns 404.
+
+**Retired preview hosts.** `next.readinglite.ai` (production) and
+`next-staging.readinglite.ai` (staging) served the frontend from Phase 3 until
+the apex cutover. reading-lite-gh335.2 removed their routes, allowlist entries,
+and smoke checks from the repository. Any magic link requested on either name
+now points at `WEB_BASE_URL`. That is harmless for a login, but an email change
+started there cannot be confirmed, because the preview host's session cookie
+does not reach the base host; start it again on the base host. The deploy token
+is zone-scoped, so Wrangler uses the per-zone route API, which never deletes
+routes. Finish the retirement in the dashboard, after the production release of
+that commit and a staging backend deploy plus **Deploy staging frontend**
+dispatch from it. If a deploy did remove a route, because the token gained
+account-level route permission, skip that deletion:
+
+1. Delete the `next.readinglite.ai/*` route from `reading-lite-app` and the
+   `next-staging.readinglite.ai/*` route from `reading-lite-app-staging`.
+2. Delete the `/api/*` and `/health` routes for `next.readinglite.ai` from
+   `reading-lite` and for `next-staging.readinglite.ai` from
+   `reading-lite-staging`.
+3. Delete the proxied `next` and `next-staging` DNS records (`AAAA 100::`) on
+   the `readinglite.ai` zone.
+4. Smoke: both preview hosts stop resolving, and `app/scripts/smoke-host.sh`
+   still passes on `readinglite.ai`, `readinglite.app`,
+   `staging.readinglite.ai`, and `staging.readinglite.app`.
+
+Deleting a route while its config still lists it only lasts until the next
+deploy, so do not start before both releases have gone out.
 
 Deploying the frontend:
 

@@ -46,11 +46,11 @@ describe("readWhoamiFromBackend", () => {
 
   it("passes the incoming Cookie header and host to the entrypoint", async () => {
     const { binding, whoami } = backend({ status: 200, body: identity });
-    const request = new Request("https://next.readinglite.ai/readings/rd_1", {
+    const request = new Request("https://readinglite.ai/readings/rd_1", {
       headers: { cookie: "__Host-session=abc; theme=dark", origin: "https://evil.example" },
     });
     await expect(readWhoamiFromBackend(binding, request)).resolves.toEqual(identity);
-    expect(whoami).toHaveBeenCalledWith({ cookie: "__Host-session=abc; theme=dark", host: "next.readinglite.ai" });
+    expect(whoami).toHaveBeenCalledWith({ cookie: "__Host-session=abc; theme=dark", host: "readinglite.ai" });
   });
 
   it("passes null without a Cookie header and keeps a loopback port", async () => {

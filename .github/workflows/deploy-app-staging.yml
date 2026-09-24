@@ -1,7 +1,6 @@
-# Deploy the new frontend Worker (app/) to its staging hosts:
-# next-staging.readinglite.ai, and since the Phase 4 staging switch (#339,
-# 2026-09-16) staging.readinglite.ai and staging.readinglite.app (ADR 0003,
-# amended 2026-09-13). Manual only: the
+# Deploy the new frontend Worker (app/) to its staging hosts,
+# staging.readinglite.ai and staging.readinglite.app, which it has owned since
+# the Phase 4 staging switch (#339, 2026-09-16; ADR 0003). Manual only: the
 # staging backend is deployed by hand (`npm run ops -- deploy worker --env
 # staging --execute`), so run this after that, from the same ref.
 
@@ -57,6 +56,5 @@ jobs:
         run: npx wrangler deploy
       - name: Smoke-check route precedence on every staging host
         run: |
-          app/scripts/smoke-host.sh https://next-staging.readinglite.ai
           app/scripts/smoke-host.sh https://staging.readinglite.ai
           app/scripts/smoke-host.sh https://staging.readinglite.app

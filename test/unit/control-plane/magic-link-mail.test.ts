@@ -29,9 +29,9 @@ describe("publicWebBase", () => {
     [CONFIGURED_BASE, "https://readinglite.app", "https://readinglite.app"],
     [CONFIGURED_BASE, "https://staging.readinglite.ai", "https://staging.readinglite.ai"],
     [CONFIGURED_BASE, "https://staging.readinglite.app", "https://staging.readinglite.app"],
-    // New-frontend preview hosts (ADR 0003); a lookalike falls back to the base.
-    [CONFIGURED_BASE, "https://next.readinglite.ai", "https://next.readinglite.ai"],
-    [STAGING_BASE, "https://next-staging.readinglite.ai", "https://next-staging.readinglite.ai"],
+    // Retired new-frontend preview hosts (ADR 0003) and a lookalike fall back to the base.
+    [CONFIGURED_BASE, "https://next.readinglite.ai", "https://readinglite.ai"],
+    [STAGING_BASE, "https://next-staging.readinglite.ai", "https://staging.readinglite.ai"],
     [CONFIGURED_BASE, "https://next.staging.readinglite.ai", "https://readinglite.ai"],
     // Staging base: staging hosts mail back to themselves, the legacy host to the base.
     [STAGING_BASE, "https://staging.readinglite.ai", "https://staging.readinglite.ai"],
