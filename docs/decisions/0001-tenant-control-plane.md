@@ -8,9 +8,9 @@
 
 - **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23);
   storage parts (tenant R2 key roots as the isolation boundary for reading
-  state) superseded at cutover by
-  [ADR 0005](0005-postgresql-storage.md) (2026-09-19). The control-plane
-  decisions stand.
+  state) superseded by [ADR 0005](0005-postgresql-storage.md) (decided
+  2026-09-19, live 2026-09-24). The control-plane decisions stand; their
+  storage moved from D1 to PostgreSQL in the same cutover.
 - **Date:** 2026-08-16
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-s1k.1`

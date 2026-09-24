@@ -1,19 +1,20 @@
 # ADR 0005: PostgreSQL, pgvector, and R2 storage
 
-- **Status:** Accepted; in progress on the `epic/postgres-storage` candidate
-  branch. Nothing here is live until the cutover (`reading-lite-gh350`).
+- **Status:** Accepted; live in production since the 2026-09-24 cutover
+  (`reading-lite-gh350`, [record](../postgres-cutover.md#production-cutover-record-2026-09-24)).
+  Staging moved first, on 2026-09-24 (`reading-lite-gh349`).
 - **Date:** 2026-09-19
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-gh347.1`, under `reading-lite-gh347` and the epic
   `reading-lite-gh346`
 - **Scope:** Reading-side storage: readings, URL ownership, published
-  revisions, relationships, and embeddings. D1 control-plane tables move in a
-  later slice.
+  revisions, relationships, and embeddings. The D1 control-plane tables moved
+  in a later slice of the same epic (`reading-lite-gh347.3`).
 - **Supersedes:** the storage parts of
   [ADR 0001](0001-tenant-control-plane.md) (tenant R2 key roots as the
   isolation boundary for reading state) and all of
-  [ADR 0002](0002-vectorize-namespace-isolation.md) (Vectorize namespaces), at
-  cutover. Until then both still describe production.
+  [ADR 0002](0002-vectorize-namespace-isolation.md) (Vectorize namespaces), as
+  of the 2026-09-24 production cutover. Neither describes the running system.
 
 ## Context
 
@@ -526,6 +527,7 @@ reports the refusal, `--execute` exits 2, and execute also refuses a
 placeholder Hyperdrive id. The flag is per environment because #349 deploys
 the candidate to staging as the rehearsal: #349 flips staging on the branch,
 #350 flips production in a reviewable commit that travels with the release.
+Both flags are now true: staging since #515, production since #518.
 `deploy-spa.yml` gates the SPA and `app/` jobs on the Worker workflow
 succeeding, so a refusal stops the whole release.
 

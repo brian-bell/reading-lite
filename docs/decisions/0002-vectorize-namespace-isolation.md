@@ -1,15 +1,15 @@
 # ADR 0002: Vectorize tenant isolation via namespaces
 
 > This ADR preserves the August 23 decision and its implementation plan.
-> Staging and production now pin tenant mode, and account wipe takes vector IDs
-> from D1 `vector_ledger`, seeded from R2 before deletion. The cutover tooling is
-> retired. See [current architecture](../architecture.md) and
+> Until the 2026-09-24 PostgreSQL cutover, staging and production pinned tenant
+> mode and account wipe took vector IDs from D1 `vector_ledger`, seeded from R2
+> before deletion. The tenant cutover tooling is retired. See [current architecture](../architecture.md) and
 > [account deletion](../operations.md#account-deletion).
 
-- **Status:** Accepted; superseded at cutover by
-  [ADR 0005](0005-postgresql-storage.md) (2026-09-19), which moves embeddings
-  to pgvector with row-level tenant scoping. Still describes production until
-  `reading-lite-gh350`.
+- **Status:** Superseded by [ADR 0005](0005-postgresql-storage.md) (decided
+  2026-09-19, live 2026-09-24), which moved embeddings to pgvector with
+  row-level tenant scoping. The Vectorize index stays frozen until
+  `reading-lite-gh351` retires it.
 - **Date:** 2026-08-23
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-s1k.6.1`

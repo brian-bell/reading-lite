@@ -1,9 +1,10 @@
 # PostgreSQL production cutover runbook (#350)
 
-> **Status: rehearsed, not executed.** Staging has run on PostgreSQL since
-> 2026-09-24 (reading-lite-gh349). Production is still on D1, R2 manifests and
-> Vectorize. The dated evidence for every number below is in the comments on
-> bead `reading-lite-gh349`.
+> **Status: executed 2026-09-24.** Production has served from PostgreSQL since
+> 11:01Z and reopened writes at 11:04:43Z ([record](#production-cutover-record-2026-09-24)).
+> The legacy D1, R2 manifests and Vectorize stay frozen and intact until #351.
+> Rehearsal evidence is in the comments on bead `reading-lite-gh349`; the
+> cutover's is on `reading-lite-gh350`.
 
 This is the procedure for moving production's library and control plane from
 the legacy stores into PostgreSQL (ADR [0005](decisions/0005-postgresql-storage.md))
@@ -12,6 +13,34 @@ and nothing legacy is deleted until #351. The importer's behavior and its
 findings are documented in
 [operations: library export and import](operations.md#library-export-and-import-reading-lite-gh348);
 this page covers the order of operations, the checks, and the rollback boundary.
+
+## Production cutover record (2026-09-24)
+
+| Step | UTC | Result |
+|---|---|---|
+| Freeze | 10:43:16–10:43:34 | Crons cleared, 8 queues paused. No backlog on any queue since the freeze, no processing leases, 63 spend records all settled |
+| Final export | 10:45:13–10:46:02 | 646 readings (632 ready, 14 failed), 632 vectors, 0 re-embeds, no blocking findings |
+| Migrate and import into `main` | 10:46:08–10:48:40 | Migrations 0001–0006; 646 readings and 632 embeddings verified with 0 mismatches, control plane matches |
+| Post-import `pg_dump` | 10:48:48 | 632 ready / 14 failed, every ready reading embedded at 1536 dimensions |
+| Release | 10:51:03 merge, 11:01:07 upload | #518 into the candidate, #488 into `main` as merge commit `9ce4d985`. Wipe gate read `PRODUCTION_DATABASE_URL` from Actions (go/no-go 6), 0 pending migrations, Worker version `8479a72b-9808-4c02-ab08-b3c218e982c1`, SPA and `app/` deployed |
+| Crons re-cleared | 11:01:36 | The deploy reinstalled them at 11:01:10; no tick in between |
+| Verification | 11:01:49 | Matches a D1 baseline taken during the freeze: health, whoami, list of 646, detail/content/raw, lookup, search, similarity (same neighbours and order, self-match 1). Signed-in browser check of library, reading and account pages |
+| Pre-reopen `pg_dump` | 11:04:25 | Unchanged from the post-import dump |
+| Writes reopened | 11:04:43 | Crons restored, queues resumed |
+| Controlled writes | 11:04:54–11:06:23 | Submit of `rd_Y4E3YT3HE6` ready in 22 s; reprocess succeeded in 49 s |
+| Background jobs | 11:15:03–11:15:30 | The `*/15` tick ran without error, and a real MCP save reached ready in 27 s. All DLQs empty, no exceptions in the tail |
+
+Freeze to reopen: 21.5 minutes. The last pre-cutover commit on `main` is
+`c62212ac`, the rollback target in [Rollback](#rollback).
+
+Backups, on the operator laptop under `~/rl-snapshots/`:
+
+- `production-2026-09-24-cutover/` — the source snapshot (library.json
+  `5622c7d4…`), with `-cutover-export.log`
+- `production-2026-09-24-cutover-import-report.json` and `-import.log`
+- `production-2026-09-24-cutover-post-import.dump` and
+  `production-2026-09-24-cutover-pre-reopen.dump` — the PostgreSQL restore
+  points. Neon's free plan keeps 6 hours of history, so keep these until #351.
 
 ## What the rehearsal proved
 
