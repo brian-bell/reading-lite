@@ -61,3 +61,4 @@ coverage/
 .beads/proxieddb/
 .beads/interactions.jsonl
 .beads/issues.jsonl
+.beads.gate.lock
