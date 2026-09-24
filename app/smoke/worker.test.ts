@@ -189,7 +189,7 @@ describe("signed-in identity", () => {
   });
 
   // A reload or a deep link renders the page the URL names (#414), with the
-  // offset snapped as the current SPA snaps it and the URL left as it came.
+  // offset snapped as the legacy SPA snaps it and the URL left as it came.
   it.each([
     ["/?offset=20", 20],
     ["/?offset=25", 20],
@@ -214,7 +214,7 @@ describe("signed-in identity", () => {
     }
   });
 
-  // As in the current SPA, a parameter the library doesn't read neither
+  // As in the legacy SPA, a parameter the library doesn't read neither
   // redirects nor is dropped from the pages it links to.
   it("keeps an unknown parameter without redirecting", async () => {
     const response = await request("/?offset=20&utm_source=feed", { headers: { Cookie: A.cookie } });

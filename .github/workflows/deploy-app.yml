@@ -1,0 +1,101 @@
+# Deploy the production frontend Worker (app/) after the Worker release
+# succeeds. The Worker run's release artifact pins this upload to the same
+# tested and released main SHA.
+#
+# The frontend owns the apex hosts readinglite.ai and readinglite.app (Phase 5
+# cutover, reading-lite-gh340.4; ADR 0003). It runs in the release concurrency
+# group behind the Worker release, which keeps only one pending run. A frontend
+# failure leaves the previous frontend version serving; roll back a bad one
+# with `wrangler rollback` from app/ (docs/operations.md#frontend-rollback).
+# The legacy SPA and its Pages deployment were retired in reading-lite-gh335.3.
+
+name: Deploy production frontend
+
+on:
+  workflow_run:
+    workflows: [Deploy production worker]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: deploy-production-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  app:
+    name: Build and deploy frontend Worker (readinglite.ai, readinglite.app)
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'workflow_run' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://readinglite.ai
+    steps:
+      - name: Download the released Worker SHA
+        uses: actions/download-artifact@v7
+        with:
+          name: production-worker-release-sha
+          path: .release
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Validate the released Worker SHA
+        id: release
+        run: |
+          release_sha="$(tr -d '\r\n' < .release/sha)"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "invalid production Worker release SHA"
+            exit 1
+          }
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+      # @tanstack/react-start requires Node >=22.12 (ADR 0003).
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+      - name: Require Cloudflare deploy secrets
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          test -n "$CLOUDFLARE_API_TOKEN" || { echo "missing secret CLOUDFLARE_API_TOKEN"; exit 1; }
+          test -n "$CLOUDFLARE_ACCOUNT_ID" || { echo "missing secret CLOUDFLARE_ACCOUNT_ID"; exit 1; }
+      - name: Build the production frontend
+        working-directory: app
+        env:
+          CLOUDFLARE_ENV: production
+        run: |
+          npm run build
+          # The built config is what deploys: check its environment, routes,
+          # and BACKEND binding against wrangler.jsonc and the backend's.
+          node scripts/check-build.ts production
+      - name: Deploy the production frontend
+        working-directory: app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main)" = "${{ steps.release.outputs.sha }}" || {
+            echo "refusing stale frontend release: main advanced past ${{ steps.release.outputs.sha }}"
+            exit 1
+          }
+          npx wrangler deploy
+      - name: Smoke-check route precedence on every production host
+        run: |
+          app/scripts/smoke-host.sh https://readinglite.ai
+          app/scripts/smoke-host.sh https://readinglite.app

@@ -125,7 +125,7 @@ ledger tables, because what it asserts is that the PostgreSQL schema does
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
 | `deploy release` | `deploy-release.ts` | Release evidence and git provenance; composes `deploy wipe-check` and `deploy worker` | **unchanged** | It reads no storage of its own and inherits whatever the commands it composes do. |
-| `deploy web` | `deploy-web.ts` | Wrangler Pages deployment state | **unchanged** | Pages deployment; it never touched R2, D1 or Vectorize. |
+| `deploy web` | `deploy-web.ts` | Wrangler Pages deployment state | **unchanged** | Pages deployment; it never touched R2, D1 or Vectorize. Removed later with the legacy SPA (reading-lite-gh335.3). |
 | `deploy wipe-check` | `deploy-wipe-check.ts` | Unfinished wipes, already over a direct connection through `scripts/lib/wipe-deploy-gate.ts` and `sqlFromConnectionString` | **unchanged** | Verified rather than assumed: it is already on PostgreSQL and does not reach wrangler D1. |
 | `deploy worker` | `deploy-worker.ts` | Preflight checks; no schema step at all, which it stated outright | **port** | A release whose code expected a new column could reach production against a database that lacked it. Ported in reading-lite-gh347.4.4: pending PostgreSQL migrations are applied before upload, fail-closed, with `--env` checked against a now-required `--database-url-env`. |
 

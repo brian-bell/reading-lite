@@ -57,9 +57,9 @@ selected, so they exercise the natural responsive layout.
 | Focus outline | Focus-visible controls use 3 px accent outline with 4 px offset |
 
 The source of exact cascade behavior is
-[shared styles](../../../web/prototypes/interface-directions/styles.css),
-[Connected layout rules](../../../web/prototypes/interface-directions/ui.css),
-and [dedicated frame rules](../../../web/prototypes/connected/styles.css).
+[shared styles](https://github.com/brian-bell/reading-lite/blob/128c7cdf926cbcbb8206f5b654208aa3456c7d51/web/prototypes/interface-directions/styles.css),
+[Connected layout rules](https://github.com/brian-bell/reading-lite/blob/128c7cdf926cbcbb8206f5b654208aa3456c7d51/web/prototypes/interface-directions/ui.css),
+and [dedicated frame rules](https://github.com/brian-bell/reading-lite/blob/128c7cdf926cbcbb8206f5b654208aa3456c7d51/web/prototypes/connected/styles.css).
 System font differences can change wrapping. An earlier rough edge — key-point
 numbers such as “01” wrapping onto two lines on narrow phones — is fixed
 (`white-space: nowrap` on the number), and the current phone screenshots show
@@ -217,7 +217,7 @@ the reading's connection and tension targets, built from the same tenant's
 - An id missing from the map is removed or unavailable. Render the removed card.
 - Stored manifests and their schema do not change. The map is computed on read,
   with one list-index read, no claims or repairs, and tenant-scoped stores.
-- Keep `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, and tests in sync.
+- Keep `src/schemas/`, `docs/openapi.yaml`, and tests in sync.
 - MCP reading output is unchanged. The `get_reading` tool in `src/mcp/tools.ts`
   spreads the whole `GET /api/readings/:id` response into its result, so it must
   strip `relationship_targets` explicitly, with a test (Brian, September 10).

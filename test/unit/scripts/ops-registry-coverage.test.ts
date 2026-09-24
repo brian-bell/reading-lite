@@ -35,7 +35,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],
   "reading-list": ["check", "process"],
-  deploy: ["worker", "web", "wipe-check", "release"],
+  deploy: ["worker", "wipe-check", "release"],
   db: ["migrate"],
   migrate: ["export", "import"],
   staging: ["setup", "teardown", "smoke", "prepare-context", "token-revocation"],

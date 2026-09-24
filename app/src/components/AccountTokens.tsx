@@ -33,8 +33,7 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
 import { StepUpNotice } from "./StepUpNotice";
 
-// API tokens on the account page (#340.7, Phase 5 of #340), as the SPA's API
-// tokens section (`web/src/App.tsx`): each token's name, format, status,
+// API tokens on the account page (#340.7, Phase 5 of #340): each token's name, format, status,
 // scopes, and times, Revoke on a usable one, and a form that creates a token
 // and shows its value once (CreateTokenForm). The section carries its
 // read's loading, offline, and server-error states, and a failed revoke's,

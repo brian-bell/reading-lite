@@ -932,7 +932,7 @@ touched stays invisible until that sweep.
 
 The bound keeps FLAGS exact, not the stored numbers: a vector added anywhere
 enters some stranger's raw topK, and the similarity max/mean the API and the
-SPA serve summarise that raw topK, sub-floor scores included. So between sweeps
+frontend serve summarise that raw topK, sub-floor scores included. So between sweeps
 those numbers are approximate on readings nothing brought into scope —
 deterministic, and cleared by the next --full. The scope and its reason are
 printed and recorded in the report header, and an escalation names how many

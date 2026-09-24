@@ -64,8 +64,8 @@ describe("publicWebBase", () => {
   });
 
   it("leaves loopback requests on the configured base", () => {
-    expect(publicWebBase("http://127.0.0.1:5173", "http://127.0.0.1:8787/api/auth/request")).toBe(
-      "http://127.0.0.1:5173",
+    expect(publicWebBase("http://127.0.0.1:5174", "http://127.0.0.1:8787/api/auth/request")).toBe(
+      "http://127.0.0.1:5174",
     );
   });
 

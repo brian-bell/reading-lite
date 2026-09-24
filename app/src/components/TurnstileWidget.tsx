@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { loadTurnstileApi, type TurnstileApi, type TurnstileRenderOptions } from "../auth/turnstile";
 
-// Ported from web/src/TurnstileWidget.tsx. Mounted only after login-options
+// The Turnstile widget on the sign-in form. Mounted only after login-options
 // returns a site key, and only in the browser.
 
 /** The page's pinned theme, or the system preference when none is pinned. */

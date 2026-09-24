@@ -1,4 +1,4 @@
-// Search parameters stay plain strings, as in the current SPA's URLs
+// Search parameters stay plain strings, as in the legacy SPA's URLs
 // (acceptance matrix: `?q=&tag=&offset=`, `?next=`, `?step_up=1`). The router's
 // default handling decodes `step_up=1` as a number and writes a string "1"
 // back as `step_up=%221%22`, which redirects server renders to that spelling.

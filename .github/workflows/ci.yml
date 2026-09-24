@@ -43,7 +43,6 @@ jobs:
     outputs:
       worker: ${{ steps.changes.outputs.worker }}
       ops: ${{ steps.changes.outputs.ops }}
-      web: ${{ steps.changes.outputs.web }}
       app: ${{ steps.changes.outputs.app }}
       app-browser: ${{ steps.changes.outputs.appBrowser }}
     steps:
@@ -69,15 +68,15 @@ jobs:
           # diffed from the merge base, including deleted paths; disabling
           # rename detection also checks the old path.
           if [[ "$EVENT_NAME" != pull_request ]]; then
-            printf '%s=true\n' worker ops web app appBrowser >> "$GITHUB_OUTPUT"
+            printf '%s=true\n' worker ops app appBrowser >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git diff --no-renames --name-only -z "$BASE_SHA...$HEAD_SHA" \
             | node scripts/ci-lib/changed-jobs.ts > "$RUNNER_TEMP/jobs"
           cat "$RUNNER_TEMP/jobs"
           # Empty outputs would skip every job and still pass required checks.
-          test "$(grep -cE '^(worker|ops|web|app|appBrowser)=(true|false)$' "$RUNNER_TEMP/jobs")" -eq 5 || {
-            echo "classifier did not select all five jobs"
+          test "$(grep -cE '^(worker|ops|app|appBrowser)=(true|false)$' "$RUNNER_TEMP/jobs")" -eq 4 || {
+            echo "classifier did not select all four jobs"
             exit 1
           }
           cat "$RUNNER_TEMP/jobs" >> "$GITHUB_OUTPUT"
@@ -147,25 +146,6 @@ jobs:
       - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
         env:
           SKIP_TEST_POSTGRES: "1"
-
-  web:
-    name: Web (test + build)
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm test
-      - run: npm run build
 
   app:
     name: App (typecheck + test + build + smoke)

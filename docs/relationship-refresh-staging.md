@@ -95,7 +95,7 @@ one-night window.
 ## Production enablement
 
 Enable `RELATIONSHIP_REFRESH=1` with `REFRESH_MAX_JUDGEMENTS=2` through the normal
-reviewed configuration PR and CI/migration/Worker/SPA release chain. Existing
+reviewed configuration PR and CI/migration/Worker/frontend release chain. Existing
 paid-work policies and budgets remain unchanged. The production refresh queue
 and DLQ already exist and were empty at the acceptance check. Verify the deployed
 gate, cap, cron, queue bindings, and release health after deployment. No manual

@@ -105,7 +105,7 @@ describe("sendReadingEmail", () => {
 
     // Source URL appears as a link.
     expect(html).toContain(`href="https://example.com/article"`);
-    // Detail link uses the SPA base + reading id.
+    // Detail link uses the web base + reading id.
     expect(html).toContain(`href="${WEB_BASE}/readings/rd_TEST01"`);
     // TL;DR is present.
     expect(html).toContain("A short summary of the article.");

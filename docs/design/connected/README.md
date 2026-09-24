@@ -45,16 +45,17 @@ All screenshots in this package represent that commit's runtime source.
 The handoff documentation is committed afterward so it can name the exact source
 revision without a circular self-reference.
 
-The [dedicated entrypoint](../../../web/prototypes/connected/README.md) shares its
-screens, authored fixtures, navigation, and simulation with
-[interface-directions](../../../web/prototypes/interface-directions/README.md).
-Keep both directories when copying or archiving the prototype. The commit also
-contains the package lockfile and Vite/TypeScript/test configuration needed to
-reproduce it. Generated build directories and dependencies are intentionally
-excluded from Git.
+The prototype source was removed from the working tree with the legacy `web/`
+SPA (reading-lite-gh335.3); this commit is now its only copy. There, the
+[dedicated entrypoint](https://github.com/brian-bell/reading-lite/tree/128c7cdf926cbcbb8206f5b654208aa3456c7d51/web/prototypes/connected) shares its screens,
+authored fixtures, navigation, and simulation with
+[interface-directions](https://github.com/brian-bell/reading-lite/tree/128c7cdf926cbcbb8206f5b654208aa3456c7d51/web/prototypes/interface-directions), and `web/`
+holds the package lockfile and the Vite/TypeScript/test configuration needed to
+reproduce it. PR #352 was merged with a merge commit so that this SHA stays
+reachable from `main`.
 
-To inspect the frozen version without changing an active checkout, run from the
-repository root, choosing an unused sibling directory:
+To run it without changing an active checkout, from the repository root,
+choosing an unused sibling directory:
 
 ```sh
 git worktree add --detach ../reading-lite-connected-reference 128c7cdf926cbcbb8206f5b654208aa3456c7d51
@@ -63,17 +64,11 @@ npm ci
 npm run prototype:connected:dev
 ```
 
-Use a supported development Node version (22.12+). Port 5174 must be free.
-For the current host's tailnet interface:
-
-```sh
-npm run prototype:connected:dev -- --host 100.94.252.48
-```
-
-Open [Connected](http://100.94.252.48:5174/#/library). That running server is a
-convenience; the commit, files, and captures are the durable reference. Other
-hosts should use their own bind address. To build: `npm run
-prototype:connected:build` from `web/`. Output: `web/dist-connected-prototype/`.
+Use Node 22.12+. Port 5174 must be free (the `app/` dev server uses it too).
+Add `-- --host <bind-address>` to serve on another interface, then open
+`http://<bind-address>:5174/#/library`. To build: `npm run
+prototype:connected:build` from that `web/`. The commit, the specification, and
+the captures are the durable reference.
 
 ## Using this package in implementation
 

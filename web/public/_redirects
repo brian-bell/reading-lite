@@ -1,4 +1,0 @@
-# SPA fallback so client routes do not 404.
-# Includes /auth/verify, /login, /account/security, /terms, /privacy, /dmca.
-# Cloudflare Pages equivalent of not_found_handling = single-page-application.
-/*    /index.html   200

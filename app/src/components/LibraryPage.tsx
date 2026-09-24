@@ -270,7 +270,7 @@ function useFocusAfterFilterChange(): (target: FilterFocus["target"], next: Libr
 
 /**
  * The filter bar (design spec, Components; #417): the search draft, submitted
- * as `q` trimmed and removed when empty as the current SPA does, and the
+ * as `q` trimmed and removed when empty as the legacy SPA does, and the
  * active filters as chips, each a link to the library without it. The draft
  * follows the URL, so a cleared or deep-linked search shows in the field. The
  * chips are named for what they clear, and differently from the empty page's

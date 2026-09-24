@@ -193,7 +193,7 @@ paths:
         invite_only and closed ignore an extra token. Issuing a new login
         challenge revokes any prior unconsumed challenge for that canonical
         email. The 15-minute secret is delivered out of band and lives in the
-        SPA URL fragment, not this response.
+        frontend URL fragment, not this response.
       requestBody:
         required: true
         content:
@@ -1170,7 +1170,7 @@ components:
     Forbidden:
       description: |
         Authenticated but lacking scope, forbidden principal, or invalid
-        cookie CSRF token (session stays; SPA must not treat this as logout).
+        cookie CSRF token (session stays; frontend must not treat this as logout).
         On a write, also an account that stopped being active after the
         request authenticated: the claim saw it under the tenant lock and
         committed nothing.

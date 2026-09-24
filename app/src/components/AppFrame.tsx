@@ -1,7 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
-import { dropLegacyBearerToken } from "../auth/legacy-storage";
+import type { ReactNode } from "react";
 import { signOut, useAccountClosingAt, useSessionEndedAt } from "../auth/session";
 import { whoamiQueryOptions } from "../identity-query";
 import { isPublicLegalPath } from "../legal";
@@ -42,7 +41,6 @@ export function AppFrame({
   const sessionEndedAt = useSessionEndedAt();
   const accountClosingAt = useAccountClosingAt();
   useFocusHeadingOnNavigation();
-  useEffect(dropLegacyBearerToken, []);
 
   const account: AccountState =
     identity === undefined

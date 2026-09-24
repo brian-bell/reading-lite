@@ -3,8 +3,8 @@ import { identityFromResponse, whoamiQueryKey, type Identity } from "../identity
 import { ApiError, NetworkError } from "./errors";
 
 // Browser requests (ADR 0003): same-origin /api/* with the session cookie, and
-// the CSRF token from /api/whoami on writes, as web/src/api.ts does. The token
-// is read from the caller's QueryClient, never from module state, because this
+// the CSRF token from /api/whoami on writes. The token is read from the
+// caller's QueryClient, never from module state, because this
 // module is also loaded during server renders.
 
 export const CSRF_HEADER = "x-csrf-token";

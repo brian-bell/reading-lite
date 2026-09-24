@@ -1,8 +1,7 @@
 import type { DigestCadence, SettingsBody, UserSettings } from "./settings";
 
-// The digest schedule on the account page (#340.6.3), as the SPA's
-// digest-schedule section (web/src/App.tsx onDigest*Change,
-// onSaveDigestDraft). Pure, so the draft rules are tested on their own.
+// The digest schedule on the account page (#340.6.3). Pure, so the draft rules
+// are tested on their own.
 //
 // Turning the digest on from off opens a draft: nothing is saved until the
 // reader presses Save digest, and Cancel discards it. While the digest is on,
@@ -39,10 +38,9 @@ export function digestHourLabel(hour: number): string {
 }
 
 /**
- * IANA names for the time-zone control, as the SPA offers them
- * (web/src/time-zone.ts, mirroring the Worker's rule): `Intl`'s list with
- * `UTC` always in it, plus a stored zone the list lacks so the control can
- * round-trip it.
+ * IANA names for the time-zone control, mirroring the Worker's rule: `Intl`'s
+ * list with `UTC` always in it, plus a stored zone the list lacks so the
+ * control can round-trip it.
  */
 export function listIanaTimeZones(stored?: string): string[] {
   const zones = new Set<string>(

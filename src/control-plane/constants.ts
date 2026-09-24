@@ -16,7 +16,7 @@ export const SESSION_CAP_WARNING =
   "This account is at the 10-session limit. Signing in from another device will sign out the least recently used session.";
 
 export const SESSION_COOKIE_NAME = "__Host-session";
-/** Same-origin SPA path in the magic-link URL. Pages must SPA-fallback this route. */
+/** Same-origin frontend path in the magic-link URL; app/ serves it. */
 export const MAGIC_LINK_VERIFY_PATH = "/auth/verify";
 
 export const LOGIN_PURPOSE = "login" as const;

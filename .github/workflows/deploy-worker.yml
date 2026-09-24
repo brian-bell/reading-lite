@@ -1,8 +1,8 @@
 # Deploy the production Worker after CI succeeds for a main commit. The exact CI
-# SHA is checked out and recorded for the downstream SPA release. The deploy
+# SHA is checked out and recorded for the downstream frontend release. The deploy
 # applies the pending PostgreSQL migrations before the upload, over the same
 # direct connection string the wipe gate reads. This workflow does not deploy
-# the SPA, create the database, import the founder token, or pass --var.
+# the frontend, create the database, import the founder token, or pass --var.
 
 name: Deploy production worker
 
@@ -73,7 +73,7 @@ jobs:
         run: |
           mkdir -p .release
           echo "${{ github.event.workflow_run.head_sha }}" > .release/sha
-      - name: Publish the released SHA for the SPA workflow
+      - name: Publish the released SHA for the frontend workflow
         uses: actions/upload-artifact@v6
         with:
           name: production-worker-release-sha

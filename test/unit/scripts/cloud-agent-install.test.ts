@@ -208,12 +208,11 @@ describe("cloud-agent-install", () => {
     expect(logs.some((line) => line.includes(logged))).toBe(true);
   });
 
-  it("installs the SPA without leaving cwd in web/", () => {
+  it("runs the installer after the root dependencies install", () => {
     const env = JSON.parse(readFileSync(path.join(".cursor", "environment.json"), "utf8")) as {
       install: string;
     };
-    expect(env.install).toMatch(/\(cd web && npm ci\)|npm ci --prefix web|npm --prefix web ci/);
-    expect(env.install).toContain("scripts/cloud-agent-install.ts");
-    expect(env.install).not.toMatch(/cd web && npm ci && /);
+    expect(env.install.indexOf("npm ci")).toBe(0);
+    expect(env.install.indexOf("scripts/cloud-agent-install.ts")).toBeGreaterThan(0);
   });
 });

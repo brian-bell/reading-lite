@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { buildWranglerArgs, parseDeployEnv } from "../../../scripts/ops-lib/commands/deploy-worker";
-import { buildWranglerPagesArgs } from "../../../scripts/ops-lib/commands/deploy-web";
 
 describe("Worker deploy wrapper", () => {
   it("builds a dry-run production deploy by default-compatible args", () => {
@@ -27,14 +26,3 @@ describe("Worker deploy wrapper", () => {
   });
 });
 
-describe("Pages deploy wrapper", () => {
-  it("uses the staging branch for preview deploys", () => {
-    expect(buildWranglerPagesArgs("staging")).toEqual([
-      "pages",
-      "deploy",
-      "dist",
-      "--branch=staging",
-      "--commit-dirty=true",
-    ]);
-  });
-});

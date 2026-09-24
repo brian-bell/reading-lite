@@ -78,7 +78,6 @@ describe("wrangler CLI launcher", () => {
     const spawners = [
       "scripts/corpus-lib/wrangler-r2.ts",
       "scripts/ops-lib/commands/deploy-worker.ts",
-      "scripts/ops-lib/commands/deploy-web.ts",
       "scripts/staging-env.ts",
     ];
     for (const file of spawners) {

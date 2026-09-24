@@ -418,7 +418,7 @@ async function readContent(
   return retried?.body ? retried : null;
 }
 
-// The 503 bodies the SPA and operator tooling match on — one message per
+// The 503 bodies the frontend and operator tooling match on — one message per
 // retryable `unavailable` reason, byte-identical to the pre-intake router.
 const UNAVAILABLE_MESSAGES: Record<
   Extract<IntakeOutcome, { kind: "unavailable" }>["reason"],

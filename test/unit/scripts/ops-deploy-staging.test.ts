@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { deployWorkerCommand, type DeployWorkerDeps } from "../../../scripts/ops-lib/commands/deploy-worker";
-import { deployWebCommand, type DeployWebDeps } from "../../../scripts/ops-lib/commands/deploy-web";
 import { stagingSetupCommand, type StagingSetupDeps } from "../../../scripts/ops-lib/commands/staging-setup";
 import {
   stagingTeardownCommand,
@@ -92,51 +91,6 @@ describe("ops deploy worker", () => {
     const { deps } = makeDeps();
     deps.validateTenantActivation = async () => { throw new Error("unexpected remote inspection"); };
     expect(await deployWorkerCommand.run(["--acknowledge-tenant-migration", "--database-url-env", "PRODUCTION_DATABASE_URL"], deps)).toBe(0);
-  });
-});
-
-describe("ops deploy web", () => {
-  function makeDeps() {
-    const { io: cio, err } = io();
-    const runs: { cmd: string; args: string[]; cwd?: string }[] = [];
-    const deps: DeployWebDeps = {
-      io: cio,
-      runCmd: async (cmd, args, cwd) => {
-        runs.push({ cmd, args, cwd });
-        return 0;
-      },
-      summarizeDist: async () => ({ files: 3, bytes: 2048 }),
-    };
-    return { deps, err, runs };
-  }
-
-  it("plan mode neither builds nor uploads and leaves no build output", async () => {
-    const { deps, err, runs } = makeDeps();
-    expect(await deployWebCommand.run(["--branch", "staging"], deps)).toBe(0);
-    expect(runs).toHaveLength(0);
-    const text = err.join("\n");
-    expect(text).toContain("would run: (cd web && npm run build)");
-    expect(text).toContain("wrangler pages deploy dist --branch=staging");
-  });
-
-  it("--execute builds then uploads", async () => {
-    const { deps, runs } = makeDeps();
-    expect(await deployWebCommand.run(["--branch", "staging", "--execute"], deps)).toBe(0);
-    expect(runs.map((r) => r.cmd)).toEqual(["npm", "wrangler"]);
-    expect(runs[1].args).toContain("--branch=staging");
-    expect(runs[1].cwd).toBe("web");
-  });
-
-  it("--execute --skip-build only uploads", async () => {
-    const { deps, runs } = makeDeps();
-    expect(await deployWebCommand.run(["--execute", "--skip-build"], deps)).toBe(0);
-    expect(runs.map((r) => r.cmd)).toEqual(["wrangler"]);
-  });
-
-  it("a failing build stops the deploy", async () => {
-    const { deps } = makeDeps();
-    deps.runCmd = async (cmd) => (cmd === "npm" ? 1 : 0);
-    expect(await deployWebCommand.run(["--execute"], deps)).toBe(1);
   });
 });
 

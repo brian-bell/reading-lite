@@ -3,7 +3,7 @@ import { parseTurnstileSiteKey } from "../auth/turnstile";
 import { apiFetch } from "./client";
 import { apiErrorOf } from "./errors";
 
-// Magic-link sign-in and sign-out, as web/src/api.ts calls them. Browser only.
+// Magic-link sign-in and sign-out. Browser only.
 
 export interface LoginOptions {
   turnstile_site_key: string | null;

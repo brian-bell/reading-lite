@@ -1,4 +1,0 @@
-name = "reading-lite"
-pages_build_output_dir = "dist"
-# Client routes such as /auth/verify are served via web/public/_redirects
-# (/* → /index.html 200), the Pages SPA fallback.

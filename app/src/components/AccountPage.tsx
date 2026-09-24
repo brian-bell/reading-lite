@@ -61,9 +61,8 @@ import {
 
 // The account page (#340.1, #340.6, #340.7, #340.8; Phase 5 of #340). Email
 // change, notification settings, session management — the list, a single
-// revoke, and revoke-all — and API tokens match the SPA (`web/src/App.tsx`);
-// the common states are
-// the acceptance matrix's, shared with the library and save. A 403 or 412
+// revoke, and revoke-all — and API tokens; the common states are the
+// acceptance matrix's, shared with the library and save. A 403 or 412
 // that refuses the account (from a read, a settings save, an email-change
 // request, or a delete) is the whole page's state; a failed settings or
 // email-change request stays inside its own section so the rest of the page

@@ -44,7 +44,7 @@ After deploying staging through `ops deploy worker --env staging --execute
 --database-url-env NEON_REHEARSAL_DATABASE_URL`,
 verify the serving version's CPU setting and observe an authorized staging judge
 through checkpoint and manifest/list publication. Then use the normal
-CI → Worker → SPA release chain for production. Match the release SHA to the
+CI → Worker → frontend release chain for production. Match the release SHA to the
 version ID in the successful deploy log when the version has no commit tag.
 If CPU terminations persist with Paid and an explicit deployed limit, stop
 recovery and take the version ID and invocation evidence to Cloudflare support.

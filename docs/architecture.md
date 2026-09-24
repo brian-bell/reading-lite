@@ -5,9 +5,8 @@ Reading Lite runs on one Cloudflare Worker plus PostgreSQL with pgvector
 embeddings and the control plane live in PostgreSQL; captured content stays in R2
 ([ADR 0005](decisions/0005-postgresql-storage.md)). The Worker owns `/api/*`, `/health`, and `/mcp*`;
 the TanStack Start frontend in `app/`, a separate Worker, handles the other
-routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). Cloudflare
-Pages still serves the legacy React SPA in `web/` on the same hosts as the
-rollback target.
+routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). The legacy
+React SPA in `web/` was retired in reading-lite-gh335.3.
 [Configuration](configuration.md) lists environment defaults, and
 [operations](operations.md) covers deployment and maintenance.
 
@@ -296,7 +295,7 @@ tools. Preserve the Anthropic system/tool cache prefix. `http-retry` retries
 network/5xx failures with bounded exponential backoff and jitter; 429 exits to
 the caller. Invalid provider, credentials, or effort fail closed.
 
-## Operator code and SPA
+## Operator code and frontend
 
 `scripts/ops.ts` and `ops-lib/` provide the typed command registry, dispatcher,
 and native `run(argv, deps)` commands. Shared libraries live in `scripts/*-lib/`.
@@ -348,8 +347,8 @@ and publishes rows atomically after creating content. Preparation never applies
 the packet remotely. Their guides are
 [paid spend](paid-provider-spend.md) and [context preparation](staging-context-copy.md).
 
-The SPA uses cookie sessions, React Query invalidation, and routed views for
-readings and account security. It stores no bearer material in localStorage or
-sessionStorage. `web/src/types.ts` hand-mirrors Worker contracts; change it with
-`src/schemas/` and [OpenAPI](openapi.yaml). Tests use jsdom and fetch stubs;
-`npm run build` in `web/` checks types and builds the Pages artifact.
+The `app/` frontend uses cookie sessions, TanStack Query invalidation, and
+routed views for the library, readings, capture, and account security. It
+stores no bearer material in localStorage or sessionStorage. Change Worker
+contracts in `src/schemas/` and [OpenAPI](openapi.yaml) together; the frontend's
+own checks are in [app/README.md](../app/README.md).

@@ -1,8 +1,8 @@
 # app — TanStack Start frontend
 
-The replacement for the `web/` SPA, on its own Cloudflare Worker. Topology,
-approved dependencies, caching, and rollout are in
-[ADR 0003](../docs/decisions/0003-frontend-worker-topology.md); the design is the
+The Reading Lite frontend, on its own Cloudflare Worker. It replaced the legacy
+`web/` SPA, retired in reading-lite-gh335.3. Topology, approved dependencies,
+caching, and rollout are in [ADR 0003](../docs/decisions/0003-frontend-worker-topology.md); the design is the
 [Connected specification](../docs/design/connected/design-spec.md). Node 22.12+
 is required; `npm run ops` does not build this package.
 
@@ -28,9 +28,8 @@ reading-lite-gh340.4); staging deploys to `staging.readinglite.ai` and
 
 To sign in locally, request a link at `http://127.0.0.1:5174/login` and open
 `verify_url` from `/api/dev/mailbox?email=…` on the backend. The backend builds
-that link from `WEB_BASE_URL`, which points at the old SPA on :5173, so start
-the backend with `npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174` or
-change the link's port. The session cookie ignores the port, but the stored
+that link from `WEB_BASE_URL`, which `wrangler.toml` points at this dev server
+(`http://127.0.0.1:5174`). The session cookie ignores the port, but the stored
 return path is per origin.
 
 ## Rules this package enforces
@@ -87,9 +86,7 @@ return path is per origin.
   change with a reload, not a failed sign-out (acceptance matrix, Account
   changed).
   Single-use sign-in material stays in component state, never in module state,
-  because these modules are loaded during server renders too. The legacy SPA's
-  `reading-lite.bearerToken` entry is removed at boot
-  (`src/auth/legacy-storage.ts`) until the old SPA is retired. Search
+  because these modules are loaded during server renders too. Search
   parameters stay plain strings (`src/search.ts`).
 - **Account.** `/account/security` lists browser sessions from
   `GET /api/auth/sessions` in the browser (ADR 0003: account pages are not
@@ -143,7 +140,7 @@ return path is per origin.
   anything else throw) and pin the read with `x-expected-tenant`. Only `q`,
   `tag`, and `offset` cross the binding; the 20-row page size is the backend's.
   Signed out, the loader reads nothing and the sign-in form renders in place.
-  `src/library-search.ts` snaps `offset` as the current SPA does (parseInt,
+  `src/library-search.ts` snaps `offset` as the legacy SPA does (parseInt,
   down to a 20-row page, the first page written without it) but keeps the
   URL's own string, so no spelling redirects. Previous and Next are links to
   the neighbouring page and are not preloaded, so a pointer remaining on Next

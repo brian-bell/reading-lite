@@ -19,7 +19,6 @@ import { dbMigrateCommand } from "./commands/db-migrate";
 import { migrateExportCommand } from "./commands/migrate-export";
 import { migrateImportCommand } from "./commands/migrate-import";
 import { deployWipeCheckCommand } from "./commands/deploy-wipe-check";
-import { deployWebCommand } from "./commands/deploy-web";
 import { deployWorkerCommand } from "./commands/deploy-worker";
 import { evalSummarizerCommand } from "./commands/eval-summarizer";
 import { extractAgentCommand } from "./commands/extract-agent";
@@ -56,7 +55,7 @@ export const defaultRegistry: Registry = {
     { name: "reading", summary: "Single-reading operations against the reading API" },
     { name: "import", summary: "Imports into the reading API" },
     { name: "reading-list", summary: "Reading-list JSON export triage and submission" },
-    { name: "deploy", summary: "Worker and Pages deployment" },
+    { name: "deploy", summary: "Worker deployment and release gates" },
     { name: "db", summary: "PostgreSQL schema migrations" },
     // The one-time storage migration (reading-lite-gh348): legacy R2/D1/Vectorize
     // library to PostgreSQL. Retired with the legacy stores in reading-lite-gh351.
@@ -97,7 +96,6 @@ export const defaultRegistry: Registry = {
     migrateExportCommand,
     migrateImportCommand,
     deployWipeCheckCommand,
-    deployWebCommand,
     stagingPrepareContextCommand,
     stagingSetupCommand,
     stagingTeardownCommand,

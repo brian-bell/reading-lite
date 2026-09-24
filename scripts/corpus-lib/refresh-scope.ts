@@ -57,7 +57,7 @@
 //     followed it, while that sweep still rewrote two snapshots the incremental
 //     never measured — both sub-floor movements (0.221→0.239, 0.172→0.268),
 //     neither able to change a flag. So between sweeps the `similarity`
-//     numbers the API and the SPA serve are approximate rather than current.
+//     numbers the API and the frontend serve are approximate rather than current.
 //     It is deterministic and it clears on the next `--full`: an immediate
 //     second sweep reported zero drift;
 // A purge and an embedding-only write used to be on that list too, and are not

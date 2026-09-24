@@ -134,12 +134,6 @@ describe("return path storage", () => {
     clearReturnPath();
     expect(localStorage.getItem(LOGIN_NEXT_STORAGE_KEY)).toBeNull();
   });
-
-  // Shared with web/src/login-return-path.ts, so a link requested on the old
-  // SPA still returns to its page after the new frontend takes over the host.
-  it("keeps the current SPA's storage key", () => {
-    expect(LOGIN_NEXT_STORAGE_KEY).toBe("reading-lite.loginNext");
-  });
 });
 
 describe("loginHref", () => {

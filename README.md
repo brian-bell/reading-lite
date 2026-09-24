@@ -31,7 +31,7 @@ automatic fallback. See [configuration](docs/configuration.md).
 | --- | --- | --- |
 | `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
 | `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
+| CI | Worker, app, and ops: Node **22** | Worker tests stay on workerd |
 
 Use Node 22.12 or newer for local development
 ([operator Node](docs/operations.md#operator-node)). In the repository root:
@@ -39,13 +39,13 @@ Use Node 22.12 or newer for local development
 ```sh
 npm ci
 cp .dev.vars.example .dev.vars   # first setup only; preserve an existing file
-npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174
+npm run dev
 ```
 
 This applies local D1 migrations, imports `dev-local-token` as the founder
 bearer, and starts the Worker at `http://127.0.0.1:8787`. The example provider
-keys are placeholders. The `--var` makes sign-in links point at the frontend;
-without it they point at the legacy SPA's `:5173`. In a second terminal:
+keys are placeholders. Sign-in links point at the frontend on `:5174`. In a
+second terminal:
 
 ```sh
 cd app
@@ -66,10 +66,6 @@ matches. List, detail, content, lookup, and `q` text search work with
 [seeded local data](docs/operations.md#seeding-local-data). Integration tests cover
 the processing pipeline with queue, Vectorize, and provider fakes.
 
-The legacy `web/` SPA (`cd web && npm ci && npm run dev`, on `:5173`) stays
-deployed to Pages as the rollback target until the rollout's observation period
-ends ([ADR 0003](docs/decisions/0003-frontend-worker-topology.md)).
-
 ## Verification
 
 ```sh
@@ -80,8 +76,7 @@ npm run typecheck
 
 `test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
 Workers-pool log noise filtered. CI uses `npm test`. There is no lint script.
-The frontends have their own checks: [app/README.md](app/README.md) for `app/`,
-and `npm test` plus `npm run build` in `web/`.
+The frontend has its own checks in [app/README.md](app/README.md).
 
 Worker runtime types are checked in as `worker-configuration.d.ts`. Run
 `npm run types:generate` after changing Wrangler or the compatibility date/flags

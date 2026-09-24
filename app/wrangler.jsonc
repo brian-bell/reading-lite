@@ -9,7 +9,7 @@
 //
 // The build fixes the environment (CLOUDFLARE_ENV=staging|production npm run
 // build). Production deploys after every production backend release
-// (.github/workflows/deploy-spa.yml); staging deploys by manual dispatch
+// (.github/workflows/deploy-app.yml); staging deploys by manual dispatch
 // (.github/workflows/deploy-app-staging.yml).
 //
 // Routes (ADR 0003): each deployed environment's frontend owns `host/*` on its
@@ -20,11 +20,11 @@
 // routes. Staging switched at Phase 4 parity (#339, 2026-09-16) and owns
 // staging.readinglite.ai/* and staging.readinglite.app/*. Production switched
 // at the Phase 5 cutover (reading-lite-gh340.4, authorized 2026-09-19) and owns
-// readinglite.ai/* and readinglite.app/*. On both, the Pages custom domains
-// stay bound and deployed as the rollback target (delete the two routes to
-// roll back). The preview hosts next.readinglite.ai and
-// next-staging.readinglite.ai were retired after the cutover
-// (reading-lite-gh335.2).
+// readinglite.ai/* and readinglite.app/*. Roll back with `wrangler rollback`
+// (docs/operations.md#frontend-rollback); the legacy Pages SPA that route
+// deletion used to fall back to was retired (reading-lite-gh335.3). The
+// preview hosts next.readinglite.ai and next-staging.readinglite.ai were
+// retired after the cutover (reading-lite-gh335.2).
 //
 // BACKEND binds the backend's read-only FrontendReads entrypoint (the repo
 // root's src/frontend-reads.ts), used for server renders; browser API calls go

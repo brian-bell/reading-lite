@@ -110,7 +110,7 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"
 EMAIL_FROM = ""
 # Unused. Immediate notifications go to the verified account email.
 EMAIL_TO = ""
-WEB_BASE_URL = "http://127.0.0.1:5173"
+WEB_BASE_URL = "http://127.0.0.1:5174"
 # Public Turnstile widget site key. GET /api/auth/login-options returns it only
 # when signup_mode is open. Omit until open-mode signup is enabled.
 # Never put TURNSTILE_SECRET_KEY in [vars] — that is a wrangler secret.
@@ -348,8 +348,7 @@ class_name = "GlobalUsageGuard"
 
 # Worker routes scoped to API, health, and MCP. Since the Phase 4 staging
 # switch (#339, 2026-09-16) the frontend Worker (app/wrangler.jsonc,
-# reading-lite-app-staging) owns `/*` on both staging hosts; the Pages custom
-# domains stay bound underneath as the rollback target. Staging dual-serves
+# reading-lite-app-staging) owns `/*` on both staging hosts. Staging dual-serves
 # staging.readinglite.ai (canonical) and
 # staging.readinglite.app. The reading-lite-staging.bbell.dev host is retired
 # (S9); removing these blocks does not delete live Cloudflare routes.
@@ -599,8 +598,7 @@ class_name = "GlobalUsageGuard"
 # Worker routes scoped to API, health, and MCP. Since the Phase 5 apex cutover
 # (reading-lite-gh340.4) the frontend Worker (app/wrangler.jsonc,
 # reading-lite-app) owns every other path with `host/*`; these more specific
-# routes win over it. Pages stays attached to the same custom domain as the
-# rollback target and serves the SPA again if the frontend routes are deleted.
+# routes win over it.
 #
 # Production dual-serves the two public hosts on the same Worker script, bucket
 # and database. The data plane does not branch on hostname, so /api/*

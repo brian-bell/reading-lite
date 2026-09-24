@@ -20,7 +20,7 @@ export function whoamiQueryOptions() {
   return queryOptions({
     queryKey: whoamiQueryKey,
     queryFn: () => loadIdentity(),
-    // As the current SPA: identity changes only through sign-in and sign-out,
+    // As the legacy SPA: identity changes only through sign-in and sign-out,
     // which invalidate it. No retry, so an unavailable backend never stalls a
     // server render.
     staleTime: Infinity,

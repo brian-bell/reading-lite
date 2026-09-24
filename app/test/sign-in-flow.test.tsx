@@ -15,7 +15,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER, apiFetch } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { redirectSignedInFromLogin, requireSignedIn, validateLoginSearch } from "../src/auth/guards";
-import { LEGACY_BEARER_TOKEN_KEY } from "../src/auth/legacy-storage";
 import { LOGIN_NEXT_STORAGE_KEY } from "../src/auth/return-path";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
 import { resetTurnstileLoaderForTests } from "../src/auth/turnstile";
@@ -248,7 +247,7 @@ describe("the sign-in loop", () => {
     await expect(redeem.json()).resolves.toMatchObject({ credential: CREDENTIAL, redemption_id: expect.stringMatching(/^clm_/) });
     expect(within(nav()).getByRole("group", { name: "Account menu, signed in as a@example.com" })).toBeInTheDocument();
 
-    // The current SPA's defect: visiting /login?next again while signed in
+    // The legacy SPA's defect: visiting /login?next again while signed in
     // redirected there but left the path stored. It must stay cleared.
     await act(() => second.router.navigate({ href: "/login?next=%2Freadings%2Frd_ONE" }));
     await waitFor(() => expect(second.router.state.location.href).toBe("/readings/rd_ONE"));
@@ -560,14 +559,6 @@ describe("a failed sign-out", () => {
     await user.click(within(nav()).getByText("Account", { selector: "summary *" }));
     await user.click(within(nav()).getByRole("button", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
-  });
-});
-
-describe("legacy SPA storage", () => {
-  it("removes the legacy bearer token at boot", async () => {
-    localStorage.setItem(LEGACY_BEARER_TOKEN_KEY, "bearer-from-the-old-spa");
-    await openTab("/", readerA);
-    expect(localStorage.getItem(LEGACY_BEARER_TOKEN_KEY)).toBeNull();
   });
 });
 

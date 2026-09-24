@@ -4,11 +4,10 @@
 //
 // The path is remembered in localStorage when a link is requested, because the
 // emailed link opens in a new tab and never carries `next`. It is cleared when
-// a later request has no safe path and whenever it is consumed. The current SPA
+// a later request has no safe path and whenever it is consumed. The legacy SPA
 // remembered it whenever /login rendered, so a transient signed-out render
 // after redemption stored it again (#369).
 
-/** Same key as web/src/login-return-path.ts, so a link requested there still returns here. */
 export const LOGIN_NEXT_STORAGE_KEY = "reading-lite.loginNext";
 export const ACCOUNT_SECURITY_PATH = "/account/security";
 export const STEP_UP_LOGIN_HREF = `/login?step_up=1&next=${encodeURIComponent(ACCOUNT_SECURITY_PATH)}`;
