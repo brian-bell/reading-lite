@@ -159,63 +159,72 @@ describe("seed-local-fixtures replaceTenantReadings", () => {
   it("clears leftover tenant rows and refresh jobs before inserting the fixture set and its attempts", async () => {
     const tenant = `usr_seed_${crypto.randomUUID()}`;
     const other = `usr_seed_${crypto.randomUUID()}`;
-    for (const id of [tenant, other]) {
-      await sql.query(
-        `INSERT INTO users (id, email_canonical, email_display, status, created_at, updated_at)
-         VALUES ($1, $2, $2, 'active', now(), now())`,
-        [id, `${id}@test.example`],
+    // This connection commits outside the node pool's per-test rollback, so the
+    // rows are removed at the end; left behind, they break any test that
+    // counts users in the shared database.
+    try {
+      for (const id of [tenant, other]) {
+        await sql.query(
+          `INSERT INTO users (id, email_canonical, email_display, status, created_at, updated_at)
+           VALUES ($1, $2, $2, 'active', now(), now())`,
+          [id, `${id}@test.example`],
+        );
+      }
+      const refreshJob = (tenantId: string, readingId: string) =>
+        sql.query(
+          `INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag)
+           VALUES ($1, $2, now(), 'owner', 'etag')`,
+          [tenantId, readingId],
+        );
+      const leftover = failedRows(tenant, "rd_leftover01");
+      const retired = failedRows(tenant, "rd_retired01");
+      const fixture = failedRows(tenant, "rd_fixture01");
+      const neighbour = failedRows(other, "rd_neighbour1");
+
+      await sql.transaction(async (tx) => {
+        await writeReadingRows(tx, leftover);
+        await writeReadingRows(tx, retired);
+        await writeReadingRows(tx, neighbour);
+      });
+      // Refresh jobs reference only the tenant, so they do not cascade with a reading.
+      await refreshJob(tenant, "rd_leftover01");
+      await refreshJob(other, "rd_neighbour1");
+      const attempt: ProcessingAttempt = {
+        id: "at_fixture01",
+        reading_id: "rd_fixture01",
+        url: "https://example.com/rd_fixture01",
+        url_hash: fixture.reading.url_hash,
+        key_prefix: "readings/rd_fixture01",
+        trigger: "submit",
+        status: "failed",
+        stage: "fetch_source",
+        started_at: "2026-09-19T00:00:00.000Z",
+        finished_at: "2026-09-19T00:00:01.000Z",
+        error: { code: "BadStatusError", message: "404", stage: "fetch_source", retryable: false, failed_at: "2026-09-19T00:00:01.000Z" },
+        events: [{ stage: "fetch_source", status: "failed", at: "2026-09-19T00:00:01.000Z" }],
+      };
+      await sql.transaction((tx) => replaceTenantReadings(tx, tenant, [fixture], [attempt]));
+
+      const remaining = await sql.query<{ tenant_id: string; id: string }>(
+        "SELECT tenant_id, id FROM readings WHERE tenant_id IN ($1, $2) ORDER BY id",
+        [tenant, other],
       );
+      expect(remaining.filter((row) => row.tenant_id === tenant)).toEqual([{ tenant_id: tenant, id: "rd_fixture01" }]);
+      expect(remaining.filter((row) => row.tenant_id === other)).toEqual([{ tenant_id: other, id: "rd_neighbour1" }]);
+      const attempts = await sql.query<{ reading_id: string; id: string; status: string; events: unknown }>(
+        "SELECT reading_id, id, status, events FROM reading_attempts WHERE tenant_id = $1",
+        [tenant],
+      );
+      expect(attempts).toEqual([{ reading_id: "rd_fixture01", id: "at_fixture01", status: "failed", events: attempt.events }]);
+      const jobs = await sql.query<{ tenant_id: string; reading_id: string }>(
+        "SELECT tenant_id, reading_id FROM relationship_refresh_jobs WHERE tenant_id IN ($1, $2)",
+        [tenant, other],
+      );
+      expect(jobs).toEqual([{ tenant_id: other, reading_id: "rd_neighbour1" }]);
+    } finally {
+      await sql.query("DELETE FROM relationship_refresh_jobs WHERE tenant_id IN ($1, $2)", [tenant, other]);
+      await sql.query("DELETE FROM readings WHERE tenant_id IN ($1, $2)", [tenant, other]);
+      await sql.query("DELETE FROM users WHERE id IN ($1, $2)", [tenant, other]);
     }
-    const refreshJob = (tenantId: string, readingId: string) =>
-      sql.query(
-        `INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag)
-         VALUES ($1, $2, now(), 'owner', 'etag')`,
-        [tenantId, readingId],
-      );
-    const leftover = failedRows(tenant, "rd_leftover01");
-    const retired = failedRows(tenant, "rd_retired01");
-    const fixture = failedRows(tenant, "rd_fixture01");
-    const neighbour = failedRows(other, "rd_neighbour1");
-
-    await sql.transaction(async (tx) => {
-      await writeReadingRows(tx, leftover);
-      await writeReadingRows(tx, retired);
-      await writeReadingRows(tx, neighbour);
-    });
-    // Refresh jobs reference only the tenant, so they do not cascade with a reading.
-    await refreshJob(tenant, "rd_leftover01");
-    await refreshJob(other, "rd_neighbour1");
-    const attempt: ProcessingAttempt = {
-      id: "at_fixture01",
-      reading_id: "rd_fixture01",
-      url: "https://example.com/rd_fixture01",
-      url_hash: fixture.reading.url_hash,
-      key_prefix: "readings/rd_fixture01",
-      trigger: "submit",
-      status: "failed",
-      stage: "fetch_source",
-      started_at: "2026-09-19T00:00:00.000Z",
-      finished_at: "2026-09-19T00:00:01.000Z",
-      error: { code: "BadStatusError", message: "404", stage: "fetch_source", retryable: false, failed_at: "2026-09-19T00:00:01.000Z" },
-      events: [{ stage: "fetch_source", status: "failed", at: "2026-09-19T00:00:01.000Z" }],
-    };
-    await sql.transaction((tx) => replaceTenantReadings(tx, tenant, [fixture], [attempt]));
-
-    const remaining = await sql.query<{ tenant_id: string; id: string }>(
-      "SELECT tenant_id, id FROM readings WHERE tenant_id IN ($1, $2) ORDER BY id",
-      [tenant, other],
-    );
-    expect(remaining.filter((row) => row.tenant_id === tenant)).toEqual([{ tenant_id: tenant, id: "rd_fixture01" }]);
-    expect(remaining.filter((row) => row.tenant_id === other)).toEqual([{ tenant_id: other, id: "rd_neighbour1" }]);
-    const attempts = await sql.query<{ reading_id: string; id: string; status: string; events: unknown }>(
-      "SELECT reading_id, id, status, events FROM reading_attempts WHERE tenant_id = $1",
-      [tenant],
-    );
-    expect(attempts).toEqual([{ reading_id: "rd_fixture01", id: "at_fixture01", status: "failed", events: attempt.events }]);
-    const jobs = await sql.query<{ tenant_id: string; reading_id: string }>(
-      "SELECT tenant_id, reading_id FROM relationship_refresh_jobs WHERE tenant_id IN ($1, $2)",
-      [tenant, other],
-    );
-    expect(jobs).toEqual([{ tenant_id: other, reading_id: "rd_neighbour1" }]);
   });
 });

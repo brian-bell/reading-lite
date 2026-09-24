@@ -108,7 +108,7 @@ describe("founder-bootstrap CLI", () => {
     expect(logs.join("")).toMatch(/f\*\*\*@example\.com/);
     expect(logs.join("")).not.toMatch(/founder@example.com/);
     expect(logs.join("")).not.toMatch(/test-token/);
-    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 0 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users WHERE email_canonical = 'founder@example.com'")) as { n: number }).toEqual({ n: 0 });
   });
 
   it("writes the founder and imported token on --execute", async () => {
@@ -128,7 +128,7 @@ describe("founder-bootstrap CLI", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 1 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users WHERE email_canonical = 'founder@example.com'")) as { n: number }).toEqual({ n: 1 });
     expect(withMs(await raw.first("SELECT format FROM api_tokens")) as { format: string }).toEqual({
       format: "legacy",
     });
