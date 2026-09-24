@@ -326,11 +326,6 @@ extracted-content, and list-visibility checks against staging. It never prints
 the bearer token and writes nothing unless --execute is present. --execute performs the staging
 writes and triggers paid summarization on staging.
 
-Against PostgreSQL-backed staging, run --execute only after the #349 import:
-the #348 importer refuses a database that already holds application rows, and
-the bearer token is the one founder bootstrap imports, which must not run on
-staging before #349 either.
-
 Options:
   --base <url>       Worker origin. Default: the staging workers.dev origin.
   --provider <name>  Expected summarization provider (required).

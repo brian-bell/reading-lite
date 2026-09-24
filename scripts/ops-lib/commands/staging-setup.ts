@@ -23,7 +23,6 @@ import {
   buildStagingSetupCommands,
   type WranglerCommand,
 } from "../../staging-env";
-import { STAGING_BOOTSTRAP_PROHIBITION } from "../../lib/founder-bootstrap";
 import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
 import { connectMigrationClient, runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
 import { resolveOperatorDatabaseUrl, type ResolvedDatabaseUrl } from "../../pg-lib/operator-db";
@@ -139,7 +138,6 @@ async function runStagingSetup(argv: string[], deps: StagingSetupDeps): Promise<
 
   io.stderr("\n[EXECUTE] staging database migrated; staging resources created or confirmed.");
   printSecretChecklist(io, provider);
-  io.stderr(`\n${STAGING_BOOTSTRAP_PROHIBITION}`);
   return 0;
 }
 
@@ -162,8 +160,6 @@ run as \`ops db migrate\`) and only then creates resources; a database that
 cannot be reached or migrated stops setup before any Cloudflare change.
 Idempotent — "already exists" is treated as success, and a rerun applies only
 what is pending. Setup never creates the database; teardown never drops it.
-
-${STAGING_BOOTSTRAP_PROHIBITION}
 
 Secrets are not written by this command because wrangler secret put is
 interactive; the plan prints the commands to run afterwards. OpenAI is the

@@ -3,11 +3,7 @@ import { chmodSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import {
-  runFounderBootstrap,
-  STAGING_BOOTSTRAP_PROHIBITION,
-  STAGING_FOUNDER_BOOTSTRAP_OPEN,
-} from "./lib/founder-bootstrap";
+import { runFounderBootstrap } from "./lib/founder-bootstrap";
 import { COMPOSE_UP_POSTGRES } from "./pg-lib/local-postgres";
 import { bucketForDeployEnv, databaseTargetForBucket } from "./pg-lib/operator-db";
 
@@ -19,7 +15,6 @@ export interface CloudAgentInstallDeps {
   log?: (line: string) => void;
   run?: (command: string, args: string[]) => Promise<number>;
   founderBootstrap?: typeof runFounderBootstrap;
-  stagingBootstrapOpen?: boolean;
 }
 
 const DEFAULT_FOUNDER_EMAIL = "bellbm@gmail.com";
@@ -113,7 +108,6 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
   const log = deps.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const run = deps.run ?? defaultRun;
   const founderBootstrap = deps.founderBootstrap ?? runFounderBootstrap;
-  const stagingBootstrapOpen = deps.stagingBootstrapOpen ?? STAGING_FOUNDER_BOOTSTRAP_OPEN;
 
   await setUpBeads(run, log);
   await setUpPostgres(envVars, run, log);
@@ -149,15 +143,6 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
   }
 
   if (envVars.CLOUD_AGENT_FOUNDER_BOOTSTRAP === "1" && stgVars) {
-    // Bootstrap refuses a staging write itself while the #349 gate is closed;
-    // skipping here keeps an optional step from failing the install.
-    if (!stagingBootstrapOpen) {
-      log(
-        `[cloud-agent-install] skipping staging founder-bootstrap: ${STAGING_BOOTSTRAP_PROHIBITION} ` +
-          "Unset CLOUD_AGENT_FOUNDER_BOOTSTRAP; #349 lifts this gate.",
-      );
-      return 0;
-    }
     // Staging's control plane is PostgreSQL (ADR 0005). The bootstrap resolves
     // it through the operator-db pairing (STAGING_DATABASE_URL, or the laptop
     // alias), never a bare DATABASE_URL. Bootstrap is optional here, so an
@@ -176,7 +161,6 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
           FOUNDER_EMAIL: resolveFounderEmail(envVars),
         },
         nowMs: Date.now(),
-        stagingBootstrapOpen,
         write: (line) => log(`[founder-bootstrap] ${line.trimEnd()}`),
         openDb: async (databaseUrl) => {
           const { openPostgresControlPlane } = await import("./lib/founder-bootstrap");
