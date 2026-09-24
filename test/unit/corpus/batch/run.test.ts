@@ -488,7 +488,6 @@ describe("runBatch — resume", () => {
           contentBytes: 10,
           contentSha256: "b".repeat(64),
           queryEmbedTokens: 0,
-          releaseByUrlOnFailure: true,
         },
       ],
     };

@@ -49,7 +49,6 @@ const SidecarTargetSchema = z
       .strip()
       .optional(),
     neighbourhoodIds: z.array(z.string().min(1)).optional(),
-    releaseByUrlOnFailure: z.literal(true).optional(),
     preserveReadyManifest: z.unknown().optional(),
   })
   .strip()

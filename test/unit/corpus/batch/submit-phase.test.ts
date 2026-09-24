@@ -321,43 +321,9 @@ describe("submitBatch", () => {
     expect(sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
   });
 
-  it.each([
-    { kind: "create-new" as const, expectedRelease: true },
-    {
-      kind: "create-existing-failed" as const,
-      expectedRelease: true,
-      expected: {
-        id: "rd_a",
-        keyPrefix: "readings/2026/01/01T000000Z-rd_a",
-        url: "https://example.com/a",
-        urlHash: "a".repeat(64),
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
-    },
-    {
-      kind: "verify-existing-failed" as const,
-      expectedRelease: undefined,
-      expected: {
-        id: "rd_a",
-        keyPrefix: "readings/2026/01/01T000000Z-rd_a",
-        url: "https://example.com/a",
-        urlHash: "a".repeat(64),
-        createdAt: "2026-01-01T00:00:00.000Z",
-      },
-    },
-  ])("marks by-url release on failure only when activation creates the claim: $kind", async ({ expectedRelease, ...policy }) => {
+  it("preserves a recover target's snapshot only when it is ready", async () => {
     const batch = fakeBatch();
-    const { sidecar } = await submitBatch(
-      [summarizeTarget({ freshActivation: policy as BatchActivationPolicy })],
-      { model: "m", effort: "low", batch: batch as any, putObject: noopPut(), saveSidecar: noopSave() },
-    );
-
-    expect(sidecar.targets[0]!.releaseByUrlOnFailure).toBe(expectedRelease);
-  });
-
-  it("leaves a recover target (no activation policy) re-submittable: no release, preserve only when ready", async () => {
-    const batch = fakeBatch();
-    // recover-shaped: no freshActivation. Failed source → no release, no snapshot.
+    // recover-shaped: no freshActivation. Failed source → no snapshot.
     const failed = await submitBatch([summarizeTarget()], {
       model: "m",
       effort: "low",
@@ -365,10 +331,9 @@ describe("submitBatch", () => {
       putObject: noopPut(),
       saveSidecar: noopSave(),
     });
-    expect(failed.sidecar.targets[0]!.releaseByUrlOnFailure).toBeUndefined();
     expect(failed.sidecar.targets[0]!.preserveReadyManifest).toBeUndefined();
 
-    // a ready recover source still rolls forward on failure but never releases by-url
+    // a ready recover source rolls forward on failure
     const ready = await submitBatch([summarizeTarget({ manifest: { status: "ready", tldr: "keep" } })], {
       model: "m",
       effort: "low",
@@ -376,7 +341,6 @@ describe("submitBatch", () => {
       putObject: noopPut(),
       saveSidecar: noopSave(),
     });
-    expect(ready.sidecar.targets[0]!.releaseByUrlOnFailure).toBeUndefined();
     expect(ready.sidecar.targets[0]!.preserveReadyManifest?.status).toBe("ready");
   });
 });

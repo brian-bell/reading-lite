@@ -327,12 +327,6 @@ export function sidecarTargetFor(st: SummarizeTarget): SidecarTarget {
     similarity: st.similarity,
     neighbourhoodIds: st.similar.map((neighbour) => neighbour.id),
   };
-  if (
-    st.extracted.freshActivation?.kind === "create-new" ||
-    st.extracted.freshActivation?.kind === "create-existing-failed"
-  ) {
-    out.releaseByUrlOnFailure = true;
-  }
   const preserveReadyManifest = readySnapshotForBatchFailure(m);
   if (preserveReadyManifest) out.preserveReadyManifest = preserveReadyManifest;
   // A fresh extract is authoritative (markdown import is the upgrade and
