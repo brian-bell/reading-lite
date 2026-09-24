@@ -1845,6 +1845,8 @@ components:
           format: uri
         title:
           type: string
+        tldr:
+          type: string
         tags:
           type: array
           items:

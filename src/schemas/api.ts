@@ -319,6 +319,7 @@ export const SimilarItemSchema = z.object({
   id: z.string(),
   url: z.string().url(),
   title: z.string().optional(),
+  tldr: z.string().optional(),
   tags: z.array(z.string()).optional(),
   created_at: z.string().datetime().optional(),
   score: z.number(),
@@ -336,9 +337,10 @@ export const LookupResponseSchema = z.object({
 export type LookupResponse = z.infer<typeof LookupResponseSchema>;
 
 // The purge report DELETE /api/readings/:id returns. `vector_delete_requested`
-// records that a Vectorize delete was issued (deleteByIds does not report
-// whether the vector existed); `by_url_released` is false when the by-url slot
-// belongs to a different (surviving) reading and was deliberately left alone.
+// and `list_row_removed` are always true: the embedding and list row are the
+// reading's own rows and go with it in one transaction. `by_url_released` is
+// false when the URL belongs to a different (surviving) reading and was
+// deliberately left alone.
 export const DeleteReadingResponseSchema = z.object({
   id: z.string().min(1),
   vector_delete_requested: z.boolean(),
