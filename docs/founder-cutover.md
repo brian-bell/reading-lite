@@ -7,7 +7,10 @@
 > deletion). **Historical procedure, not a current operating checklist:** the
 > one-time migration command and its dedicated code/tests are retired. The
 > procedure below is preserved as executed evidence; do not repeat it for
-> routine releases or staging deletion drills.
+> routine releases or staging deletion drills. The R2 manifests, list index and
+> Vectorize namespaces it describes are legacy stores: reading state moved to
+> PostgreSQL on 2026-09-24 ([ADR 0005](decisions/0005-postgresql-storage.md),
+> [PostgreSQL cutover record](postgres-cutover.md)).
 
 Operator runbook and human-approval checklist for copying the pre-tenant
 production corpus into the founder tenant namespace and flipping
@@ -624,6 +627,8 @@ Quirks worth knowing:
 
 Still pending: the separate, signed-off deletion of global-layout objects and
 bare-id vectors (3606 objects, 547 vectors). Until then `--tenant global`
-operator commands still see the legacy copy. Live production corpus ops use
-`--tenant "$TENANT"` from whoami (see `docs/operations.md`), not `global`.
+addresses that retained R2 copy, and only the R2-only commands accept it; the
+commands that read or delete reading rows refuse it. Live production corpus
+ops use `--tenant "$TENANT"` from whoami (see `docs/operations.md`), not
+`global`.
 

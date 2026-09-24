@@ -61,9 +61,9 @@ const BUILDINGS = [
     zone: "control",
     variant: "tower",
     blurb:
-      "The fetch handler mounts Hono. Queue dispatch separates reading, digest, and wipe jobs and their DLQs; cron handles digest and wipe fan-out. Reading rate limits retry with delay; lease/budget denial defers paid work.",
+      "The fetch handler mounts Hono. Queue dispatch separates reading, digest, wipe, and relationship-refresh jobs and their DLQs; cron handles digest and wipe fan-out and the nightly refresh. Reading rate limits retry with delay; lease/budget denial defers paid work.",
     cites: ["src/index.ts", "src/router.ts", "wrangler.toml"],
-    payload: `Env bindings:\nCONTROL_PLANE · usage guards\nREADINGS_BUCKET · READINGS_INDEX\nREADING_JOBS · DIGEST_JOBS\nACCOUNT_WIPE_JOBS · secrets/vars`,
+    payload: `Env bindings:\nHYPERDRIVE · READINGS_BUCKET\nREADING_JOBS · DIGEST_JOBS\nACCOUNT_WIPE_JOBS\nRELATIONSHIP_REFRESH_JOBS\nusage guards · secrets/vars`,
   },
   {
     id: "claim",
@@ -76,9 +76,9 @@ const BUILDINGS = [
     zone: "control",
     variant: "hall",
     blurb:
-      "URL ownership via index/by-url/{sha256(url)}. Outcomes: owned | initializing | unclaimed. Submit/import claim eagerly; lookup stays side-effect-free (no cold legacy claim, no damage repair).",
-    cites: ["src/modules/reading-claim.ts", "src/router.ts"],
-    payload: `OwnerResolution\n→ owned { pointer, manifest }\n→ initializing { pointer }\n→ unclaimed { replaceEtag? }`,
+      "URL ownership is one unique reading_urls row per tenant, committed with the pending reading, its attempt, and its job in one transaction. Outcomes: claimed | owned | tenant_inactive. Submit/import claim eagerly; lookup stays one side-effect-free read.",
+    cites: ["src/intake/index.ts", "src/modules/stores/postgres/reading-writer.ts", "src/router.ts"],
+    payload: `claimUrl(pending, keyPrefix, attempt)\n→ claimed\n→ owned { ownerId }\n→ tenant_inactive`,
   },
   {
     id: "activate",
@@ -91,8 +91,8 @@ const BUILDINGS = [
     zone: "control",
     variant: "stack",
     blurb:
-      "Canonical eager write-and-enqueue: optional artifacts → pending manifest → by-id pointer → list index row → queue.send. Throw before send rolls back to failed (503).",
-    cites: ["src/intake/activation.ts", "src/attempt-ownership.ts"],
+      "Canonical eager write-and-enqueue: import artifacts to R2 first → committed claim (reading, URL, attempt, job) → queue.send. A failed send rolls the reading back to failed (or its prior ready state) and returns 503.",
+    cites: ["src/intake/activation.ts", "src/intake/index.ts", "src/attempt-ownership.ts"],
     payload: `AttemptActivation {\n  manifest (pending),\n  queueMessage: ProcessReadingArgs,\n  artifacts? (import paths)\n}`,
   },
   {
@@ -106,7 +106,7 @@ const BUILDINGS = [
     zone: "queue",
     variant: "depot",
     blurb:
-      "Cloudflare Queue producer/consumer. Production: max_concurrency=3, max_retries=3, dead_letter_queue=reading-lite-dlq. Local wrangler.dev intentionally omits the binding (submit → 503).",
+      "Cloudflare Queue producer/consumer. Production: max_concurrency=3, max_retries=3, dead_letter_queue=reading-lite-dlq. Local wrangler dev has no Queue (submit → 503).",
     cites: ["wrangler.toml", "src/index.ts"],
     payload: `ProcessReadingArgs {\n  id, url, urlHash, keyPrefix,\n  attemptId, trigger, email?,\n  source?, preserveReadyManifest?\n}`,
   },
@@ -121,9 +121,9 @@ const BUILDINGS = [
     zone: "pipeline",
     variant: "mill",
     blurb:
-      "Queue consumer pipeline: extract → write raw/extracted → embed source → Vectorize.query → summarize (OpenAI or Anthropic, no silent fallback) → embed TL;DR → commitTerminalManifest → optional Resend email.",
-    cites: ["src/process-reading.ts", "src/modules/summarizer", "src/schemas/manifest.ts"],
-    payload: `stages: queued → fetch_source →\nprepare_markdown → write_raw →\nwrite_extracted → embed_source →\nquery_similar → summarize →\nembed_summary → write_manifest →\nwrite_indexes → upsert_vector →\nsend_email`,
+      "Queue consumer pipeline: extract → write raw/extracted to R2 → embed source → pgvector similarity query → summarize (OpenAI or Anthropic, no silent fallback) → embed TL;DR → publish in one PostgreSQL transaction → optional Resend email.",
+    cites: ["src/process-reading.ts", "src/attempt-io.ts", "src/modules/summarizer", "src/schemas/manifest.ts"],
+    payload: `stages: queued → fetch_source →\nprepare_markdown → write_raw →\nwrite_extracted → embed_source →\nquery_similar → summarize →\nembed_summary → write_manifest →\nsend_email`,
   },
   {
     id: "extractor",
@@ -155,16 +155,16 @@ const BUILDINGS = [
     zone: "store",
     variant: "warehouse",
     blurb:
-      "ReadingStore codecs over R2: manifests, raw/extracted, by-id + by-url pointers, attempts, diagnostics. ListIndexStore owns index/list.json CAS mutate loop (jittered backoff) and q/tag filter.",
+      "ContentStore over R2: captured content only. Each attempt writes raw and extracted objects under its own revisions/{attemptId}/ prefix, written before the row that points at them commits. Keys stay relative, spelled by r2KeyLayout. The hosted refresh cursor also lives here.",
     cites: [
-      "src/modules/stores/reading-store.ts",
-      "src/modules/stores/list-index.ts",
+      "src/modules/stores/content-store.ts",
+      "src/modules/stores/layout.ts",
     ],
-    payload: `u/{tenantId}/{key_prefix}/manifest.json\nu/{tenantId}/{key_prefix}/extracted.md\nu/{tenantId}/{key_prefix}/raw.*\nu/{tenantId}/index/by-url/{sha256}\nu/{tenantId}/index/by-id/{id}\nu/{tenantId}/index/list.json`,
+    payload: `u/{tenantId}/{key_prefix}/revisions/{attemptId}/raw.*\nu/{tenantId}/{key_prefix}/revisions/{attemptId}/extracted.md\nu/{tenantId}/index/refresh-cursor.json`,
   },
   {
-    id: "visibility",
-    name: "Visibility bridge",
+    id: "publish-gate",
+    name: "Publish gate",
     gx: 9,
     gy: 7,
     w: 58,
@@ -173,13 +173,13 @@ const BUILDINGS = [
     zone: "control",
     variant: "bridge",
     blurb:
-      "List-row + Vectorize vector lockstep behind attemptOwnership. publish / remove / restoreIfOwner. Success publishes both; failure paths are list-only when similarity is null.",
-    cites: ["src/reading-visibility.ts", "src/attempt-ownership.ts"],
-    payload: `publish(manifest, vector?)\nremove(args)  // list±vector\nrestoreIfOwner(args)`,
+      "PgReadingWriter locks the reading row and decides ownership under the lock. Publication is one transaction in a fixed order: lock, attempt ownership, URL ownership, revision, reading, relationships, embedding, attempt. A failed publish rolls back and requeues; a missing row is the deletion fence.",
+    cites: ["src/modules/stores/postgres/reading-writer.ts", "src/attempt-io.ts", "src/attempt-ownership.ts"],
+    payload: `publish(args, manifest, {\n  keyPrefix, content, embedding\n}) → { committed, published }`,
   },
   {
-    id: "vectorize",
-    name: "Vectorize lattice",
+    id: "postgres",
+    name: "PostgreSQL vault",
     gx: 11,
     gy: 9,
     w: 68,
@@ -188,9 +188,13 @@ const BUILDINGS = [
     zone: "index",
     variant: "lattice",
     blurb:
-      "SimilarityStore queries the tenant namespace for summary context. Upserts use composed tenant/reading IDs and 1536-dimensional TL;DR embeddings. The vector ledger records IDs before upsert.",
-    cites: ["src/modules/stores/similarity-store.ts", "src/modules/embeddings"],
-    payload: `query(embedding, k=5)\nupsert(id, tldr_embedding, meta)\ndelete(id)`,
+      "PostgreSQL (Neon via Hyperdrive) holds reading state and the control plane; every query is scoped by tenant_id. Similarity is an exact pgvector cosine scan over 1536-dimensional TL;DR embeddings in reading_embeddings (no HNSW index).",
+    cites: [
+      "src/modules/stores/postgres/reading-store.ts",
+      "src/modules/stores/postgres/similarity-store.ts",
+      "db/migrations/",
+    ],
+    payload: `readings · reading_urls · reading_revisions\nreading_attempts · reading_jobs\nreading_relationships\nreading_embeddings vector(1536)`,
   },
   {
     id: "openai",
@@ -237,7 +241,7 @@ const BUILDINGS = [
     zone: "queue",
     variant: "bunker",
     blurb:
-      "Exhausted main-queue retries land on reading-lite-dlq. markDeadLettered converts stranded pending to retryable failed and acks terminally (never retry DLQ).",
+      "Exhausted main-queue retries land on reading-lite-dlq. markDeadLettered converts a stranded pending reading to retryable failed and acks terminally (never retry DLQ).",
     cites: ["src/index.ts", "src/process-reading.ts", "wrangler.toml"],
     payload: `handleDeadLetter →\nmarkDeadLettered(args) →\nstatus: "failed" + ack`,
   },
@@ -252,7 +256,7 @@ const BUILDINGS = [
     zone: "external",
     variant: "post",
     blurb:
-      "Optional per-reading email after successful publish. Failure here logs send_email attempt event but does not flip the ready manifest to failed.",
+      "Optional per-reading email after successful publish. Failure here logs a send_email attempt event but does not flip the ready reading to failed.",
     cites: ["src/modules/email.ts", "src/process-reading.ts"],
     payload: `sendReadingEmail({\n  title, tldr, WEB_BASE_URL link\n})`,
   },
@@ -288,15 +292,16 @@ const FLOWS = {
   submit: {
     title: "1 · Submit & claim",
     summary:
-      "The frontend POSTs a URL. Reading intake resolves ownership (ReadingClaim). Unclaimed URLs get an eager by-url pointer (claimSlot), then activateAttempt writes pending state and enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
+      "The frontend POSTs a URL. Reading intake resolves ownership against reading_urls. An unclaimed URL is claimed in one transaction with the pending reading, its attempt, and its job; activateAttempt then enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
     cites: [
       "app/src/api/save.ts",
       "src/router.ts",
-      "src/modules/reading-claim.ts",
+      "src/intake/index.ts",
       "src/intake/activation.ts",
+      "src/modules/stores/postgres/reading-writer.ts",
     ],
     kind: "control",
-    nodes: ["spa", "worker", "claim", "activate", "r2", "queue"],
+    nodes: ["spa", "worker", "claim", "postgres", "activate", "queue"],
     hops: [
       {
         from: "spa",
@@ -307,20 +312,20 @@ const FLOWS = {
       {
         from: "worker",
         to: "claim",
-        label: "resolveOwner(url)",
-        payload: `sha256(url) → index/by-url/…`,
+        label: "resolve owner(url)",
+        payload: `reading_urls (tenant_id, url)`,
+      },
+      {
+        from: "claim",
+        to: "postgres",
+        label: "claimUrl",
+        payload: `one transaction:\npending reading · reading_urls row\nattempt · job`,
       },
       {
         from: "claim",
         to: "activate",
-        label: "unclaimed → activate",
-        payload: `claim by-url slot\nthen AttemptActivation`,
-      },
-      {
-        from: "activate",
-        to: "r2",
-        label: "eager writes",
-        payload: `manifest pending\nby-id pointer\nlist.json row`,
+        label: "claimed → activate",
+        payload: `AttemptActivation`,
       },
       {
         from: "activate",
@@ -333,7 +338,7 @@ const FLOWS = {
   process: {
     title: "2 · Process pipeline",
     summary:
-      "Queue consumer runs processReading: extract source (or use import markdown), persist raw/extracted, embed for similarity, query Vectorize, summarize once through the selected provider, embed the TL;DR for the durable vector.",
+      "Queue consumer runs processReading: extract source (or use import markdown), persist raw/extracted to R2 under the attempt's revision prefix, embed for similarity, query pgvector, summarize once through the selected provider, embed the TL;DR for the stored embedding.",
     cites: [
       "src/index.ts",
       "src/process-reading.ts",
@@ -342,7 +347,7 @@ const FLOWS = {
       "src/modules/summarizer",
     ],
     kind: "data",
-    nodes: ["queue", "pipeline", "extractor", "r2", "openai", "anthropic", "vectorize"],
+    nodes: ["queue", "pipeline", "extractor", "r2", "openai", "anthropic", "postgres"],
     hops: [
       {
         from: "queue",
@@ -360,7 +365,7 @@ const FLOWS = {
         from: "extractor",
         to: "r2",
         label: "write_raw / write_extracted",
-        payload: `raw.* + extracted.md`,
+        payload: `revisions/{attemptId}/\nraw.* + extracted.md`,
       },
       {
         from: "pipeline",
@@ -370,9 +375,9 @@ const FLOWS = {
       },
       {
         from: "openai",
-        to: "vectorize",
+        to: "postgres",
         label: "query_similar",
-        payload: `top-K SimilarContext[]`,
+        payload: `exact pgvector top-K\nSimilarContext[]`,
       },
       {
         from: "pipeline",
@@ -390,40 +395,34 @@ const FLOWS = {
         from: "pipeline",
         to: "openai",
         label: "embed_summary",
-        payload: `embed(tldr) → vector`,
+        payload: `embed(tldr) → embedding`,
       },
     ],
   },
   publish: {
     title: "3 · Terminal publish",
     summary:
-      "commitTerminalManifest records the vector ID in D1 before the terminal R2 manifest. ReadingVisibility then writes the list row and vector under ownership/deletion checks. These writes are not atomic. Eligible Resend mail follows publication.",
+      "publishReady commits the terminal reading in one PostgreSQL transaction: attempt ownership, URL ownership, revision, reading, relationships, and embedding together. A failed commit rolls back and requeues rather than marking the reading failed. Eligible Resend mail follows a searchable publish.",
     cites: [
       "src/process-reading.ts",
-      "src/reading-visibility.ts",
-      "src/modules/stores/list-index.ts",
+      "src/attempt-io.ts",
+      "src/modules/stores/postgres/reading-writer.ts",
       "src/modules/email.ts",
     ],
     kind: "data",
-    nodes: ["pipeline", "visibility", "r2", "vectorize", "resend"],
+    nodes: ["pipeline", "publish-gate", "postgres", "resend"],
     hops: [
       {
         from: "pipeline",
-        to: "visibility",
-        label: "commitTerminalManifest",
-        payload: `D1 ledger before terminal manifest\nthen list row → vector\n+ PublishVector`,
+        to: "publish-gate",
+        label: "write_manifest",
+        payload: `publishReady(manifest,\n  tldr_embedding)`,
       },
       {
-        from: "visibility",
-        to: "r2",
-        label: "write_indexes",
-        payload: `appendOrReplaceListIndexItem`,
-      },
-      {
-        from: "visibility",
-        to: "vectorize",
-        label: "upsert_vector",
-        payload: `{ id, tldr_embedding, meta }`,
+        from: "publish-gate",
+        to: "postgres",
+        label: "one transaction",
+        payload: `lock → attempt → URL →\nrevision → reading →\nrelationships → embedding`,
       },
       {
         from: "pipeline",
@@ -436,7 +435,7 @@ const FLOWS = {
   failure: {
     title: "4 · Retry & DLQ",
     summary:
-      "Upstream 429 becomes RateLimitedError → queue retry with delay; manifest stays pending. Exhausted retries route to DLQ; markDeadLettered writes retryable failed. Lease/budget denial defers the attempt; vector-ledger failures retry. Other processing errors write failed, preserving a prior ready manifest on reprocess.",
+      "Upstream 429 becomes RateLimitedError → queue retry with delay; the reading stays pending. Exhausted retries route to DLQ; markDeadLettered writes retryable failed. Lease/budget denial defers the attempt; a failed publish commit retries. Other processing errors write failed, preserving a prior ready reading on reprocess.",
     cites: [
       "src/index.ts",
       "src/modules/http-retry",
@@ -444,13 +443,13 @@ const FLOWS = {
       "src/modules/staleness.ts",
     ],
     kind: "fail",
-    nodes: ["pipeline", "queue", "dlq", "r2", "staleness", "worker"],
+    nodes: ["pipeline", "queue", "dlq", "postgres", "staleness", "worker"],
     hops: [
       {
         from: "pipeline",
         to: "queue",
         label: "RateLimitedError",
-        payload: `msg.retry({ delaySeconds })\nmanifest stays pending`,
+        payload: `msg.retry({ delaySeconds })\nreading stays pending`,
       },
       {
         from: "queue",
@@ -460,7 +459,7 @@ const FLOWS = {
       },
       {
         from: "dlq",
-        to: "r2",
+        to: "postgres",
         label: "markDeadLettered",
         payload: `status: "failed"\nretryable strand`,
       },
@@ -475,17 +474,18 @@ const FLOWS = {
   read: {
     title: "5 · Read path",
     summary:
-      "Authenticated list/detail/content/diagnostics. List reads index/list.json with q/tag filter; detail reads the manifest; staleness overlay may annotate pending as failed without writing. Lookup is side-effect-free.",
+      "Authenticated list/detail/content/diagnostics. List and q/tag search query the tenant's reading rows in PostgreSQL; detail reads the reading row; content streams from R2; the staleness overlay may annotate pending as failed without writing. Lookup is side-effect-free.",
     cites: [
       "app/src/api/library.ts",
       "src/router.ts",
-      "src/modules/stores/list-index.ts",
+      "src/modules/stores/postgres/reading-store.ts",
+      "src/modules/stores/content-store.ts",
       "src/modules/staleness.ts",
     ],
     kind: "read",
-    // Frontend list/search is q/tag over index/list.json via the Worker — it never
-    // calls POST /api/readings/similar, so Vectorize stays off this path.
-    nodes: ["spa", "worker", "r2", "staleness"],
+    // Frontend list/search is q/tag over PostgreSQL rows via the Worker — it never
+    // calls POST /api/readings/similar, so the pgvector scan stays off this path.
+    nodes: ["spa", "worker", "postgres", "r2", "staleness"],
     hops: [
       {
         from: "spa",
@@ -495,9 +495,15 @@ const FLOWS = {
       },
       {
         from: "worker",
+        to: "postgres",
+        label: "list / detail",
+        payload: `readings WHERE tenant_id = $1\n(q, tag, offset, limit)`,
+      },
+      {
+        from: "worker",
         to: "r2",
-        label: "list / manifest / blobs",
-        payload: `u/{tenantId}/index/list.json\nu/{tenantId}/{key_prefix}/manifest.json`,
+        label: "content",
+        payload: `revisions/{attemptId}/\nextracted.md | raw.*`,
       },
       {
         from: "worker",
@@ -512,7 +518,7 @@ const FLOWS = {
 const OVERVIEW = {
   title: "reading-lite edge district",
   body:
-    "A personal reading service on Cloudflare Workers with a TanStack Start frontend. Submit a URL → eager by-url claim → pending manifest → queue → extract, embed, similar-context summarize → terminal R2 + Vectorize write. Provider selection never falls back silently.",
+    "A personal reading service on Cloudflare Workers with a TanStack Start frontend. Submit a URL → eager URL claim (pending reading, attempt, and job in one PostgreSQL transaction) → queue → extract to R2, embed, similar-context summarize → one PostgreSQL publish transaction with the embedding. Provider selection never falls back silently.",
   cites: ["docs/architecture.md", "src/index.ts", "src/router.ts", "src/process-reading.ts", "wrangler.toml"],
 };
 

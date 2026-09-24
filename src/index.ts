@@ -91,8 +91,8 @@ export interface Env {
   OPENAI_SUMMARIZATION_MODEL?: string;
   OPENAI_SUMMARIZATION_REASONING_EFFORT?: string;
   ANTHROPIC_SUMMARIZATION_REASONING_EFFORT?: string;
-  // "1" enables tenant-prefixed R2 keys (u/{tenantId}/…). Off by default so
-  // production/staging keep the founder corpus visible until s1k.6 copies it.
+  // "1" enables tenant-prefixed R2 keys (u/{tenantId}/…). Staging and
+  // production pin it on; local dev leaves it unset and stores unprefixed keys.
   TENANT_DATA_PLANE?: string;
   LOCAL_MAIL_SINK?: string;
   // Public Turnstile widget site key. GET /api/auth/login-options returns it

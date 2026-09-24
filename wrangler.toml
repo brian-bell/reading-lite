@@ -81,7 +81,7 @@ class_name = "GlobalUsageGuard"
 
 # Production secrets (set via `wrangler secret put` per-env, e.g.
 # `wrangler secret put READER_API_TOKEN --env production`):
-#   READER_API_TOKEN     — imported once as the founder legacy D1 token
+#   READER_API_TOKEN     — imported once into PostgreSQL as the founder's legacy bearer
 #   AUTH_ROOT_SECRET     — 256-bit hex HKDF root for credential HMACs
 #   OPENAI_API_KEY       — always required: embeddings + default summarizer
 #   X_API_BEARER_TOKEN    — required only for X/Twitter status URL imports
@@ -138,9 +138,10 @@ bucket_name = "reading-lite"
 
 # PostgreSQL through Hyperdrive (ADR 0005). Locally Hyperdrive is a passthrough
 # to the docker-compose `postgres` service (`npm run dev` starts and migrates
-# it). No runtime path reads PostgreSQL until slice 1b. `ops deploy worker`
-# refuses staging and production while POSTGRES_CUTOVER_ENABLED is false for
-# that environment (scripts/ops-lib/postgres-cutover.ts).
+# it). Reading state, embeddings and the control plane live here; R2 holds
+# captured content. `ops deploy worker` refuses an environment whose
+# POSTGRES_CUTOVER_ENABLED entry is false, or whose Hyperdrive id is still a
+# placeholder (scripts/ops-lib/postgres-cutover.ts).
 [[hyperdrive]]
 binding = "HYPERDRIVE"
 id = "00000000000000000000000000000001"
@@ -199,7 +200,7 @@ WEB_BASE_URL = "https://staging.readinglite.ai/"
 # signup_mode is open. Staging bootstrap stays invite_only — leave unset until
 # an explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
 # TURNSTILE_SITE_KEY = ""
-# Tenant-rooted keys (u/{tenantId}/) and namespaced vectors, matching
+# Tenant-rooted R2 keys (u/{tenantId}/), matching
 # production. Pinned so staging can exercise the destructive account-wipe path
 # at all: `src/account-wipe.ts` skips with `no_tenant_prefix` whenever the gate
 # is off, so a staging environment with this unset cannot rehearse deletion —
@@ -211,9 +212,9 @@ WEB_BASE_URL = "https://staging.readinglite.ai/"
 # The retained pre-tenant readings/ and index/ objects stay in the bucket.
 # Removing this line and redeploying is a complete
 # rollback ONLY before post-pin writes resume. After the pin, new staging
-# readings exist only under tenant R2 roots and Vectorize namespaces; rolling
-# the gate back without a freeze plus reverse reconciliation (copy those
-# objects/vectors back to the global layout) makes post-pin writes disappear
+# readings keep their content only under tenant R2 roots; rolling the gate
+# back without a freeze plus reverse reconciliation (copy those objects back to
+# the global layout) makes post-pin writes disappear
 # from the app even though their bytes still exist. After writes, require that
 # freeze + reverse reconciliation, or an explicit captain-accepted loss of the
 # post-pin corpus. See docs/operations.md, "Rehearsing account deletion on
@@ -441,8 +442,8 @@ WEB_BASE_URL = "https://readinglite.ai/"
 # explicit open-mode policy change. TURNSTILE_SECRET_KEY is a secret, not a var.
 # TURNSTILE_SITE_KEY = ""
 # Founder corpus cutover completed 2026-08-31 (docs/founder-cutover.md): every
-# production read/write is tenant-rooted (u/{tenantId}/ keys, namespaced
-# vectors). Pinned here so ordinary deploys keep the gate on. Removing this
+# production R2 read/write is tenant-rooted (u/{tenantId}/ keys; PostgreSQL
+# rows are scoped by tenant_id). Pinned here so ordinary deploys keep the gate on. Removing this
 # line and deploying is a complete rollback only before post-pin writes resume;
 # after writes, freeze + reverse reconciliation or captain-accepted loss.
 # Legacy global objects and bare-id vectors are retained until a separate
@@ -456,10 +457,9 @@ RETRY_MAX_DELAY_MS = "8000"
 # messages and runs processReading. max_concurrency caps how many readings (and
 # thus Anthropic/OpenAI calls) run at once. Two things make >1 safe: 429s from
 # upstream are surfaced as RateLimitedError → msg.retry({ delaySeconds }) so the
-# wait happens on the queue side rather than burning a worker slot; and the
-# index/list.json read-modify-write is guarded by an R2 compare-and-set retry
-# loop (ReadingStore.mutateListIndex), so concurrent terminal writes merge
-# instead of clobbering each other (last-writer-wins).
+# wait happens on the queue side rather than burning a worker slot; and each
+# terminal write is one PostgreSQL transaction under its reading's row lock
+# (PgReadingWriter), so concurrent readings never contend on a shared index.
 [[env.production.queues.producers]]
 binding = "READING_JOBS"
 queue = "reading-lite"
@@ -472,12 +472,12 @@ max_concurrency = 3
 max_retries = 3
 # Messages that exhaust max_retries (almost always an upstream that stayed
 # rate-limited past the retry budget) route here instead of being dropped.
-# Without this, the manifest would stay stranded pending+running forever.
+# Without this, the reading would stay stranded pending+running forever.
 dead_letter_queue = "reading-lite-dlq"
 
 # Consumer for the dead-letter queue, served by this same worker. The queue()
 # handler branches on batch.queue and marks each dead-lettered reading as a
-# retryable `failed` manifest (handleDeadLetter / markDeadLettered) so the
+# retryable `failed` reading (handleDeadLetter / markDeadLettered) so the
 # strand becomes a visible, re-submittable failure. handleDeadLetter always
 # acks — even when the mark write fails (logged, then dropped) — so a message
 # can never loop in the DLQ. A failed mark falls back to the TTL annotator,
@@ -494,7 +494,7 @@ max_concurrency = 1
 max_retries = 3
 
 # Digest jobs are a separate queue (never READING_JOBS). The digest DLQ marks
-# the D1 ledger failed and must not call markDeadLettered / touch manifests.
+# the digest ledger failed and must not call markDeadLettered / touch readings.
 [[env.production.queues.producers]]
 binding = "DIGEST_JOBS"
 queue = "reading-lite-digest"

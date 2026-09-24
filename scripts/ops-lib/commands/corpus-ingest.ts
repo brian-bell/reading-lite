@@ -384,9 +384,9 @@ Options:
   --execute        Actually submit + write (otherwise prints the plan).
   --database-url-env <NAME>  Direct PostgreSQL connection variable paired with --bucket.
   --sole-writer    Required with --execute: assert the realtime writer is
-                   paused/drained. Fresh ingest eagerly claims activated by-url
-                   slots and releases its own failed eager claims. Run refuses
-                   without the acknowledgment.
+                   paused/drained. Fresh ingest eagerly claims each activated
+                   URL; a failed target keeps its claim as a failed owner. Run
+                   refuses without the acknowledgment.
   --limit <n>      Cap how many readings to *submit*, applied after the ownership
                    check so skipped ready/pending owners don't consume the budget.
   --bucket <name>  R2 bucket to write to. Default: CORPUS_R2_BUCKET / reading-lite.

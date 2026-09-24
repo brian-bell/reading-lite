@@ -17,7 +17,7 @@
         <h1>Isometric system map</h1>
         <p class="lede">
           Trace reading intake, processing, publication, retries, and reads.
-          For D1, budgets, digests, and account teardown, see the architecture guide
+          For the control plane, budgets, digests, and account teardown, see the architecture guide
           in <code>docs/architecture.md</code>.
         </p>
       </div>
@@ -48,9 +48,11 @@
           <p class="explainer-kicker">District overview</p>
           <h2 id="explainer-title">reading-lite edge district</h2>
           <p id="explainer-body">
-            A personal reading service on Cloudflare Workers with a TanStack Start frontend.
-            Submit a URL → eager by-url claim → pending manifest → queue → extract,
-            embed, similar-context summarize → terminal R2 + Vectorize write.
+            A personal reading service on Cloudflare Workers with a TanStack Start
+            frontend. Submit a URL → eager
+            URL claim (pending reading, attempt, and job in one PostgreSQL
+            transaction) → queue → extract to R2, embed, similar-context summarize →
+            one PostgreSQL publish transaction with the embedding.
           </p>
           <ul class="cite-list" id="explainer-cites">
             <li><code>README.md</code></li>
@@ -70,8 +72,8 @@
             <li><span class="swatch zone-client"></span> Client / frontend Worker</li>
             <li><span class="swatch zone-control"></span> Worker control plane</li>
             <li><span class="swatch zone-pipeline"></span> Processing pipeline</li>
-            <li><span class="swatch zone-store"></span> Durable store (R2)</li>
-            <li><span class="swatch zone-index"></span> Similarity index</li>
+            <li><span class="swatch zone-store"></span> Content store (R2)</li>
+            <li><span class="swatch zone-index"></span> PostgreSQL + pgvector</li>
             <li><span class="swatch zone-queue"></span> Queues</li>
             <li><span class="swatch zone-external"></span> Upstream providers</li>
             <li><span class="swatch path-control"></span> Control path</li>

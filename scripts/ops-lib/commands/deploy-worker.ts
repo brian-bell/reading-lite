@@ -98,7 +98,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
     deps.io.stderr(`[DEPLOY] tenant activation preflight: ${activation.message}`);
     if (!activation.ok) {
       if (!values["acknowledge-tenant-migration"]) {
-        deps.io.stderr("Refusing before upload. Verify the target tenant R2 corpus, namespaced vectors, and deletion eligibility, then re-run with --acknowledge-tenant-migration. See docs/operations.md (Tenant-mode activation guard).");
+        deps.io.stderr("Refusing before upload. Verify the target tenant R2 content, its PostgreSQL reading rows, and deletion eligibility, then re-run with --acknowledge-tenant-migration. See docs/operations.md (Tenant-mode activation guard).");
         return 2;
       }
       deps.io.stderr("[DEPLOY] OVERRIDE: operator acknowledges target tenant migration and deletion eligibility were verified manually for this deployment.");
@@ -189,7 +189,7 @@ Options:
                  Operators source these from ~/.config/reading-lite/neon.env.
   --acknowledge-tenant-migration
                  Override unverified activation only after manually verifying
-                 target tenant R2 data, namespaced vectors, and deletion eligibility.
+                 target tenant R2 data, PostgreSQL reading rows, and deletion eligibility.
   --release-sha <full SHA>
                  Tag the deployed version after verifying a clean exact checkout.
                  Required when preparing staging evidence for deploy release.

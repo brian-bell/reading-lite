@@ -21,9 +21,10 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
 2. Commit the claim in one transaction: the reading, its unique URL row, the
    attempt, and a `queued` job row. A concurrent submission of the same URL
    waits on the unique key and then finds the winner, so duplicates converge on
-   one reading and an owner is never half-written. `activateAttempt` writes
-   import content under the attempt's revision keys, then enqueues; a failure
-   there rolls the reading back to a retryable failure and marks the job
+   one reading and an owner is never half-written. An import writes its
+   content under the attempt's revision keys before this transaction.
+   `activateAttempt` then enqueues and marks the job `sent`; a send failure
+   rolls the reading back to a retryable failure and marks the job
    `send_failed`. New work returns 202 with a poll URL.
 3. `processReading` checks the reading's row, tenant, and attempt ownership
    before spending or writing. It extracts the source and stores raw and
@@ -96,20 +97,20 @@ overdue rows; see [operations](operations.md#orphaned-in-flight-processing-lease
 ### Publication and failure ordering
 
 `PgReadingWriter.publish` (`src/modules/stores/postgres/reading-writer.ts`) is
-one transaction, and its order is the contract: lock the reading row, verify
-attempt ownership (`src/attempt-ownership.ts`), settle URL ownership, then
-write the revision, the reading, its relationships, the embedding, and the
-attempt and job rows. Nothing is written before ownership is settled, and a
-reader never sees a summary without its content keys or a vector for a reading
-that is not ready. Only the URL's owner is searchable: a duplicate that does
-not own its URL is stored without an embedding. `test/integration/postgres/
+one transaction, and its order is the contract: lock the tenant's `users` row
+FOR SHARE, lock the reading row, verify attempt ownership
+(`src/attempt-ownership.ts`), settle URL ownership, then write the revision,
+the reading, its relationships, the embedding, and the attempt and job rows.
+Nothing is written before ownership is settled, and a reader never sees a
+summary without its content keys or a vector for a reading that is not ready.
+Only the URL's owner is searchable: a duplicate that does not own its URL is
+stored without an embedding. `test/integration/postgres/
 reading-writer.test.ts` pins lost ownership, rollback, and the fence.
 
-This replaces the old cross-service sequence (ledger row, terminal manifest,
-list row, vector) and its compensation paths. A publish transaction that fails
-rolls back whole and throws `PublishCommitError`; the consumer requeues rather
-than marking the reading failed, because the summary is paid for and
-checkpointed and the reading is still pending and still owned by the attempt.
+There is no cross-service sequence and no compensation path. A publish
+transaction that fails rolls back whole and throws `PublishCommitError`; the
+consumer requeues rather than marking the reading failed, because the summary
+is paid for and checkpointed and the reading is still owned by the attempt.
 
 An upstream 429 raises `RateLimitedError`; queue retry leaves the attempt
 pending. Paid-work denial or stale processing leases defer the same attempt,
@@ -138,10 +139,8 @@ Every attempt writes its content under its own immutable revision prefix, so a
 reprocess can never overwrite what the published revision points at. A ready
 reading stays `ready` while it reprocesses. If the attempt fails, only the
 attempt summaries change: the previous content, summary, relationships, and
-embedding stay intact together. This closes the gap where a failed reprocess
-restored the manifest but not the content artifacts it had overwritten
-(reading-lite-psu; the [193-v2.1 handoff](193-v2.1-handoff.md) records one
-observed case in the pre-migration corpus).
+embedding stay intact together (reading-lite-psu; the
+[193-v2.1 handoff](193-v2.1-handoff.md) records the case this rules out).
 
 Content a failed or superseded attempt captured is deleted once nothing
 references it. `AttemptIo.discardUnreferencedContent` checks the reading's
@@ -176,16 +175,16 @@ corpus sweep.
 ## Tenant storage
 
 Hosted stores derive their scope from a validated `TenantContext`, and every
-PostgreSQL query is `WHERE tenant_id = $1`:
+PostgreSQL query is `WHERE tenant_id = $1`. Paths are under `src/modules/`:
 
-| Store | Location and responsibility |
+| Module | Responsibility |
 |---|---|
-| `postgres/reading-store.ts` | List, detail, relationship targets, URL owner, content keys |
-| `postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
-| `postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
-| `postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding and the importer |
-| `content-store.ts` | R2 bytes by relative key under the tenant root |
-| `layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
+| `stores/postgres/reading-store.ts` | List, detail, relationship targets, URL owner, content keys |
+| `stores/postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
+| `stores/postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
+| `stores/postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding and the importer |
+| `stores/content-store.ts` | R2 bytes by relative key under the tenant root |
+| `stores/layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
 | `staleness.ts` | Read-time stale-attempt annotation |
 | `manifest-drafting.ts` | Pure pending, rollback, and terminal manifest constructors |
 
@@ -193,16 +192,15 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 `key_prefix` values and content keys stay relative, such as
 `readings/YYYY/MM/<timestamp>-<id>/revisions/<attemptId>/raw.html`.
 
-Beside the PostgreSQL stores, three storage-free modules hold what the Worker,
-the operator scripts and the batch pipeline share: `tenant-root.ts`
+Beside the PostgreSQL stores, three storage-free modules in `stores/` hold what
+the Worker, the operator scripts and the batch pipeline share: `tenant-root.ts`
 (`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
 ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
-snapshot). The Worker binds no Vectorize index. The account wipe has no
-Vectorize or vector-ledger phases: an embedding is a row that deletes with its
-reading, so the wipe is rows then objects, and no ledger exists anywhere.
-Vectors written to Vectorize before the cutover are left to its retirement at
-cutover. No runtime or operator path writes manifests, `index/list.json`,
-pointers, or Vectorize.
+snapshot). The Worker binds no Vectorize index. An embedding is a row that
+deletes with its reading, so the account wipe is rows, then objects. Only the
+read-only `ops migrate export` still reads the legacy D1, manifests and
+Vectorize index, and no runtime or operator path writes R2 manifests,
+`index/list.json`, pointers, or Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover
 copied data and retained global R2 objects and unnamespaced vectors, which
@@ -213,10 +211,10 @@ command is retired; see the [historical cutover](founder-cutover.md).
 
 PostgreSQL stores users, credentials, sessions, settings, limits, and deletion
 records ([ADR 0005](decisions/0005-postgresql-storage.md)). Each HTTP request
-shares one client between authentication and its handler. Reads that were a
-read-then-write on D1's single writer now lock then act in one transaction:
-magic-link issue (advisory locks per address and user), redeem (the challenge
-row), session issue and token creation (the user row), founder bootstrap, and
+shares one client between authentication and its handler. Each read-then-write
+locks, then acts, in one transaction (`SELECT … FOR UPDATE`, or `lockKey` for a
+row that may not exist yet): magic-link issue (advisory locks per address and
+user), redeem (the challenge row), session issue and token creation (the user row), founder bootstrap, and
 teardown.
 `src/control-plane/` handles branded IDs, HKDF/HMAC credentials, eligibility,
 CSRF, recent auth, and guard RPCs. `TenantUsageGuard` uses `idFromName(tenantId)`

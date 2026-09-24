@@ -5,9 +5,9 @@ FROM node:22-bookworm-slim
 
 WORKDIR /workspace
 
-# Only wrangler's D1/Vectorize local emulation has historically needed a
-# native build toolchain for optional deps; keep it available so `npm ci`
-# does not fail on an image rebuild.
+# Native optional dependencies (better-sqlite3 for the D1-era test fixtures)
+# need a build toolchain when no prebuilt binary matches; keep it available so
+# `npm ci` does not fail on an image rebuild.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ ca-certificates \
     && rm -rf /var/lib/apt/lists/*

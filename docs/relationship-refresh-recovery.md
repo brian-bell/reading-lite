@@ -1,5 +1,13 @@
 # Relationship refresh CPU recovery
 
+> The diagnosis and CPU fix below are current: both hosted Wrangler
+> environments pin `limits.cpu_ms = 30_000`. The September 10 recovery
+> procedure is a dated record written against the stores of that time (R2
+> manifests and list rows, D1 `relationship_refresh_jobs`); readings and judge
+> checkpoints now live in PostgreSQL ([ADR 0005](decisions/0005-postgresql-storage.md)),
+> while the scan cursor stays in R2. Plan any new recovery afresh rather than
+> replaying it.
+
 ## Diagnosis (September 10, 2026)
 
 The production refresh failed under an account shown by Cloudflare's Workers
@@ -43,7 +51,7 @@ build cannot verify account entitlement or enforce the production CPU limit.
 After deploying staging through `ops deploy worker --env staging --execute
 --database-url-env NEON_REHEARSAL_DATABASE_URL`,
 verify the serving version's CPU setting and observe an authorized staging judge
-through checkpoint and manifest/list publication. Then use the normal
+through checkpoint and reading publication. Then use the normal
 CI → Worker → frontend release chain for production. Match the release SHA to the
 version ID in the successful deploy log when the version has no commit tag.
 If CPU terminations persist with Paid and an explicit deployed limit, stop

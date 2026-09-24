@@ -10,12 +10,12 @@ The canonical API base is `https://readinglite.ai`. The same Worker also serves
 
 Scripts use `Authorization: Bearer <token>`. Create scoped tokens from a signed-in
 session; creation returns the secret once. The founder bootstrap imports the
-legacy `READER_API_TOKEN` into D1. Runtime authentication never falls back to that
-secret when the D1 lookup fails.
+legacy `READER_API_TOKEN` into PostgreSQL. Runtime authentication never falls back
+to that secret when the database lookup fails.
 
 The browser uses a host-only `__Host-session` cookie with `Secure`, `HttpOnly`,
 `Path=/`, `SameSite=Lax`, and `Max-Age=7776000`. Login survives browser restarts;
-D1 enforces 30-day inactivity and 90-day absolute expiry. A session on one host
+the server enforces 30-day inactivity and 90-day absolute expiry. A session on one host
 does not authenticate another. Bearer tokens work across the served hosts.
 
 Cookie writes require an allowed origin and `X-CSRF-Token`, issued by
@@ -63,33 +63,36 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 | `POST /api/readings` | `{ url, email? }`; notification defaults to true and goes to the current verified account address |
 | `POST /api/readings/import-markdown` | `{ source_url, markdown, title?, email? }`; uses the URL for ownership and supplied Markdown for content. Email defaults to false; send-time import is always silent |
 | `GET /api/readings` | Newest-first list; `q` matches title/TLDR/URL/keywords by case-insensitive substring; `tag` is an exact case-insensitive tag. `offset` defaults to 0, `limit` to 20 with range 1 to 100. Returns `{ readings, limit, offset, has_more }` |
-| `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No pointer claims, repair writes, or deep scans |
+| `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No claims, repair writes, or scans |
 | `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |
-| `GET /api/readings/:id/diagnostics` | Manifest, pointers, list row, R2 inventory, and recent attempt records |
+| `GET /api/readings/:id/diagnostics` | Manifest, list row, URL ownership (reported in the `pointers` shape), the R2 objects under its key prefix, and up to 20 recent attempt records |
 | `POST /api/readings/:id/reprocess` | Fresh attempt on the same ID; optional `force` bypasses an active-attempt conflict, and optional `source: { kind: "markdown", markdown, title? }` supplies replacement text |
-| `GET /api/readings/:id/content` | Streams `extracted.md`; 404 if content is not captured |
+| `GET /api/readings/:id/content` | Streams the extracted Markdown; 404 if content is not captured |
 | `GET /api/readings/:id/content/raw` | Raw bytes with their stored content type |
 | `DELETE /api/readings/:id` | Requires `readings:delete`; 409 while a non-stale attempt runs, 404 for unknown ID. Returns `{ id, vector_delete_requested, list_row_removed, by_url_released, objects_deleted }` |
-| `POST /api/readings/similar` | `{ query_embedding: number[1536], k? }`; top-K matches in the caller's Vectorize namespace |
+| `POST /api/readings/similar` | `{ query_embedding: number[1536], k? }` (`k` defaults to 10, max 50); returns `{ items }`, an exact cosine scan over the caller's ready readings' embeddings |
 
 Read routes require `readings:read`; submit/reprocess/similar require
 `readings:write`, and Markdown import requires `readings:import`.
-List filtering reads the tenant's R2 `index/list.json`, maintained during
-activation and terminal writes. Missing list indexes trigger scan-and-rebuild;
-text search does not require Vectorize.
+List filtering is one query over the tenant's `readings` rows in PostgreSQL;
+text search does not use embeddings.
 
 Supplied Markdown reprocessing takes precedence over stored text. Only success
-changes `source_type` to `markdown`, enabling later source-less reuse. A failed
-attempt preserves a previously ready manifest. Content artifacts can still
-have changed; see [reprocessing limits](architecture.md#reprocessing-and-recovery).
+changes `source_type` to `markdown`, enabling later source-less reuse. Each
+attempt writes under its own revision prefix, so a failed attempt leaves a
+previously ready reading's content, summary, and embedding intact; see
+[reprocessing](architecture.md#reprocessing-and-recovery).
 Markdown must fit the 128 KB queue-message limit; an oversized envelope rolls
 activation back and returns 503.
 
-Single-reading purge requests vector deletion first, releases only its own
-by-url pointer, removes the list row and objects, and deletes by-id last for
-retry recovery. Other readings can retain inbound connections that return 404
+Single-reading purge deletes the reading's row in one transaction (its URL
+ownership, revisions, relationships, embedding, attempts, and jobs cascade),
+then deletes its R2 prefix. `by_url_released` is false when another reading
+owns the URL; `vector_delete_requested` and `list_row_removed` are always true,
+because the embedding and list row are the reading's own rows. A retried DELETE
+is a 404. Other readings can retain inbound connections that return 404
 until [purge-connections](operations.md#purging-connections-to-a-deleted-reading)
-runs. A vector deletion acknowledgement is not proof of immediate absence.
+runs.
 
 The manifest includes source/content metadata, summary and entities, novelty,
 connections, similarity, provider usage, and active/last attempts. Offline tension
@@ -99,7 +102,7 @@ refresh adds directional `tensions` and `tensions_judged`. Use
 
 The detail response also carries `relationship_targets`, a map from each
 connection and tension target id to `{ url, title?, status }`, resolved at read
-time from the same tenant's list index. It is never stored on the manifest, and
+time from the same tenant's reading rows. It is never stored on the manifest, and
 an id absent from the map is removed or unavailable. MCP `get_reading` omits it.
 
 ## MCP connector
@@ -112,7 +115,7 @@ no OAuth and no network re-fetch of the public host.
 |---|---|
 | `list_readings`, `search_readings` | Metadata, with pagination/filtering |
 | `get_reading`, `get_reading_content` | Manifest or opt-in extracted Markdown by ID |
-| `get_diagnostics` | Pointer/content/attempt diagnostics |
+| `get_diagnostics` | URL-ownership/content/attempt diagnostics |
 | `submit_url`, `import_markdown`, `reprocess_reading` | Corpus writes subject to the caller's scopes |
 
 Successful imports include `public_url` and `public_markdown_link` when

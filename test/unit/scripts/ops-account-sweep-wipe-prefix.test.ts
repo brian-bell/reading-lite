@@ -231,7 +231,7 @@ describe("ops account sweep-wipe-prefix", () => {
     expect(out).toContain("PLAN");
   });
 
-  it("names the tenants at risk, prints a D1 query scoped to exactly them, and states the S2 rules", async () => {
+  it("names the tenants at risk, prints a wipe_progress query scoped to exactly them, and states the S2 rules", async () => {
     const other = TENANT_ID.replace("1111-1111", "4444-4444");
     const storage = fakeStorage({
       listings: [[object(PROGRESS_KEY), object(accountWipeProgressKey(other))]],
@@ -249,12 +249,12 @@ describe("ops account sweep-wipe-prefix", () => {
     // S2's deploy is the precondition; pre-deploy the rule is wait, not
     // sweep-around: a stale record is DUE FOR RESUMPTION, not inert
     // (src/account-wipe.ts wipeLeaseHeld). Post-deploy the in-flight signal
-    // lives in D1, not in R2, and the lease window is the worker's own.
+    // lives in PostgreSQL, not in R2, and the lease window is the worker's own.
     expect(out).toContain("BEFORE S2 DEPLOYS");
     expect(out).toContain("AFTER S2 DEPLOYS");
     expect(out).toContain("Do not sweep around it");
     expect(out).toContain("RESUME");
-    expect(out).toContain("completed_at_ms NULL and a recent updated_at_ms heartbeat");
+    expect(out).toContain("completed_at NULL and a recent updated_at heartbeat");
     expect(out).toContain(`${ACCOUNT_WIPE_IN_FLIGHT_MS / 60_000} minutes`);
   });
 

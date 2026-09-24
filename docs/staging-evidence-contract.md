@@ -57,8 +57,9 @@ non-atomic vector observations and deferred legacy cleanup. Preserve
 A release decision may reference those specific accepted limits; it must not
 turn them into observed absence or waive new read errors, unexplained residue,
 or missing evidence. No new inspection API or unconditional zero-residue promise
-is required. D1 migrations, runtime tenant isolation, the activation preflight,
-production wipe check and general repair/deletion tools remain in service.
+is required. PostgreSQL migrations, runtime tenant isolation, the activation
+preflight, production wipe check and general repair/deletion tools remain in
+service.
 
 ## Explicit token-revocation gate
 
@@ -126,11 +127,11 @@ Evidence-write failure makes the command fail; never use a partial result.
 
 The result contains commit, local `wrangler.toml` hash, active version ID, a hash
 of selected effective staging auth configuration (APP_ENV, WEB_BASE_URL,
-TENANT_DATA_PLANE and D1 binding), observation interval, token selectors, statuses,
-exit code and cleanup/restoration outcomes. It compares provenance before and
+TENANT_DATA_PLANE and the Hyperdrive binding), observation interval, token
+selectors, statuses, exit code and cleanup/restoration outcomes. It compares provenance before and
 after the drill. HTTP bodies, cookies, bearer values, CSRF tokens, email addresses,
 login links and arbitrary exception text are not retained. This does not attest
-secret values, dynamically changed D1 policy, or continuous deployment stability
+secret values, dynamically changed PostgreSQL policy, or continuous deployment stability
 between observations; coordinate changes during the run. Version tags and JSON
 are operator audit evidence, not tamper-proof authorization seals.
 

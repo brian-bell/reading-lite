@@ -64,8 +64,8 @@ while preserving incurred spend in the global daily aggregate.
 
 ## Rollout and issue #201
 
-Migration `0013_system_policy_daily_spend.sql` adds nullable
-`system_policy.daily_spend_microdollars`. NULL blocks hosted paid work.
+`system_policy.daily_spend_microdollars` (PostgreSQL migration
+`db/migrations/0003_control_plane.sql`) is nullable, and NULL blocks hosted paid work.
 Configure an explicit global cap and catalog version 1 before deployment;
 tenant caps use `tenant_limits.daily_spend_microdollars`. No production budget
 was selected or changed. Calibration belongs to #193.
@@ -94,8 +94,9 @@ inspect global policy and current UTC-day accounting. Add `--tenant usr_…` for
 one tenant's policy and charged total. Charged means **charged against budget**:
 known usage, unused holds, and unresolved maximum charges can all contribute.
 It is not a provider invoice. The command reports the guard's observation time
-and UTC reset time; D1 policy and accounting are separate observations, not an
-atomic snapshot. An unavailable guard yields exit 1 and no accounting total.
+and UTC reset time; PostgreSQL policy and guard accounting are separate
+observations, not an atomic snapshot. An unavailable guard yields exit 1 and no
+accounting total.
 
 The status command uses Wrangler's authenticated remote service binding to the
 existing Worker's named `OperatorStatus` entrypoint. This entrypoint exposes only
@@ -107,7 +108,11 @@ The dedicated `scripts/system-lib/wrangler-status.toml` pins the two Worker
 names and enables only the remote status service; local persistence is disabled.
 This follows Cloudflare's [service-binding pattern for remote Durable Objects](https://developers.cloudflare.com/workers/local-development/#using-remote-resources-with-durable-objects-and-workflows).
 
-Policy changes use the existing D1 operator adapter. For example, after inspecting
+`system status` and `system policy` read and write the policy rows over a
+direct PostgreSQL connection resolved through the operator database pairing
+(`scripts/pg-lib/operator-db.ts`: `STAGING_DATABASE_URL` or
+`NEON_REHEARSAL_DATABASE_URL` for staging, `PRODUCTION_DATABASE_URL` or
+`NEON_MAIN_DATABASE_URL` for production). For example, after inspecting
 staging and observing global policy version 3:
 
 ```sh
@@ -164,6 +169,7 @@ reaches none of these providers.
 | --- | --- | --- | --- |
 | `corpus refresh-connections`, `corpus refresh-tensions` | Synchronous OpenAI Responses or Anthropic Messages judgements | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--bucket` |
 | `corpus ingest`, `corpus recover --batch` | OpenAI Batch or Anthropic Message Batches summaries, plus synchronous OpenAI embeddings | One per provider batch; embeddings per attempt | As above; a resume pays with the tenant its sidecar recorded |
+| `migrate export` | Synchronous OpenAI embeddings for ready readings whose vector the legacy source did not return | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--source` |
 | `eval summarizer`, compare-summary-effort script | Synchronous OpenAI or Anthropic summaries | Per attempt | `--billing-tenant` required; authority from `--env` |
 | `corpus recover` without `--batch`, `reading submit`, `import …`, `staging smoke`, `extract agent` | None from the operator: the hosted consumer calls the provider | Hosted, per attempt | The bearer token's tenant; `--billing-tenant` does not apply |
 
@@ -172,7 +178,8 @@ reaches none of these providers.
 
 ### Synchronous operator clients
 
-`corpus refresh-connections`, `corpus refresh-tensions`, `eval summarizer`, and the compare-summary-effort script wrap their provider
+`corpus refresh-connections`, `corpus refresh-tensions`, `migrate export`,
+`eval summarizer`, and the compare-summary-effort script wrap their provider
 fetch in the same `createPaidFetch`, inside the client's retry loop, in their
 `--execute` branch only. A plan opens no spend session. The verbs travel over
 the `OperatorSpend` service binding (`scripts/system-lib/spend.ts`, one
@@ -222,8 +229,8 @@ like any synchronous client.
   charged. Settlement is idempotent, so a repeated resume settles at most once.
 - **Retention.** Operation records last the admission day plus one UTC day. A
   resume after that gets a settlement refusal; the run logs the maximum as
-  permanently held and completes. Sidecars from before this change resume
-  unmetered.
+  permanently held and completes. A sidecar that carries no spend operation
+  resumes unmetered.
 - **Payer.** A resume settles against the tenant its sidecar records and needs no
   `--billing-tenant`; naming a different one is refused. The spend authority
   follows `--bucket`; an unmapped bucket cannot execute a batch.

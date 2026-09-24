@@ -4,17 +4,17 @@
 // from the connections judgement. The universe is every (target, neighbour)
 // pair the tier-1 report already floored by similarity; similarity alone is
 // necessary but not sufficient, so pairs are pre-filtered on cheap overlap
-// evidence that both stored manifests already carry (shared people or orgs,
+// evidence that both stored readings already carry (shared people or orgs,
 // keyword overlap, an existing citation) before any paid pairwise call.
 //
-// A judged pair is written to BOTH manifests: each side stores its own
-// directional `kind` plus one neutral pair-level `reason`, and a
-// `tensions_judged` record so a "none" verdict is remembered. Writes are not
-// atomic across the two objects; a crash between them leaves a one-sided
-// pair, which `findOneSided` repairs without a paid call when the other side
-// has not changed since the judgement. Like refresh-connections, nothing here
-// touches status, vectors, title, tldr, tags, keywords, entities,
-// summary_markdown, connections, or `updated_at`.
+// A judged pair is written to BOTH readings in one transaction: each side
+// stores its own directional `kind` plus one neutral pair-level `reason`, and a
+// `tensions_judged` record so a "none" verdict is remembered. A one-sided pair
+// (left by a partner's deletion, or by a write from before both sides shared a
+// transaction) is found by `findOneSided`, which repairs it without a paid
+// call when the other side has not changed since the judgement. Like
+// refresh-connections, nothing here touches status, vectors, title, tldr, tags,
+// keywords, entities, summary_markdown, connections, or `updated_at`.
 
 import {
   ManifestSchema,

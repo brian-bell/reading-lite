@@ -52,6 +52,8 @@ item on September 10, 2026.
 
 ## Phase 3 — foundation and reading detail (#338)
 
+Closed as `reading-lite-gh338`; unticked boxes below were not updated at close.
+
 - [x] Add read-time `relationship_targets` to `GET /api/readings/:id` with schema,
   OpenAPI, SPA type, and test updates (#367).
 - [x] Add the backend's read-only frontend `WorkerEntrypoint` (whoami, reading
@@ -73,6 +75,8 @@ item on September 10, 2026.
 
 ## Phase 4 — daily reading workflow (#339)
 
+Closed as `reading-lite-gh339`; unticked boxes below were not updated at close.
+
 - [ ] Stand up `next.readinglite.ai`: add it to `PUBLIC_WEB_ORIGINS`, add the
   backend `/api/*` and `/health` routes and the frontend `/*` route, and verify
   route precedence. The first deploy needs separate authorization and passing
@@ -90,6 +94,9 @@ item on September 10, 2026.
   incomplete/old manifests and long source content.
 
 ## Later parity and release gates (#340–#342)
+
+Phase 5 (`reading-lite-gh340`, account parity and frontend cutover) is closed;
+Phases 6 and 7 (`reading-lite-gh341`, `reading-lite-gh342`) are open.
 
 - [ ] Complete account/session/token/notification/digest/deletion parity.
 - [ ] Agree provider contracts, key storage/validation/rotation/removal semantics,

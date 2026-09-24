@@ -111,7 +111,7 @@ paths:
         the prefix is confirmed empty, cron writes an audit record, purges
         tenant Durable Object state, rechecks the prefix, and deletes child
         rows before the user. No relationship cascades. Global incurred
-        spend and unconfirmed vector-ledger rows survive teardown.
+        spend survives teardown.
         The founder and staging fixtures have no deletion exemption.
         Retained global corpus data is outside the tenant wipe. See
         operations.md for confirmation rules, residue repair, and known limits.
@@ -709,7 +709,8 @@ paths:
       operationId: submitReading
       summary: Submit a URL for processing
       description: |
-        Claims by-url ownership, writes a pending manifest, and enqueues a job.
+        Claims the tenant's URL-ownership row, commits the pending reading with
+        its attempt and job, and enqueues the job.
         Ready/pending owners return 200 with the existing manifest. Failed
         owners reprocess the same id (202). URLs with embedded userinfo or a
         blocked literal host (loopback/private) are rejected 400 before
@@ -904,8 +905,8 @@ paths:
         "200":
           description: |
             Manifest (stale pending/attempts may be annotated as failed at read
-            time) plus relationship_targets resolved from the tenant's list
-            index. Missing ids are removed or unavailable targets.
+            time) plus relationship_targets resolved from the tenant's reading
+            rows. Missing ids are removed or unavailable targets.
           content:
             application/json:
               schema:
@@ -1002,8 +1003,8 @@ paths:
         instead of re-fetching the URL (and takes precedence over stored
         Markdown). On success the reading becomes `source_type: "markdown"`;
         on failure prior source type is retained, and a previously ready
-        reading rolls back to its preserved manifest. Raw/extracted artifacts
-        written before failure are not restored with that manifest. Markdown must
+        reading keeps its published content, summary, and embedding (each
+        attempt writes under its own revision prefix). Markdown must
         fit the Cloudflare 128 KB queue-message limit or the attempt rolls back
         with 503. A URL-backed reprocess of a reading whose stored URL is
         categorically unfetchable (userinfo, blocked literal host) returns 400
@@ -1198,7 +1199,7 @@ components:
       description: |
         Invalid body (zod), or a URL the worker categorically refuses to
         fetch: embedded userinfo, or a blocked literal host (loopback /
-        private / link-local). Refused before any by-url slot is claimed or
+        private / link-local). Refused before any URL ownership is claimed or
         attempt started.
       content:
         application/json:
@@ -1845,6 +1846,8 @@ components:
           format: uri
         title:
           type: string
+        tldr:
+          type: string
         tags:
           type: array
           items:
@@ -1883,9 +1886,10 @@ components:
           description: Always true; the embedding row is deleted with the reading. Kept for the report contract.
         list_row_removed:
           type: boolean
+          description: Always true; the list row is the reading's own row. Kept for the report contract.
         by_url_released:
           type: boolean
-          description: False when another surviving reading owns the by-url slot
+          description: False when another surviving reading owns the URL
         objects_deleted:
           type: integer
           minimum: 0
@@ -2252,7 +2256,7 @@ components:
       description: |
         GET /api/readings/{id} body: the manifest plus response-only
         relationship_targets, computed at read time from the same tenant's
-        list index. Never stored on the manifest.
+        reading rows. Never stored on the manifest.
       allOf:
         - $ref: "#/components/schemas/ManifestFields"
         - type: object

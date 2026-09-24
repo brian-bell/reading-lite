@@ -23,8 +23,8 @@ part of this scope or prerequisites for the free launch.
 Preserve and extend the current Worker. Replace the current React SPA with a new
 React frontend built on TanStack Start and deployed as a separate Cloudflare
 Worker; keep the current SPA available until the replacement and rollback checks
-pass. Accounts, tenant
-R2 roots and Vectorize namespaces, scoped tokens, quotas, processing leases,
+pass. Accounts, tenant-scoped PostgreSQL rows and R2 content roots, scoped
+tokens, quotas, processing leases,
 spend admission, digests, and account deletion already exist. Verify them as the
 new work lands. The founder cutover is complete and must not be rerun.
 
@@ -220,7 +220,7 @@ results.
 
 ## Rules for implementation
 
-- Preserve tenant isolation, eager URL ownership, manifest/list/vector ordering,
+- Preserve tenant isolation, eager URL ownership, publication transaction order,
   deletion fences, and existing recovery contracts. Follow the rules
   in [AGENTS.md](../../AGENTS.md) and module headers.
 - Synchronize API/schema, SPA types, OpenAPI, and behavioral tests for new
