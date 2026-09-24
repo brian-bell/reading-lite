@@ -296,10 +296,6 @@ See [deploying](docs/operations.md#deploying) for secrets, guards, and exception
 `READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL` (a direct
 connection string to the Neon rehearsal branch; founder bootstrap resolves it
 through the operator-db pairing); the installer writes `.stg.vars`.
-Staging founder state persists in PostgreSQL. Do not bootstrap staging before
-the #349 import: the importer refuses a database holding application rows.
-Until then `ops founder bootstrap --env staging --execute` refuses and the
-installer skips `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` (`STAGING_FOUNDER_BOOTSTRAP_OPEN`
-in `scripts/lib/founder-bootstrap.ts`, which #349 flips). After it, bootstrap again
-after credential rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for
-idempotent bootstrap on each install.
+Staging founder state persists in PostgreSQL. Bootstrap again after credential
+rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for idempotent bootstrap on
+each install.

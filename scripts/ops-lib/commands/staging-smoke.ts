@@ -190,7 +190,10 @@ async function runStagingSmoke(argv: string[], deps: StagingSmokeDeps): Promise<
   };
 
   const submittedId = acceptedId(
-    await api.submit(`https://www.rfc-editor.org/rfc/rfc1149.html?reading-lite-${marker}`, {
+    // rfc-editor.org and iana.org have answered Workers egress with empty
+    // bodies since 2026-09-10 (a laptop still gets HTML), so the submit uses a
+    // host staging has fetched cleanly.
+    await api.submit(`https://martinfowler.com/bliki/StranglerFigApplication.html?reading-lite-${marker}`, {
       email: false,
     }),
     "submit",
@@ -322,11 +325,6 @@ Previews submit, markdown import, reprocess, deliberate failure, diagnostics,
 extracted-content, and list-visibility checks against staging. It never prints
 the bearer token and writes nothing unless --execute is present. --execute performs the staging
 writes and triggers paid summarization on staging.
-
-Against PostgreSQL-backed staging, run --execute only after the #349 import:
-the #348 importer refuses a database that already holds application rows, and
-the bearer token is the one founder bootstrap imports, which must not run on
-staging before #349 either.
 
 Options:
   --base <url>       Worker origin. Default: the staging workers.dev origin.

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { defaultWranglerTomlPath, type DeployEnvName } from "../control-plane-env";
 
 export const POSTGRES_CUTOVER_ENABLED: Readonly<Record<DeployEnvName, boolean>> = {
-  staging: false,
+  staging: true,
   production: false,
 };
 

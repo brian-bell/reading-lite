@@ -12,7 +12,6 @@ import {
   parseFounderBootstrapArgs,
   resolveEnvVars,
   runFounderBootstrap,
-  STAGING_BOOTSTRAP_PROHIBITION,
   type BootstrapEnvName,
   type FounderBootstrapCliArgs,
   type FounderBootstrapDeps,
@@ -80,10 +79,7 @@ Options:
 Credentials: AUTH_ROOT_SECRET and READER_API_TOKEN from the environment
 or .dev.vars / .stg.vars / .prd.vars. The control plane is PostgreSQL
 (ADR 0005); apply its migrations first with \`npm run ops -- db migrate\`
-(staging: \`npm run ops -- staging setup\` migrates it).
-
-${STAGING_BOOTSTRAP_PROHIBITION} Until #349 lifts the gate, a staging
---execute exits 2 before opening the database; a staging plan still runs.`,
+(staging: \`npm run ops -- staging setup\` migrates it).`,
   defaultDeps: (io: CommandIo): FounderBootstrapCommandDeps => ({
     io,
     resolveEnvVars,

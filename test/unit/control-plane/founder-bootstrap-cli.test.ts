@@ -84,38 +84,9 @@ describe("founder-bootstrap CLI", () => {
           opened.push(url);
           throw new Error("stop after open");
         },
-        stagingBootstrapOpen: true,
       }),
     ).rejects.toThrow("stop after open");
     expect(opened).toEqual(["postgres://rehearsal"]);
-  });
-
-  // The #349 gate: staging's database is the rehearsal target the #348
-  // importer needs free of application rows, so a staging write is refused
-  // until #349 opens it. A plan only reads, and stays allowed.
-  it.each<[string, string[], boolean]>([
-    ["refuses a staging --execute before opening anything", ["--execute"], false],
-    ["still allows a staging plan", [], true],
-  ])("while the #349 gate is closed, %s", async (_name, mode, opens) => {
-    const logs: string[] = [];
-    const opened: string[] = [];
-    const run = runFounderBootstrap(parseFounderBootstrapArgs([...mode, "--env", "staging", "--email", "a@b.com"]), {
-      envVars: { AUTH_ROOT_SECRET: ROOT_HEX, READER_API_TOKEN: "test-token", STAGING_DATABASE_URL: "postgres://staging" },
-      nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
-      write: (line) => logs.push(line),
-      openDb: async (url) => {
-        opened.push(url);
-        throw new Error("stop after open");
-      },
-    });
-    if (opens) {
-      await expect(run).rejects.toThrow("stop after open");
-      expect(opened).toEqual(["postgres://staging"]);
-    } else {
-      expect((await run).exitCode).toBe(2);
-      expect(opened).toEqual([]);
-      expect(logs.join("")).toMatch(/before the #349 import/);
-    }
   });
 
   it("prints a dry-run plan and does not write", async () => {
@@ -137,7 +108,7 @@ describe("founder-bootstrap CLI", () => {
     expect(logs.join("")).toMatch(/f\*\*\*@example\.com/);
     expect(logs.join("")).not.toMatch(/founder@example.com/);
     expect(logs.join("")).not.toMatch(/test-token/);
-    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 0 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users WHERE email_canonical = 'founder@example.com'")) as { n: number }).toEqual({ n: 0 });
   });
 
   it("writes the founder and imported token on --execute", async () => {
@@ -157,7 +128,7 @@ describe("founder-bootstrap CLI", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users")) as { n: number }).toEqual({ n: 1 });
+    expect(withMs(await raw.first("SELECT COUNT(*) AS n FROM users WHERE email_canonical = 'founder@example.com'")) as { n: number }).toEqual({ n: 1 });
     expect(withMs(await raw.first("SELECT format FROM api_tokens")) as { format: string }).toEqual({
       format: "legacy",
     });

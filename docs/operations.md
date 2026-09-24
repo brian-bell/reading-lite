@@ -1098,16 +1098,7 @@ importer's source, and #351 retires it. The old staging Vectorize index
 (`reading-lite-staging`) is in neither list, since the Worker binds none; it
 too waits for #351.
 
-Do not run `ops founder bootstrap --env staging`, set
-`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1`, or run `ops staging smoke --execute`
-against PostgreSQL-backed staging before the #349 import. The importer refuses
-a target database holding any application row, and a bootstrapped founder
-would conflict with the imported one. Founder bootstrap enforces this:
-`STAGING_FOUNDER_BOOTSTRAP_OPEN` in `scripts/lib/founder-bootstrap.ts` stays
-`false` until #349 flips it, so a staging `--execute` exits 2 before opening
-the database (a plan still runs), and the cloud-agent installer skips
-`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` with a log line. The staging smoke rule is
-not enforced in code. Cloud agents supply the database as the `STAGING_DATABASE_URL`
+Cloud agents supply the database as the `STAGING_DATABASE_URL`
 Cursor secret, which is never written to `.stg.vars`. `ops founder bootstrap`
 resolves staging's and production's databases through the same pairing as the
 other operator commands, so `--database-url-env` naming another environment's
@@ -1198,9 +1189,9 @@ The last line stops the drill when neither variable is set. Without it, every
 libpq's defaults name instead.
 
 Staging's old D1 is retained only as the #348 importer's source; nothing in this
-runbook reads or writes it. Until #349 points staging's Worker at this
-database, a drill exercises the D1-era Worker and proves nothing about the
-candidate, so run it after that cutover.
+runbook reads or writes it. Staging's Worker has run on this database since
+the #349 rehearsal deploy (2026-09-24); a drill from before then exercised the
+D1-era Worker and proves nothing about the candidate.
 
 **Preflight, before any deploy that could start wipes.** Any account left in
 `status='deleting'` by earlier testing becomes a real wipe on the next `*/15`
@@ -1288,9 +1279,8 @@ Re-read the user and progress rows before resuming: the user must be active,
 That still is **not** a full rescue: `beginAccountDeletion` stamped
 `revoked_at` on every session and API token and nothing reverses that, so the
 account is `active` but cannot authenticate. Re-run
-`ops founder bootstrap --env staging --execute` for the founder (it refuses
-until #349 opens `STAGING_FOUNDER_BOOTSTRAP_OPEN`, which this drill already
-waits for), or issue a fresh magic link, before assuming staging works again.
+`ops founder bootstrap --env staging --execute` for the founder, or issue a
+fresh magic link, before assuming staging works again.
 
 Staging already has tenant mode enabled and its founder cutover is complete.
 Do not rerun that migration to rehearse deletion. For a rebuilt environment,
@@ -2231,7 +2221,9 @@ tests and rehearsal, not a recurring founder-cutover release check.
 
 The storage migration ([ADR 0005](decisions/0005-postgresql-storage.md)) moves
 a tenant's library and the whole control plane from the legacy stores (R2
-manifests and pointers, the D1 control plane, Vectorize) into PostgreSQL. It
+manifests and pointers, the D1 control plane, Vectorize) into PostgreSQL. The
+production cutover's order of operations, go/no-go checks and rollback
+boundary are in the [cutover runbook](postgres-cutover.md). The migration
 takes two commands and a snapshot directory between them:
 
 ```sh

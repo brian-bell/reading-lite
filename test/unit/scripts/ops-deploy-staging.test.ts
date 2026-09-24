@@ -194,7 +194,6 @@ describe("ops staging setup / teardown", () => {
     expect(order.slice(0, firstWrangler)).toEqual(["connect:postgres://staging-secret@host/db", "db:migrated", "db:end"]);
     expect(firstWrangler).toBe(3);
     expect(out.join("\n")).toContain("[EXECUTE] applied 0001_init");
-    expect(err.join("\n")).toMatch(/do not run founder bootstrap against staging before the #349 import/i);
     expect(`${out.join("\n")}\n${err.join("\n")}`).not.toContain("staging-secret");
   });
 

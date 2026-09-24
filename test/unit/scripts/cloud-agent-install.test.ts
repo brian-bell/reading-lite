@@ -82,38 +82,13 @@ describe("cloud-agent-install", () => {
     expect(founderBootstrap).not.toHaveBeenCalled();
   });
 
-  // The #349 gate: closed by default, so the flag cannot write founder rows
-  // into the rehearsal database the #348 importer needs empty.
-  it("CLOUD_AGENT_FOUNDER_BOOTSTRAP=1 skips staging bootstrap while the #349 gate is closed", async () => {
-    const founderBootstrap = vi.fn();
-    const logs: string[] = [];
-
-    const code = await runCloudAgentInstall({
-      envVars: {
-        AUTH_ROOT_SECRET: "aa",
-        READER_API_TOKEN: "tok",
-        CLOUD_AGENT_FOUNDER_BOOTSTRAP: "1",
-        STAGING_DATABASE_URL: "postgres://staging",
-      },
-      writeFile: () => {},
-      chmod: () => {},
-      log: (line) => logs.push(line),
-      run: async () => 0,
-      founderBootstrap,
-    });
-
-    expect(code).toBe(0);
-    expect(founderBootstrap).not.toHaveBeenCalled();
-    expect(logs.join("\n")).toMatch(/skipping staging founder-bootstrap: .*#349 import/);
-  });
-
   it.each<[string, Record<string, string>, number]>([
     ["runs it on the paired staging database", { STAGING_DATABASE_URL: "postgres://staging" }, 1],
     ["runs it on the laptop alias", { NEON_REHEARSAL_DATABASE_URL: "postgres://rehearsal" }, 1],
     // Bare DATABASE_URL names no deployed target; bootstrap is optional, so
     // the install skips it rather than failing.
     ["skips it without failing when only DATABASE_URL is set", {}, 0],
-  ])("with the gate open, CLOUD_AGENT_FOUNDER_BOOTSTRAP=1 %s", async (_name, dbEnv, calls) => {
+  ])("CLOUD_AGENT_FOUNDER_BOOTSTRAP=1 %s", async (_name, dbEnv, calls) => {
     const founderBootstrap = vi.fn().mockResolvedValue({ exitCode: 0 });
     const logs: string[] = [];
 
@@ -130,7 +105,6 @@ describe("cloud-agent-install", () => {
       log: (line) => logs.push(line),
       run: async () => 0,
       founderBootstrap,
-      stagingBootstrapOpen: true,
     });
 
     expect(code).toBe(0);
@@ -141,12 +115,10 @@ describe("cloud-agent-install", () => {
     }
     const [args, deps] = founderBootstrap.mock.calls[0] as [
       { env: string; databaseUrlEnv?: string },
-      { envVars: Record<string, string | undefined>; stagingBootstrapOpen?: boolean },
+      { envVars: Record<string, string | undefined> },
     ];
-    // The bootstrap resolves the database through the pairing itself, and
-    // enforces the #349 gate itself, so the installer hands the gate over.
+    // The bootstrap resolves the database through the pairing itself.
     expect(args).toEqual({ execute: true, env: "staging", confirmProduction: false });
-    expect(deps.stagingBootstrapOpen).toBe(true);
     expect(deps.envVars.FOUNDER_EMAIL).toBe(resolveFounderEmail({}));
   });
 
@@ -166,7 +138,6 @@ describe("cloud-agent-install", () => {
       log: () => {},
       run: async () => 0,
       founderBootstrap,
-      stagingBootstrapOpen: true,
     });
 
     const [, deps] = founderBootstrap.mock.calls[0] as [
