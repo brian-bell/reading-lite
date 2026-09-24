@@ -2221,7 +2221,9 @@ tests and rehearsal, not a recurring founder-cutover release check.
 
 The storage migration ([ADR 0005](decisions/0005-postgresql-storage.md)) moves
 a tenant's library and the whole control plane from the legacy stores (R2
-manifests and pointers, the D1 control plane, Vectorize) into PostgreSQL. It
+manifests and pointers, the D1 control plane, Vectorize) into PostgreSQL. The
+production cutover's order of operations, go/no-go checks and rollback
+boundary are in the [cutover runbook](postgres-cutover.md). The migration
 takes two commands and a snapshot directory between them:
 
 ```sh
