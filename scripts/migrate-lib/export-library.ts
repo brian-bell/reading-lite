@@ -490,13 +490,6 @@ export async function collectExport(tenantId: string, deps: ExportDeps): Promise
   for (const id of [...live].sort()) {
     if (parsedById.get(id)?.manifest.status !== "ready") note({ code: "ledger_live_without_ready_reading", id });
   }
-  const others = (tables.users ?? []).filter((u) => u.id !== tenantId).map((u) => String(u.id)).sort();
-  if (others.length > 0) {
-    note({
-      code: "other_accounts",
-      detail: `${others.length} other account(s) import with the control plane; only ${tenantId}'s library is in this snapshot: ${others.join(", ")}`,
-    });
-  }
   const account = (tables.users ?? []).find((u) => u.id === tenantId);
   // A missing account is blocking (blockingIssues): its readings would import
   // outside every deletion path.

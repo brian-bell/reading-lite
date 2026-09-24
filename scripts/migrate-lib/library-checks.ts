@@ -28,6 +28,9 @@ export const BLOCKING_CODES = {
     accept: "the reading is imported with its attempt summary but no job row, so nothing will run it",
   },
   unusable_vector: { accept: "the reading is imported without an embedding and is not searchable" },
+  other_accounts: {
+    accept: "the account imports with its control-plane rows but no library: its legacy readings are not migrated",
+  },
   duplicate_reading_id: {},
   url_hash_mismatch: {},
   tenant_account_missing: {},
@@ -202,6 +205,17 @@ export function blockingIssues(
   // commit with no account behind it, outside every deletion path.
   if (!(controlPlane.tables.users ?? []).some((user) => user.id === tenantId)) {
     issues.push({ code: "tenant_account_missing", id: tenantId, detail: "no users row for the exported tenant" });
+  }
+  // The control plane moves whole but the library is one tenant's, so any other
+  // account would sign in to an empty library after cutover. Each one is
+  // named, and importing it that way is an explicit decision.
+  for (const user of controlPlane.tables.users ?? []) {
+    if (user.id === tenantId) continue;
+    issues.push({
+      code: "other_accounts",
+      id: String(user.id),
+      detail: `account status ${String(user.status)}; only ${tenantId}'s library is in this snapshot`,
+    });
   }
   const tombstoned = new Set(library.tombstones);
   const seen = new Map<string, string>();
