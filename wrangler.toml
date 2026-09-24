@@ -327,12 +327,12 @@ crons = ["*/15 * * * *", "7 3 * * *"]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite-staging"
 
-# Placeholder until #349 creates the staging config against the Neon rehearsal
-# branch. Create every Hyperdrive config with query caching DISABLED: cached
-# SELECTs would show stale lists after a write (ADR 0005).
+# `reading-lite-staging`, created by #349 against the Neon rehearsal branch.
+# Create every Hyperdrive config with query caching DISABLED: cached SELECTs
+# would show stale lists after a write (ADR 0005).
 [[env.staging.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "00000000000000000000000000000002"
+id = "42417083121547548bf2338106528349"
 
 [[env.staging.durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"
