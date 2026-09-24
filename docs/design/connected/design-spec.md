@@ -206,7 +206,7 @@ panel.
 
 Approved September 10, 2026. `GET /api/readings/:id` adds a response-only map of
 the reading's connection and tension targets, built from the same tenant's
-`index/list.json`. Proposed shape, final name in the Phase 3 PR:
+reading rows. Proposed shape, final name in the Phase 3 PR:
 
 ```json
 "relationship_targets": {
@@ -216,7 +216,7 @@ the reading's connection and tension targets, built from the same tenant's
 
 - An id missing from the map is removed or unavailable. Render the removed card.
 - Stored manifests and their schema do not change. The map is computed on read,
-  with one list-index read, no claims or repairs, and tenant-scoped stores.
+  with one tenant-scoped query for the target rows and no claims or repairs.
 - Keep `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, and tests in sync.
 - MCP reading output is unchanged. The `get_reading` tool in `src/mcp/tools.ts`
   spreads the whole `GET /api/readings/:id` response into its result, so it must

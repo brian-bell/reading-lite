@@ -1,8 +1,9 @@
 # Full production corpus refresh
 
 Run the neighbour, connection, and tension refreshes in one maintenance window.
-This procedure produced the [September 4, 2026 results](2026-09-04-results.md)
-for [#174](https://github.com/brian-bell/reading-lite/issues/174).
+The R2-manifest version of this procedure produced the
+[September 4, 2026 results](2026-09-04-results.md) for
+[#174](https://github.com/brian-bell/reading-lite/issues/174).
 The [operations guide](../operations.md#corpus-tools) documents the commands,
 credential selection, retry policy, and incremental scope in detail.
 
@@ -21,8 +22,9 @@ Start in the repository root with installed dependencies and a reviewed checkout
 Record the revision. Set `TENANT` from an authenticated production
 `GET /api/whoami`, confirming `tenant_data_plane: true`; never use `global` for
 the live founder corpus. Obtain production credentials from the operator's
-existing secure file, outside the repository. Staging-scoped `.corpus.vars` R2
-keys take precedence over an otherwise usable API token and can cause a 403.
+existing secure file, outside the repository. The passes read no R2 content;
+`.corpus.vars` and `.prd.vars` supply provider settings only, and the process
+environment overrides both.
 
 Set these three variables before running the zsh examples:
 
@@ -50,7 +52,7 @@ prd() (
 wr() { node node_modules/wrangler/wrangler-dist/cli.js "$@"; }
 ```
 
-`prd` supplies the database connection string, R2, and provider credentials to
+`prd` supplies the database connection string and provider credentials to
 corpus commands. Each refresh pass resolves its database from `--bucket`
 (`scripts/pg-lib/operator-db.ts`), so a credentials file that exports
 `PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` is what points them at
@@ -93,7 +95,8 @@ execution because citations are an admission arm.
 ## Establish the maintenance hold
 
 Hold submit, import, reprocess, deletion, recovery, ingest, batch writers, other
-refreshes, and any account wipe affecting this tenant. Check background jobs and
+refreshes (including the hosted nightly refresh: its 03:07 UTC cron and the
+`reading-lite-refresh` queue), and any account wipe affecting this tenant. Check background jobs and
 operator schedules. The account must be active with no wipe in progress.
 Queue pause alone does not stop HTTP intake or administrative writers;
 `--sole-writer` is an operator assertion, not a lock.
@@ -256,10 +259,10 @@ capture after
 
 ## Recover, verify, and restore delivery
 
-On provider failure, CAS loss, list-flush failure, or backoff exhaustion, retain
-the logs and report. Re-plan against the **same report** under the same hold:
-completed connection judgements are skipped and stale list rows can be healed;
-one-sided tension writes can be repaired without another paid call. Review the
+On provider failure, a refused write (the reading changed since it was
+planned), or backoff exhaustion, retain the logs and report. Re-plan against the
+**same report** under the same hold: completed connection judgements are
+skipped, and one-sided tension writes can be repaired without another paid call. Review the
 remaining plan before executing it. A fresh report can select paid work again;
 do not silently replace the resume report. If ingest or reprocessing has made
 it stale, stop and regenerate/re-plan explicitly.
@@ -286,7 +289,7 @@ into another paid run.
 
 Compare the captured data by reading ID:
 
-- Corpus/list membership and unrelated fields remain unchanged, including
+- Corpus membership and unrelated fields remain unchanged, including
   summaries, source metadata, status, and ingest/attempt timestamps.
 - Refreshed connections and neighbourhood IDs stay within the original report's
   allowed neighbours. The verdict is a column of the judged reading, so it

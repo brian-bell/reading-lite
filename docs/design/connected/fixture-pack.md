@@ -28,8 +28,8 @@ The pack contains authored fiction from the
 [Connected prototype](design-spec.md#data-mapping): `.example` hosts, a
 reserved-style YouTube video id, and invented bylines. No production corpus
 content, no credentials, and no paid processing run produces or consumes it.
-Local `wrangler dev` has no Queue or Vectorize, so seeding is the only way to
-see these states locally.
+Local `wrangler dev` has no Queue, so seeding is the only way to see these
+states locally.
 
 ## Reading states
 

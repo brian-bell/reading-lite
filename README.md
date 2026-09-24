@@ -1,9 +1,10 @@
 # reading-lite
 
 Save a URL and get a summary, connections to earlier readings, and a verdict
-on whether it adds something new to your library. Reading Lite stores captured
-content and summaries in Cloudflare R2, with a Worker for processing and a
-TanStack Start frontend for reading, searching, and managing your account.
+on whether it adds something new to your library. Reading Lite keeps captured
+content in Cloudflare R2 and readings, summaries, embeddings, and accounts in
+PostgreSQL with pgvector, with a Worker for processing and a TanStack Start
+frontend for reading, searching, and managing your account.
 
 The canonical host is [readinglite.ai](https://readinglite.ai).
 [readinglite.app](https://readinglite.app) also serves the app. Browser
@@ -34,7 +35,9 @@ automatic fallback. See [configuration](docs/configuration.md).
 | CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
 
 Use Node 22.12 or newer for local development
-([operator Node](docs/operations.md#operator-node)). In the repository root:
+([operator Node](docs/operations.md#operator-node)) and Docker for the local
+PostgreSQL container ([local Postgres](docs/operations.md#local-postgres)). In
+the repository root:
 
 ```sh
 npm ci
@@ -42,8 +45,10 @@ cp .dev.vars.example .dev.vars   # first setup only; preserve an existing file
 npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174
 ```
 
-This applies local D1 migrations, imports `dev-local-token` as the founder
-bearer, and starts the Worker at `http://127.0.0.1:8787`. The example provider
+This starts PostgreSQL 18 with pgvector on `127.0.0.1:54329`
+(`docker compose up -d --wait postgres`), applies its migrations, imports
+`dev-local-token` as the founder bearer, and starts the Worker at
+`http://127.0.0.1:8787`. The example provider
 keys are placeholders. The `--var` makes sign-in links point at the frontend;
 without it they point at the legacy SPA's `:5173`. In a second terminal:
 
@@ -60,11 +65,11 @@ Request a magic link, then retrieve it from
 [reading-lite-local](.agents/skills/reading-lite-local/SKILL.md) skill runs
 both for you.
 
-Local R2 starts empty. Local development has no Queue or Vectorize binding, so
-submit, import, and reprocess return 503, and vector similarity returns no
-matches. List, detail, content, lookup, and `q` text search work with
-[seeded local data](docs/operations.md#seeding-local-data). Integration tests cover
-the processing pipeline with queue, Vectorize, and provider fakes.
+Local R2 and PostgreSQL start empty. Local development has no Queue binding, so
+submit, import, and reprocess return 503. List, detail, content, lookup, `q`
+text search, and similarity work with
+[seeded local data](docs/operations.md#seeding-local-data) (`npm run seed:local`).
+Integration tests cover the processing pipeline with queue and provider fakes.
 
 The legacy `web/` SPA (`cd web && npm ci && npm run dev`, on `:5173`) stays
 deployed to Pages as the rollback target until the rollout's observation period
@@ -79,7 +84,9 @@ npm run typecheck
 ```
 
 `test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
-Workers-pool log noise filtered. CI uses `npm test`. There is no lint script.
+Workers-pool log noise filtered. CI uses `npm test`. The suite needs the local
+PostgreSQL container running (`docker compose up -d --wait postgres`); it
+creates its own test databases there. Run it on Node 22. There is no lint script.
 The frontends have their own checks: [app/README.md](app/README.md) for `app/`,
 and `npm test` plus `npm run build` in `web/`.
 
@@ -135,5 +142,7 @@ extraction adds description and transcript when available. See
 - [System map](docs/system-map/README.md), interactive architecture overview.
 - [Product brief](docs/product/reading-lite-portfolio-brief.md) and
   [product scope](docs/product/reading-lite-scope.md), what to build and why.
-- [Architecture decisions](docs/decisions/0001-tenant-control-plane.md), design history.
-- [Founder cutover](docs/founder-cutover.md), completed migration and retained evidence.
+- [Architecture decisions](docs/decisions/), design history;
+  [ADR 0005](docs/decisions/0005-postgresql-storage.md) covers PostgreSQL storage.
+- [PostgreSQL cutover](docs/postgres-cutover.md) and
+  [founder cutover](docs/founder-cutover.md), completed migrations and retained evidence.

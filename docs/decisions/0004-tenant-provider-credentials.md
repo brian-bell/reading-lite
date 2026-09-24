@@ -1,6 +1,8 @@
 # ADR 0004: Tenant provider credentials (BYOK) and archive export
 
-- **Status:** Accepted
+- **Status:** Accepted; not yet implemented (`reading-lite-gh341` is open).
+  Written before [ADR 0005](0005-postgresql-storage.md): its "D1 storage" and
+  manifest references mean the PostgreSQL control plane and reading rows.
 - **Date:** 2026-09-10
 - **Decision owners:** Brian Bell
 - **Task:** [#341](https://github.com/brian-bell/reading-lite/issues/341), under

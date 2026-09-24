@@ -38,10 +38,12 @@ history matters before asking them to import an archive.
 
 ## Starting point
 
-The service runs at `readinglite.ai` on Cloudflare Workers, D1, Durable Objects,
-R2, Vectorize, and Queues, with a React SPA served through Pages. A new TanStack
-Start frontend on its own Worker will replace that SPA
-([issue #335](https://github.com/brian-bell/reading-lite/issues/335)). It already has:
+The service runs at `readinglite.ai` on Cloudflare Workers, Durable Objects,
+R2, and Queues, with reading state, embeddings, and the control plane in
+PostgreSQL with pgvector ([ADR 0005](../decisions/0005-postgresql-storage.md)).
+A TanStack Start frontend on its own Worker serves the public hosts
+([issue #335](https://github.com/brian-bell/reading-lite/issues/335)); the React
+SPA stays deployed to Pages as the rollback target. It already has:
 
 - URL submission, Markdown import, background processing, summaries, connections,
   novelty verdicts, and reprocessing.
@@ -55,8 +57,9 @@ Start frontend on its own Worker will replace that SPA
 - REST and bearer-authenticated MCP access for existing reading workflows.
 
 AI credentials and provider/model choices are currently deployment-wide. OpenAI
-provides embeddings even when Anthropic supplies summaries. The redesign,
-tenant provider settings, and self-service full-archive export are planned work.
+provides embeddings even when Anthropic supplies summaries. Provider setup in
+the new frontend, tenant provider settings, and self-service full-archive export
+are planned work.
 Architecture and API details belong in the [architecture guide](../architecture.md)
 and [API guide](../api.md).
 

@@ -34,7 +34,7 @@ container, so `READING_LITE_DATABASE_URL` marks the database as self-managed and
 `HYPERDRIVE` binding at `postgres:5432` instead of the host port in
 `wrangler.toml`. The service is also published on host port **54329** for the
 native flow and the test suite, which start it alone with
-`docker compose up -d postgres`. `docker-compose.yml` maps to no CI job, so
+`docker compose up -d --wait postgres`. `docker-compose.yml` maps to no CI job, so
 check this wiring by hand after changing it.
 
 ## Why one shared network namespace

@@ -2,10 +2,11 @@
 
 Personal reading service on Cloudflare Workers. The TanStack Start frontend in
 `app/` serves the public hosts; the legacy React SPA in `web/` stays deployed to
-Pages as the rollback target. Intake claims a URL, writes a pending R2
-manifest, and enqueues `READING_JOBS`. The consumer extracts, embeds, finds
-related readings, summarizes, and publishes the terminal manifest, list row,
-and vector.
+Pages as the rollback target. Intake claims a URL by committing a pending
+reading, its attempt, and a job to PostgreSQL, then enqueues `READING_JOBS`.
+The consumer extracts content to R2, embeds, finds related readings with
+pgvector, summarizes, and publishes the reading, its relationships, and its
+embedding in one transaction.
 
 Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
@@ -104,8 +105,9 @@ switching Node versions in a tree whose `node_modules` was installed under
 another one, run `npm rebuild better-sqlite3` — otherwise the Node-pool suites
 that open a SQLite fixture fail on the native module's ABI, not on their
 assertions. Those fixtures are the last of D1: the runtime, its tests and
-`npm run dev` no longer bind or migrate a D1 database, and `migrations/`
-describes only the live control plane that reading-lite-gh348 imports from.
+`npm run dev` bind and migrate no D1 database, and `migrations/` describes
+only the retired D1 control plane that `ops migrate export` (reading-lite-gh348)
+reads.
 
 ## Where to work
 
@@ -257,7 +259,8 @@ and it is R2-only: the commands that read or delete rows refuse it, because no
 Production and staging pin `TENANT_DATA_PLANE=1`. Removing the pin after tenant
 writes resume requires a freeze and reverse reconciliation, or explicit
 acceptance of the hidden post-cutover data. Tenant wipes never touch global
-objects or unnamespaced vectors. Legacy deletion requires separate sign-off.
+objects or the retained legacy D1 database and Vectorize index. Legacy deletion
+requires separate sign-off.
 The 2026-08-31 founder migration is complete and its command is retired; do not
 rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cutover.md).
 

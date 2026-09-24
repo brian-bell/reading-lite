@@ -1,5 +1,9 @@
 # Issue 195: S5 staging drill evidence, 2026-09-05
 
+> Pre-PostgreSQL record. The D1 and Vectorize sources and `account audit-bare-vectors`
+> it used are retired; for the current scan see
+> [account residue scan](../operations.md#account-residue-scan-s5).
+
 The staging drill exercised guarded bare-vector repair, the real HTTP account
 deletion fence, ordinary cron/queue wipe, and automatic S4 control-plane teardown.
 The final residue scan found **no observed tenant residue in scanned sources**, but
@@ -11,7 +15,7 @@ All times are UTC on September 5, 2026; the run began September 4 in
 America/New_York. This is a historical report, not a statement of current staging
 state. The issue was already closed when this report was prepared; the drill did
 not change its status. Operational procedures remain in the
-[operations runbook](../operations.md#account-residue-scan-and-bare-vector-repair-s5).
+[operations runbook](../operations.md#account-residue-scan-s5).
 
 ## Source and scope
 
