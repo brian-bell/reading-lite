@@ -39,8 +39,9 @@ pins.
 | Provider, project | Neon `reading-lite` (`little-cake-62522212`), aws-us-east-1, PostgreSQL 18.6, pgvector 0.8.6 |
 | Production branch | `main`, direct endpoint `ep-rapid-sound-awt688y7` (`NEON_MAIN_DATABASE_URL` on a laptop, `PRODUCTION_DATABASE_URL` in Actions) |
 | Compute | 0.25 CU, the rehearsal size |
-| Suspend | **Decide in #350.** The free plan suspends after about 5 idle minutes. The `*/15` cron queries PostgreSQL on every tick, so the compute is awake about a third of the time and a request more than 5 minutes after a tick pays about 1 s. That is tolerable for one reader. |
-| Plan | **Decide in #350.** Cold start alone does not require a paid plan. The free plan's 6-hour history retention does matter: the pre-reopen `pg_dump` is the only restore point after that. |
+| Plan | **Free** (decided 2026-09-24). |
+| Suspend | Scale to zero after about 5 idle minutes, the free plan's behavior. The `*/15` cron queries PostgreSQL on every tick, so the compute is awake about a third of the time and a request more than 5 minutes after a tick pays about 1 s. That is accepted for one reader. |
+| History retention | 6 hours on the free plan. The post-import `pg_dump` (step 3) is the restore point for the cutover; keep it until #351. After that window, restores rely on dumps you take yourself. |
 | Hyperdrive | New config `reading-lite-production`, created with `--caching-disabled` against the **direct** endpoint (never `-pooler`), default origin connection limit (60). Its id replaces the placeholder `00000000000000000000000000000003` in `[env.production]`. |
 | Connection strings | Use `sslmode=verify-full`; node-postgres warns that `require` will change meaning. |
 
