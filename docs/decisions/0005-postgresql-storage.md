@@ -483,6 +483,35 @@ Columns not listed import unchanged (`TEXT` to `text`, `INTEGER` to `integer`).
 Import order follows the foreign keys: `users` first, then `api_tokens` before
 `api_token_scopes`; the rest in any order.
 
+#### Importer decisions (reading-lite-gh348)
+
+`ops migrate export` and `ops migrate import` ([operations](../operations.md#library-export-and-import-reading-lite-gh348))
+implement the mapping above. Decisions the mapping left open:
+
+- **Timestamps without milliseconds** are respelled. Values in `timestamptz`
+  columns come back through the seam as ISO-8601 with three fraction digits.
+  The report lists every reading whose spelling changes, and names any loss of
+  sub-millisecond precision separately. Timestamps inside `jsonb` (attempt
+  summaries, errors, similarity) are stored verbatim.
+- **Missing vectors are re-embedded from the `tldr`**, not from
+  `extracted.md`. The issue text said `extracted.md`, but the published vector
+  has always been the tldr embedding (`embed_summary`). A source-text vector
+  would be a different kind of vector in the same similarity scan. Re-embedding
+  happens at export, so the snapshot is frozen and deterministic.
+- **Pending work is never runnable after import.** A pending reading, or one
+  with an active attempt, imports with its attempt summary and log but no
+  `reading_jobs` row. It is a blocking finding until accepted, so the final
+  freeze has to drain it rather than carry it over.
+- **Purge tombstones are not fences.** A manifest whose id has a tombstone is
+  blocking; when accepted it is skipped, never resurrected.
+- **Relationship uniqueness** is checked on the real corpus as the mapper
+  requires. Duplicate targets keep the first occurrence and are reported as
+  mapping notes.
+- **Only one tenant's library, every account's control plane.** The export
+  reads `u/{tenant}/` only, which is what excludes retained pre-tenant global
+  data. The control plane is one database, so all of it moves, and the report
+  names the other accounts.
+
 ### Per-environment cutover flag
 
 The candidate's `wrangler.toml` binds Hyperdrive, so a mistaken merge or

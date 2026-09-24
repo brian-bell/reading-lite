@@ -261,6 +261,11 @@ objects or unnamespaced vectors. Legacy deletion requires separate sign-off.
 The 2026-08-31 founder migration is complete and its command is retired; do not
 rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cutover.md).
 
+The legacy library moves to PostgreSQL through `ops migrate export` (read-only
+source, frozen snapshot) and `ops migrate import` (empty target only, named by
+`--target-env`, one verified transaction); see
+[library export and import](docs/operations.md#library-export-and-import-reading-lite-gh348).
+
 Offline batch ingest/recover require `--sole-writer`, asserting that realtime
 writers are paused and drained. Preserve sidecars and their resume rules; never
 recreate an ambiguous batch. See [batch operations](docs/operations.md#provider-batch-apis).
