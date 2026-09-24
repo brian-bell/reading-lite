@@ -163,8 +163,9 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
 - **Refresh judgement checkpoint** — `relationship_refresh_jobs` keeps one
   latest run per tenant/reading. Dispatch is marked only after paid admission;
   an uncertain dispatch is not repeated by another delivery. A saved relationship
-  patch and resulting-manifest hash allow CAS publication/list repair without
-  another provider call. Reading purge and account teardown remove checkpoints.
+  patch and resulting-reading hash let a replay publish it with one
+  compare-and-replace on the reading's row, without another provider call.
+  Reading purge and account teardown remove checkpoints.
 
 ## Operator surface
 

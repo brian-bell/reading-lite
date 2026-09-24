@@ -1,5 +1,9 @@
 # Issue 195: S5 production read-only audit, 2026-09-05
 
+> Pre-PostgreSQL record. The D1 and Vectorize sources and `account audit-bare-vectors`
+> it used are retired; for the current scan see
+> [account residue scan](../operations.md#account-residue-scan-s5).
+
 The production audit found **no tenant bare-vector repair candidates and no ready
 readings missing composed vectors**. All 557 ready-listed readings had a composed
 vector in the correct namespace. No production repair or other mutation was
@@ -10,7 +14,7 @@ or proof of all [#195 acceptance criteria](https://github.com/brian-bell/reading
 All times are UTC on September 5, 2026. The audit ran from **02:23:05.736 to
 02:27:56.825**. The issue was already closed before this audit; the audit did not
 change its status. Procedures remain in the
-[operations runbook](../operations.md#account-residue-scan-and-bare-vector-repair-s5).
+[operations runbook](../operations.md#account-residue-scan-s5).
 
 ## Source, authorization and scope
 

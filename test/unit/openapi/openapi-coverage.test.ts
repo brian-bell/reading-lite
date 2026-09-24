@@ -204,6 +204,14 @@ describe("docs/openapi.yaml", () => {
     expect(manifest?.required ?? []).not.toContain("connections_neighbourhood_ids");
   });
 
+  it("documents the optional tldr on a similar item", () => {
+    const item = loadSpec().components?.schemas?.SimilarItem as
+      | { properties?: Record<string, unknown>; required?: string[] }
+      | undefined;
+    expect(item?.properties?.tldr).toMatchObject({ type: "string" });
+    expect(item?.required ?? []).not.toContain("tldr");
+  });
+
   it("documents optional directional tensions on the manifest", () => {
     const doc = loadSpec();
     const manifest = doc.components?.schemas?.ManifestFields as

@@ -334,7 +334,7 @@ describe("writeOpenAIResults — success path", () => {
   });
 
   it("merges output and error files by custom_id and writes every target once", async () => {
-    const a = sidecarTarget({ releaseByUrlOnFailure: true });
+    const a = sidecarTarget();
     const b = sidecarTarget({
       customId: "rd_b",
       id: "rd_b",

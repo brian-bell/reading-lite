@@ -109,14 +109,6 @@ export interface SidecarTarget {
   // Floored neighbour IDs shown to the summarizer. Optional so sidecars written
   // before this field still load; write-phase then omits the ingest baseline.
   neighbourhoodIds?: string[];
-  // Only fresh ingest sets this. Both batch paths now eagerly claim by-url before
-  // submit, but they differ on terminal failure: a fresh ingest *created* the
-  // slot, so write-phase releases that exact claim (set true for create-new /
-  // create-existing-failed). A recover target's slot is a failed→pending flip of
-  // pre-existing corpus ownership — left unset so the claim survives a failure and
-  // the failed recover URL stays re-submittable by both recover and the online
-  // reprocess path.
-  releaseByUrlOnFailure?: true;
   preserveReadyManifest?: Manifest;
 }
 

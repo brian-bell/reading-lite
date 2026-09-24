@@ -3,7 +3,8 @@
 > This ADR preserves the August 16 design baseline. For shipped behavior, read
 > [architecture](../architecture.md), [account deletion](../operations.md#account-deletion),
 > and [paid spend](../paid-provider-spend.md). Spend accounting now reserves tenant
-> and global budgets in one GlobalUsageGuard ledger; vector isolation follows
+> and global budgets in one GlobalUsageGuard ledger; reading storage and vector
+> isolation follow [ADR 0005](0005-postgresql-storage.md), which superseded
 > [ADR 0002](0002-vectorize-namespace-isolation.md).
 
 - **Status:** Accepted; vector isolation amended by ADR 0002 (2026-08-23);

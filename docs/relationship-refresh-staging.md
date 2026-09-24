@@ -1,5 +1,11 @@
 # Relationship refresh staging rollout
 
+> **Historical evidence (2026-09-07/08).** Production refresh is enabled; the
+> current gate, caps and queues are in
+> [operations](operations.md#relationship-refresh-queue-plumbing). The manifests,
+> list rows, D1 and Vectorize named below are the pre-PostgreSQL stores
+> ([ADR 0005](decisions/0005-postgresql-storage.md)).
+
 Issue #175 slice 4. On 2026-09-07 the owner authorized **one clean actual nightly
 staging run** before acceptance and production enablement, replacing the earlier
 “several nights” rollout window. The actual 2026-09-08 scheduled run passed that check; production enablement

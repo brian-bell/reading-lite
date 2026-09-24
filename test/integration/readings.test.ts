@@ -15,7 +15,7 @@ import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
-import { GetReadingResponseSchema } from "../../src/schemas/api";
+import { GetReadingResponseSchema, PostReadingsSimilarResponseSchema } from "../../src/schemas/api";
 import {
   FOUNDER_TENANT_ID,
   OTHER_TENANT_ID,
@@ -3714,8 +3714,10 @@ describe("POST /api/readings/similar", () => {
         body: JSON.stringify({ query_embedding: embedding, k: 20 }),
       });
       expect(response.status).toBe(200);
-      const body = await response.json() as { items: { id: string; url: string }[] };
-      expect(body.items.map(item => [item.id, item.url])).toEqual([[id, `https://example.com/${id}`]]);
+      const body = await response.json() as { items: { id: string; url: string; tldr?: string }[] };
+      expect(body.items.map(item => [item.id, item.url, item.tldr])).toEqual([[id, `https://example.com/${id}`, id]]);
+      // The contract names every field the route returns; parsing drops none.
+      expect(PostReadingsSimilarResponseSchema.parse(body)).toEqual(body);
     }
     // A query is a read: both vectors are still there, and nothing was queued.
     expect(await testReadingsFor(founderTenant()).hasEmbedding("rd_founder")).toBe(true);
