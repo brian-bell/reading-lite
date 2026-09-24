@@ -15,7 +15,7 @@ import { defaultWranglerTomlPath, type DeployEnvName } from "../control-plane-en
 
 export const POSTGRES_CUTOVER_ENABLED: Readonly<Record<DeployEnvName, boolean>> = {
   staging: true,
-  production: false,
+  production: true,
 };
 
 // Filled in by #349 (staging) and #350 (production) with `wrangler hyperdrive

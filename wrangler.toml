@@ -590,11 +590,11 @@ crons = ["*/15 * * * *", "7 3 * * *"]
 binding = "READINGS_BUCKET"
 bucket_name = "reading-lite"
 
-# Placeholder until #350 creates the production config against the Neon main
-# branch, with query caching DISABLED (ADR 0005).
+# Hyperdrive config reading-lite-production (#350): the direct endpoint of the
+# Neon main branch, with query caching DISABLED (ADR 0005).
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "00000000000000000000000000000003"
+id = "4aebdf8836c746f29703a04cf575b34a"
 
 [[env.production.durable_objects.bindings]]
 name = "AUTH_RATE_GUARD"

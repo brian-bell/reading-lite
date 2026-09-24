@@ -42,7 +42,7 @@ pins.
 | Plan | **Free** (decided 2026-09-24). |
 | Suspend | Scale to zero after about 5 idle minutes, the free plan's behavior. The `*/15` cron queries PostgreSQL on every tick, so the compute is awake about a third of the time and a request more than 5 minutes after a tick pays about 1 s. That is accepted for one reader. |
 | History retention | 6 hours on the free plan. The post-import `pg_dump` (step 3) is the restore point for the cutover; keep it until #351. After that window, restores rely on dumps you take yourself. |
-| Hyperdrive | New config `reading-lite-production`, created with `--caching-disabled` against the **direct** endpoint (never `-pooler`), default origin connection limit (60). Its id replaces the placeholder `00000000000000000000000000000003` in `[env.production]`. |
+| Hyperdrive | `reading-lite-production` (`4aebdf8836c746f29703a04cf575b34a`, created 2026-09-24), caching disabled, against the **direct** endpoint (never `-pooler`), default origin connection limit (60). Bound in `[env.production]`. |
 | Connection strings | Use `sslmode=verify-full`; node-postgres warns that `require` will change meaning. |
 
 ## Go/no-go before the freeze
@@ -62,16 +62,22 @@ Every item must be true. Stop if any is not.
    candidate sets the Hyperdrive id and `POSTGRES_CUTOVER_ENABLED.production =
    true`. `ops deploy worker --env production` (plan mode) reports the guard
    as admitted.
-4. **`PRODUCTION_DATABASE_URL` is set as an Actions secret.** It is not set
-   today. The release workflow's wipe gate and its migrations read it.
-5. **`main` is empty.** No tables in `public`, pgvector installed. The
-   importer refuses anything else.
-6. **The freeze will not straddle 03:07 UTC.** A refresh judgement between the
+4. **`PRODUCTION_DATABASE_URL` is set as an Actions secret** (set
+   2026-09-24). The release workflow's wipe gate and its migrations read it.
+5. **`main` is empty and protected.** No tables in `public`, pgvector
+   installed; the importer refuses anything else. Mark the branch protected
+   in the Neon console.
+6. **Actions has reached `main`.** A workflow run has read the database
+   through `PRODUCTION_DATABASE_URL`, not only the Neon connection settings
+   (no IP allowlist, public connections allowed).
+7. **Account deletion is proved on PostgreSQL staging.** reading-lite-gh346.4
+   records the `usr_9c2abd78` wipe and teardown completing with no residue.
+8. **The freeze will not straddle 03:07 UTC.** A refresh judgement between the
    final export and the cutover advances the R2 cursor while PostgreSQL never
    receives its job row or connections patch.
-7. **Nothing is mid-deletion.** `ops deploy wipe-check` passes: no unfinished
+9. **Nothing is mid-deletion.** `ops deploy wipe-check` passes: no unfinished
    wipe, and the wipe queues are empty.
-8. **Someone can watch for 30 minutes after reopening.**
+10. **Someone can watch for 30 minutes after reopening.**
 
 ## Procedure
 
