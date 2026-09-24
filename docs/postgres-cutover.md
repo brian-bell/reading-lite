@@ -30,7 +30,9 @@ successful and failed reprocess, purge), the nightly refresh cron, and a
 signed-in browser check of library, reading, and account pages. `app/`'s
 `test:browser` passes every signed-out case against a deployed host; its
 signed-in cases cannot pass there until reading-lite-gh392 removes the fixture
-pins.
+pins. Account deletion on PostgreSQL staging is verified separately, by the
+`usr_9c2abd78` wipe after 2026-09-26 (reading-lite-gh346.4); it does not
+gate the cutover.
 
 ## Database configuration
 
@@ -53,31 +55,29 @@ Every item must be true. Stop if any is not.
    successful reprocess of an imported reading deletes that reading's legacy
    R2 content, and a rollback serves it with content 404 (seen live on
    staging).
-2. **The four stuck production readings have a decision.** `rd_6DCN32K7KJ`,
-   `rd_SE726QGY16`, `rd_SEC6BW372D` and `rd_V7W948M6QH` are ready with an
-   active attempt from May or June that never finished. Either import them
-   with `--accept unresolved_pending` (they look exactly as they do today) or
-   clear their active attempts before the freeze.
+2. **The export plan reports no `unresolved_pending`.** The four ready
+   readings with an active attempt left over from May or June
+   (`rd_6DCN32K7KJ`, `rd_SE726QGY16`, `rd_SEC6BW372D`, `rd_V7W948M6QH`) were
+   reprocessed cleanly on 2026-09-24. A new one is a stop: reprocess it, or
+   import it as found with `--accept unresolved_pending`.
 3. **The production release is prepared but not merged.** A commit on the
    candidate sets the Hyperdrive id and `POSTGRES_CUTOVER_ENABLED.production =
    true`. `ops deploy worker --env production` (plan mode) reports the guard
    as admitted.
 4. **`PRODUCTION_DATABASE_URL` is set as an Actions secret** (set
    2026-09-24). The release workflow's wipe gate and its migrations read it.
-5. **`main` is empty and protected.** No tables in `public`, pgvector
-   installed; the importer refuses anything else. Mark the branch protected
-   in the Neon console.
+5. **`main` is empty.** No tables in `public`, pgvector installed. The
+   importer refuses anything else. The free plan cannot mark a branch
+   protected, and that is accepted.
 6. **Actions has reached `main`.** A workflow run has read the database
    through `PRODUCTION_DATABASE_URL`, not only the Neon connection settings
    (no IP allowlist, public connections allowed).
-7. **Account deletion is proved on PostgreSQL staging.** reading-lite-gh346.4
-   records the `usr_9c2abd78` wipe and teardown completing with no residue.
-8. **The freeze will not straddle 03:07 UTC.** A refresh judgement between the
+7. **The freeze will not straddle 03:07 UTC.** A refresh judgement between the
    final export and the cutover advances the R2 cursor while PostgreSQL never
    receives its job row or connections patch.
-9. **Nothing is mid-deletion.** `ops deploy wipe-check` passes: no unfinished
+8. **Nothing is mid-deletion.** `ops deploy wipe-check` passes: no unfinished
    wipe, and the wipe queues are empty.
-10. **Someone can watch for 30 minutes after reopening.**
+9. **Someone can watch for 30 minutes after reopening.**
 
 ## Procedure
 
@@ -118,7 +118,7 @@ Account for what is in flight:
   should show no active processing lease. Clear a stale one with
   `ops system lease-clear`.
 - **Pending readings.** The export plan below reports `unresolved_pending`.
-  Nothing new may appear beyond the decision in go/no-go item 2.
+  It must report none (go/no-go item 2).
 
 ### 2. Final export
 
@@ -139,7 +139,7 @@ is also still intact.
 npm run ops -- db migrate --database-url-env NEON_MAIN_DATABASE_URL --execute
 npm run ops -- migrate import --snapshot ~/rl-snapshots/production-<date> --target-env NEON_MAIN_DATABASE_URL
 npm run ops -- migrate import --snapshot ~/rl-snapshots/production-<date> --target-env NEON_MAIN_DATABASE_URL \
-  [--accept unresolved_pending] --execute --json > ~/rl-snapshots/production-<date>-import-report.json
+  --execute --json > ~/rl-snapshots/production-<date>-import-report.json
 ```
 
 Expect about 2.5 minutes. The import verifies itself before committing and
@@ -256,16 +256,16 @@ PostgreSQL exactly (146 of 146 readings identical).
 
 ## Known discrepancies
 
-Production reconciliation, 2026-09-24 (snapshot taken 02:52Z, before that
-night's refresh):
+Production export plan, 2026-09-24 after the four stuck readings were
+reprocessed (the 02:52Z reconciliation snapshot differed only in those four):
 
 | Finding | Count | Disposition |
 |---|---|---|
-| `unresolved_pending` (blocking) | 4 | Go/no-go item 2 |
-| `content_hash_mismatch` / `content_size_mismatch` | 4 readings (`rd_45XAY3N8MM`, `rd_86H2EZ7WJ2`, `rd_D54QAN355D`, `rd_V7W948M6QH`) | A failed reprocess restored the manifest, not the overwritten content ([reprocessing](architecture.md#reprocessing-and-recovery)). Imported as found. |
+| `unresolved_pending` (blocking) | 0 | Go/no-go item 2 |
+| `content_hash_mismatch` / `content_size_mismatch` | 3 readings (`rd_45XAY3N8MM`, `rd_86H2EZ7WJ2`, `rd_D54QAN355D`) | A failed reprocess restored the manifest, not the overwritten content ([reprocessing](architecture.md#reprocessing-and-recovery)). Imported as found. |
 | `orphan_objects` | 17 prefixes (2026-05-02, 05-12, 06-18, 08-21) | Objects with no manifest, not imported. Cleanup in #351. |
-| `ledger_row_missing` | 556 of 632 ready | Informational. The D1 vector ledger is not imported, and every ready reading has its vector. |
-| `processing_checkpoint_not_imported` | 107 | Not imported by design |
+| `ledger_row_missing` | 552 of 632 ready | Informational. The D1 vector ledger is not imported, and every ready reading has its vector. |
+| `processing_checkpoint_not_imported` | 111 | Not imported by design |
 | `refresh_state_not_imported` | 1 | The next operator refresh sweeps the whole library |
 | Snapshot drift in `corpus refresh-neighbours` | most readings | Stale snapshots from library growth, not the migration. pgvector reproduces Vectorize. |
 
