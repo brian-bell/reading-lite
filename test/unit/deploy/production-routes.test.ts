@@ -68,10 +68,11 @@ const wrangler = readFileSync("wrangler.toml", "utf8");
 describe("production worker routes", () => {
   const routes = routesFor(wrangler, "env.production.routes");
 
-  it("serves the same three path sets on readinglite.ai and readinglite.app, and the API on next", () => {
+  it("serves the same three path sets on readinglite.ai and readinglite.app", () => {
     // Exact set: nothing else is routed. `www` belongs to a Cloudflare redirect
-    // rule, never to a worker route, and the retired reading-lite.bbell.dev
-    // host is not a Worker route.
+    // rule, never to a worker route, and neither the retired
+    // reading-lite.bbell.dev host nor the retired next.readinglite.ai preview
+    // host is a Worker route.
     expect(routes).toEqual([
       { pattern: "readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -79,23 +80,19 @@ describe("production worker routes", () => {
       { pattern: "readinglite.app/api/*", zone_name: "readinglite.app" },
       { pattern: "readinglite.app/health", zone_name: "readinglite.app" },
       { pattern: "readinglite.app/mcp*", zone_name: "readinglite.app" },
-      // New-frontend preview host (ADR 0003): the frontend Worker owns
-      // next.readinglite.ai/*; these more specific routes keep the API here.
-      { pattern: "next.readinglite.ai/api/*", zone_name: "readinglite.ai" },
-      { pattern: "next.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
   });
 
   it("counts a route however its block is spelled", () => {
     // The assertions above are only as good as the parser's blind spots, so
-    // prove the shapes that could smuggle a ninth route past them.
+    // prove the shapes that could smuggle an extra route past them.
     const smuggled = [
       '[[env.production.routes]] # temporarily\npattern = "extra.example/api/*"\nzone_name = "example"',
       '[[ env.production.routes ]]\npattern = "extra.example/api/*"\nzone_name = "example"',
       "[[env.production.routes]]\npattern = 'extra.example/api/*' # note\nzone_name = 'example'",
     ];
     for (const block of smuggled) {
-      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(9);
+      expect(routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes")).toHaveLength(routes.length + 1);
     }
 
     // A block that is not a plain (pattern, zone_name) route still has to be
@@ -106,7 +103,7 @@ describe("production worker routes", () => {
     ];
     for (const block of notPlain) {
       const parsed = routesFor(`${wrangler}\n\n${block}\n`, "env.production.routes");
-      expect(parsed).toHaveLength(9);
+      expect(parsed).toHaveLength(routes.length + 1);
       expect(parsed.at(-1)).toBeNull();
     }
   });
@@ -163,8 +160,9 @@ describe("production link-emitting config", () => {
 describe("staging worker routes", () => {
   const routes = routesFor(wrangler, "env.staging.routes");
 
-  it("serves the same three path sets on both staging hosts, and the API on next-staging", () => {
-    // Exact set: no www. redirect host and no retired bbell.dev host.
+  it("serves the same three path sets on both staging hosts", () => {
+    // Exact set: no www. redirect host, no retired bbell.dev host, and no
+    // retired next-staging.readinglite.ai preview host.
     expect(routes).toEqual([
       { pattern: "staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
       { pattern: "staging.readinglite.ai/health", zone_name: "readinglite.ai" },
@@ -172,8 +170,6 @@ describe("staging worker routes", () => {
       { pattern: "staging.readinglite.app/api/*", zone_name: "readinglite.app" },
       { pattern: "staging.readinglite.app/health", zone_name: "readinglite.app" },
       { pattern: "staging.readinglite.app/mcp*", zone_name: "readinglite.app" },
-      { pattern: "next-staging.readinglite.ai/api/*", zone_name: "readinglite.ai" },
-      { pattern: "next-staging.readinglite.ai/health", zone_name: "readinglite.ai" },
     ]);
   });
 });

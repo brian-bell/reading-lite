@@ -149,7 +149,7 @@ describe("coordinated production deployment workflows", () => {
     expect(deploy?.["working-directory"]).toBe("app");
     expectBoundaryCheck(deploy?.run, "npx wrangler deploy");
     expect(appSteps.indexOf(smoke!)).toBeGreaterThan(appSteps.indexOf(deploy!));
-    for (const host of ["https://next.readinglite.ai", "https://readinglite.ai", "https://readinglite.app"]) {
+    for (const host of ["https://readinglite.ai", "https://readinglite.app"]) {
       expect(smoke?.run).toContain(`app/scripts/smoke-host.sh ${host}`);
     }
     expect(commands(app)).not.toMatch(/deploy worker|deploy web|--env/);
@@ -169,7 +169,9 @@ describe("staging frontend deployment workflow", () => {
     expect(build?.env?.CLOUDFLARE_ENV).toBe("staging");
     expect(build?.run).toContain("node scripts/check-build.ts staging");
     expect(deploy?.["working-directory"]).toBe("app");
-    expect(smoke?.run).toContain("https://next-staging.readinglite.ai");
+    for (const host of ["https://staging.readinglite.ai", "https://staging.readinglite.app"]) {
+      expect(smoke?.run).toContain(`app/scripts/smoke-host.sh ${host}`);
+    }
     expect(commands(workflow)).not.toMatch(/production|deploy worker|deploy web/);
   });
 });

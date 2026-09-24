@@ -536,7 +536,7 @@ describe("the tenant pin", () => {
   });
 
   it("forwards the cookie and host of the request being rendered", async () => {
-    request.current = new Request("https://next.readinglite.ai/readings/x", {
+    request.current = new Request("https://readinglite.ai/readings/x", {
       headers: { cookie: "__Host-session=abc" },
     });
     backendAnswers(200, readings[ATTENTION]);
@@ -544,7 +544,7 @@ describe("the tenant pin", () => {
 
     expect(backend.reading.mock.calls[0]![0]).toMatchObject({
       cookie: "__Host-session=abc",
-      host: "next.readinglite.ai",
+      host: "readinglite.ai",
     });
   });
 });

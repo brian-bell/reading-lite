@@ -90,7 +90,7 @@ describe("checkBackendBindings", () => {
 describe("checkBuiltConfig", () => {
   const source: DeployedConfigView = {
     ...frontendBinding("production", "reading-lite"),
-    routes: [{ pattern: "next.readinglite.ai/*", zone_name: "readinglite.ai" }],
+    routes: [{ pattern: "readinglite.ai/*", zone_name: "readinglite.ai" }],
     workers_dev: false,
     preview_urls: false,
   };
@@ -104,7 +104,7 @@ describe("checkBuiltConfig", () => {
     ["built for another environment", { ...built, targetEnvironment: "staging" }, /production.*targets.*staging/],
     ["built from the top-level config", { ...built, targetEnvironment: undefined }, /production.*targets.*top level/],
     ["renamed", { ...built, name: "reading-lite-app-staging" }, /production.*built name/],
-    ["routed to another host", { ...built, routes: [{ pattern: "readinglite.ai/*", zone_name: "readinglite.ai" }] }, /production.*built routes/],
+    ["routed to another host", { ...built, routes: [{ pattern: "readinglite.app/*", zone_name: "readinglite.app" }] }, /production.*built routes/],
     ["published on workers.dev", { ...built, workers_dev: true }, /production.*built workers_dev/],
     [
       "bound to another environment's backend",

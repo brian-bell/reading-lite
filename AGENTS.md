@@ -280,8 +280,8 @@ Reddit and full YouTube recovery use local import skills; X threads older than
 seven days fail the recent-search path. See [source recovery](docs/operations.md#sources-that-need-a-local-skill).
 
 Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
-(`readinglite.ai`, `readinglite.app`, and `next.readinglite.ai`) under a shared
-release lock with stale-commit checks. Worker deployment applies pending
+(`readinglite.ai` and `readinglite.app`) under a shared release lock with
+stale-commit checks. Worker deployment applies pending
 PostgreSQL migrations before upload, fail-closed, over the DIRECT connection
 string named by the required `--database-url-env`; that name is checked against
 `--env` first, so a production deploy cannot migrate staging. The workflow

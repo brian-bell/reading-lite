@@ -355,7 +355,7 @@ decisions above. They are for Brian to adjust, not commitments.
 | 3 | Tokens, themes, navigation, and the reading summary view with SSR | M |
 | 3 | Novelty panel, relationship cards, removed targets, return trail | M |
 | 3 | Source view with sanitizer and rich-content handling | M |
-| 4 (#339) | `next.readinglite.ai` host: allowlist entry, routes, precedence smoke check | S |
+| 4 (#339) | `next.readinglite.ai` host: allowlist entry, routes, precedence smoke check (retired after cutover, reading-lite-gh335.2) | S |
 | 4 | Library search, tags, pagination, return state | M |
 | 4 | `/save` URL and Markdown capture with intake outcomes | M |
 | 4 | Status refresh contract and failure categories | M |

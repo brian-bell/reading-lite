@@ -12,20 +12,16 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
  * Adding a host here asserts that this project serves it: a login arriving on
  * it will be mailed a single-use credential pointing back at it. Cloudflare
  * routes keep production Host values off the staging Worker and vice versa.
- * Retired `bbell.dev` hosts are not listed; a login on those names falls
+ * Retired hosts are not listed: the `bbell.dev` hosts and the new-frontend
+ * preview hosts `next.readinglite.ai` and `next-staging.readinglite.ai`
+ * (ADR 0003, retired after the Phase 5 cutover). A login on those names falls
  * through to `WEB_BASE_URL`.
- *
- * `next.readinglite.ai` (production) and `next-staging.readinglite.ai`
- * (staging) serve the new frontend Worker ahead of cutover (ADR 0003). Remove
- * them when those preview hosts are retired after the Phase 5 cutover.
  */
 export const PUBLIC_WEB_ORIGINS = [
   "https://readinglite.ai",
   "https://readinglite.app",
   "https://staging.readinglite.ai",
   "https://staging.readinglite.app",
-  "https://next.readinglite.ai",
-  "https://next-staging.readinglite.ai",
 ];
 
 export function isPublicWebOrigin(origin: string | null | undefined): boolean {

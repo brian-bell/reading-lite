@@ -20,10 +20,9 @@ npm run test:browser:ci # the essential subset CI runs
 ```
 
 Build a deployable environment with `CLOUDFLARE_ENV=staging` or
-`CLOUDFLARE_ENV=production`. Production deploys to `readinglite.ai`,
-`readinglite.app`, and `next.readinglite.ai` after every production backend
-release (apex cutover, reading-lite-gh340.4); staging deploys to
-`next-staging.readinglite.ai`, `staging.readinglite.ai`, and
+`CLOUDFLARE_ENV=production`. Production deploys to `readinglite.ai` and
+`readinglite.app` after every production backend release (apex cutover,
+reading-lite-gh340.4); staging deploys to `staging.readinglite.ai` and
 `staging.readinglite.app` by manual dispatch. See
 [New-frontend hosts](../docs/operations.md#new-frontend-hosts).
 
