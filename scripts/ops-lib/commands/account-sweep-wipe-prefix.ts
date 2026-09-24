@@ -4,7 +4,7 @@
 //
 // Why it exists (issue #195 slice S2). The account wipe keeps its resume record
 // at `wipe/{tenantId}/progress.json`, outside the tenant key root so it can
-// outlive everything under `u/{tenantId}/`. S2 moves that state into D1 and
+// outlive everything under `u/{tenantId}/`. S2 moved that state out of R2 and
 // removes the only code that ever deleted the R2 object, so a record left by an
 // in-flight wipe at deploy time would sit in the bucket forever: a key naming a
 // deleted tenant, with a body carrying that tenant's `vector_cursor` (a reading
@@ -72,7 +72,7 @@ interface Args {
 //     to enqueue a RESUME for that tenant. Pre-deploy, a stale record is due to
 //     be picked up, not finished with.
 //
-// So age and D1 status are reported as evidence of a wipe that is running or
+// So age and wipe_progress status are reported as evidence of a wipe that is running or
 // due — reasons to stop — never as a green light. The green light is the deploy.
 const NO_ACTIVE_WIPE_FLAG = "--acknowledge-no-active-wipe";
 // Derived, not retyped: the briefing's "a record older than this has a lapsed
@@ -134,7 +134,7 @@ function describe(object: R2ObjectMeta): string {
   return `  ${object.key}  ${object.size} bytes  ${object.lastModified ?? "(no last-modified reported)"}`;
 }
 
-// The pre-delete briefing: which tenants these records name, and the scoped D1
+// The pre-delete briefing: which tenants these records name, and the scoped wipe_progress
 // query for spotting a wipe that is running or due to resume. Neither is a
 // green light — see the NO_ACTIVE_WIPE_FLAG comment above.
 function reportTenantsAtRisk(io: CommandIo, bucket: string, listed: R2ObjectMeta[]): void {
@@ -164,16 +164,17 @@ function reportTenantsAtRisk(io: CommandIo, bucket: string, listed: R2ObjectMeta
   const query = scopedProgressQuery(bucket, tenantIds);
   if (query === null) {
     io.stdout(
-      `\nNo control-plane database is mapped to bucket '${bucket}', so no D1 query is offered —\n` +
+      `\nNo control-plane database is mapped to bucket '${bucket}', so no wipe_progress query is offered —\n` +
         "check the control plane for THAT bucket's environment yourself, not production's.",
     );
     return;
   }
   io.stdout(
-    "\nOnce S2 has deployed, D1 carries the in-flight signal — a wipe_progress row with\n" +
-      "completed_at_ms NULL and a recent updated_at_ms heartbeat is a wipe still running:\n\n" +
+    "\nOnce S2 has deployed, the PostgreSQL control plane carries the in-flight signal — a\n" +
+      "wipe_progress row with completed_at NULL and a recent updated_at heartbeat is a wipe\n" +
+      "still running:\n\n" +
       query +
-      "\n\n(The table exists only after S2's migration applies.) A count of users with\n" +
+      "\n\nA count of users with\n" +
       "status='deleting' is NOT the signal, before or after: that status survives a\n" +
       "COMPLETED wipe until the S4 hard-delete, so it never returns to 0.",
   );
@@ -330,7 +331,7 @@ exiting non-zero if anything remains.
 
 '${WIPE_PREFIX}{tenantId}/progress.json' is the account wipe's resume record. It names a
 deleted tenant and its body carries that tenant's vector cursor, so a record
-orphaned by the move of wipe progress into D1 (issue #195 slice S2) must not
+orphaned by the move of wipe progress out of R2 (issue #195 slice S2) must not
 survive in R2. Deletes are hard-restricted to keys literally under '${WIPE_PREFIX}':
 tenant-rooted keys (u/{tenantId}/…) and the legacy corpus roots (readings/,
 index/) are refused, and a listing containing one aborts the run before any
@@ -347,13 +348,14 @@ writes this prefix and every record under it is orphaned by construction.
 Before that deploy, a record under wipe/ means that tenant's wipe is running or
 due to resume — wait for it to finish rather than sweeping around it. A record
 older than the ${WIPE_IN_FLIGHT_MINUTES}-minute lease is not inert: that is precisely when cron is free
-to enqueue a RESUME. After the deploy, the in-flight signal lives in D1
-(a wipe_progress row with completed_at_ms NULL and a recent heartbeat), which
+to enqueue a RESUME. After the deploy, the in-flight signal lives in the
+PostgreSQL control plane (a wipe_progress row with completed_at NULL and a
+recent updated_at heartbeat), which
 plan mode prints a scoped query for. A count of users with status='deleting' is
 not the signal either way — that status survives a COMPLETED wipe until the S4
 hard-delete, so it never returns to 0.
 
-See docs/operations.md, "Sweeping the wipe/ prefix".
+See docs/operations.md, "Sweeping old R2 wipe records".
 
 Options:
   --bucket <name>  R2 bucket. Default: READING_LITE_BUCKET / reading-lite.

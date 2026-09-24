@@ -6,7 +6,7 @@
   "engines": {
     "node": ">=22.0.0"
   },
-  "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist to R2 + Vectorize.",
+  "description": "Cloudflare Worker reading service: fetch URL, summarize through a configured provider, persist content to R2 and readings to PostgreSQL + pgvector.",
   "scripts": {
     "prepare": "command -v bd >/dev/null 2>&1 && git config core.hooksPath .beads/hooks || true",
     "predev": "tsx scripts/require-dev-node.ts",
