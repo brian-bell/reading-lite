@@ -1,6 +1,6 @@
 # Reading Lite system map
 
-Interactive overview of the reading pipeline, from the Pages SPA through
+Interactive overview of the reading pipeline, from the frontend Worker through
 Worker intake, PostgreSQL (with pgvector similarity), R2 content, and provider
 calls. It shows five flows: submit, process, publish, retry/DLQ, and read.
 Select a building or flow for its payload and source references.

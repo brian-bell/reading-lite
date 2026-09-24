@@ -1,5 +1,5 @@
 // Streamable HTTP MCP connector for Cursor / Grok Bot. A dedicated POST /mcp
-// route (not the SPA fallback) speaks current MCP over JSON. Each request
+// route (not the frontend's catch-all) speaks current MCP over JSON. Each request
 // builds a fresh stateless McpServer; tools dispatch a synthetic sub-request
 // into the same Hono app with the caller's Authorization header so auth,
 // scopes, and toHttp stay single-homed. The token is forwarded as a header

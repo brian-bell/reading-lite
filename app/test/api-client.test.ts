@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 // Browser calls go to same-origin /api/* with the session cookie and the CSRF
-// token from whoami, as web/src/api.ts does (ADR 0003, Browser requests).
+// token from whoami (ADR 0003, Browser requests).
 describe("apiFetch", () => {
   it("sends same-origin requests with credentials", async () => {
     const calls = stubFetch();

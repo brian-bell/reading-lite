@@ -330,7 +330,7 @@ export function neighboursOf(
  *
  * Deliberately not `updated_at`: no content changed, and bumping it would
  * misreport the reading as freshly written to everything that orders by it —
- * the list the SPA serves, and the refresh pass's own incremental scope, which
+ * the list the frontend serves, and the refresh pass's own incremental scope, which
  * would then re-measure the reading it just measured, every night, forever.
  * This is the one-field discipline the retired manifest backfill carried,
  * expressed as a column.

@@ -14,7 +14,7 @@ plan by default and acts only with `--execute`.
 | --- | --- | --- |
 | `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
 | `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
+| CI | Worker, app, and ops: Node **22** | Worker tests stay on workerd |
 
 `npm run ops` runs on **Node 22**, the same floor as the rest of the repo.
 Install with `npm ci`. Wrangler child processes go through
@@ -386,8 +386,8 @@ the s1k.6 sequencing, where the flip comes well after.)
 | Environment | Worker | Bucket / database | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2; local PostgreSQL through Hyperdrive's `localConnectionString` | no Queue |
-| staging | `reading-lite-staging` | `reading-lite-staging`; Neon `rehearsal` branch through Hyperdrive | canonical `staging.readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `staging.readinglite.app`; `next-staging.readinglite.ai` and `reading-lite-staging.bbell.dev` retired |
-| production | `reading-lite` | `reading-lite`; Neon `main` branch through Hyperdrive | canonical `readinglite.ai` (new frontend `/*` over `/api/*` `/health` `/mcp*`; Pages still bound as rollback); also `readinglite.app`; `next.readinglite.ai` and `reading-lite.bbell.dev` retired |
+| staging | `reading-lite-staging` | `reading-lite-staging`; Neon `rehearsal` branch through Hyperdrive | canonical `staging.readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*`); also `staging.readinglite.app`; `next-staging.readinglite.ai` and `reading-lite-staging.bbell.dev` retired |
+| production | `reading-lite` | `reading-lite`; Neon `main` branch through Hyperdrive | canonical `readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*`); also `readinglite.app`; `next.readinglite.ai` and `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -615,14 +615,10 @@ npm run ops -- db migrate --database-url-env NEON_REHEARSAL_DATABASE_URL --execu
 npm run ops -- founder bootstrap --email founder@example.com --env staging --execute
 npm run ops -- deploy worker --env staging --execute \
   --database-url-env NEON_REHEARSAL_DATABASE_URL
-npm run ops -- deploy web --branch staging --execute
 ```
 
-`deploy web --branch staging` is what creates the Pages preview named `staging`
-on project `reading-lite`. There is no separate Pages project. After that
-preview exists, bind `staging.readinglite.ai` and `staging.readinglite.app` to
-it (not to `main`). A first-time preview deploy does not move existing custom
-domains; re-point them in the dashboard if they were bound to production.
+Then run the **Deploy staging frontend** workflow by manual dispatch from the
+same ref (see [New-frontend hosts](#new-frontend-hosts)).
 
 Production is the same sequence with `NEON_MAIN_DATABASE_URL`, `--env production`,
 `.prd.vars`, and:
@@ -632,7 +628,6 @@ npm run ops -- founder bootstrap --email founder@example.com --env production \
   --execute --confirm-production
 npm run ops -- deploy worker --env production --execute \
   --database-url-env NEON_MAIN_DATABASE_URL
-npm run ops -- deploy web --branch main --execute
 ```
 
 Code merges to `main` start one coordinated production chain. Root Markdown,
@@ -646,12 +641,11 @@ pinned in `[env.production.vars]`, so this path keeps the gate on; only removing
 the pin rolls it off (see `docs/founder-cutover.md`).
 
 After the Worker release succeeds, it publishes the released commit SHA for
-`.github/workflows/deploy-spa.yml`. The SPA workflow validates and checks out
-that SHA, installs both lockfiles with `npm ci`, then runs
-`ops deploy web --branch main --execute` to build `web/` and deploy `web/dist`
-to the production Pages branch. Both release stages refuse to deploy if `main`
-has advanced at the deployment boundary, and one shared non-cancelling lock
-serializes Worker and SPA production commands. An older run therefore cannot
+`.github/workflows/deploy-app.yml`. The frontend workflow validates and checks
+out that SHA, then builds and deploys `app/` (see
+[New-frontend hosts](#new-frontend-hosts)). Both release stages refuse to deploy
+if `main` has advanced at the deployment boundary, and one shared
+non-cancelling lock serializes Worker and frontend production commands. An older run therefore cannot
 overwrite a newer production release. Neither release workflow has a manual
 trigger that can bypass the chain.
 
@@ -666,7 +660,7 @@ the backlogs still come from the Cloudflare API. Stale unfinished records also
 block: cron can resume them. Completed records and `users.status = 'deleting'`
 alone do not block. A missing connection string, failed API calls, missing
 queues, missing schema, or invalid responses fail closed and prevent the Worker
-release artifact from being published, so the SPA cannot follow that release.
+release artifact from being published, so the frontend cannot follow that release.
 The command can also be run locally with the two Cloudflare environment
 variables below plus `DATABASE_URL` (or `--database-url-env`); direct
 `ops deploy worker` invocations do not automatically run this workflow gate.
@@ -675,7 +669,7 @@ For an explicitly selected token-revocation release check, use `ops staging
 token-revocation` and `ops deploy release`; see the [operator evidence
 workflow](staging-evidence-contract.md#explicit-token-revocation-gate). The wrapper
 validates the retained drill before invoking the production wipe check and
-existing Worker deploy. It does not change the automatic CI/SPA chain or gate
+existing Worker deploy. It does not change the automatic CI/frontend chain or gate
 ordinary `deploy worker` calls.
 
 The queue check uses the [Queues REST metrics endpoint](https://developers.cloudflare.com/api/resources/queues/methods/get_metrics/)
@@ -694,7 +688,7 @@ failures, and emits a visible warning in the Actions log. It does not bypass CI,
 the stale-main check, or the shared release lock. Remove the variable after the
 release; even if left set, it cannot bypass the gate for a different commit.
 Do not use a generic `true` value. No manual workflow trigger is needed, so the
-successful Worker rerun still triggers the existing SPA release chain.
+successful Worker rerun still triggers the existing frontend release chain.
 
 The gate requires Queues Read/Write or Workers Scripts Read/Write on the
 production account, plus a PostgreSQL role that can read `wipe_progress`. The
@@ -707,7 +701,7 @@ GitHub repository secrets (or the `production` environment):
 
 | Secret | Purpose |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. Grant Pages Edit for the SPA workflow. The Worker workflow also needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
+| `CLOUDFLARE_API_TOKEN` | Non-interactive Wrangler. The Worker workflow needs Workers Scripts Edit and zone Workers Routes on **bbell.dev**, **readinglite.ai**, and **readinglite.app** so the route updates succeed (see "readinglite.ai / readinglite.app dual-serve" below). Scope the token to this account and those zones. |
 | `CLOUDFLARE_ACCOUNT_ID` | Account Wrangler deploys into. |
 | `PRODUCTION_DATABASE_URL` | Direct PostgreSQL connection string for the production database. The wipe gate reads `wipe_progress` through it and `ops deploy worker` applies the pending migrations through it, so the role behind it needs DDL as well as that read. The workflow fails fast with a named error when it is missing. |
 
@@ -721,24 +715,18 @@ own migration step), then re-run the same founder bootstrap command — its
 scope grants are idempotent and top up the existing token.
 
 `ops deploy worker` targets only staging and production (`--env`), so a dev
-Worker can never be uploaded by mistake. `ops deploy web --skip-build` reuses
-an existing SPA build.
+Worker can never be uploaded by mistake.
 
 Local `npm run dev` runs `dev:setup` first: it starts the compose Postgres
 service, applies the migrations, then bootstraps the founder's
 `dev-local-token` into it, since the control plane is PostgreSQL (ADR 0005).
 See [local Postgres](#local-postgres).
 
-The legacy SPA is served from Cloudflare Pages on the same hostname as the
-Worker. Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
+Backend Worker routes are scoped to `/api/*`, `/health`, and `/mcp*`; the
 `app/` frontend Worker's `host/*` route handles every other path on the
-staging and production hosts, ahead of Pages, which stays bound as the
-rollback target (see [New-frontend hosts](#new-frontend-hosts)).
-Pages uses `web/public/_redirects` (`/* /index.html 200`) so `/auth/verify`
-does not 404. Staging canonical host is `https://staging.readinglite.ai`;
-`https://staging.readinglite.app` also serves. The staging SPA is the Pages
-**preview** deployment created by `ops deploy web --branch staging` on project
-`reading-lite` — it is not a second Pages project. Production canonical host
+staging and production hosts (see [New-frontend hosts](#new-frontend-hosts)).
+Staging canonical host is `https://staging.readinglite.ai`;
+`https://staging.readinglite.app` also serves. Production canonical host
 is `https://readinglite.ai`; `https://readinglite.app` also serves the
 application (see "readinglite.ai / readinglite.app dual-serve" below). Both
 `bbell.dev` hosts are retired (S9). Magic-link mail prefers the recognized
@@ -863,9 +851,9 @@ removes routes.
    to another worker`. Mind what any of them leaves behind: the migrations and
    the new Worker script **have** landed and are live on the existing
    public-host routes; only the route addition fails. And because
-   `deploy-worker.yml` then exits non-zero, `deploy-spa.yml`, which runs only
+   `deploy-worker.yml` then exits non-zero, `deploy-app.yml`, which runs only
    on a successful Worker run, never deploys, so production Worker code sits
-   ahead of the production SPA until someone notices. Recovering by re-running
+   ahead of the production frontend until someone notices. Recovering by re-running
    the failed workflow works only while `main` is still at that commit: both
    deploy workflows re-check `origin/main` against the run's `head_sha` and
    refuse a stale release, so once another merge lands, let the newer commit's
@@ -977,15 +965,21 @@ intentional:
 ### New-frontend hosts
 
 The TanStack Start frontend in `app/` ([ADR 0003](decisions/0003-frontend-worker-topology.md))
-owns `host/*` on these hosts, ahead of any Pages custom domain there. The
+owns `host/*` on these hosts. The
 backend of the same environment keeps the more specific `/api/*`, `/health`,
 and (on the public hosts) `/mcp*` routes from `wrangler.toml`, and the frontend
 answers backend paths with 404 instead of proxying them.
 
-| Worker | Hosts | Pages |
-| --- | --- | --- |
-| `reading-lite-app` (production) | `readinglite.ai`, `readinglite.app` (apex cutover, reading-lite-gh340.4, 2026-09-19) | Still bound on the apex hosts as the rollback target |
-| `reading-lite-app-staging` | `staging.readinglite.ai`, `staging.readinglite.app` (staging switch, #339, 2026-09-16) | Still bound on the staging hosts as the rollback target |
+| Worker | Hosts |
+| --- | --- |
+| `reading-lite-app` (production) | `readinglite.ai`, `readinglite.app` (apex cutover, reading-lite-gh340.4, 2026-09-19) |
+| `reading-lite-app-staging` | `staging.readinglite.ai`, `staging.readinglite.app` (staging switch, #339, 2026-09-16) |
+
+A Worker route only receives traffic for a hostname with a proxied DNS record.
+On these four hosts that record is a proxied `AAAA 100::` placeholder, which
+replaced the CNAME the legacy Pages custom domain had created (see
+[Retiring the Pages SPA](#retiring-the-pages-spa)). Deleting it takes the host
+off the frontend and the backend alike.
 
 On any new host, the backend routes and `PUBLIC_WEB_ORIGINS` entry must be
 live before the frontend route, or `/api/*` there reaches the frontend and
@@ -1020,13 +1014,11 @@ deploy, so do not start before both releases have gone out.
 
 Deploying the frontend:
 
-- **Production.** The **Deploy production SPA** workflow has a second job that
-  builds `app/` with `CLOUDFLARE_ENV=production` on Node 22 and runs
-  `wrangler deploy` for `reading-lite-app` from the same released SHA, with the
-  same stale-`main` refusal. It does not depend on the SPA job, so a failure
-  there leaves the previous frontend version serving and does not block the
-  SPA, which keeps deploying to Pages so the rollback target stays current.
-  Rerun that job to redeploy.
+- **Production.** The **Deploy production frontend** workflow
+  (`.github/workflows/deploy-app.yml`) builds `app/` with
+  `CLOUDFLARE_ENV=production` on Node 22 and runs `wrangler deploy` for
+  `reading-lite-app` from the released SHA, with the stale-`main` refusal. A
+  failure leaves the previous frontend version serving. Rerun it to redeploy.
 - **Staging.** Deploy the staging backend first
   (`npm run ops -- deploy worker --env staging --execute --database-url-env
   NEON_REHEARSAL_DATABASE_URL`), then run the
@@ -1039,18 +1031,63 @@ Deploying the frontend:
   on every host of their environment; it also runs by hand from any machine.
   It passes only when `/health` is `ok` and a signed-out `/api/whoami` is a
   JSON 401 from the backend, and `/` comes from the frontend
-  (`Cache-Control: private, no-store`, which Pages does not send).
-- **Rollback.** Delete the host's frontend route in the dashboard, or
-  `wrangler rollback` the frontend Worker to its previous version. Neither
-  affects the backend. On the staging and apex hosts, deleting the `/*` route
-  hands `/` back to the Pages SPA immediately, with no rebuild. Every frontend
-  deploy re-applies the routes in `app/wrangler.jsonc`, so a route deleted in
-  the dashboard comes back on the next production release (every merge to
-  `main`) or staging dispatch: land a commit removing it from `app/wrangler.jsonc`
-  before the next deploy, or the rollback silently undoes itself.
+  (`Cache-Control: private, no-store`, which a static host would not send).
 
 The deploy token's zone Workers Routes permission on `readinglite.ai` and
 `readinglite.app` (the backend already routes both) covers the frontend routes.
+
+#### Frontend rollback
+
+Roll a bad frontend back to its previous version with Wrangler, from `app/`:
+
+```sh
+npx wrangler deployments list --name reading-lite-app
+npx wrangler rollback --name reading-lite-app -m "<reason>"
+```
+
+Pass a version id to `rollback` to pick an older version than the previous
+one; use `reading-lite-app-staging` for staging. This does not touch the
+backend. The next deploy (every merge to `main`, or a staging dispatch) replaces
+the rolled-back version, so land the fix or a revert before it. There is no
+second frontend to fall back to: the legacy `web/` SPA on Cloudflare Pages was
+retired in reading-lite-gh335.3, and deleting a host's frontend route now
+leaves `/` with no page to serve.
+
+#### Retiring the Pages SPA
+
+reading-lite-gh335.3 removed the SPA, its Pages deploy job, and `ops deploy
+web` from the repository. The Pages project `reading-lite` and its custom
+domains are dashboard state, removed by hand as below. **Status (2026-09-24):**
+steps 1–4 are done on all four hosts, and the smoke check passes on each. The
+Pages project itself is deleted after the production release of that commit,
+so an earlier merge's SPA job does not fail against a missing project.
+
+The Pages custom domain is what created each host's proxied DNS record, and a
+Worker route only receives traffic for a proxied hostname (see
+[Captain-only DNS / Pages / token](#captain-only-dns--pages--token-re-verify-if-zones-or-tokens-change)).
+Cloudflare's order for detaching a Pages domain is to delete its CNAME first,
+then remove the domain from the project. Deleting the CNAME without a
+replacement takes the frontend **and** the backend's `/api/*`, `/health`, and
+`/mcp*` off that host. For each host in turn — `staging.readinglite.ai`,
+`staging.readinglite.app`, then `readinglite.ai`, `readinglite.app`:
+
+1. In the zone's DNS records, delete the Pages CNAME for the host (target
+   `reading-lite.pages.dev`, or its `staging.` preview alias) and immediately
+   add a proxied `AAAA` record with content `cn` at the same name. The host
+   does not resolve between the two steps, so do them back to back.
+2. Run `app/scripts/smoke-host.sh https://<host>`; it must pass before going on.
+   For a minute or so after the swap some edges still send the host to Pages,
+   and the check fails with Pages HTML (`200 text/html`,
+   `Cache-Control: public, max-age=0, must-revalidate`) on `/health` and
+   `/api/whoami`. Wait and rerun before treating that as a failure; on
+   2026-09-24 `readinglite.app` took about a minute longer than the others.
+3. In **Workers & Pages → reading-lite → Custom domains**, remove the host.
+4. Run the smoke check again.
+
+After all four hosts pass, delete the Pages project `reading-lite` (this also
+removes its `staging` preview) and drop Pages Edit from `CLOUDFLARE_API_TOKEN`
+if it was granted. If a smoke check fails at step 2, re-point the record at
+the Pages CNAME to restore the host while you investigate.
 
 ### MCP connector
 
@@ -1063,7 +1100,7 @@ the token is never echoed in tool results. Canonical production URL is
 host.
 
 Production dual-serves dedicated `mcp*` Worker routes on `readinglite.ai` and
-`readinglite.app` so Pages does not serve SPA HTML at `/mcp`. Attaching those
+`readinglite.app` so the frontend's `host/*` route does not answer `/mcp`. Attaching those
 routes requires zone Workers Routes permission on the Cloudflare API token;
 if `ops deploy worker --env production` uploads the script but fails with
 authentication error 10000 on `/zones/.../workers/routes`, add the missing
@@ -1673,7 +1710,7 @@ in scope defers a measurement to the sweep.
 Flags are exact: the bound is derived so that a reading further away than it
 cannot gain or lose a *floored* neighbour because one vector changed. The
 stored `similarity` snapshot is not, and this is broader than the moved-vector
-case above. That snapshot, which the API and the SPA serve straight off the
+case above. That snapshot, which the API and the frontend serve straight off the
 reading's row, summarises the **raw** topK, sub-floor scores included, so a vector
 merely *added* anywhere enters some stranger's topK and moves its `max`/`mean`
 at any score, far below the bound. Between sweeps those numbers are therefore

@@ -2,7 +2,6 @@
 #
 # Used by:
 #   npm run ops -- deploy worker --env staging [--execute]
-#   npm run ops -- deploy web --branch staging [--execute]
 #   BASE=<staging-url> READER_API_TOKEN=<staging-token> ./scripts/manual/idempotency-smoke.sh a
 #
 # Secrets still need to be set in Cloudflare with:

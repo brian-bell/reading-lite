@@ -34,9 +34,8 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
 
 - **Manifest** — the API shape of a reading, projected from its `readings`
   row, current revision and attempt rows. Status is `pending` → `ready` |
-  `failed`. The cross-module contract (`src/schemas/manifest.ts`); the SPA
-  hand-mirrors it in `web/src/types.ts`. Rows read from PostgreSQL are parsed
-  into it at the seam.
+  `failed`. The cross-module contract (`src/schemas/manifest.ts`). Rows read
+  from PostgreSQL are parsed into it at the seam.
 - **Attempt** — one processing run (`submit` | `reprocess` | `import`), a
   `reading_attempts` row. The manifest carries an `active_attempt` while running
   and a `last_attempt` after.

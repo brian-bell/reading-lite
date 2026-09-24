@@ -5,9 +5,8 @@ import { sourceKnownUnavailable, type ContentProblem } from "./reading-source";
 // extracted Markdown" and "Open raw capture", both "Blob in new tab",
 // preserved from the SPA). The bytes come from GET /api/readings/:id/content
 // and …/content/raw in the browser, on click, and open in a new tab as a
-// blob: URL the way web/src/App.tsx opens them. They stay bytes: a capture
-// may be a PDF or a page in a legacy encoding, and decoding it as text would
-// destroy it.
+// blob: URL. They stay bytes: a capture may be a PDF or a page in a legacy
+// encoding, and decoding it as text would destroy it.
 //
 // Two deliberate differences from the SPA. The blob is always `text/plain`:
 // a blob: URL runs in the origin of the page that created it, so a raw HTML

@@ -54,7 +54,7 @@ export function isSameOriginRequest(input: {
     if (webOrigin && input.origin === webOrigin) return true;
   }
 
-  // Vite proxies /api from :5173 to wrangler on :8787. Both ends are loopback,
+  // Vite proxies /api from :5174 to wrangler on :8787. Both ends are loopback,
   // so treat loopback-to-loopback as same-origin for local cookie endpoints.
   try {
     const originUrl = new URL(input.origin);

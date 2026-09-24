@@ -5,7 +5,7 @@
 #   app/scripts/smoke-host.sh https://staging.readinglite.ai
 #
 # Passes only when the backend answers /health and a signed-out /api/whoami, and
-# the frontend (not Pages) answers /: its rendered HTML is private, no-store.
+# the frontend answers /: its rendered HTML is private, no-store.
 # Needs no session and reads no reading data.
 set -euo pipefail
 

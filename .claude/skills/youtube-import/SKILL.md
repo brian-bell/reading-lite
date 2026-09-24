@@ -82,7 +82,7 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 - **Imported as markdown.** The reading is created via `/api/readings/import-markdown`
   (`source_type: "markdown"`), so it summarizes the supplied text directly — no
   re-fetch — which is why the rich local markdown is what gets summarized.
-- **Local + manual by design.** It can't run inside the worker or the SPA submit
+- **Local + manual by design.** It can't run inside the worker or the frontend submit
   flow (it needs a residential IP and the yt-dlp binary).
 
 ## Implementation

@@ -1,8 +1,7 @@
 # AGENTS.md - reading-lite
 
 Personal reading service on Cloudflare Workers. The TanStack Start frontend in
-`app/` serves the public hosts; the legacy React SPA in `web/` stays deployed to
-Pages as the rollback target. Intake claims a URL by committing a pending
+`app/` serves the public hosts. Intake claims a URL by committing a pending
 reading, its attempt, and a job to PostgreSQL, then enqueues `READING_JOBS`.
 The consumer extracts content to R2, embeds, finds related readings with
 pgvector, summarizes, and publishes the reading, its relationships, and its
@@ -52,13 +51,7 @@ npm run test:quiet              # preferred; same suite as npm test
 npm run types:check             # verify checked-in Wrangler runtime types
 npm run typecheck
 
-cd web
-npm ci
-npm run dev                     # SPA :5173, in a separate terminal
-npm test
-npm run build                   # TypeScript check plus Vite build
-
-cd app                          # new TanStack Start frontend (ADR 0003)
+cd app                          # TanStack Start frontend (ADR 0003)
 npm ci
 npm run dev                     # :5174, proxies /api to :8787
 npm run typecheck && npm test
@@ -68,10 +61,9 @@ npm run test:browser:ci         # the essential subset CI runs
 ```
 
 There is no lint script. Full Worker verification is `npm test`,
-`npm run types:check`, and `npm run typecheck`; SPA verification is `npm test`
-plus `npm run build` in `web/`; frontend verification is `typecheck`, `test`,
-`build`, `test:smoke`, and `test:browser` in `app/`. CI runs Worker and Node
-tests, SPA tests/build, the `app/` checks and its browser-evidence job, and
+`npm run types:check`, and `npm run typecheck`; frontend verification is
+`typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
+runs Worker and Node tests, the `app/` checks and its browser-evidence job, and
 the Ops CLI job, all on Node 22. The browser-evidence job runs
 `test:browser:ci`, the essential subset; run the full `test:browser` locally
 before shipping a frontend change. On pull requests each job runs only
@@ -92,7 +84,7 @@ file. Generation excludes bindings; keep the application `Env` in `src/index.ts`
 | --- | --- | --- |
 | `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
 | `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, SPA, app, and ops: Node **22** | Worker tests stay on workerd |
+| CI | Worker, app, and ops: Node **22** | Worker tests stay on workerd |
 
 `app/` also needs Node 22.12+. `engines.node` (`>=22.0.0`) is only the install
 and ops floor. See [operator Node](docs/operations.md#operator-node).
@@ -125,16 +117,16 @@ reads.
 | R2 content and keys | `src/modules/stores/content-store.ts`, `layout.ts` |
 | Operator commands | `scripts/ops.ts`, `scripts/ops-lib/registry.ts`, `scripts/ops-lib/commands/`, shared `scripts/*-lib/` |
 | Operator PostgreSQL seam | `scripts/pg-lib/operator-db.ts` (bucket/database pairing, session lifetime), `scripts/pg-lib/operator-corpus.ts` |
-| Contracts and SPA | `src/schemas/`, `web/src/types.ts`, `docs/openapi.yaml`, `web/` |
-| New frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
+| Contracts | `src/schemas/`, `docs/openapi.yaml` |
+| Frontend Worker | `app/` ([README](app/README.md), [ADR 0003](docs/decisions/0003-frontend-worker-topology.md)) |
 
 ## Development constraints
 
 - Use TDD by default for behavior changes. Test public behavior and inject
   `fetch`, `now`, and `newId` through `src/services.ts`.
 - Validate at seams with zod. Always parse rows read from PostgreSQL into the
-  manifest and list shapes. Keep manifest and API schemas, tests,
-  `web/src/types.ts`, and `docs/openapi.yaml` synchronized.
+  manifest and list shapes. Keep manifest and API schemas, tests, and
+  `docs/openapi.yaml` synchronized.
 - Reading state and embeddings live in PostgreSQL; captured content stays in
   R2. Add no dual-write or fallback to the R2 manifests, `index/list.json`,
   pointers, or Vectorize. Construct stores with `pgReadingStoreFor`,
@@ -194,7 +186,7 @@ reads.
   rows and re-checks both before deleting. Read the
   [deletion rules](docs/operations.md#account-deletion) before touching this path.
 - Do not remove `nodejs_compat`. Keep bearer material out of browser storage.
-  Both frontends invalidate queries after writes but do not poll pending
+  The frontend invalidates queries after writes but does not poll pending
   manifests.
 
 ## Tests and local limits
@@ -232,10 +224,10 @@ integration, at phase and orchestrator, or at parser and every caller. Prefer
 `it.each` tables over near-identical copies. Exceptions worth keeping even
 when they look redundant: every ordering pin this file names as a contract
 (publication transaction order, rows before objects, spend RPC order,
-sidecar before create), fail-closed `not.toHaveBeenCalled` guards, cached-prefix
-snapshots, and SPA-mirror typed parses. Don't add a test that can't fail
-(asserting a constant equals its own literal, grepping source or docs for a
-string, or exercising a plan-mode path that swallows the assertion) or a
+sidecar before create), fail-closed `not.toHaveBeenCalled` guards, and
+cached-prefix snapshots. Don't add a test that can't fail (asserting a
+constant equals its own literal, grepping source or docs for a string, or
+exercising a plan-mode path that swallows the assertion) or a
 duplicate `--tenant`-style check per command when a registry-level loop
 covers all of them plus a unit test of the shared guard.
 
@@ -282,9 +274,10 @@ calls providers. Production stays GET-only. `ops eval summarizer` uses fixtures.
 Reddit and full YouTube recovery use local import skills; X threads older than
 seven days fail the recent-search path. See [source recovery](docs/operations.md#sources-that-need-a-local-skill).
 
-Code merges run CI, then deploy the same commit's Worker, SPA, and `app/` frontend
+Code merges run CI, then deploy the same commit's Worker and `app/` frontend
 (`readinglite.ai` and `readinglite.app`) under a shared release lock with
-stale-commit checks. Worker deployment applies pending
+stale-commit checks. Frontend rollback is `wrangler rollback` of the frontend
+Worker; see [frontend rollback](docs/operations.md#frontend-rollback). Worker deployment applies pending
 PostgreSQL migrations before upload, fail-closed, over the DIRECT connection
 string named by the required `--database-url-env`; that name is checked against
 `--env` first, so a production deploy cannot migrate staging. The workflow
@@ -293,7 +286,7 @@ PostgreSQL over the same `PRODUCTION_DATABASE_URL` secret; a direct
 `ops deploy worker` invocation does not run that separate wipe check.
 See [deploying](docs/operations.md#deploying) for secrets, guards, and exceptions.
 
-`.cursor/environment.json` installs both npm projects and runs
+`.cursor/environment.json` installs the root npm project and runs
 `scripts/cloud-agent-install.ts`. Cursor environment secrets are
 `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
 `READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL` (a direct

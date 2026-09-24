@@ -20,7 +20,7 @@ The table lists application defaults and checked-in overrides.
 | `EMAIL_FROM` | `""` | Sender for notification emails on a verified Resend domain. Empty skips send. May include a display name (`Reading Lite <noreply@readinglite.app>`). Production uses that form; staging uses `RL Staging <noreply@staging.readinglite.app>`. |
 | `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email, `users.email_display`. |
 | `AUTH_MAIL_ALLOWLIST` | unset; staging sets `""` | Staging only: comma-separated addresses that may receive auth, notification, and digest mail, plus `FOUNDER_EMAIL`. Ignored outside staging. |
-| `WEB_BASE_URL` | `http://127.0.0.1:5173` locally; `https://readinglite.ai/` in production; `https://staging.readinglite.ai/` in staging | Canonical base for digest mail, reading-notification mail, and MCP `public_url`. Magic-link mail prefers the request's recognized public host and falls back here. |
+| `WEB_BASE_URL` | `http://127.0.0.1:5174` locally (the `app/` dev server); `https://readinglite.ai/` in production; `https://staging.readinglite.ai/` in staging | Canonical base for digest mail, reading-notification mail, and MCP `public_url`. Magic-link mail prefers the request's recognized public host and falls back here. |
 | `RETRY_MAX_ATTEMPTS` | `"3"` | In-call retry attempts for transient Anthropic/OpenAI failures. |
 | `RETRY_BASE_DELAY_MS` | `"500"` | Base exponential-backoff delay for transient upstream retries. |
 | `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call backoff for transient failures. A 429 leaves the retry loop as `RateLimitedError` for queue rescheduling. |

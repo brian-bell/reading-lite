@@ -8,7 +8,7 @@ import { libraryParamsOf, validateLibrarySearch } from "../library-search";
 // page and the browser renders it without asking again. A page change in the
 // browser starts the read and mounts the page at once, so its loading and
 // offline states show there (#416). Signed out, the sign-in form renders in
-// place, with no redirect, as in the current SPA.
+// place, with no redirect, as in the legacy SPA.
 export const Route = createFileRoute("/")({
   validateSearch: validateLibrarySearch,
   loaderDeps: ({ search }) => libraryParamsOf(search),

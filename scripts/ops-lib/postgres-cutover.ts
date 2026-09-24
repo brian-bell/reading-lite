@@ -2,7 +2,7 @@
 // long-lived candidate branch whose wrangler.toml binds Hyperdrive. Until an
 // environment is cut over, a Worker built from that config must not deploy to
 // it, so `ops deploy worker` refuses before the readiness preflight,
-// migrations or upload. deploy-spa.yml gates the SPA and app/ jobs on the
+// migrations or upload. deploy-app.yml gates the app/ job on the
 // Worker workflow succeeding, so a refusal here stops the whole release.
 //
 // The flag is checked in and per environment, so flipping it is a reviewable

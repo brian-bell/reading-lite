@@ -154,7 +154,7 @@ does not introduce an activation override or evidence exception mechanism.
 No accepted deletion limit is silently converted into a successful token drill.
 
 The wrapper is explicitly selected. It does not intercept `deploy worker`, direct
-Wrangler, or the automatic CI/SPA deployment chain. Coordinate a selected manual
+Wrangler, or the automatic CI/frontend deployment chain. Coordinate a selected manual
 release with existing release activity; this local command does not acquire the
 GitHub Actions release lock. Wipe/provenance checks are snapshots, not concurrency
 locks. There is no automatic path classification, arbitrary freshness deadline,

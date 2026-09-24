@@ -861,7 +861,7 @@ describe("hydration", () => {
   });
 });
 
-// Search and tags (#417): `q` and `tag` in the URL, written as the current SPA
+// Search and tags (#417): `q` and `tag` in the URL, written as the legacy SPA
 // writes them, read on the server for a deep link and through the browser's
 // loader on a change. The pack has four rows tagged "design" and one titled
 // "A quieter internet is a choice we can make".

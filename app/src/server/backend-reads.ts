@@ -1,7 +1,6 @@
 // The backend's read-only FrontendReads entrypoint, bound as BACKEND in
 // wrangler.jsonc (ADR 0003, Server reads). Mirrors src/frontend-reads.ts at the
-// repo root; keep the two in step, as web/src/types.ts is kept in step with the
-// API schemas.
+// repo root; keep the two in step.
 //
 // Results carry the HTTP API's status and JSON body and no headers, so the
 // backend cannot set cookies through this binding. Server renders only: browser

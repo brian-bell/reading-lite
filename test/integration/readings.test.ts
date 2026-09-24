@@ -645,8 +645,8 @@ describe("auth", () => {
 });
 
 describe("route namespace", () => {
-  // The un-prefixed /readings* namespace belongs to the SPA (Pages serves the
-  // detail page there); the Worker must not claim it, even for authed callers.
+  // The un-prefixed /readings* namespace belongs to the frontend (app/ serves
+  // the detail page there); the Worker must not claim it, even for authed callers.
   it("does not serve the old /readings paths", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     for (const path of ["/readings", "/readings/rd_SOMEID"]) {

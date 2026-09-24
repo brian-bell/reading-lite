@@ -85,7 +85,7 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
 - **`redd.it` shortlinks and `/r/<sub>/s/<token>` share links** work — step 1's
   navigation resolves the redirect to the full thread URL before the in-page
   `.json` fetch (and step 2 captures that resolved URL as the canonical key).
-- This is **local + manual** by design; it can't run inside the worker or the SPA
+- This is **local + manual** by design; it can't run inside the worker or the frontend
   submit flow.
 
 ## Implementation

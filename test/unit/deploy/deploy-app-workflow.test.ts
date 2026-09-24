@@ -97,37 +97,11 @@ describe("coordinated production deployment workflows", () => {
     expect(upload?.with?.name).toBe("production-worker-release-sha");
   });
 
-  it("deploys only the exact SHA recorded by a successful Worker release", async () => {
-    const workflow = await readWorkflow(".github/workflows/deploy-spa.yml");
-    const spa = workflow.jobs?.deploy ?? {};
-    const allSteps = steps(spa);
-    const download = allSteps.find((step) => step.uses === "actions/download-artifact@v7");
-    const checkout = allSteps.find((step) => step.uses === "actions/checkout@v7");
-    const deploy = allSteps.find((step) =>
-      step.run?.includes("npm run ops -- deploy web --branch main --execute"),
-    );
-    const allCommands = commands(spa);
-
-    expect(workflow.on?.workflow_run).toEqual({
-      workflows: ["Deploy production worker"],
-      types: ["completed"],
-      branches: ["main"],
-    });
-    expect(workflow.permissions).toEqual({ contents: "read", actions: "read" });
-    expect(workflow.concurrency).toEqual(productionReleaseLock);
-    expect(workflow.jobs?.deploy?.if).toContain("conclusion == 'success'");
-    expect(download?.with?.["run-id"]).toBe("${{ github.event.workflow_run.id }}");
-    expect(checkout?.with?.ref).toBe("${{ steps.release.outputs.sha }}");
-    expect(allCommands).toContain("npm ci");
-    expectBoundaryCheck(deploy?.run, "npm run ops -- deploy web --branch main --execute");
-    expect(allCommands).not.toMatch(/deploy worker|wrangler deploy/);
-  });
-
-  it("deploys the frontend Worker to every production host from the same released SHA", async () => {
-    // ADR 0003 (amended 2026-09-13; apex cutover reading-lite-gh340.4). A job in the SPA run, not its own
-    // workflow: the release group keeps one pending run, so a second workflow
-    // queued behind the Worker release could cancel the SPA release.
-    const workflow = await readWorkflow(".github/workflows/deploy-spa.yml");
+  it("deploys the frontend Worker to every production host from the exact released SHA", async () => {
+    // ADR 0003 (apex cutover reading-lite-gh340.4). The Worker release records
+    // its SHA; this run deploys only that SHA, and only while it is still main.
+    const workflow = await readWorkflow(".github/workflows/deploy-app.yml");
+    expect(Object.keys(workflow.jobs ?? {})).toEqual(["app"]);
     const app = workflow.jobs?.app ?? {};
     const appSteps = steps(app);
     const download = appSteps.find((step) => step.uses === "actions/download-artifact@v7");
@@ -136,10 +110,15 @@ describe("coordinated production deployment workflows", () => {
     const deploy = appSteps.find((step) => step.run?.includes("npx wrangler deploy"));
     const smoke = appSteps.find((step) => step.run?.includes("app/scripts/smoke-host.sh"));
 
+    expect(workflow.on?.workflow_run).toEqual({
+      workflows: ["Deploy production worker"],
+      types: ["completed"],
+      branches: ["main"],
+    });
+    expect(workflow.permissions).toEqual({ contents: "read", actions: "read" });
+    expect(workflow.concurrency).toEqual(productionReleaseLock);
     expect(app.if).toContain("conclusion == 'success'");
     expect(app.if).toContain("head_branch == 'main'");
-    // Independent of the SPA job, so a frontend failure never blocks the SPA.
-    expect(app.needs).toBeUndefined();
     expect(download?.with?.name).toBe("production-worker-release-sha");
     expect(download?.with?.["run-id"]).toBe("${{ github.event.workflow_run.id }}");
     expect(checkout?.with?.ref).toBe("${{ steps.release.outputs.sha }}");
@@ -152,7 +131,7 @@ describe("coordinated production deployment workflows", () => {
     for (const host of ["https://readinglite.ai", "https://readinglite.app"]) {
       expect(smoke?.run).toContain(`app/scripts/smoke-host.sh ${host}`);
     }
-    expect(commands(app)).not.toMatch(/deploy worker|deploy web|--env/);
+    expect(commands(app)).not.toMatch(/deploy worker|--env/);
   });
 });
 
@@ -172,6 +151,6 @@ describe("staging frontend deployment workflow", () => {
     for (const host of ["https://staging.readinglite.ai", "https://staging.readinglite.app"]) {
       expect(smoke?.run).toContain(`app/scripts/smoke-host.sh ${host}`);
     }
-    expect(commands(workflow)).not.toMatch(/production|deploy worker|deploy web/);
+    expect(commands(workflow)).not.toMatch(/production|deploy worker/);
   });
 });

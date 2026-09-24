@@ -14,7 +14,7 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const CI_JOBS = ["worker", "ops", "web", "app", "appBrowser"] as const;
+export const CI_JOBS = ["worker", "ops", "app", "appBrowser"] as const;
 export type CiJob = (typeof CI_JOBS)[number];
 export type CiJobSelection = Record<CiJob, boolean>;
 
@@ -43,11 +43,6 @@ const RULES: Rule[] = [
   [/^(\.claude\/settings\.json|\.codex\/.*|\.cursor\/(hooks\.json|rules\/.*))$/, NONE],
   // Skill scripts are tested by the Worker suite.
   [/^\.agents\//, ["worker"]],
-
-  // The SPA. The Worker suite parses web/src/types.ts as the schema mirror
-  // and reads the Pages fallback.
-  [/^web\/(src\/types\.ts|public\/_redirects)$/, ["worker", "web"]],
-  [/^web\//, ["web"]],
 
   // app/. The Worker suite imports the browser fixture pack and, through
   // library-page.js, library-search.ts.

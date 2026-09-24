@@ -48,7 +48,8 @@
           <p class="explainer-kicker">District overview</p>
           <h2 id="explainer-title">reading-lite edge district</h2>
           <p id="explainer-body">
-            A personal reading service on Cloudflare Workers. Submit a URL → eager
+            A personal reading service on Cloudflare Workers with a TanStack Start
+            frontend. Submit a URL → eager
             URL claim (pending reading, attempt, and job in one PostgreSQL
             transaction) → queue → extract to R2, embed, similar-context summarize →
             one PostgreSQL publish transaction with the embedding.
@@ -68,7 +69,7 @@
         <section class="legend" aria-labelledby="legend-title">
           <h2 id="legend-title">Legend</h2>
           <ul class="legend-list">
-            <li><span class="swatch zone-client"></span> Client / frontend</li>
+            <li><span class="swatch zone-client"></span> Client / frontend Worker</li>
             <li><span class="swatch zone-control"></span> Worker control plane</li>
             <li><span class="swatch zone-pipeline"></span> Processing pipeline</li>
             <li><span class="swatch zone-store"></span> Content store (R2)</li>
@@ -90,7 +91,7 @@
     <footer class="foot">
       <p>
         Reading pipeline overview · Worker entry <code>src/index.ts</code> ·
-        bindings in <code>wrangler.toml</code> · SPA in <code>web/</code>
+        bindings in <code>wrangler.toml</code> · frontend in <code>app/</code>
       </p>
     </footer>
   </div>

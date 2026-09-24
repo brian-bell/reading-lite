@@ -37,7 +37,7 @@ describe("snapOffset", () => {
     expect(snapOffset(raw)).toBe(expected);
   });
 
-  // The current SPA reads the offset with parseInt, so these spellings name
+  // The legacy SPA reads the offset with parseInt, so these spellings name
   // the same page there.
   it.each([
     ["20abc", 20],
@@ -85,7 +85,7 @@ describe("page arithmetic", () => {
 
 describe("the route's search", () => {
   // The raw string is kept: rewriting it would redirect a server render to
-  // the new spelling, which the current SPA never does.
+  // the new spelling, which the legacy SPA never does.
   it("keeps offset as the string the URL carries", () => {
     expect(validateLibrarySearch({ offset: "25" })).toEqual({ offset: "25" });
     expect(validateLibrarySearch({ offset: "abc" })).toEqual({ offset: "abc" });
@@ -120,7 +120,7 @@ describe("the route's search", () => {
   });
 });
 
-// Filter changes (#417) as the current SPA writes them: the changed key set
+// Filter changes (#417) as the legacy SPA writes them: the changed key set
 // or removed, `offset` dropped, everything else left alone.
 describe("searchForFilters", () => {
   it("sets a search and starts from the first page", () => {

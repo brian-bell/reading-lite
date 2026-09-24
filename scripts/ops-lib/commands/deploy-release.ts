@@ -19,7 +19,7 @@ export const deployReleaseCommand: CommandDefinition<Deps> = {
   helpText: `Usage: npm run ops -- deploy release --check token-revocation --evidence <result.json> --release-sha <full SHA> [--execute]
 Validates retained staging evidence, clean candidate checkout and active staging
 version/configuration. --execute then runs the production wipe check and existing
-Worker deployment (readiness, tenant activation, migrations, upload). No SPA or CI
+Worker deployment (readiness, tenant activation, migrations, upload). No frontend or CI
 changes. Does not grant an activation override. Plan performs reads only.`,
   defaultDeps: io => ({
     io, read: path => readFile(path, "utf8"), provenance: captureProvenance,

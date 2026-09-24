@@ -1,6 +1,5 @@
 /**
- * Cloudflare Turnstile client loader for the login widget, ported from
- * web/src/turnstile.ts.
+ * Cloudflare Turnstile client loader for the login widget.
  *
  * Explicit render (`?render=explicit`): the sign-in form mounts the widget only
  * after GET /api/auth/login-options returns a non-null site key. The site key

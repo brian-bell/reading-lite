@@ -2,7 +2,7 @@ import type { LibraryParams } from "./library";
 
 // The library's URL state, `/?q=&tag=&offset=` (acceptance matrix, Routes),
 // its pages (#414), and its filters (#417). Parameters stay the plain strings
-// the current SPA writes: `q` and `tag` are passed through as they are (the
+// the legacy SPA writes: `q` and `tag` are passed through as they are (the
 // backend trims and lowercases them), and `offset` is read with parseInt and
 // snapped down to a 20-row page, so "Page N" always names the slice served.
 // The first page is the URL without `offset`; no filter is the URL without
@@ -10,7 +10,7 @@ import type { LibraryParams } from "./library";
 //
 // The route keeps the string it was given rather than the snapped one: a
 // validateSearch that rewrites the value redirects a server render to the new
-// spelling, which the current SPA never does. Links the page writes are
+// spelling, which the legacy SPA never does. Links the page writes are
 // snapped already.
 //
 // validateSearch picks only the library's own parameters, but the router's

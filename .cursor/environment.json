@@ -1,4 +1,4 @@
 {
   "name": "reading-lite",
-  "install": "npm ci && (cd web && npm ci) && npx tsx scripts/cloud-agent-install.ts"
+  "install": "npm ci && npx tsx scripts/cloud-agent-install.ts"
 }

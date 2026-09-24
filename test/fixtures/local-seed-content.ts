@@ -1,7 +1,7 @@
 // Authored article bodies for the local seed pack (issue #366). All content is
 // fiction written for the Connected prototype (see
-// docs/design/connected/design-spec.md#data-mapping and the authored samples in
-// web/prototypes/interface-directions/samples.ts): no production corpus text,
+// docs/design/connected/design-spec.md#data-mapping and the authored samples.ts
+// at its frozen source commit): no production corpus text,
 // no real publications, no credentials. Fictional hosts use the reserved
 // .example TLD; the YouTube fixture uses a reserved-style video id.
 //

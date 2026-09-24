@@ -1,6 +1,6 @@
 ---
 name: reading-lite-local
-description: Start, stop, or troubleshoot reading-lite's local app/ frontend and backend together, retrieve local sign-in links, and optionally seed the sample library. Use for running this repository locally, not deployment or the legacy web/ SPA.
+description: Start, stop, or troubleshoot reading-lite's local app/ frontend and backend together, retrieve local sign-in links, and optionally seed the sample library. Use for running this repository locally, not deployment.
 ---
 
 # reading-lite local development
@@ -15,10 +15,10 @@ Work in the current reading-lite checkout. Read its `AGENTS.md` and `app/README.
 4. Start the backend in a persistent exec session from the repository root:
 
    ```sh
-   npm run dev -- --var WEB_BASE_URL:http://127.0.0.1:5174
+   npm run dev
    ```
 
-   This starts and migrates local Postgres (`docker compose up -d --wait postgres`, host port **54329**), applies local D1 migrations, and bootstraps the local founder. Docker must be running; if `READING_LITE_DATABASE_URL` is set in the shell or `.dev.vars`, setup starts nothing and migrates that server instead. The URL override makes magic links return to the new frontend instead of the legacy SPA on 5173.
+   This starts and migrates local Postgres (`docker compose up -d --wait postgres`, host port **54329**), applies local D1 migrations, and bootstraps the local founder. Docker must be running; if `READING_LITE_DATABASE_URL` is set in the shell or `.dev.vars`, setup starts nothing and migrates that server instead. Local magic links point at the frontend on 5174 (`WEB_BASE_URL` in `wrangler.toml`).
 5. Start the frontend in a separate persistent exec session with working directory `app/`:
 
    ```sh

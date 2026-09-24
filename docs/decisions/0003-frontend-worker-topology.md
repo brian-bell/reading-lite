@@ -3,7 +3,9 @@
 - **Status:** Accepted; hosts and release amended 2026-09-13 (see
   [Amendment](#amendment-2026-09-13-preview-hosts-from-phase-3)); preview
   hosts retired 2026-09-24 (see
-  [Retirement](#retirement-2026-09-24-preview-hosts))
+  [Retirement](#retirement-2026-09-24-preview-hosts)); legacy SPA and Pages
+  rollback retired 2026-09-24 (see
+  [Retirement](#retirement-2026-09-24-legacy-spa))
 - **Date:** 2026-09-10
 - **Decision owners:** Brian Bell
 - **Task:** [#338](https://github.com/brian-bell/reading-lite/issues/338), under
@@ -92,7 +94,8 @@ observability.
   delivers `/api/*`, `/health`, or `/mcp*` to it, it returns 404 rather than
   rendering or proxying, so the fault is visible.
 - Pages stays deployed. Rolling back a host means deleting that host's frontend
-  `/*` route; Pages serves it again with no rebuild.
+  `/*` route; Pages serves it again with no rebuild. (Superseded 2026-09-24:
+  see [Retirement](#retirement-2026-09-24-legacy-spa).)
 - After every route change, a smoke check confirms that `/health` answers from
   the backend and `/` answers from the frontend on each affected host.
 
@@ -244,3 +247,25 @@ be started again on a public host. The deploy token only adds routes, so the liv
 two DNS records are deleted in the Cloudflare dashboard after the releases that
 drop them; see [New-frontend hosts](../operations.md#new-frontend-hosts).
 Each environment's frontend now serves only its two public hosts.
+
+## Retirement (2026-09-24): legacy SPA
+
+Brian closed the post-cutover observation period and approved retiring the
+legacy SPA (reading-lite-gh335.3). The `web/` project, its Pages deploy job,
+`ops deploy web`, its CI job and changed-jobs mapping, and the
+`web/src/types.ts` schema mirror and its test are removed from the repository.
+The Connected prototype that lived under `web/prototypes/` is deleted with it;
+the frozen source commit named in the
+[handoff](../design/connected/README.md#frozen-source) still holds it. The
+production release workflow is now `.github/workflows/deploy-app.yml`, with the
+frontend as its only job.
+
+This supersedes rollback by route deletion. Deleting a host's `/*` route no
+longer hands the host back to anything. Frontend rollback is `wrangler
+rollback` of the frontend Worker to a previous version, which still leaves the
+backend untouched; see
+[Frontend rollback](../operations.md#frontend-rollback). The Pages project and
+its four custom domains are removed in the Cloudflare dashboard after the
+release, replacing each Pages-created DNS record with a proxied placeholder
+first so the Worker routes keep receiving traffic; see
+[Retiring the Pages SPA](../operations.md#retiring-the-pages-spa).

@@ -1499,7 +1499,7 @@ describe("the Details section", () => {
   });
 
   // Acceptance: "Open as file" opens extracted Markdown and the raw capture as
-  // the current SPA does — a blob in a new tab — except that the blob is
+  // the legacy SPA does — a blob in a new tab — except that the blob is
   // plain text whatever the capture was (reading-files.ts).
   it("opens the extracted Markdown and the raw capture in a new tab as plain text", async () => {
     const fetchMock = browserAnswers({

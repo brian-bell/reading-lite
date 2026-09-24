@@ -1,6 +1,6 @@
 /**
  * reading-lite isometric system map
- * Building placement and flows are derived from the Worker/SPA architecture
+ * Building placement and flows are derived from the Worker/frontend architecture
  * described in docs/architecture.md and the modules cited on each node.
  */
 
@@ -37,7 +37,7 @@ function isoToScreen(gx, gy, gz = 0) {
 const BUILDINGS = [
   {
     id: "spa",
-    name: "Pages SPA",
+    name: "Frontend Worker",
     gx: 1,
     gy: 8,
     w: 70,
@@ -46,8 +46,8 @@ const BUILDINGS = [
     zone: "client",
     variant: "pavilion",
     blurb:
-      "React/Vite SPA on Cloudflare Pages, the rollback frontend beside the app/ frontend Worker; both call the same API. Uses a host-only magic-link session cookie and CSRF tokens for writes. Lists/searches readings, submits URLs, opens content, and starts reprocesses. Invalidates queries after writes without polling pending readings.",
-    cites: ["web/src/App.tsx", "web/src/api.ts", "web/src/types.ts"],
+      "TanStack Start frontend (app/) on its own Worker. Uses a host-only magic-link session cookie and CSRF tokens for writes. Lists/searches readings, submits URLs, opens content, and starts reprocesses. Invalidates queries after writes without polling pending readings.",
+    cites: ["app/src/api/client.ts", "app/src/api/save.ts", "app/src/server/backend-reads.ts"],
     payload: `Cookie: __Host-session=…\nX-CSRF-Token: …  // writes\nGET /api/readings?q=&tag=\nPOST /api/readings { url, email? }`,
   },
   {
@@ -292,9 +292,9 @@ const FLOWS = {
   submit: {
     title: "1 · Submit & claim",
     summary:
-      "SPA POSTs a URL. Reading intake resolves ownership against reading_urls. An unclaimed URL is claimed in one transaction with the pending reading, its attempt, and its job; activateAttempt then enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
+      "The frontend POSTs a URL. Reading intake resolves ownership against reading_urls. An unclaimed URL is claimed in one transaction with the pending reading, its attempt, and its job; activateAttempt then enqueues ProcessReadingArgs. Ready/pending owners return existing; failed owners reprocess in place.",
     cites: [
-      "web/src/api.ts",
+      "app/src/api/save.ts",
       "src/router.ts",
       "src/intake/index.ts",
       "src/intake/activation.ts",
@@ -476,14 +476,14 @@ const FLOWS = {
     summary:
       "Authenticated list/detail/content/diagnostics. List and q/tag search query the tenant's reading rows in PostgreSQL; detail reads the reading row; content streams from R2; the staleness overlay may annotate pending as failed without writing. Lookup is side-effect-free.",
     cites: [
-      "web/src/App.tsx",
+      "app/src/api/library.ts",
       "src/router.ts",
       "src/modules/stores/postgres/reading-store.ts",
       "src/modules/stores/content-store.ts",
       "src/modules/staleness.ts",
     ],
     kind: "read",
-    // SPA list/search is q/tag over PostgreSQL rows via the Worker — it never
+    // Frontend list/search is q/tag over PostgreSQL rows via the Worker — it never
     // calls POST /api/readings/similar, so the pgvector scan stays off this path.
     nodes: ["spa", "worker", "postgres", "r2", "staleness"],
     hops: [
@@ -518,7 +518,7 @@ const FLOWS = {
 const OVERVIEW = {
   title: "reading-lite edge district",
   body:
-    "A personal reading service on Cloudflare Workers. Submit a URL → eager URL claim (pending reading, attempt, and job in one PostgreSQL transaction) → queue → extract to R2, embed, similar-context summarize → one PostgreSQL publish transaction with the embedding. Provider selection never falls back silently.",
+    "A personal reading service on Cloudflare Workers with a TanStack Start frontend. Submit a URL → eager URL claim (pending reading, attempt, and job in one PostgreSQL transaction) → queue → extract to R2, embed, similar-context summarize → one PostgreSQL publish transaction with the embedding. Provider selection never falls back silently.",
   cites: ["docs/architecture.md", "src/index.ts", "src/router.ts", "src/process-reading.ts", "wrangler.toml"],
 };
 

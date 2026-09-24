@@ -1,5 +1,5 @@
-// Stroke icons from the Connected prototype
-// (web/prototypes/interface-directions/study.tsx). Decorative only.
+// Stroke icons from the Connected prototype (study.tsx at the frozen source
+// commit in docs/design/connected/README.md). Decorative only.
 const paths = {
   library: "M4 4h4v16H4z M10 4h4v16h-4z M16 5l3-1 4 15-3 1z",
   plus: "M12 5v14 M5 12h14",
