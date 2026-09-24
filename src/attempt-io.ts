@@ -103,23 +103,25 @@ export class AttemptIo {
   // more. Guarded the way discardUnreferencedContent is: the reading's
   // current keys are read first, and whatever they still point at stays,
   // this attempt's own prefix included. Content under a revision prefix goes
-  // with its prefix; the legacy spelling shares key_prefix with everything
-  // else, so only its two objects go.
+  // with its prefix.
+  //
+  // Legacy-spelled content (raw.{ext} and extracted.md directly under
+  // key_prefix) is only ever an imported reading's initial revision, and the
+  // legacy manifest still names it: a rollback to the D1-era Worker serves
+  // that reading from it. It stays until #351 retires the legacy layout
+  // (reading-lite-gh346.3).
   //
   // A read that resolved the old keys just before this delete re-resolves
   // them on a missing object (router.ts readContent), which is what makes
   // deleting here, rather than deferring, safe for in-flight requests.
   async discardSupersededContent(keys: AttemptContentKeys): Promise<void> {
     const revisions = layout.revisionsPrefix(this.args.keyPrefix);
+    if (!keys.rawKey.startsWith(revisions)) return;
     const own = `${revisions}${resolveAttemptId(this.args)}/`;
     if (keys.rawKey.startsWith(own)) return;
     const current = await this.store.contentKeys(this.args.id);
     if (current && (current.rawKey === keys.rawKey || (keys.extractedKey !== null && current.extractedKey === keys.extractedKey))) return;
-    if (keys.rawKey.startsWith(revisions)) {
-      await this.content.deletePrefix(keys.rawKey.slice(0, keys.rawKey.lastIndexOf("/") + 1));
-      return;
-    }
-    await this.content.delete(keys.extractedKey === null ? [keys.rawKey] : [keys.rawKey, keys.extractedKey]);
+    await this.content.deletePrefix(keys.rawKey.slice(0, keys.rawKey.lastIndexOf("/") + 1));
   }
 
   private async recordContent(): Promise<void> {

@@ -68,14 +68,6 @@ export class ContentStore {
     }
   }
 
-  // Deletes exactly these objects: a superseded revision's content at the
-  // legacy spelling, which shares its key_prefix with the live objects and so
-  // cannot be swept by prefix.
-  async delete(relativeKeys: readonly string[]): Promise<void> {
-    if (relativeKeys.length === 0) return;
-    await this.bucket.delete(relativeKeys.map((key) => this.abs(key)));
-  }
-
   // Diagnostics: what is actually in the bucket under one reading.
   async list(keyPrefix: string): Promise<ReadingObjectInfo[]> {
     const list = await this.bucket.list({ prefix: this.abs(`${keyPrefix}/`), limit: 1000 });
