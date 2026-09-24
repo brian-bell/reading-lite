@@ -63,10 +63,9 @@ describe("PostgreSQL cutover guard", () => {
     expect(checkPostgresCutover("production", { execute: true, toml, flags: OFF })).toEqual({ ok: true, bound: false });
   });
 
-  it("admits staging and refuses production in the checked-in config", () => {
-    // Real wrangler.toml, real flags: #349 cut staging over; production waits for #350.
-    expect(checkPostgresCutover("staging", { execute: true })).toEqual({ ok: true, bound: true });
-    expect(checkPostgresCutover("production", { execute: true }).ok).toBe(false);
+  it.each(["staging", "production"] as const)("admits %s in the checked-in config", (env) => {
+    // Real wrangler.toml, real flags: #349 cut staging over, #350 production.
+    expect(checkPostgresCutover(env, { execute: true })).toEqual({ ok: true, bound: true });
   });
 });
 
