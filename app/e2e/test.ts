@@ -119,9 +119,12 @@ export async function serveLibraryInBrowser(
  * through to the Worker (or to a `serveLibraryInBrowser` route), or a page's
  * list would be answered by the save stub.
  */
-export function serveSaveInBrowser(page: Page, answer: { status: number; json: unknown }): Request[] {
+export async function serveSaveInBrowser(
+  page: Page,
+  answer: { status: number; json: unknown },
+): Promise<Request[]> {
   const saves: Request[] = [];
-  void page.route("**/api/readings", async (route) => {
+  await page.route("**/api/readings", async (route) => {
     if (route.request().method() !== "POST") {
       await route.fallback();
       return;

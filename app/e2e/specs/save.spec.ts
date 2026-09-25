@@ -37,7 +37,7 @@ function field(page: Page) {
 
 test("saves a URL and opens the reading it created, without a new document", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
-  const saves = serveSaveInBrowser(page, { status: 202, json: ACCEPTED });
+  const saves = await serveSaveInBrowser(page, { status: 202, json: ACCEPTED });
   // The reading the save opens is read in the browser: the frontend Worker
   // answers /api/* with 404 by design (ADR 0003).
   await serveReadingsInBrowser(page);
@@ -54,6 +54,9 @@ test("saves a URL and opens the reading it created, without a new document", asy
   await expect(field(page)).toBeVisible();
   expect(documents).toEqual(["/save"]);
 
+  // Before hydration attaches onSubmit, Save is a native GET submit that
+  // reloads /save and never makes the save (reading-lite-e35g).
+  await page.waitForLoadState("networkidle");
   await field(page).fill(URL_TO_SAVE);
   await page.getByRole("button", { name: "Save" }).click();
 
@@ -81,9 +84,10 @@ test("says a URL already in the library is, and forgets it on reload", async ({ 
   await signIn(page.context(), baseURL!);
   await serveReadingsInBrowser(page);
   // 200 is the owning reading's manifest; this one is ready.
-  serveSaveInBrowser(page, { status: 200, json: pack.readings[READY] });
+  await serveSaveInBrowser(page, { status: 200, json: pack.readings[READY] });
 
   await page.goto("/save");
+  await page.waitForLoadState("networkidle");
   await field(page).fill("https://quieter.example/a-quieter-internet");
   await page.getByRole("button", { name: "Save" }).click();
 
