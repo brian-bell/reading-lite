@@ -67,7 +67,7 @@ It does not include processing logs or account secrets.
 - \`index.json\` — every reading, every status, in library order (\`version\` 1, \`items\`). Items use the library list shape, so each one includes \`key_prefix\`. That is the row's historical storage location, not a path in this zip. Bytes live under \`readings/<id>/\`.
 - \`readings/<id>/manifest.json\` — the reading record (summary, metadata, relationships). Same fields as the reading detail. No storage keys.
 - \`readings/<id>/extracted.md\` — captured Markdown, when \`content_status\` is \`captured\` and the object was in storage.
-- \`readings/<id>/raw.<ext>\` — the original bytes. \`<ext>\` comes from the stored content type: \`html\`, \`md\`, \`pdf\`, \`json\`, \`txt\`, or \`bin\`.
+- \`readings/<id>/raw.<ext>\` — the original bytes. \`<ext>\` comes from the reading's \`content_type\` (for a reading that never published, the type its bytes were stored with): \`html\`, \`md\`, \`pdf\`, \`json\`, \`txt\`, or \`bin\`.
 - \`report.json\` — gaps. \`missing_artifacts\` (an expected object was absent), \`dangling_relationships\` (a connection or tension whose target is not in this export), and \`warnings\` (the stored bytes disagree with \`content_bytes\`, \`content_sha256\`, or \`extracted_bytes\`; not checked while a reading that never published still has the placeholder \`content_bytes\` 0). Warnings are not failures: the file in the zip is what was stored. All three arrays are always present. Nothing is left out.
 - \`checksums.sha256\` — SHA-256 of every other file, GNU \`sha256sum\` text mode (\`<64 hex>  <path>\`), sorted by path. This file is not listed in itself.
 
@@ -122,11 +122,14 @@ function sortedBy<T>(items: readonly T[], key: (item: T) => readonly string[]): 
   });
 }
 
-async function readBytes(content: ContentStore, key: string | null): Promise<Uint8Array | null> {
+async function readObject(
+  content: ContentStore,
+  key: string | null,
+): Promise<{ bytes: Uint8Array; contentType: string } | null> {
   if (key === null) return null;
   const object = await content.get(key);
   if (!object) return null;
-  return new Uint8Array(await object.arrayBuffer());
+  return { bytes: new Uint8Array(await object.arrayBuffer()), contentType: object.contentType };
 }
 
 interface ArchivePart {
@@ -196,20 +199,22 @@ async function packCurrentReading(
 // the bucket is a missing artifact. A present object whose size or sha256
 // disagrees with the row is a warning, and the bytes still ship. A row that
 // still carries the empty-content placeholder describes no bytes, so raw
-// bytes an unpublished attempt stored ship without that comparison.
+// bytes an unpublished attempt stored ship without that comparison, named by
+// the type they were stored with rather than the placeholder's.
 async function packReading(content: ContentStore, state: ReadingState): Promise<PackedReading> {
   const { loaded, keys } = state;
   const manifest = loaded.manifest;
   const id = manifest.id;
   const dir = `readings/${id}`;
-  const rawPath = `${dir}/raw.${rawExtFromContentType(keys?.contentType ?? manifest.content_type)}`;
+  const described = !isEmptyContent(manifest);
+  const rowType = keys?.contentType ?? manifest.content_type;
   const extractedPath = `${dir}/extracted.md`;
   const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes(manifest))];
   const missing: ArchiveMissingArtifact[] = [];
   const warnings: ArchiveContentWarning[] = [];
 
   if (manifest.content_status === "captured") {
-    const extracted = await readBytes(content, keys?.extractedKey ?? null);
+    const extracted = (await readObject(content, keys?.extractedKey ?? null))?.bytes;
     if (!extracted) {
       missing.push({ reading_id: id, kind: "extracted", path: extractedPath });
     } else {
@@ -226,13 +231,15 @@ async function packReading(content: ContentStore, state: ReadingState): Promise<
     }
   }
 
-  const raw = await readBytes(content, keys?.rawKey ?? null);
-  if (!raw) {
+  const stored = await readObject(content, keys?.rawKey ?? null);
+  const rawType = stored && !described ? stored.contentType : rowType;
+  const rawPath = `${dir}/raw.${rawExtFromContentType(rawType)}`;
+  if (!stored) {
     missing.push({ reading_id: id, kind: "raw", path: rawPath });
   } else {
+    const raw = stored.bytes;
     const entry = await hashed(rawPath, raw);
     entries.push(entry);
-    const described = !isEmptyContent(manifest);
     if (described && raw.byteLength !== manifest.content_bytes) {
       warnings.push({
         reading_id: id,

@@ -20,7 +20,7 @@ needs with the file open and the repo closed.
 | `index.json` | `{ "version": 1, "items": [...] }`, one item per exported reading, in library order. The item is the list-row shape, so it includes `key_prefix`. That prefix is the row's historical storage location. It is not a path inside this zip. |
 | `readings/<id>/manifest.json` | The reading record: summary, metadata, content facts, and relationships. Same fields as the reading detail. No `key_prefix`. |
 | `readings/<id>/extracted.md` | Captured Markdown. Present when `content_status` is `captured` and the object was in storage. |
-| `readings/<id>/raw.<ext>` | The original bytes. `<ext>` comes from the stored content type, not from the storage key: `html` (`text/html`, `application/xhtml+xml`), `md` (`text/markdown`), `pdf`, `json`, `txt` (any other `text/*`), or `bin`. |
+| `readings/<id>/raw.<ext>` | The original bytes. `<ext>` comes from the reading's `content_type`, not from the storage key: `html` (`text/html`, `application/xhtml+xml`), `md` (`text/markdown`), `pdf`, `json`, `txt` (any other `text/*`), or `bin`. A reading that never published and still carries the empty-content placeholder has no real `content_type`, so its attempt's bytes are named by the type they were stored with. |
 | `report.json` | Gaps. The arrays are always present. An empty array means that check found nothing. |
 | `checksums.sha256` | SHA-256 of every other file. |
 

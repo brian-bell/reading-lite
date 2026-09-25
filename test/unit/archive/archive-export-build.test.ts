@@ -230,11 +230,16 @@ describe("buildArchiveExport", () => {
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
   });
 
-  it("ships an unpublished attempt's raw bytes without comparing them to the placeholder facts", async () => {
+  it("ships an unpublished attempt's raw bytes under their stored type, without comparing them to the placeholder", async () => {
     const { db, sql } = openControlPlane();
     const { tenantId, bucket, env, readings } = await arrange(sql, db);
-    // rd_pending carries the pending draft's empty-content placeholder; its
-    // running attempt has already captured raw bytes.
+    // rd_pending carries the pending draft's empty-content placeholder,
+    // application/octet-stream included; its running attempt has already
+    // stored raw bytes with the type it fetched.
+    await sql.query(
+      "UPDATE readings SET content_type = 'application/octet-stream' WHERE tenant_id = $1 AND id = 'rd_pending'",
+      [TENANT_ID],
+    );
     const html = new TextEncoder().encode("<p>Captured mid-attempt.</p>");
     const rawKey = "readings/pending/revisions/at_running/raw.html";
     await readings.content.put(rawKey, html, "text/html; charset=utf-8");
