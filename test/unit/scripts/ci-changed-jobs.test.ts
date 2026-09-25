@@ -24,6 +24,7 @@ describe("CI job selection for pull requests", () => {
     ["a frontend route", ["app/src/routes/index.tsx"], only("app", "appBrowser")],
     ["a frontend unit test", ["app/test/reading-state.test.ts"], only("app")],
     ["the browser fixture pack", ["app/e2e/fixtures/fixture-pack.json"], only("worker", "app", "appBrowser")],
+    ["the Markdown import limit the Worker suite pins", ["app/src/markdown-import-limit.ts"], only("worker", "app", "appBrowser")],
     ["the FrontendReads seam", ["src/frontend-reads.ts"], only("worker", "ops", "app")],
     // PR #444: staging routes, a comment in wrangler.toml, and docs.
     [

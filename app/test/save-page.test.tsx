@@ -7,7 +7,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
@@ -19,6 +19,7 @@ import { ReadingPage } from "../src/components/ReadingPage";
 import { SavePage } from "../src/components/SavePage";
 import { SignInPage } from "../src/components/SignInPage";
 import { whoamiQueryKey, type Identity } from "../src/identity";
+import { MARKDOWN_IMPORT_BUDGET_BYTES } from "../src/markdown-import-limit";
 import { libraryQueryKey } from "../src/library";
 import { readingQueryKey, type Reading } from "../src/reading";
 import { readingQueryOptions } from "../src/reading-query";
@@ -159,6 +160,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe("the save page", () => {
@@ -626,6 +628,23 @@ describe("the save page", () => {
     expect(router.state.location.href).toBe("/save");
   });
 
+  // An attempt already running over the URL's owner is a refusal the backend
+  // finishes by itself: the body names no reading, and asking again while it
+  // runs gets the same answer, so there is nothing to offer but the sentence.
+  it("says a URL already being processed is, and offers no retry", async () => {
+    stubFetch(() => Response.json({ error: "reading already has an active attempt" }, { status: 409 }));
+    const { router } = await openSave();
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("This reading is already processing."));
+    expect(screen.getByRole("status")).toHaveTextContent("This reading is already processing.");
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(urlField()).toHaveValue("https://example.com/a");
+    expect(router.state.location.href).toBe("/save");
+  });
+
   // A second refusal replaces the first rather than stacking beside it, and
   // the reader is not left with focus on a button that has just gone.
   it("replaces one refusal with the next and keeps the reader in the form", async () => {
@@ -799,22 +818,6 @@ describe("a URL that is already a reading", () => {
     expect(isAbove(banner, card)).toBe(true);
   });
 
-  // The 409 owner is still initializing: it names an id and no state, so the
-  // reading's own status card is the whole answer.
-  it("opens the reading a 409 names with no notice at all", async () => {
-    const { router, queryClient, libraryKey } = await saveExisting(
-      { error: "reading owner is still initializing", id: PENDING, poll: `/api/readings/${PENDING}` },
-      409,
-    );
-
-    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
-    expect(await screen.findByText("This reading is still being processed.")).toBeVisible();
-    expect(screen.queryByText("Already in your library")).not.toBeInTheDocument();
-    expect(screen.queryByText("Already saved and still processing")).not.toBeInTheDocument();
-    expect(router.state.location.state.saveNotice).toBeUndefined();
-    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
-  });
-
   // The reading page renders the cached reading (staleTime: Infinity), so a
   // copy read before the save would still be on screen under a notice taken
   // from the fresh manifest: "Already in your library" over a card saying it
@@ -858,3 +861,337 @@ describe("a URL that is already a reading", () => {
     expect(router.state.location.state.saveNotice).toBeUndefined();
   });
 });
+
+// Importing Markdown (#408): the second tab of the same page, through the same
+// request and outcomes. What is shared with the URL tab is proven there once;
+// these are what the import adds — its fields, the queue limit, where a
+// rejection lands, the tab itself — and one pass through each outcome row the
+// acceptance matrix gives an import.
+describe("the Markdown tab", () => {
+  const MARKDOWN_READING = "rd_FXMDPAGE01";
+  const SOURCE_URL = "https://notes.example/slow-reading-week";
+  const MARKDOWN = "# A slow reading week\n\nWhat a week of reading one thing at a time taught me.";
+
+  function tab(name: "URL" | "Markdown"): HTMLElement {
+    return screen.getByRole("tab", { name });
+  }
+
+  function sourceUrlField(): HTMLInputElement {
+    return screen.getByRole("textbox", { name: "Source URL" }) as HTMLInputElement;
+  }
+
+  function titleField(): HTMLInputElement {
+    return screen.getByRole("textbox", { name: "Title (optional)" }) as HTMLInputElement;
+  }
+
+  function markdownField(): HTMLTextAreaElement {
+    return screen.getByRole("textbox", { name: "Markdown" }) as HTMLTextAreaElement;
+  }
+
+  async function openMarkdown() {
+    const opened = await openSave();
+    await userEvent.click(tab("Markdown"));
+    return opened;
+  }
+
+  /** A paste lands in one input event, as a long one does in a browser. */
+  function paste(field: HTMLElement, text: string) {
+    fireEvent.change(field, { target: { value: text } });
+  }
+
+  async function fillAndImport({ sourceUrl = SOURCE_URL, title = "", markdown = MARKDOWN } = {}) {
+    if (sourceUrl) await userEvent.type(sourceUrlField(), sourceUrl);
+    if (title) await userEvent.type(titleField(), title);
+    if (markdown) paste(markdownField(), markdown);
+    await userEvent.click(screen.getByRole("button", { name: "Import" }));
+  }
+
+  function lastBody(): Promise<unknown> {
+    const calls = vi.mocked(fetch).mock.calls;
+    return (calls[calls.length - 1]![0] as unknown as Request).json();
+  }
+
+  it("offers the Markdown tab and its fields", async () => {
+    await openMarkdown();
+
+    expect(tab("Markdown")).toHaveAttribute("aria-selected", "true");
+    expect(tab("URL")).toHaveAttribute("aria-selected", "false");
+    expect(sourceUrlField()).toBeInTheDocument();
+    expect(titleField()).toBeInTheDocument();
+    expect(markdownField()).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "URL" })).not.toBeInTheDocument();
+  });
+
+  // The ARIA tabs pattern (ViewTabs): arrows wrap, Home and End jump, a tab
+  // is selected as it is focused, and the panel is a stop of its own.
+  it("moves between the tabs from the keyboard", async () => {
+    await openSave();
+    tab("URL").focus();
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(tab("Markdown")).toHaveFocus();
+    expect(tab("Markdown")).toHaveAttribute("aria-selected", "true");
+    expect(markdownField()).toBeInTheDocument();
+
+    await userEvent.keyboard("{ArrowRight}");
+    expect(tab("URL")).toHaveFocus();
+    await userEvent.keyboard("{End}");
+    expect(tab("Markdown")).toHaveFocus();
+    await userEvent.keyboard("{Home}");
+    expect(tab("URL")).toHaveFocus();
+    await userEvent.keyboard("{ArrowLeft}");
+    expect(tab("Markdown")).toHaveFocus();
+
+    await userEvent.tab();
+    expect(screen.getByRole("tabpanel")).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAccessibleName("Markdown");
+  });
+
+  // What the reader typed is the page's, not the tab's: switching does not
+  // throw either form away.
+  it("keeps what was typed in each tab across a switch", async () => {
+    await openSave();
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(tab("Markdown"));
+    await userEvent.type(sourceUrlField(), SOURCE_URL);
+    paste(markdownField(), MARKDOWN);
+
+    await userEvent.click(tab("URL"));
+    expect(urlField()).toHaveValue("https://example.com/a");
+    await userEvent.click(tab("Markdown"));
+    expect(sourceUrlField()).toHaveValue(SOURCE_URL);
+    expect(markdownField()).toHaveValue(MARKDOWN);
+  });
+
+  // Remembered for the browser tab's session, not in the URL. A page mounted
+  // into a running app (a client-side navigation) opens on the remembered tab
+  // in its first render, rather than flashing the URL tab; what is stored,
+  // and the hydrating load's catch-up, belong to e2e/specs/save.spec.ts.
+  it("opens on the remembered tab without showing the URL tab first", async () => {
+    sessionStorage.setItem("reading-lite:save-tab", "markdown");
+    // act() flushes the mount effect before anything can be asserted, so the
+    // flash is caught in the DOM's own record: a URL form rendered and then
+    // swapped out is a removed node that still holds its field.
+    const removed: Node[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) removed.push(...record.removedNodes);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    await openSave();
+    observer.disconnect();
+    removed.push(...observer.takeRecords().flatMap((record) => [...record.removedNodes]));
+
+    expect(tab("Markdown")).toHaveAttribute("aria-selected", "true");
+    expect(removed.some((node) => node instanceof Element && node.querySelector('input[name="url"]'))).toBe(false);
+  });
+
+  it("opens on the URL tab when the remembered one is not a tab", async () => {
+    sessionStorage.setItem("reading-lite:save-tab", "elsewhere");
+    await openSave();
+
+    expect(tab("URL")).toHaveAttribute("aria-selected", "true");
+  });
+
+  // Every field the rules refuse says so, and focus goes to the first of them.
+  it("refuses what it can see is wrong without asking the backend", async () => {
+    const fetchMock = stubFetch(() => Response.json({ id: MARKDOWN_READING }, { status: 202 }));
+    const { router } = await openMarkdown();
+
+    await fillAndImport({ sourceUrl: "", markdown: "" });
+
+    const urlMessage = screen.getByText("Enter the URL the Markdown came from.");
+    const markdownMessage = screen.getByText("Paste the Markdown you want to import.");
+    expect(sourceUrlField()).toHaveFocus();
+    expect(sourceUrlField()).toHaveAttribute("aria-invalid", "true");
+    expect(sourceUrlField()).toHaveAttribute("aria-describedby", urlMessage.id);
+    expect(markdownField()).toHaveAttribute("aria-invalid", "true");
+    expect(markdownField()).toHaveAttribute("aria-describedby", markdownMessage.id);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  it("puts the reader in the Markdown when that is all that is wrong", async () => {
+    const fetchMock = stubFetch(() => Response.json({ id: MARKDOWN_READING }, { status: 202 }));
+    await openMarkdown();
+
+    await fillAndImport({ markdown: "" });
+
+    expect(screen.getByText("Paste the Markdown you want to import.")).toBeVisible();
+    expect(markdownField()).toHaveFocus();
+    expect(sourceUrlField()).not.toHaveAttribute("aria-invalid");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // The queue limit, which the backend only meets after it has written a
+  // reading: the form measures what it would send and never sends it.
+  it("refuses Markdown over the queue limit, names it, and keeps the text", async () => {
+    const fetchMock = stubFetch(() => Response.json({ id: MARKDOWN_READING }, { status: 202 }));
+    const { router } = await openMarkdown();
+    const tooLarge = "a".repeat(MARKDOWN_IMPORT_BUDGET_BYTES);
+
+    await fillAndImport({ markdown: tooLarge });
+
+    const message = screen.getByText(/Imports are limited to 128 KB; shorten the text and try again\./);
+    expect(markdownField()).toHaveFocus();
+    expect(markdownField()).toHaveAttribute("aria-describedby", message.id);
+    expect(markdownField().value).toBe(tooLarge);
+    expect(sourceUrlField()).toHaveValue(SOURCE_URL);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // The rules cover everything else the backend checks, so its 400 is about
+  // the URL it would not fetch as a source.
+  it("renders a rejection from the backend on the source URL", async () => {
+    stubFetch(() =>
+      Response.json({ error: "url rejected: host is not allowed", code: "unsupported_url" }, { status: 400 }),
+    );
+    const { router } = await openMarkdown();
+
+    await fillAndImport({ sourceUrl: "https://blocked.example/a" });
+
+    await waitFor(() => expect(screen.getByText("url rejected: host is not allowed")).toBeVisible());
+    expect(sourceUrlField()).toHaveFocus();
+    expect(sourceUrlField()).toHaveAttribute("aria-invalid", "true");
+    expect(markdownField()).toHaveValue(MARKDOWN);
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // The accepted row, landing on a reading shaped like the one an import
+  // makes (the fixture pack's imported-markdown), whose metadata says so.
+  it("imports the Markdown and opens the reading it made", async () => {
+    stubFetch(() =>
+      Response.json(
+        { id: MARKDOWN_READING, status: "pending", poll: `/api/readings/${MARKDOWN_READING}`, attempt_id: "att_1" },
+        { status: 202 },
+      ),
+    );
+    const { router, queryClient } = await openMarkdown();
+    const libraryKey = libraryQueryKey({ offset: 0 });
+    queryClient.setQueryData(libraryKey, { state: "ready", page: { readings: [], limit: 20, offset: 0, has_more: false } });
+
+    await fillAndImport({ title: "A slow reading week" });
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${MARKDOWN_READING}`));
+    expect(await screen.findByText("Imported Markdown", { exact: false })).toBeVisible();
+    expect(queryClient.getQueryState(libraryKey)?.isInvalidated).toBe(true);
+    await expect(lastBody()).resolves.toEqual({
+      source_url: SOURCE_URL,
+      title: "A slow reading week",
+      markdown: MARKDOWN,
+    });
+  });
+
+  it("says an import landed before it leaves the page", async () => {
+    stubFetch(() => Response.json({ id: MARKDOWN_READING }, { status: 202 }));
+    backend.reading.mockImplementation(() => new Promise(() => {}));
+    await openMarkdown();
+
+    await fillAndImport();
+
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Imported. Opening the reading…"));
+  });
+
+  // A source URL already in the library is not imported again: the backend
+  // returns its owner, and the reading says so on arrival.
+  it("opens a reading that already owns the source URL, saying so", async () => {
+    stubFetch(() => Response.json(readings[MARKDOWN_READING], { status: 200 }));
+    const { router } = await openMarkdown();
+
+    await fillAndImport();
+
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${MARKDOWN_READING}`));
+    expect(await screen.findByText("Already in your library")).toBeVisible();
+  });
+
+  it("says the owner is already processing, and keeps the paste", async () => {
+    stubFetch(() => Response.json({ error: "reading already has an active attempt" }, { status: 409 }));
+    await openMarkdown();
+
+    await fillAndImport();
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("This reading is already processing."));
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(markdownField()).toHaveValue(MARKDOWN);
+  });
+
+  it("keeps the form when a 429 names a limit, and asks again from it", async () => {
+    const fetchMock = stubRefusedThenAccepted(() =>
+      Response.json(
+        { error: "quota exhausted", code: "quota_exhausted", limit: "monthly", reset_at: "2026-12-31T23:59:00Z" },
+        { status: 429 },
+      ),
+    );
+    const { router } = await openMarkdown();
+
+    await fillAndImport();
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("You've reached the monthly reading limit."));
+    expect(sourceUrlField()).toHaveValue(SOURCE_URL);
+    expect(markdownField()).toHaveValue(MARKDOWN);
+
+    // Try again asks for what is on screen: the import, not a URL save.
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(router.state.location.href).toBe(`/readings/${PENDING}`));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(new URL((vi.mocked(fetch).mock.calls[1]![0] as unknown as Request).url).pathname).toBe(
+      "/api/readings/import-markdown",
+    );
+  });
+
+  it("keeps the form when importing is unavailable, and offers the reading it names", async () => {
+    stubFetch(() => Response.json({ error: "queue send failed", id: MARKDOWN_READING }, { status: 503 }));
+    const { router } = await openMarkdown();
+
+    await fillAndImport();
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Importing is unavailable right now."));
+    expect(screen.getByRole("status")).toHaveTextContent("Importing is unavailable right now.");
+    expect(screen.getByRole("link", { name: "Open the reading" })).toHaveAttribute(
+      "href",
+      `/readings/${MARKDOWN_READING}`,
+    );
+    expect(markdownField()).toHaveValue(MARKDOWN);
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // A rejection that lands after the reader switched tabs is not left on a
+  // form that is not there: the page goes back to the one it rejected.
+  it("takes the reader back to the Markdown tab when its import is rejected there", async () => {
+    let answer: (response: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))),
+    );
+    const { router } = await openMarkdown();
+    await fillAndImport({ sourceUrl: "https://blocked.example/a" });
+    await userEvent.click(tab("URL"));
+
+    await act(async () => {
+      answer(Response.json({ error: "url rejected: host is not allowed", code: "unsupported_url" }, { status: 400 }));
+    });
+
+    await waitFor(() => expect(screen.getByText("url rejected: host is not allowed")).toBeVisible());
+    expect(tab("Markdown")).toHaveAttribute("aria-selected", "true");
+    expect(sourceUrlField()).toHaveFocus();
+    expect(markdownField()).toHaveValue(MARKDOWN);
+    expect(router.state.location.href).toBe("/save");
+  });
+
+  // The notice's button goes with the notice, so focus goes back to the form
+  // the retry asked for rather than falling to the document.
+  it("puts the reader back in the form after a retry from a notice", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: "usage guard unavailable" }, { status: 429 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await openMarkdown();
+    await fillAndImport();
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Limits can't be checked right now."));
+
+    await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Limits can't be checked right now."));
+    expect(sourceUrlField()).toHaveFocus();
+  });
+});
+

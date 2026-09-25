@@ -136,6 +136,29 @@ export async function serveSaveInBrowser(
 }
 
 /**
+ * Answers `POST /api/readings/import-markdown` in the browser with one canned
+ * response, and records the imports made (#408), as serveSaveInBrowser does
+ * for a URL. `serveReadingsInBrowser`'s `/api/readings/*` would answer this
+ * path as a reading id, so call this after it: Playwright asks the route
+ * registered last first.
+ */
+export async function serveImportInBrowser(
+  page: Page,
+  answer: { status: number; json: unknown },
+): Promise<Request[]> {
+  const imports: Request[] = [];
+  await page.route("**/api/readings/import-markdown", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    imports.push(route.request());
+    await route.fulfill(answer);
+  });
+  return imports;
+}
+
+/**
  * Answers `POST /api/readings/:id/reprocess` in the browser (#410) and records
  * each one, so a spec can read the body the page sent — never `force`.
  * `answer` is called per request, so a spec can refuse the first and accept

@@ -1028,6 +1028,14 @@ textarea {
   font-size: 16px;
 }
 
+/* Pasted Markdown (#408): tall enough to see its shape, and the reader can
+   make it taller. */
+.text-area {
+  min-height: 16rem;
+  resize: vertical;
+  line-height: 1.5;
+}
+
 .text-input[readonly] {
   background: var(--soft);
   color: var(--muted);

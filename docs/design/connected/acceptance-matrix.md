@@ -140,16 +140,15 @@ Each row names the backend signal, what the reader sees, and the actions offered
 
 | State | Signal | Presentation | Actions |
 | --- | --- | --- | --- |
-| Invalid input | Client URL check, or 400 | Field-level error, focus the field | Correct |
+| Invalid input | Client field check (URL; Markdown source URL and text), or 400 | Field-level error, focus the first invalid field | Correct |
 | Already saved, ready | 200 with a ready manifest | Navigate to that reading with an "Already in your library" notice at the top | — |
 | Already saved, processing | 200 with a pending manifest (or a running attempt) | Navigate to that reading with an "Already saved and still processing" notice; the status watch starts | — |
 | Accepted | 202 | Navigate to `/readings/:id`; watch starts | — |
-| Owner initializing | 409 with `id` and `poll` | Navigate to that reading; watch starts | — |
-| Already processing | 409 active attempt, from an explicit reprocess (URL and Markdown capture return 200 for a pending owner instead) | "This reading is already processing." | Open reading |
+| Already processing | 409 active attempt. A reprocess meets it over its own reading; URL and Markdown capture only when an attempt is running over a failed owner (a pending owner returns 200), and the body names no reading | "This reading is already processing." | Open reading (reprocess only) |
 | Request rate or quota | 429 `rate_limited` or `quota_exhausted`, `limit`, `reset_at` | Names the limit (request rate, hourly, monthly) and when it resets | Try again after reset |
 | Usage guard unavailable | 429 `usage guard unavailable` | "Limits can't be checked right now." | Try again |
-| Saving unavailable | 503; optional `id` | "Saving is unavailable right now." Includes a link when `id` is present | Try again |
-| Markdown too large | 503 on import or Markdown reprocess | Explains the 128 KB queue limit | Shorten |
+| Saving unavailable | 503; optional `id` | "Saving is unavailable right now." ("Importing …" for a Markdown import). Includes a link when `id` is present | Try again |
+| Markdown too large | Client check of the serialized request against the 128 KB queue limit, before sending; the backend's own 503 is indistinguishable from "Saving unavailable" | Field-level error on the Markdown naming the 128 KB limit; the text stays | Shorten |
 
 ### Failure categories
 
