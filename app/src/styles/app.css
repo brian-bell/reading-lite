@@ -991,6 +991,20 @@ textarea {
   opacity: 0.55;
 }
 
+/* Hover (reading-lite-hb8o): quiet buttons take a tint, primary ones deepen
+   toward ink. Only where the pointer can hover, so a tap leaves no sticky
+   state, and never on an unavailable button. Instant, like every other hover. */
+@media (hover: hover) {
+  .button:hover:not(:disabled, [aria-disabled="true"]) {
+    background: var(--button-hover-fill);
+  }
+
+  .button-primary:hover:not(:disabled, [aria-disabled="true"]) {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+  }
+}
+
 .field {
   display: flex;
   flex-direction: column;

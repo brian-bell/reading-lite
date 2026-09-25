@@ -129,6 +129,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // Button hover (reading-lite-hb8o): the one state the matrix's resting
+    // screenshots never reach. The spec sets each theme, and a touch device,
+    // itself.
+    name: "controls",
+    testMatch: /controls\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,

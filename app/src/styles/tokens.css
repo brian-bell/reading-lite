@@ -30,6 +30,11 @@
     0 4px 14px light-dark(rgba(84, 62, 36, 0.12), rgba(0, 0, 0, 0.36));
   /* A card's border under the pointer, deepened toward accent. */
   --card-border-hover: color-mix(in oklab, var(--border), var(--accent) 45%);
+  /* A button under the pointer. The quiet fill is an ink tint, so it shows on
+     the page, a card, or an accent-soft panel alike; the primary fill moves
+     accent toward ink, which raises its label's contrast in both themes. */
+  --button-hover-fill: color-mix(in oklab, var(--ink) 10%, transparent);
+  --accent-hover: color-mix(in oklab, var(--accent), var(--ink) 20%);
   /* Floating panels: a ring plus lift in light, a single white ring in dark. */
   --popover-shadow:
     0 0 0 1px light-dark(oklch(0 0 0 / 0.06), oklch(1 0 0 / 0.08)),

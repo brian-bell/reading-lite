@@ -382,6 +382,9 @@ floor — run for the shell. `e2e/specs/reading-cache.spec.ts` (the
 `reading-cache` project) records every request a server-rendered reading page
 makes and fails if the browser asks for the reading or identity again after
 hydration, or when the reader leaves for the library and returns (#370).
+`e2e/specs/controls.spec.ts` (the `controls` project) covers the one state the
+resting screenshots never reach: a `.button` under the pointer changes in both
+themes, and a disabled, aria-disabled, or touch-tapped one does not.
 
 The focus indicator is measured on the element the reader sees, as a rendering
 that changes when focus arrives: the theme options focus a transparent radio
