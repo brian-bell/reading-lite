@@ -26,7 +26,7 @@ The table lists application defaults and checked-in overrides.
 | `RETRY_MAX_DELAY_MS` | `"8000"` | Maximum in-call backoff for transient failures. A 429 leaves the retry loop as `RateLimitedError` for queue rescheduling. |
 | `GUARD_POLICY_CACHE_MS` | unset (no caching); `5000` in staging and production | How long a usage-guard instance may reuse a tenant's limits row or the global concurrency limit. The deletion fence and paid-work switch are always read fresh. |
 | `RELATIONSHIP_REFRESH` | unset; `1` in staging and production | Enables the nightly relationship scan and judge fan-out, which runs only for the active `FOUNDER_EMAIL` tenant with `TENANT_DATA_PLANE=1`. |
-| `REFRESH_MAX_JUDGEMENTS` | `100`; staging `2`, production `5` | Nightly cap on relationship judgements, an integer from 1 to 1000. |
+| `REFRESH_MAX_JUDGEMENTS` | `100`; staging `2`, production `20` | Nightly cap on relationship judgements, an integer from 1 to 1000. |
 
 Bindings are `READINGS_BUCKET` (R2), `HYPERDRIVE` (PostgreSQL; locally a
 passthrough to the docker-compose `postgres` service on port 54329), the

@@ -2834,7 +2834,7 @@ Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
 `RELATIONSHIP_REFRESH=1` is configured in staging and production. Staging uses
-`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=5`. The
+`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=20`. The
 owner-authorized single actual staging run passed on 2026-09-08 before
 production enablement. See [staging evidence](relationship-refresh-staging.md).
 Gate-off queue deliveries acknowledge and discard without storage/provider
@@ -2909,4 +2909,4 @@ is removed by reading purge, the tenant wipe, and the guarded account-teardown
 transaction.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
-keeps a two-judgement nightly cap; production uses five.
+keeps a two-judgement nightly cap; production uses twenty.
