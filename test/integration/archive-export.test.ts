@@ -515,7 +515,7 @@ describe("archive export", () => {
     const index = JSON.parse(new TextDecoder().decode(entries.get("index.json"))) as {
       items: Array<{ id: string; status: string }>;
     };
-    expect(index.items).toHaveLength(stored?.n);
+    expect(stored).toEqual({ n: index.items.length });
     expect(index.items.map((item) => item.status).sort()).toEqual(["failed", "pending", "ready", "ready", "ready"]);
     expect(names.filter((name) => name.endsWith("/manifest.json"))).toHaveLength(index.items.length);
     const document = JSON.parse(new TextDecoder().decode(entries.get("export.json"))) as {
