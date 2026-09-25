@@ -13,6 +13,7 @@ import {
   insertSecondTenant,
   otherTenant,
 } from "../helpers/tenant-fixtures";
+import { contentStoreFor } from "../../src/modules/stores/content-store";
 import { readZipEntries } from "../helpers/read-zip";
 import { interceptSql } from "../helpers/sql-faults";
 import { testReadingsFor } from "../helpers/test-readings";
@@ -301,5 +302,61 @@ describe("archive export", () => {
 
     const allowed = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
     expect(allowed.res.status).toBe(202);
+  });
+
+  it("deletes a failed export's parts from the dead letter and retries when the delete throws", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_dlq_parts");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    const content = contentStoreFor(env.READINGS_BUCKET, founderTenant(), env);
+    // A build that wrote its parts and then kept failing before it published.
+    for (const part of ["segment-0001", "central-directory"]) {
+      await content.put(`exports/${id}/${part}`, new Uint8Array([1, 2, 3]), "application/octet-stream");
+    }
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deleteSpy = vi.spyOn(env.READINGS_BUCKET, "delete").mockRejectedValueOnce(new Error("r2 hiccup"));
+    try {
+      const dead = await dispatch("reading-lite-export-dlq", sent[0]);
+      expect(dead.ack).not.toHaveBeenCalled();
+      expect(dead.retry).toHaveBeenCalledOnce();
+    } finally {
+      deleteSpy.mockRestore();
+      errors.mockRestore();
+    }
+    expect(await content.list(`exports/${id}`)).toHaveLength(2);
+
+    const recovered = await dispatch("reading-lite-export-dlq", sent[0]);
+    expect(recovered.ack).toHaveBeenCalledOnce();
+    expect(await content.list(`exports/${id}`)).toEqual([]);
+    const row = await testControlPlane(env).first<{ status: string }>(
+      "SELECT status FROM archive_exports WHERE id = ?",
+      id,
+    );
+    expect(row?.status).toBe("failed");
+  });
+
+  it("keeps a ready export's parts when a stale dead letter arrives", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_dlq_ready");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    const built = await dispatch("reading-lite-export", sent[0]);
+    expect(built.ack).toHaveBeenCalledOnce();
+    const content = contentStoreFor(env.READINGS_BUCKET, founderTenant(), env);
+    const parts = await content.list(`exports/${id}`);
+    expect(parts.length).toBeGreaterThan(0);
+
+    const dead = await dispatch("reading-lite-export-dlq", sent[0]);
+    expect(dead.ack).toHaveBeenCalledOnce();
+    expect(await content.list(`exports/${id}`)).toHaveLength(parts.length);
+    const row = await testControlPlane(env).first<{ status: string }>(
+      "SELECT status FROM archive_exports WHERE id = ?",
+      id,
+    );
+    expect(row?.status).toBe("ready");
   });
 });

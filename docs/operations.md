@@ -2819,6 +2819,25 @@ workflow to create a new attempt. This command does not resume paid work or
 cancel a provider request already sent. It requires the updated Worker;
 older deployments fail closed.
 
+## Archive export queue plumbing
+
+`ARCHIVE_EXPORT_JOBS` (reading-lite-mxwx) uses dedicated queues
+`reading-lite-staging-export` / `reading-lite-staging-export-dlq` and
+`reading-lite-export` / `reading-lite-export-dlq`, shared by every tenant.
+`ops staging setup` and `ops staging teardown` manage the staging pair.
+Wrangler does not create queues on deploy, so provision the production pair
+before the first Worker deployment that binds them:
+
+```sh
+npx wrangler queues create reading-lite-export
+npx wrangler queues create reading-lite-export-dlq
+```
+
+A delivery builds the archive under the tenant's `exports/{exportId}/` prefix
+and marks the row ready. The DLQ marks a queued or building export failed and
+then deletes that prefix; a database or R2 error retries the dead letter
+instead of acknowledging it. A ready export keeps its parts.
+
 ## Relationship refresh queue plumbing
 
 Hosted processing requires Workers Paid; `usage_model: standard` alone does not

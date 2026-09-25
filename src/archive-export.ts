@@ -2,10 +2,10 @@
 // segment — export.json, index.json, and one manifest per reading — writes
 // it to R2, then marks the row ready. Later slices add more files, more
 // segments, and the cron that resumes or expires. The DLQ marks the export
-// failed so the active slot frees.
+// failed so the active slot frees, then deletes any parts the build wrote.
 
 import type { ArchiveExportError } from "./schemas/api";
-import { ListIndexSchema, type ListIndexItem } from "./schemas/api";
+import { ListIndexItemSchema, ListIndexSchema, type ListIndexItem } from "./schemas/api";
 import {
   ARCHIVE_EXPORT_RETENTION_MS,
   archiveDocument,
@@ -153,7 +153,10 @@ export async function buildArchiveExport(
   for (const item of listed) {
     const loaded = await store.loadReadingById(item.id);
     if (!loaded) continue;
-    kept.push(item);
+    // The listed item can be stale by now (a publish or reprocess landed
+    // between pages), so index.json and counts come from the manifest that
+    // ships beside it.
+    kept.push(ListIndexItemSchema.parse({ ...loaded.manifest, key_prefix: loaded.keyPrefix }));
     manifests.push({ name: `readings/${item.id}/manifest.json`, data: jsonBytes(loaded.manifest) });
   }
 
@@ -286,9 +289,22 @@ export async function handleArchiveExportDeadLetter(
   // Acking a failed mark burns the DLQ's retries and leaves the row queued
   // or building, so the partial unique index 409s the tenant until manual SQL.
   // A transient database error has to fail the delivery and keep the retry.
+  // The same holds for the parts a build wrote before it kept failing: a failed
+  // row never serves them, so they go now or never. A ready row, reached by a
+  // stale dead letter, keeps its parts.
   const sql = sqlSessionFor(env);
   try {
+    const { tenantId, exportId } = parsed.envelope;
     await failExport(sql, parsed.envelope, deps.nowMs, { code: "dead_letter" });
+    const row = await fromSql(sql).first<{ status: string }>(
+      "SELECT status FROM archive_exports WHERE id = ? AND tenant_id = ?",
+      exportId,
+      tenantId,
+    );
+    if (row?.status === "failed") {
+      const content = contentStoreFor(env.READINGS_BUCKET, { tenantId: tenantId as TenantId }, env);
+      await content.deletePrefix(exportObjectPrefix(exportId));
+    }
     msg.ack();
   } catch (error) {
     console.error(error);
