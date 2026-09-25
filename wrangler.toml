@@ -404,7 +404,7 @@ invocation_logs = true
 [env.production.vars]
 # Enabled after the accepted 2026-09-08 staging nightly run.
 RELATIONSHIP_REFRESH = "1"
-REFRESH_MAX_JUDGEMENTS = "5"
+REFRESH_MAX_JUDGEMENTS = "20"
 # See [env.staging.vars].
 GUARD_POLICY_CACHE_MS = "5000"
 APP_ENV = "production"
