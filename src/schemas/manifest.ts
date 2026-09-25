@@ -104,12 +104,19 @@ const UsageV2Schema = z.object({
 export const UsageSchema = z.union([LegacyUsageSchema, UsageV2Schema]);
 export type Usage = z.infer<typeof UsageSchema>;
 
+/** An upstream HTTP response status, as the error classes that carry one record it. */
+export const HttpStatusSchema = z.number().int().min(100).max(599);
+
 export const ManifestErrorSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
   stage: ProcessingStageSchema.optional(),
   failed_at: z.string().datetime().optional(),
   retryable: z.boolean().optional(),
+  // The status of the upstream response that failed, when the error class kept
+  // one (BadStatusError, XApiError, OpenAIError, AnthropicError, …). Provider
+  // classes carry the provider's own message, which does not repeat it.
+  http_status: HttpStatusSchema.optional(),
 });
 export type ManifestError = z.infer<typeof ManifestErrorSchema>;
 

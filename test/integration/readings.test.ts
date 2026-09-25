@@ -99,6 +99,8 @@ function makeStubFetch(opts: {
   toolInputFromRequest?: (requestBody: string) => Record<string, unknown>;
   anthropicStatus?: number;
   anthropicBody?: unknown;
+  // Replaces the OpenAI summarizer's success response.
+  openaiResponses?: { status: number; body: unknown };
   resendStatus?: number;
   resendBody?: unknown;
 } = {}) {
@@ -137,6 +139,12 @@ function makeStubFetch(opts: {
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
+    }
+    if (url.startsWith("https://api.openai.com/v1/responses") && opts.openaiResponses) {
+      return new Response(JSON.stringify(opts.openaiResponses.body), {
+        status: opts.openaiResponses.status,
+        headers: { "content-type": "application/json" },
+      });
     }
     if (url.startsWith("https://api.openai.com/v1/responses")) {
       return new Response(
@@ -825,6 +833,38 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       String(input).startsWith("https://api.openai.com/v1/responses"),
     );
     expect(String(summarizeCall?.[1]?.body)).toContain("Thread continuation");
+  });
+
+  // The provider's message is its own JSON error.message, with no status in
+  // it, so the status has to travel as a field: 401 and 403 are what separate
+  // a key problem from any other provider error for the reader.
+  it("records the provider's HTTP status on a summarize failure", async () => {
+    const message = "Incorrect API key provided: sk-test****1234. You can find your API key at https://platform.openai.com/account/api-keys.";
+    const fetchFn = makeStubFetch({
+      openaiResponses: { status: 401, body: { error: { message, type: "invalid_request_error", code: "invalid_api_key" } } },
+    });
+    const services = makeServices(fetchFn);
+    const app = createApp({ services });
+    const ctx = createExecutionContext();
+
+    const submit = await app.fetch(
+      new Request("http://t/api/readings", {
+        method: "POST",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: JSON.stringify({ url: "https://example.com/rejected-key" }),
+      }),
+      env,
+      ctx,
+    );
+    const { id } = (await submit.json()) as { id: string };
+    await drainQueue(services);
+    await waitOnExecutionContext(ctx);
+
+    const get = await app.request(`/api/readings/${id}`, { headers: { authorization: `Bearer ${TOKEN}` } }, env);
+    expect(await get.json()).toMatchObject({
+      status: "failed",
+      error: { code: "OpenAIError", message, stage: "summarize", http_status: 401, retryable: false },
+    });
   });
 
   it("surfaces the recent-search window error on an old X reading", async () => {

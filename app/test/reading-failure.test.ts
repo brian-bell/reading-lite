@@ -52,25 +52,24 @@ describe("failure categories", () => {
     expect(unknown.headline).toBe(unknown.message);
   });
 
-  // BadStatusError is the site refusing us at fetch_source and the provider
-  // refusing us at summarize. Neither the code nor the status alone decides.
-  it("separates the same class by stage and by provider status", () => {
-    const site: ReadingError = { code: "BadStatusError", message: "bad response status 403: https://x.example/a", stage: "fetch_source" };
-    expect(categorize(site).category).toBe("source-unreachable");
-
-    const key: ReadingError = { code: "BadStatusError", message: "bad response status 403: https://api.openai.com/v1/responses", stage: "summarize" };
-    expect(categorize(key).category).toBe("key-problem");
-
-    const provider: ReadingError = { code: "BadStatusError", message: "bad response status 500: https://api.openai.com/v1/responses", stage: "summarize" };
-    expect(categorize(provider).category).toBe("provider-error");
-
-    const limit: ReadingError = { code: "BadStatusError", message: "bad response status 429: https://api.openai.com/v1/responses", stage: "summarize" };
-    expect(categorize(limit).category).toBe("provider-limit");
+  // The provider classes carry the provider's own message, so the status that
+  // separates a key problem from any other provider error is a field. A 403 at
+  // fetch_source is the site refusing us, whatever its status.
+  it.each<[string, ReadingError, FailureCategory]>([
+    ["a site 403", { code: "BadStatusError", message: "bad response status 403: https://x.example/a", stage: "fetch_source", http_status: 403 }, "source-unreachable"],
+    ["a provider 401", { code: "OpenAIError", message: "Incorrect API key provided", stage: "summarize", http_status: 401 }, "key-problem"],
+    ["a provider 403", { code: "AnthropicError", message: "permission denied", stage: "embed_source", http_status: 403 }, "key-problem"],
+    ["a provider 429", { code: "AnthropicError", message: "slow down", stage: "summarize", http_status: 429 }, "provider-limit"],
+    ["a provider 500", { code: "OpenAIError", message: "The server had an error", stage: "embed_summary", http_status: 500 }, "provider-error"],
+  ])("categorizes %s by stage and HTTP status", (_label, error, category) => {
+    expect(categorize(error).category).toBe(category);
   });
 
-  it("never reads a key problem out of a message with no status", () => {
-    const vague: ReadingError = { code: "OpenAIError", message: "the provider connection dropped", stage: "summarize" };
-    expect(categorize(vague).category).toBe("provider-error");
+  // Failures recorded before the backend kept the status have none. The
+  // message is the provider's prose, not a contract, and is never parsed.
+  it("never reads a key problem out of the message text", () => {
+    const prose: ReadingError = { code: "OpenAIError", message: "upstream said status 401", stage: "summarize" };
+    expect(categorize(prose).category).toBe("provider-error");
   });
 
   // stale_pending and stale_active_attempt are markers the backend writes
