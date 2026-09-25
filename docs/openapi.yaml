@@ -161,8 +161,8 @@ paths:
         Session cookie plus `X-CSRF-Token`. Bearer tokens are refused 403.
         No recent-authentication step. One active (queued or building) export
         per tenant; a second request is 409. A queued, building, or ready
-        request inside the rolling 24 hours is 429 with `reset_at`. Failed
-        and cancelled requests do not count. Enqueues `ARCHIVE_EXPORT_JOBS`.
+        request inside the rolling 24 hours is 429 with `reset_at`. Failed,
+        cancelled, and expired requests do not count. Enqueues `ARCHIVE_EXPORT_JOBS`.
         Local `wrangler dev` has no export queue and returns 503.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"

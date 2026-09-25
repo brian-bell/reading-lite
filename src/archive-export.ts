@@ -273,25 +273,27 @@ export async function consumeArchiveExportMessage(
 }
 
 export async function handleArchiveExportDeadLetter(
-  msg: { body: unknown; ack: () => void },
+  msg: { body: unknown; ack: () => void; retry: (opts?: { delaySeconds?: number }) => void },
   env: ArchiveExportEnv,
   deps: { nowMs: number },
 ): Promise<void> {
+  const parsed = parseArchiveExportEnvelope(msg.body);
+  if (!parsed.ok) {
+    logArchiveExportEnvelopeRejected(parsed.reason);
+    msg.ack();
+    return;
+  }
+  // Acking a failed mark burns the DLQ's retries and leaves the row queued
+  // or building, so the partial unique index 409s the tenant until manual SQL.
+  // A transient database error has to fail the delivery and keep the retry.
+  const sql = sqlSessionFor(env);
   try {
-    const parsed = parseArchiveExportEnvelope(msg.body);
-    if (!parsed.ok) {
-      logArchiveExportEnvelopeRejected(parsed.reason);
-      return;
-    }
-    const sql = sqlSessionFor(env);
-    try {
-      await failExport(sql, parsed.envelope, deps.nowMs, { code: "dead_letter" });
-    } finally {
-      await sql.end();
-    }
+    await failExport(sql, parsed.envelope, deps.nowMs, { code: "dead_letter" });
+    msg.ack();
   } catch (error) {
     console.error(error);
+    msg.retry();
   } finally {
-    msg.ack();
+    await sql.end();
   }
 }

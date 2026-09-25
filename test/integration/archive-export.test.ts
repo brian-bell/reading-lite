@@ -14,6 +14,7 @@ import {
   otherTenant,
 } from "../helpers/tenant-fixtures";
 import { readZipEntries } from "../helpers/read-zip";
+import { interceptSql } from "../helpers/sql-faults";
 import { testReadingsFor } from "../helpers/test-readings";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { toTimestamp } from "../../src/control-plane/pg-time";
@@ -240,6 +241,7 @@ describe("archive export", () => {
 
     const dead = await dispatch("reading-lite-export-dlq", sent[0]);
     expect(dead.ack).toHaveBeenCalledOnce();
+    expect(dead.retry).not.toHaveBeenCalled();
     const failed = await testControlPlane(env).first<{ status: string }>(
       "SELECT status FROM archive_exports WHERE id = ?",
       firstBody.id,
@@ -259,5 +261,45 @@ describe("archive export", () => {
       limit: "daily_export",
       reset_at: new Date(NOW_MS + ARCHIVE_EXPORT_DAILY_WINDOW_MS).toISOString(),
     });
+  });
+
+  it("retries a dead letter when marking the export failed throws, then frees the slot", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_dlq_fault");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const createdBody = (await created.res.json()) as { id: string };
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fault = interceptSql(/UPDATE archive_exports\s+SET status = 'failed'/, () => new Error("database hiccup"));
+    try {
+      const dead = await dispatch("reading-lite-export-dlq", sent[0]);
+      expect(dead.ack).not.toHaveBeenCalled();
+      expect(dead.retry).toHaveBeenCalledOnce();
+    } finally {
+      fault.mockRestore();
+      errors.mockRestore();
+    }
+
+    const stuck = await testControlPlane(env).first<{ status: string }>(
+      "SELECT status FROM archive_exports WHERE id = ?",
+      createdBody.id,
+    );
+    expect(stuck?.status).toBe("queued");
+    const blocked = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(blocked.res.status).toBe(409);
+    expect(await blocked.res.json()).toEqual({ error: "export_active", id: createdBody.id });
+
+    const recovered = await dispatch("reading-lite-export-dlq", sent[0]);
+    expect(recovered.ack).toHaveBeenCalledOnce();
+    expect(recovered.retry).not.toHaveBeenCalled();
+    const failed = await testControlPlane(env).first<{ status: string }>(
+      "SELECT status FROM archive_exports WHERE id = ?",
+      createdBody.id,
+    );
+    expect(failed?.status).toBe("failed");
+
+    const allowed = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(allowed.res.status).toBe(202);
   });
 });
