@@ -16,7 +16,6 @@ import {
   type ArchiveDanglingRelationship,
   type ArchiveMissingArtifact,
 } from "./schemas/archive-report";
-import type { Manifest } from "./schemas/manifest";
 import {
   ARCHIVE_EXPORT_RETENTION_MS,
   archiveDocument,
@@ -33,9 +32,16 @@ import { toTimestamp } from "./control-plane/pg-time";
 import { ZipLimitError, writeZipEocd, writeZipSegment, type ZipEntry } from "./modules/archive-zip";
 import { sqlSessionFor, type Sql } from "./modules/db/sql";
 import { sha256Bytes } from "./modules/extractor/response-bytes";
+import { isEmptyContent } from "./modules/manifest-drafting";
 import { contentStoreFor, type ContentStore } from "./modules/stores/content-store";
 import { rawExtFromContentType } from "./modules/stores/layout";
-import { pgReadingStoreFor, type PgReadingStore } from "./modules/stores/postgres/reading-store";
+import {
+  PgReadingStore,
+  pgReadingStoreFor,
+  pgTenantId,
+  type ContentKeys,
+  type ReadingSnapshot,
+} from "./modules/stores/postgres/reading-store";
 
 export const ARCHIVE_EXPORT_QUEUE_NAMES = ["reading-lite-export", "reading-lite-staging-export"] as const;
 export const ARCHIVE_EXPORT_DLQ_NAMES = ["reading-lite-export-dlq", "reading-lite-staging-export-dlq"] as const;
@@ -62,7 +68,7 @@ It does not include processing logs or account secrets.
 - \`readings/<id>/manifest.json\` — the reading record (summary, metadata, relationships). Same fields as the reading detail. No storage keys.
 - \`readings/<id>/extracted.md\` — captured Markdown, when \`content_status\` is \`captured\` and the object was in storage.
 - \`readings/<id>/raw.<ext>\` — the original bytes. \`<ext>\` comes from the stored content type: \`html\`, \`md\`, \`pdf\`, \`json\`, \`txt\`, or \`bin\`.
-- \`report.json\` — gaps. \`missing_artifacts\` (an expected object was absent), \`dangling_relationships\` (a connection or tension whose target is not in this export), and \`warnings\` (the stored bytes disagree with \`content_bytes\`, \`content_sha256\`, or \`extracted_bytes\`). Warnings are not failures: the file in the zip is what was stored. All three arrays are always present. Nothing is left out.
+- \`report.json\` — gaps. \`missing_artifacts\` (an expected object was absent), \`dangling_relationships\` (a connection or tension whose target is not in this export), and \`warnings\` (the stored bytes disagree with \`content_bytes\`, \`content_sha256\`, or \`extracted_bytes\`; not checked while a reading that never published still has the placeholder \`content_bytes\` 0). Warnings are not failures: the file in the zip is what was stored. All three arrays are always present. Nothing is left out.
 - \`checksums.sha256\` — SHA-256 of every other file, GNU \`sha256sum\` text mode (\`<64 hex>  <path>\`), sorted by path. This file is not listed in itself.
 
 ## Not in this zip
@@ -138,6 +144,7 @@ async function hashed(name: string, data: Uint8Array): Promise<HashedEntry> {
 }
 
 interface PackedReading {
+  item: ListIndexItem;
   entries: HashedEntry[];
   missing: ArchiveMissingArtifact[];
   warnings: ArchiveContentWarning[];
@@ -146,18 +153,55 @@ interface PackedReading {
   relationships: ArchiveDanglingRelationship[];
 }
 
+interface ReadingState {
+  loaded: ReadingSnapshot;
+  keys: ContentKeys | null;
+}
+
+// The manifest and its content keys from one snapshot, so both describe the
+// same revision even when a publish lands between the two reads.
+function readReadingState(sql: Sql, tenantId: string, id: string): Promise<ReadingState | null> {
+  return sql.transaction(
+    async (tx) => {
+      const store = new PgReadingStore(tx, tenantId);
+      const loaded = await store.loadReadingById(id);
+      return loaded ? { loaded, keys: await store.contentKeys(id) } : null;
+    },
+    { repeatableRead: true },
+  );
+}
+
+// A publish after the snapshot deletes the content it superseded
+// (AttemptIo.discardSupersededContent), so a missing object is resolved once
+// more, as router.ts readContent does: a row that changed is packed from its
+// new snapshot, and an unchanged one really is missing the object. A reading
+// purged in between is left out, as one purged before its load is.
+async function packCurrentReading(
+  sql: Sql,
+  tenantId: string,
+  content: ContentStore,
+  id: string,
+): Promise<PackedReading | null> {
+  const first = await readReadingState(sql, tenantId, id);
+  if (!first) return null;
+  const packed = await packReading(content, first);
+  if (packed.missing.length === 0) return packed;
+  const again = await readReadingState(sql, tenantId, id);
+  if (!again) return null;
+  return again.loaded.version === first.loaded.version ? packed : packReading(content, again);
+}
+
 // One reading's files. extracted.md only when the row says the content was
 // captured; raw.<ext> for every reading. An expected object that is not in
 // the bucket is a missing artifact. A present object whose size or sha256
-// disagrees with the row is a warning, and the bytes still ship.
-async function packReading(
-  store: PgReadingStore,
-  content: ContentStore,
-  manifest: Manifest,
-): Promise<PackedReading> {
+// disagrees with the row is a warning, and the bytes still ship. A row that
+// still carries the empty-content placeholder describes no bytes, so raw
+// bytes an unpublished attempt stored ship without that comparison.
+async function packReading(content: ContentStore, state: ReadingState): Promise<PackedReading> {
+  const { loaded, keys } = state;
+  const manifest = loaded.manifest;
   const id = manifest.id;
   const dir = `readings/${id}`;
-  const keys = await store.contentKeys(id);
   const rawPath = `${dir}/raw.${rawExtFromContentType(keys?.contentType ?? manifest.content_type)}`;
   const extractedPath = `${dir}/extracted.md`;
   const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes(manifest))];
@@ -188,7 +232,8 @@ async function packReading(
   } else {
     const entry = await hashed(rawPath, raw);
     entries.push(entry);
-    if (raw.byteLength !== manifest.content_bytes) {
+    const described = !isEmptyContent(manifest);
+    if (described && raw.byteLength !== manifest.content_bytes) {
       warnings.push({
         reading_id: id,
         code: "content_size_mismatch",
@@ -197,7 +242,7 @@ async function packReading(
         actual: raw.byteLength,
       });
     }
-    if (entry.sha256 !== manifest.content_sha256) {
+    if (described && entry.sha256 !== manifest.content_sha256) {
       warnings.push({
         reading_id: id,
         code: "content_hash_mismatch",
@@ -216,7 +261,16 @@ async function packReading(
     })),
     ...(manifest.tensions ?? []).map((tension) => ({ reading_id: id, kind: "tension" as const, target_id: tension.id })),
   ];
-  return { entries, missing, warnings, relationships };
+  return {
+    // The listed item can be stale by now (a publish or reprocess landed
+    // between pages), so index.json and counts come from the manifest that
+    // ships beside it.
+    item: ListIndexItemSchema.parse({ ...manifest, key_prefix: loaded.keyPrefix }),
+    entries,
+    missing,
+    warnings,
+    relationships,
+  };
 }
 
 // Uploads the zip while it is built. Once the pending entries reach the
@@ -377,6 +431,7 @@ export async function buildArchiveExport(
   if (!Number.isInteger(segmentBytes) || segmentBytes < 1) throw new Error("invalid export segment size");
 
   const tenant = { tenantId: envelope.tenantId as TenantId };
+  const tenantId = pgTenantId(tenant);
   const store = pgReadingStoreFor(sql, tenant);
   const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
   const prefix = exportObjectPrefix(envelope.exportId);
@@ -390,13 +445,9 @@ export async function buildArchiveExport(
   try {
     await writer.add(await hashed("README.md", textBytes(ARCHIVE_README)));
     for (const item of listed) {
-      const loaded = await store.loadReadingById(item.id);
-      if (!loaded) continue;
-      // The listed item can be stale by now (a publish or reprocess landed
-      // between pages), so index.json and counts come from the manifest that
-      // ships beside it.
-      kept.push(ListIndexItemSchema.parse({ ...loaded.manifest, key_prefix: loaded.keyPrefix }));
-      const packed = await packReading(store, content, loaded.manifest);
+      const packed = await packCurrentReading(sql, tenantId, content, item.id);
+      if (!packed) continue;
+      kept.push(packed.item);
       for (const entry of packed.entries) await writer.add(entry);
       missing.push(...packed.missing);
       warnings.push(...packed.warnings);

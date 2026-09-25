@@ -8,7 +8,7 @@ import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { archiveExportEnvelopeV1 } from "../../../src/control-plane/export-envelope";
 import { parseTenantId, parseUserId } from "../../../src/control-plane/ids";
 import { toTimestamp } from "../../../src/control-plane/pg-time";
-import type { Sql } from "../../../src/modules/db/sql";
+import type { Sql, SqlQuery, SqlRow } from "../../../src/modules/db/sql";
 import { contentStoreFor } from "../../../src/modules/stores/content-store";
 import type { ListIndexItem } from "../../../src/schemas/api";
 
@@ -123,6 +123,31 @@ async function readArchive(db: ControlPlaneDb, bucket: R2Bucket, env: { TENANT_D
   return { row: row!, zip, entries: await readZipEntries(zip) };
 }
 
+// Runs `before` ahead of each statement, including those inside a
+// transaction, and `after` once it returns.
+function watchSql(
+  sql: Sql,
+  hooks: {
+    before?: (text: string, values: readonly unknown[]) => Promise<void>;
+    after?: (text: string) => Promise<void>;
+  },
+): Sql {
+  const watch = (handle: SqlQuery): SqlQuery => ({
+    query: async <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) => {
+      await hooks.before?.(text, values ?? []);
+      const rows = await handle.query<Row>(text, values);
+      await hooks.after?.(text);
+      return rows;
+    },
+    execute: (text, values) => handle.execute(text, values),
+  });
+  return {
+    ...watch(sql),
+    transaction: (run, opts) => sql.transaction((tx) => run(watch(tx)), opts),
+    end: () => sql.end(),
+  };
+}
+
 function jsonEntry<T>(entries: Map<string, Uint8Array>, name: string): T {
   return JSON.parse(new TextDecoder().decode(entries.get(name))) as T;
 }
@@ -170,18 +195,16 @@ describe("buildArchiveExport", () => {
     const { tenantId, bucket, env } = await arrange(sql, db);
     const content = contentStoreFor(bucket, { tenantId }, env);
     const uploadedBeforeLoad: string[][] = [];
-    const watching: Sql = {
-      query: async (text, values) => {
-        if (/r\.xmin::text AS version/.test(text)) {
-          const listed = await content.list(`exports/${EXPORT_ID}`);
-          uploadedBeforeLoad.push(listed.map((object) => object.key.split("/").pop()!).sort());
-        }
-        return sql.query(text, values);
+    const loaded = new Set<unknown>();
+    const watching = watchSql(sql, {
+      // The first load of each reading; one missing an object is read again.
+      before: async (text, values) => {
+        if (!/r\.xmin::text AS version/.test(text) || loaded.has(values[1])) return;
+        loaded.add(values[1]);
+        const listed = await content.list(`exports/${EXPORT_ID}`);
+        uploadedBeforeLoad.push(listed.map((object) => object.key.split("/").pop()!).sort());
       },
-      execute: (text, values) => sql.execute(text, values),
-      transaction: (run, opts) => sql.transaction(run, opts),
-      end: () => sql.end(),
-    };
+    });
 
     const outcome = await buildArchiveExport(watching, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
       nowMs: NOW_MS,
@@ -205,6 +228,30 @@ describe("buildArchiveExport", () => {
     const path = join(dir, "archive.zip");
     writeFileSync(path, zip);
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
+  });
+
+  it("ships an unpublished attempt's raw bytes without comparing them to the placeholder facts", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    // rd_pending carries the pending draft's empty-content placeholder; its
+    // running attempt has already captured raw bytes.
+    const html = new TextEncoder().encode("<p>Captured mid-attempt.</p>");
+    const rawKey = "readings/pending/revisions/at_running/raw.html";
+    await readings.content.put(rawKey, html, "text/html; charset=utf-8");
+    await sql.query(
+      `INSERT INTO reading_attempts (tenant_id, reading_id, id, trigger, status, started_at, raw_key)
+       VALUES ($1, 'rd_pending', 'at_running', 'submit', 'running', $2, $3)`,
+      [TENANT_ID, toTimestamp(NOW_MS), rawKey],
+    );
+
+    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: NOW_MS,
+    });
+    expect(outcome).toBe("ready");
+    const { entries } = await readArchive(db, bucket, env);
+    expect(entries.get("readings/rd_pending/raw.html")).toEqual(html);
+    const report = jsonEntry<{ warnings: Array<{ reading_id: string }> }>(entries, "report.json");
+    expect(report.warnings.filter((warning) => warning.reading_id === "rd_pending")).toEqual([]);
   });
 
   it("fails a build the zip format cannot hold and deletes the parts already written", async () => {
@@ -233,18 +280,13 @@ describe("buildArchiveExport", () => {
     // rd_pending publishes after the index pages were listed and before its
     // manifest is loaded.
     let published = false;
-    const racing: Sql = {
-      query: async (text, values) => {
-        if (!published && /r\.xmin::text AS version/.test(text)) {
-          published = true;
-          await readings.restate({ id: "rd_pending", status: "ready", updated_at: "2026-09-01T00:00:00.000Z" });
-        }
-        return sql.query(text, values);
+    const racing = watchSql(sql, {
+      after: async (text) => {
+        if (published || !/FROM readings\s+WHERE tenant_id = \$1\s+ORDER BY created_at DESC/.test(text)) return;
+        published = true;
+        await readings.restate({ id: "rd_pending", status: "ready", updated_at: "2026-09-01T00:00:00.000Z" });
       },
-      execute: (text, values) => sql.execute(text, values),
-      transaction: (run, opts) => sql.transaction(run, opts),
-      end: () => sql.end(),
-    };
+    });
 
     const outcome = await buildArchiveExport(racing, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
       nowMs: NOW_MS,

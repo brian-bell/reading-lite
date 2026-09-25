@@ -27,8 +27,14 @@ needs with the file open and the repo closed.
 Content bytes are read through the reading's stored keys (`contentKeys`). The
 archive never rebuilds an object path from `key_prefix`. A published reading's
 bytes live under its revision; an imported reading's bytes live at the legacy
-spelling. Both arrive here as `readings/<id>/extracted.md` and
-`readings/<id>/raw.<ext>`.
+spelling; a reading that never published serves its latest attempt's bytes.
+All arrive here as `readings/<id>/extracted.md` and `readings/<id>/raw.<ext>`.
+
+Each reading's manifest and keys are read in one database snapshot, so the
+manifest and the bytes beside it describe the same revision. A reprocess that
+publishes after that read deletes the content it replaced. The export then
+finds the object missing, reads the reading again, and packs the newer
+revision whole.
 
 `extracted.md` is omitted when `content_status` is `raw_only` or `failed`.
 Those readings were not extracted. `raw.<ext>` is expected for every reading.
@@ -71,6 +77,12 @@ Neighbourhood id lists and tension-judgement memory are not relationships.
 | `content_size_mismatch` | `raw.<ext>` byte length against `content_bytes` |
 | `content_hash_mismatch` | SHA-256 of `raw.<ext>` against `content_sha256` |
 | `extracted_size_mismatch` | `extracted.md` byte length against `extracted_bytes`, when the row has that field |
+
+The raw comparisons are skipped while the row still carries the empty-content
+placeholder (`content_bytes` 0, `content_sha256` all zeros): a pending
+submission, or a failure before the reading published, has no content facts
+to compare, although an attempt may already have stored bytes. Those bytes
+still ship.
 
 The file in the zip is the object that was stored. The warning says the row
 disagrees with those bytes. That disagreement is expected for a few production

@@ -17,6 +17,9 @@ import { buildArchiveExport } from "../../src/archive-export";
 import { sqlSessionFor } from "../../src/modules/db/sql";
 import { sha256Bytes } from "../../src/modules/extractor/response-bytes";
 import { contentStoreFor } from "../../src/modules/stores/content-store";
+import { r2KeyLayout } from "../../src/modules/stores/layout";
+import { tenantDataPlaneEnabled, tenantKeyRoot } from "../../src/modules/stores/tenant-root";
+import { manifestToRows, writeReadingRows } from "../../src/modules/stores/postgres/manifest-rows";
 import { ArchiveReportSchema } from "../../src/schemas/archive-report";
 import type { Manifest } from "../../src/schemas/manifest";
 import { sha256Hex } from "../../src/services";
@@ -344,6 +347,83 @@ describe("archive export", () => {
     const entries = await readZipEntries(zip);
     expect(entries.size).toBe(8);
     await expectChecksums(entries);
+  });
+
+  it("packs a reading republished mid-export from one revision", async () => {
+    installQueue();
+    const readings = testReadingsFor(founderTenant());
+    const oldHtml = "<p>First capture.</p>";
+    const newHtml = "<p>Second capture, after a reprocess.</p>";
+    const oldRaw = new TextEncoder().encode(oldHtml);
+    const newRaw = new TextEncoder().encode(newHtml);
+    const createdAt = "2026-01-01T00:00:00.000Z";
+    const url = "https://example.com/rd_moving";
+    const before: Manifest = {
+      id: "rd_moving",
+      url,
+      url_hash: await sha256Hex(url),
+      title: "Moving",
+      status: "ready",
+      source_type: "url",
+      created_at: createdAt,
+      updated_at: createdAt,
+      content_type: "text/html; charset=utf-8",
+      content_status: "raw_only",
+      content_bytes: oldRaw.byteLength,
+      content_sha256: await sha256Bytes(oldRaw),
+      connections: [],
+    };
+    const keyPrefix = await readings.seed(before, {
+      raw: { ext: "html", body: oldHtml, contentType: "text/html; charset=utf-8" },
+    });
+    const layout = r2KeyLayout("");
+    const oldKey = layout.rawKey(keyPrefix, "html");
+    const newKey = layout.revisionRawKey(keyPrefix, "at_second", "html");
+    const after: Manifest = {
+      ...before,
+      updated_at: "2026-09-01T00:00:00.000Z",
+      content_bytes: newRaw.byteLength,
+      content_sha256: await sha256Bytes(newRaw),
+    };
+
+    const session = await redeemSession("clm_export_republish");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+
+    // The reprocess publishes a new revision and deletes the one it replaced
+    // just as the export resolves the reading's content keys.
+    const republish = interceptSql(/AS has_revision/, async (call) => {
+      if (call === 1) {
+        await readings.content.put(newKey, newRaw, "text/html; charset=utf-8");
+        const rows = manifestToRows(after, {
+          tenantId: FOUNDER_TENANT_ID,
+          keyPrefix,
+          ownsUrl: true,
+          revision: { id: "at_second", rawKey: newKey, extractedKey: null },
+        });
+        await readings.sql.transaction((tx) => writeReadingRows(tx, rows));
+        await env.READINGS_BUCKET.delete(`${tenantKeyRoot(founderTenant(), tenantDataPlaneEnabled(env))}${oldKey}`);
+      }
+      return "pass" as const;
+    });
+    try {
+      const built = await dispatch("reading-lite-export", sent[0]);
+      expect(built.ack).toHaveBeenCalledOnce();
+    } finally {
+      republish.mockRestore();
+    }
+
+    const download = await request(`/api/exports/${id}/download`, { cookie: session.cookie });
+    expect(download.res.status).toBe(200);
+    const entries = await readZipEntries(new Uint8Array(await download.res.arrayBuffer()));
+    const manifest = JSON.parse(new TextDecoder().decode(entries.get("readings/rd_moving/manifest.json"))) as Manifest;
+    expect(manifest).toMatchObject({ updated_at: after.updated_at, content_sha256: after.content_sha256 });
+    expect(entries.get("readings/rd_moving/raw.html")).toEqual(newRaw);
+    const index = JSON.parse(new TextDecoder().decode(entries.get("index.json"))) as { items: Manifest[] };
+    expect(index.items.find((item) => item.id === "rd_moving")?.updated_at).toBe(after.updated_at);
+    const report = ArchiveReportSchema.parse(JSON.parse(new TextDecoder().decode(entries.get("report.json"))));
+    expect(report).toMatchObject({ missing_artifacts: [], warnings: [] });
   });
 
   it("deletes a failed export's parts from the dead letter and retries when the delete throws", async () => {
