@@ -5,27 +5,44 @@
 // server renders cross a real service binding and Workers Assets serves
 // /assets/*.
 //
-// Set E2E_BASE_URL to point the same suite at a running host instead (the
-// ADR's route-precedence check after a route change, or Phase 5's rollback
-// rehearsal against a deployed host). Nothing is started in that mode.
+// Set E2E_BASE_URL to point the suite at a running host instead. Nothing is
+// started in that mode, so nothing answers from the stub or the fixture pack:
+// the run keeps only the matrix and shell-extras projects (e2e/scope.ts), and
+// of the coverage cases only the `anyHost` ones (e2e/coverage.ts) — the
+// signed-out shell, sign-in, the legal pages, /save, and a missing reading's
+// 404 — so it checks the deployed shell's rendering, axe, and keyboard, never
+// reading content (#392). Signed-in cases run only with E2E_SESSION_COOKIE
+// (a real session) and E2E_SESSION_EMAIL (its account's address); without
+// the cookie the run is signed-out only, and the cookie alone, or either one
+// without E2E_BASE_URL, is refused below. No case writes: /save's are the
+// empty form and a URL the page refuses before it asks.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createTestHarness } from "wrangler";
+import { hostSession, hostSessionEmail } from "./sessions";
 
 export const OUTPUT_DIR = path.join(import.meta.dirname, "test-results");
 const URL_FILE = path.join(OUTPUT_DIR, "harness-url");
 const BUILT_WORKER_CONFIG = "dist/server/wrangler.json";
 
 export function externalBaseUrl(): string | undefined {
-  return process.env.E2E_BASE_URL;
+  return process.env.E2E_BASE_URL || undefined;
 }
 
 export async function startHarness(root: string): Promise<() => Promise<void>> {
   const external = externalBaseUrl();
   if (external) {
+    if (hostSession() !== undefined && hostSessionEmail() === undefined) {
+      throw new Error("E2E_SESSION_COOKIE needs E2E_SESSION_EMAIL, the address the signed-in cases expect");
+    }
     publishBaseUrl(external);
     return async () => rmSync(URL_FILE, { force: true });
+  }
+  // The stub answers only its own sessions, so a real one left in the
+  // environment would fail every signed-in case for no visible reason.
+  if (hostSession() !== undefined || hostSessionEmail() !== undefined) {
+    throw new Error("E2E_SESSION_COOKIE and E2E_SESSION_EMAIL apply only with E2E_BASE_URL");
   }
 
   if (!existsSync(path.join(root, BUILT_WORKER_CONFIG))) {

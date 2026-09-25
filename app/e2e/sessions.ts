@@ -2,10 +2,21 @@
 // e2e/backend-stub.js answers for; the cookie name matches the backend's, so
 // the frontend forwards exactly the header it forwards in production.
 //
-// E2E_SESSION_COOKIE overrides the value when the suite runs against a host
-// with real sessions.
+// E2E_SESSION_COOKIE and E2E_SESSION_EMAIL override the value and the email
+// it signs in as when the suite runs against a host with real sessions
+// (e2e/harness.ts).
 
-export const SESSION_COOKIE_VALUE = process.env.E2E_SESSION_COOKIE ?? "reader-a";
+/** The real session an external run signs in with, if it was given one. */
+export function hostSession(): string | undefined {
+  return process.env.E2E_SESSION_COOKIE || undefined;
+}
+
+/** The address that real session's account menu shows. */
+export function hostSessionEmail(): string | undefined {
+  return process.env.E2E_SESSION_EMAIL || undefined;
+}
+
+export const SESSION_COOKIE_VALUE = hostSession() ?? "reader-a";
 
 /**
  * The same reader, with the library's list answering one of the common
@@ -29,5 +40,5 @@ export function sessionCookieName(baseUrl: string): string {
   return baseUrl.startsWith("https:") ? "__Host-session" : "e2e-session";
 }
 
-/** The email e2e/backend-stub.js reports for that session. */
-export const SESSION_EMAIL = "reader-a@example.com";
+/** The email e2e/backend-stub.js reports for that session, or the real session's. */
+export const SESSION_EMAIL = hostSessionEmail() ?? "reader-a@example.com";

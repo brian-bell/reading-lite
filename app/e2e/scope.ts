@@ -6,6 +6,12 @@
 // (`npm run test:browser:ci`): the cases marked `essential` in coverage.ts, in
 // one light and one dark project that between them still cover both
 // viewports, plus the behaviour specs. Reduced motion and zoom stay local.
+//
+// Against an external host (E2E_BASE_URL, e2e/harness.ts) only the projects
+// playwright.config.ts marks `anyHost` run; each behaviour spec reads the
+// stub's scenarios or the fixture pack.
+
+import { externalBaseUrl } from "./harness";
 
 export type EvidenceScope = "full" | "essential";
 
@@ -28,6 +34,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "account",
 ]);
 
-export function inScope(project: { name?: string }): boolean {
+export function inScope(project: { name?: string; metadata?: { anyHost?: boolean } }): boolean {
+  if (externalBaseUrl() && !project.metadata?.anyHost) return false;
   return EVIDENCE_SCOPE === "full" || ESSENTIAL_PROJECTS.has(project.name ?? "");
 }

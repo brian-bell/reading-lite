@@ -425,11 +425,19 @@ Extending it:
   `e2e/fixtures/fixture-pack.json`. `test/unit/fixtures/app-fixture-pack.test.ts`
   fails while it is stale.
 - **A viewport or theme:** add a project in `playwright.config.ts`.
-- **Another host:** `E2E_BASE_URL=https://host npm run test:browser` runs the
-  same suite against a running host instead of starting the harness, with
-  `E2E_SESSION_COOKIE` supplying a real session. Its reading cases are still
-  pinned to fixture ids, so it cannot pass against a real host yet (#392). For
-  route precedence after a deploy or route change, use
+- **Another host:** `E2E_BASE_URL=https://host npm run test:browser` points
+  the suite at a running host instead of starting the harness. Nothing there
+  answers from the stub or the fixture pack, so it runs only the matrix and
+  shell-extras projects over the cases marked `anyHost` in `e2e/coverage.ts`:
+  the signed-out shell and sign-in, the legal pages, `/save`, and a missing
+  reading's 404 (#392). That is the deployed shell's rendering, axe, and
+  keyboard evidence, not reading content, and no case writes. Set
+  `E2E_SESSION_COOKIE` (a real session) with `E2E_SESSION_EMAIL` (its
+  account's address) to add the signed-in cases; without the cookie the run is
+  signed-out only. The cookie without the email, or either one without
+  `E2E_BASE_URL`, stops the run before it starts.
+  Mark a new case `anyHost` only if it expects nothing the stub or the pack
+  supplies. For route precedence after a deploy or route change, use
   `scripts/smoke-host.sh https://host`.
 
 The local harness runs on `http://127.0.0.1`, where a browser refuses the
