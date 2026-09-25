@@ -8,6 +8,7 @@ const CONTROL_PLANE_TABLES = [
   "account_deletions",
   "api_token_scopes",
   "api_tokens",
+  "archive_exports",
   "auth_challenges",
   "dev_mail_outbox",
   "digest_deliveries",
@@ -61,6 +62,7 @@ describe("control-plane schema", () => {
     expect(rows).toEqual([
       { from: "api_token_scopes", column: "token_id", to: "api_tokens", on_delete: "a" },
       { from: "api_tokens", column: "user_id", to: "users", on_delete: "a" },
+      { from: "archive_exports", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "auth_challenges", column: "user_id", to: "users", on_delete: "a" },
       { from: "digest_deliveries", column: "user_id", to: "users", on_delete: "a" },
       { from: "relationship_refresh_jobs", column: "tenant_id", to: "users", on_delete: "a" },
@@ -136,6 +138,7 @@ describe("control-plane schema", () => {
     ["a second system_policy row", "INSERT INTO system_policy (id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at) VALUES (2, 'open', true, 1, 1, now())", /system_policy_id_check/],
     ["the retired vectors wipe phase", "INSERT INTO wipe_progress (tenant_id, phase, updated_at) VALUES ('usr_a', 'vectors', now())", /wipe_progress_phase_check/],
     ["an unknown token scope", "INSERT INTO api_token_scopes (token_id, scope) VALUES ('tok_a', 'readings:admin')", /api_token_scopes_scope_check/],
+    ["an unknown archive export status", "INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at) VALUES ('exp_a', 'usr_a', 'draft', now(), now())", /archive_exports_status_check/],
     ["a zero spend ceiling", "UPDATE system_policy SET daily_spend_microdollars = 0", /system_policy_daily_spend_microdollars_check/],
     ["a settings row for no user", "INSERT INTO user_settings (user_id, schema_version, notify_immediate, digest_cadence, time_zone, digest_hour_local, digest_weekday, created_at, updated_at) VALUES ('usr_missing', 1, true, 'off', 'UTC', 8, 1, now(), now())", /user_settings_user_id_fkey/],
   ])("rejects %s", async (_name, statement, constraint) => {

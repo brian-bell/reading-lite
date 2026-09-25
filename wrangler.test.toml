@@ -1,5 +1,5 @@
 # Test-only wrangler config used by vitest-pool-workers / Miniflare.
-# No cron / DIGEST_JOBS / ACCOUNT_WIPE_JOBS binding: digest and wipe due+enqueue
+# No cron / DIGEST_JOBS / ACCOUNT_WIPE_JOBS / ARCHIVE_EXPORT_JOBS binding: digest and wipe due+enqueue
 # are exercised by calling fanOutDueDigests / fanOutDueAccountWipes / scheduled()
 # with a frozen now in tests.
 

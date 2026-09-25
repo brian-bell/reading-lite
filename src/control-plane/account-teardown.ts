@@ -507,6 +507,10 @@ function teardownStatements(
                AND (consumed_at IS NOT NULL OR email_canonical = ?)`,
       params: [addresses, emailCanonical],
     },
+    // No cascade (db/migrations/0007). The row has to go before the user or
+    // teardown cannot finish for a tenant that requested an export. Cancelling
+    // the active export at deletion start is a later slice.
+    { sql: "DELETE FROM archive_exports WHERE tenant_id = ?", params: [tenantId] },
     { sql: "DELETE FROM wipe_progress WHERE tenant_id = ?", params: [tenantId] },
     // Last: everything above names it.
     { sql: "DELETE FROM users WHERE id = ?", params: [tenantId] },

@@ -1,0 +1,216 @@
+// Admission for archive export (reading-lite-mxwx). One transaction under
+// `users FOR UPDATE`, the same serialization the token cap uses: an active
+// export (partial unique index) is 409, and a queued, building, or ready
+// request inside the rolling day is 429. Failed and cancelled requests do
+// not count, so a failure frees the slot immediately.
+
+import { z } from "zod";
+import {
+  ArchiveExportDocumentSchema,
+  ArchiveExportErrorSchema,
+  ArchiveExportSummarySchema,
+  type ArchiveExportDocument,
+  type ArchiveExportError,
+  type ArchiveExportSummary,
+} from "../schemas/api";
+import { isUniqueConstraintError, type ControlPlaneDb } from "./db";
+import { mintExportId, parseExportId } from "./export-envelope";
+import type { UserId } from "./ids";
+import { fromTimestamp, toTimestamp } from "./pg-time";
+
+export const ARCHIVE_EXPORT_DAILY_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const ARCHIVE_EXPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export type RequestArchiveExportResult =
+  | { kind: "queued"; id: string }
+  | { kind: "inactive" }
+  | { kind: "active"; id: string }
+  | { kind: "daily"; resetAtMs: number };
+
+export interface ArchiveExportSegments {
+  parts: Array<{ key: string; bytes: number }>;
+  total_bytes: number;
+}
+
+const SegmentsSchema = z
+  .object({
+    parts: z
+      .array(
+        z
+          .object({
+            key: z.string().min(1),
+            bytes: z.number().int().nonnegative(),
+          })
+          .strict(),
+      )
+      .min(1),
+    total_bytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
+interface ExportRow {
+  id: string;
+  tenant_id: string;
+  status: string;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  expires_at: string | null;
+  segments: unknown;
+  error: unknown;
+}
+
+const SUMMARY_COLUMNS = `id, tenant_id, status, requested_at, started_at, completed_at, expires_at, segments, error`;
+
+export async function requestArchiveExport(
+  db: ControlPlaneDb,
+  input: { userId: UserId; nowMs: number; newUuid?: () => string },
+): Promise<RequestArchiveExportResult> {
+  const id = mintExportId(input.newUuid);
+  const now = toTimestamp(input.nowMs);
+  const windowStart = toTimestamp(input.nowMs - ARCHIVE_EXPORT_DAILY_WINDOW_MS);
+  try {
+    return await db.transaction(async (tx) => {
+      const user = await tx.first<{ status: string }>(
+        "SELECT status FROM users WHERE id = ? FOR UPDATE",
+        input.userId,
+      );
+      if (!user || user.status !== "active") return { kind: "inactive" };
+
+      const active = await tx.first<{ id: string }>(
+        `SELECT id FROM archive_exports
+         WHERE tenant_id = ? AND status IN ('queued', 'building')`,
+        input.userId,
+      );
+      if (active) return { kind: "active", id: active.id };
+
+      const recent = await tx.first<{ requested_at: string }>(
+        `SELECT requested_at FROM archive_exports
+         WHERE tenant_id = ? AND status IN ('queued', 'building', 'ready') AND requested_at > ?
+         ORDER BY requested_at DESC
+         LIMIT 1`,
+        input.userId,
+        windowStart,
+      );
+      if (recent) {
+        return {
+          kind: "daily",
+          resetAtMs: fromTimestamp(recent.requested_at) + ARCHIVE_EXPORT_DAILY_WINDOW_MS,
+        };
+      }
+
+      await tx.run(
+        `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at)
+         VALUES (?, ?, 'queued', ?, ?)`,
+        id,
+        input.userId,
+        now,
+        now,
+      );
+      return { kind: "queued", id };
+    });
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const active = await db.first<{ id: string }>(
+      `SELECT id FROM archive_exports
+       WHERE tenant_id = ? AND status IN ('queued', 'building')`,
+      input.userId,
+    );
+    return { kind: "active", id: active?.id ?? id };
+  }
+}
+
+export async function markArchiveExportFailed(
+  db: ControlPlaneDb,
+  input: { tenantId: string; exportId: string; nowMs: number; error: ArchiveExportError },
+): Promise<void> {
+  const error = ArchiveExportErrorSchema.parse(input.error);
+  const now = toTimestamp(input.nowMs);
+  await db.run(
+    `UPDATE archive_exports
+     SET status = 'failed', error = ?::jsonb, completed_at = ?, updated_at = ?,
+         lease_seq = lease_seq + 1
+     WHERE id = ? AND tenant_id = ? AND status IN ('queued', 'building')`,
+    JSON.stringify(error),
+    now,
+    now,
+    input.exportId,
+    input.tenantId,
+  );
+}
+
+export interface LatestArchiveExport {
+  export: ArchiveExportSummary | null;
+  nextAllowedAtMs: number;
+}
+
+export async function latestArchiveExport(
+  db: ControlPlaneDb,
+  input: { userId: UserId; nowMs: number },
+): Promise<LatestArchiveExport> {
+  const row = await db.first<ExportRow>(
+    `SELECT ${SUMMARY_COLUMNS} FROM archive_exports
+     WHERE tenant_id = ?
+     ORDER BY requested_at DESC
+     LIMIT 1`,
+    input.userId,
+  );
+  const counted = await db.first<{ requested_at: string }>(
+    `SELECT requested_at FROM archive_exports
+     WHERE tenant_id = ? AND status IN ('queued', 'building', 'ready')
+     ORDER BY requested_at DESC
+     LIMIT 1`,
+    input.userId,
+  );
+  const nextAllowedAtMs = counted
+    ? Math.max(input.nowMs, fromTimestamp(counted.requested_at) + ARCHIVE_EXPORT_DAILY_WINDOW_MS)
+    : input.nowMs;
+  return { export: row ? summaryOf(row) : null, nextAllowedAtMs };
+}
+
+export type OwnedArchiveDownload =
+  | { kind: "not_found" }
+  | { kind: "not_ready" }
+  | { kind: "ready"; segments: ArchiveExportSegments };
+
+export async function ownedArchiveDownload(
+  db: ControlPlaneDb,
+  input: { userId: UserId; exportId: string },
+): Promise<OwnedArchiveDownload> {
+  const exportId = parseExportId(input.exportId);
+  if (!exportId) return { kind: "not_found" };
+  const row = await db.first<ExportRow>(
+    `SELECT ${SUMMARY_COLUMNS} FROM archive_exports WHERE id = ? AND tenant_id = ?`,
+    exportId,
+    input.userId,
+  );
+  if (!row) return { kind: "not_found" };
+  if (row.status !== "ready") return { kind: "not_ready" };
+  const segments = SegmentsSchema.parse(row.segments);
+  const sum = segments.parts.reduce((total, part) => total + part.bytes, 0);
+  if (sum !== segments.total_bytes) throw new Error("archive segment sizes do not add up");
+  return { kind: "ready", segments };
+}
+
+export function archiveDocument(input: {
+  generatedAtMs: number;
+  counts: ArchiveExportDocument["counts"];
+}): ArchiveExportDocument {
+  return ArchiveExportDocumentSchema.parse({
+    format_version: 1,
+    generated_at: new Date(input.generatedAtMs).toISOString(),
+    counts: input.counts,
+  });
+}
+
+function summaryOf(row: ExportRow): ArchiveExportSummary {
+  return ArchiveExportSummarySchema.parse({
+    id: row.id,
+    status: row.status,
+    requested_at: row.requested_at,
+    started_at: row.started_at,
+    completed_at: row.completed_at,
+    expires_at: row.expires_at,
+    error: row.error === null || row.error === undefined ? null : ArchiveExportErrorSchema.parse(row.error),
+  });
+}

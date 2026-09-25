@@ -389,3 +389,89 @@ export const UsageGuardUnavailableResponseSchema = z.object({
   error: z.literal("usage guard unavailable"),
 });
 export type UsageGuardUnavailableResponse = z.infer<typeof UsageGuardUnavailableResponseSchema>;
+
+export const ArchiveExportStatusSchema = z.enum([
+  "queued",
+  "building",
+  "ready",
+  "failed",
+  "expired",
+  "cancelled",
+]);
+export type ArchiveExportStatus = z.infer<typeof ArchiveExportStatusSchema>;
+
+export const ArchiveExportErrorSchema = z
+  .object({
+    code: z.string().min(1),
+  })
+  .strict();
+export type ArchiveExportError = z.infer<typeof ArchiveExportErrorSchema>;
+
+export const ArchiveExportSummarySchema = z
+  .object({
+    id: z.string().min(1),
+    status: ArchiveExportStatusSchema,
+    requested_at: z.string().datetime(),
+    started_at: z.string().datetime().nullable(),
+    completed_at: z.string().datetime().nullable(),
+    expires_at: z.string().datetime().nullable(),
+    error: ArchiveExportErrorSchema.nullable(),
+  })
+  .strict();
+export type ArchiveExportSummary = z.infer<typeof ArchiveExportSummarySchema>;
+
+export const PostArchiveExportResponseSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.literal("queued"),
+  })
+  .strict();
+export type PostArchiveExportResponse = z.infer<typeof PostArchiveExportResponseSchema>;
+
+export const ArchiveExportActiveErrorSchema = z
+  .object({
+    error: z.literal("export_active"),
+    id: z.string().min(1),
+  })
+  .strict();
+export type ArchiveExportActiveError = z.infer<typeof ArchiveExportActiveErrorSchema>;
+
+export const ArchiveExportDailyLimitSchema = z
+  .object({
+    limit: z.literal("daily_export"),
+    reset_at: z.string().datetime(),
+  })
+  .strict();
+export type ArchiveExportDailyLimit = z.infer<typeof ArchiveExportDailyLimitSchema>;
+
+export const GetArchiveExportLatestResponseSchema = z
+  .object({
+    export: ArchiveExportSummarySchema.nullable(),
+    next_allowed_at: z.string().datetime(),
+  })
+  .strict();
+export type GetArchiveExportLatestResponse = z.infer<typeof GetArchiveExportLatestResponseSchema>;
+
+export const ArchiveExportNotReadySchema = z
+  .object({
+    error: z.literal("not_ready"),
+  })
+  .strict();
+export type ArchiveExportNotReady = z.infer<typeof ArchiveExportNotReadySchema>;
+
+// export.json inside the zip. Counts are readings of every status.
+export const ArchiveExportDocumentSchema = z
+  .object({
+    format_version: z.literal(1),
+    generated_at: z.string().datetime(),
+    counts: z
+      .object({
+        readings: z.number().int().nonnegative(),
+        pending: z.number().int().nonnegative(),
+        ready: z.number().int().nonnegative(),
+        failed: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+export type ArchiveExportDocument = z.infer<typeof ArchiveExportDocumentSchema>;

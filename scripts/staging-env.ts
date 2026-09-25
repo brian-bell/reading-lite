@@ -14,6 +14,8 @@ export interface StagingResources {
   digestDlq: string;
   wipeQueue: string;
   wipeDlq: string;
+  exportQueue: string;
+  exportDlq: string;
   refreshQueue: string;
   refreshDlq: string;
 }
@@ -47,6 +49,8 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
   digestDlq: "reading-lite-staging-digest-dlq",
   wipeQueue: "reading-lite-staging-wipe",
   wipeDlq: "reading-lite-staging-wipe-dlq",
+  exportQueue: "reading-lite-staging-export",
+  exportDlq: "reading-lite-staging-export-dlq",
   refreshQueue: "reading-lite-staging-refresh",
   refreshDlq: "reading-lite-staging-refresh-dlq",
 };
@@ -139,6 +143,16 @@ export function buildStagingSetupCommands(
       idempotentOk: ALREADY_EXISTS,
     },
     {
+      label: "Create staging export queue",
+      args: ["queues", "create", resources.exportQueue],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
+      label: "Create staging export dead-letter queue",
+      args: ["queues", "create", resources.exportDlq],
+      idempotentOk: ALREADY_EXISTS,
+    },
+    {
       label: "Create staging refresh queue",
       args: ["queues", "create", resources.refreshQueue],
       idempotentOk: ALREADY_EXISTS,
@@ -187,6 +201,16 @@ export function buildStagingTeardownCommands(
       idempotentOk: MISSING_CONSUMER,
     },
     {
+      label: "Remove staging export queue consumer",
+      args: ["queues", "consumer", "remove", resources.exportQueue, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
+      label: "Remove staging export dead-letter queue consumer",
+      args: ["queues", "consumer", "remove", resources.exportDlq, resources.worker],
+      idempotentOk: MISSING_CONSUMER,
+    },
+    {
       label: "Remove staging refresh queue consumer",
       args: ["queues", "consumer", "remove", resources.refreshQueue, resources.worker],
       idempotentOk: MISSING_CONSUMER,
@@ -229,6 +253,16 @@ export function buildStagingTeardownCommands(
     {
       label: "Delete staging wipe dead-letter queue",
       args: ["queues", "delete", resources.wipeDlq],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging export queue",
+      args: ["queues", "delete", resources.exportQueue],
+      idempotentOk: MISSING_RESOURCE,
+    },
+    {
+      label: "Delete staging export dead-letter queue",
+      args: ["queues", "delete", resources.exportDlq],
       idempotentOk: MISSING_RESOURCE,
     },
     {

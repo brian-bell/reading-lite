@@ -18,6 +18,13 @@ import {
   isAccountWipeQueue,
 } from "./account-wipe";
 import type { AccountWipeEnvelopeV1 } from "./control-plane/wipe-envelope";
+import type { ArchiveExportEnvelopeV1 } from "./control-plane/export-envelope";
+import {
+  consumeArchiveExportMessage,
+  handleArchiveExportDeadLetter,
+  isExportDlq,
+  isExportQueue,
+} from "./archive-export";
 import {
   consumeDigestMessage,
   fanOutDueDigests,
@@ -45,6 +52,10 @@ export interface Env {
   // Shared tenant-wipe queue (issue 195b PR1). Not per-tenant. Local wrangler
   // has no wipe queue; tests inject a stub. Wipe is never inline in DELETE /api/account.
   ACCOUNT_WIPE_JOBS?: Queue<AccountWipeEnvelopeV1>;
+  // Shared archive-export queue (reading-lite-mxwx). Not per-tenant. Local
+  // wrangler has no export queue; tests inject a stub. POST /api/exports
+  // returns 503 when the binding is missing.
+  ARCHIVE_EXPORT_JOBS?: Queue<ArchiveExportEnvelopeV1>;
   // Dedicated nightly scan/judge queue, gated off until staging rollout.
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
@@ -282,6 +293,21 @@ export default {
       const nowMs = Date.now();
       for (const msg of batch.messages) {
         await consumeDigestMessage(msg, env, { nowMs, fetch: services.fetch });
+      }
+      return;
+    }
+    // Export deliveries must never fall through to reading processing.
+    if (isExportDlq(batch.queue)) {
+      const nowMs = Date.now();
+      for (const msg of batch.messages) {
+        await handleArchiveExportDeadLetter(msg, env, { nowMs });
+      }
+      return;
+    }
+    if (isExportQueue(batch.queue)) {
+      const nowMs = Date.now();
+      for (const msg of batch.messages) {
+        await consumeArchiveExportMessage(msg, env, { nowMs });
       }
       return;
     }

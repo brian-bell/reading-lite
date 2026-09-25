@@ -54,6 +54,11 @@ import {
 } from "./control-plane/token-handlers";
 import { handleGetSettings, handlePostSettings } from "./control-plane/settings-handlers";
 import { handleDeleteAccount } from "./control-plane/account-handlers";
+import {
+  handleDownloadArchiveExport,
+  handleGetLatestArchiveExport,
+  handlePostArchiveExport,
+} from "./control-plane/archive-export-handlers";
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromSql } from "./control-plane/db";
@@ -151,6 +156,14 @@ export function createApp(opts: AppOptions = {}) {
     requireRecentAuth(authNowMs),
   );
   app.delete("/api/account", (c) => handleDeleteAccount(c, authNowMs(), authRuntime));
+
+  // Archive export stays off /api/account: that mount forces recent-auth.
+  // Session cookie only (bearer 403). CSRF is requirePrincipal on POST.
+  app.use("/api/exports", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
+  app.use("/api/exports/*", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
+  app.post("/api/exports", (c) => handlePostArchiveExport(c, authNowMs()));
+  app.get("/api/exports/latest", (c) => handleGetLatestArchiveExport(c, authNowMs()));
+  app.get("/api/exports/:id/download", (c) => handleDownloadArchiveExport(c));
 
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));

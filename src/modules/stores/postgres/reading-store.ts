@@ -109,6 +109,32 @@ export class PgReadingStore {
     return rows.map((row) => ListIndexItemSchema.parse(present(row)));
   }
 
+  // Keyset page of readings_library_order (tenant_id, created_at DESC, id DESC),
+  // every status. `after` is the last row of the previous page; null is the
+  // first page. A row inserted with a newer created_at between pages is not
+  // visited, and a row already returned is not returned again.
+  async listItemsKeyset(
+    after: { createdAt: string; id: string } | null,
+    limit: number,
+  ): Promise<ListIndexItem[]> {
+    const rows = after
+      ? await this.sql.query(
+          `SELECT ${LIST_COLUMNS} FROM readings
+           WHERE tenant_id = $1 AND (created_at, id) < ($2::timestamptz, $3)
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`,
+          [this.tenantId, after.createdAt, after.id, limit],
+        )
+      : await this.sql.query(
+          `SELECT ${LIST_COLUMNS} FROM readings
+           WHERE tenant_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2`,
+          [this.tenantId, limit],
+        );
+    return rows.map((row) => ListIndexItemSchema.parse(present(row)));
+  }
+
   // Keyed replacement for the whole-index read behind relationship_targets.
   async relationshipTargets(ids: readonly string[]): Promise<ListIndexItem[]> {
     if (ids.length === 0) return [];
