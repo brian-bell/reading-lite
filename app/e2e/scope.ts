@@ -32,6 +32,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "reading-refresh",
   "reprocess",
   "account",
+  "controls",
 ]);
 
 export function inScope(project: { name?: string; metadata?: { anyHost?: boolean } }): boolean {
