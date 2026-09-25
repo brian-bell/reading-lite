@@ -47,6 +47,14 @@ describe("staging environment scripts", () => {
         args: ["queues", "create", "reading-lite-staging-wipe-dlq"],
       },
       {
+        label: "Create staging export queue",
+        args: ["queues", "create", "reading-lite-staging-export"],
+      },
+      {
+        label: "Create staging export dead-letter queue",
+        args: ["queues", "create", "reading-lite-staging-export-dlq"],
+      },
+      {
         label: "Create staging refresh queue",
         args: ["queues", "create", "reading-lite-staging-refresh"],
       },
@@ -84,6 +92,14 @@ describe("staging environment scripts", () => {
         args: ["queues", "consumer", "remove", "reading-lite-staging-wipe-dlq", "reading-lite-staging"],
       },
       {
+        label: "Remove staging export queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging-export", "reading-lite-staging"],
+      },
+      {
+        label: "Remove staging export dead-letter queue consumer",
+        args: ["queues", "consumer", "remove", "reading-lite-staging-export-dlq", "reading-lite-staging"],
+      },
+      {
         label: "Remove staging refresh queue consumer",
         args: ["queues", "consumer", "remove", "reading-lite-staging-refresh", "reading-lite-staging"],
       },
@@ -118,6 +134,14 @@ describe("staging environment scripts", () => {
       {
         label: "Delete staging wipe dead-letter queue",
         args: ["queues", "delete", "reading-lite-staging-wipe-dlq"],
+      },
+      {
+        label: "Delete staging export queue",
+        args: ["queues", "delete", "reading-lite-staging-export"],
+      },
+      {
+        label: "Delete staging export dead-letter queue",
+        args: ["queues", "delete", "reading-lite-staging-export-dlq"],
       },
       {
         label: "Delete staging refresh queue",

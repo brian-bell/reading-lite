@@ -301,6 +301,27 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
+# Archive export (reading-lite-mxwx). One shared queue for every tenant,
+# separate from reading, digest, refresh, and wipe. The DLQ marks the export failed.
+[[env.staging.queues.producers]]
+binding = "ARCHIVE_EXPORT_JOBS"
+queue = "reading-lite-staging-export"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-export"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+dead_letter_queue = "reading-lite-staging-export-dlq"
+
+[[env.staging.queues.consumers]]
+queue = "reading-lite-staging-export-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
 # Nightly relationship refresh (#175), gated off in both environments.
 [[env.staging.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
@@ -545,6 +566,27 @@ dead_letter_queue = "reading-lite-wipe-dlq"
 
 [[env.production.queues.consumers]]
 queue = "reading-lite-wipe-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+
+# Archive export (reading-lite-mxwx). One shared queue for every tenant,
+# separate from reading, digest, refresh, and wipe. The DLQ marks the export failed.
+[[env.production.queues.producers]]
+binding = "ARCHIVE_EXPORT_JOBS"
+queue = "reading-lite-export"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-export"
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 1
+max_retries = 3
+dead_letter_queue = "reading-lite-export-dlq"
+
+[[env.production.queues.consumers]]
+queue = "reading-lite-export-dlq"
 max_batch_size = 10
 max_batch_timeout = 5
 max_concurrency = 1

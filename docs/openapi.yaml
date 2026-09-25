@@ -41,6 +41,8 @@ tags:
     description: Authenticated principal introspection
   - name: readings
     description: Corpus read and write paths
+  - name: exports
+    description: Session archive export
 security:
   - bearerAuth: []
   - sessionCookie: []
@@ -145,6 +147,145 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/exports:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      security:
+        - sessionCookie: []
+      tags: [exports]
+      operationId: requestArchiveExport
+      summary: Request a full-archive export
+      description: |
+        Session cookie plus `X-CSRF-Token`. Bearer tokens are refused 403.
+        No recent-authentication step. One active (queued or building) export
+        per tenant; a second request is 409. A queued, building, or ready
+        request inside the rolling 24 hours is 429 with `reset_at`. Failed
+        and cancelled requests do not count. Enqueues `ARCHIVE_EXPORT_JOBS`.
+        Local `wrangler dev` has no export queue and returns 503.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "202":
+          description: Export queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostArchiveExportResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden principal, CSRF, or bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "409":
+          description: An export is already queued or building
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveExportActiveError"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "429":
+          description: A counted export was requested in the rolling day
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveExportDailyLimit"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/exports/latest:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      security:
+        - sessionCookie: []
+      tags: [exports]
+      operationId: getLatestArchiveExport
+      summary: Latest archive export and the next time a request is allowed
+      description: |
+        Session cookie. Bearer tokens are refused 403. `export` is null when
+        the tenant has never requested one. `next_allowed_at` is now when no
+        queued, building, or ready request is inside the rolling day.
+      responses:
+        "200":
+          description: Latest export, if any
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetArchiveExportLatestResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/exports/{id}/download:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          minLength: 1
+    get:
+      security:
+        - sessionCookie: []
+      tags: [exports]
+      operationId: downloadArchiveExport
+      summary: Download a ready archive export
+      description: |
+        Session cookie. Bearer tokens are refused 403. Another tenant's id is
+        404. A row that is not ready is 409. The body is one zip: each segment's
+        local bytes, then each central-directory fragment, then the
+        end-of-central-directory record. `Content-Length` is the summed part
+        sizes and `Content-Disposition` is an attachment.
+      responses:
+        "200":
+          description: Zip archive
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+              description: attachment filename
+            Content-Length:
+              schema:
+                type: integer
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The export is not ready to download
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveExportNotReady"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          description: A stored segment is missing or the wrong size
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
 
   /api/auth/login-options:
     get:
@@ -1472,6 +1613,137 @@ components:
         ok:
           type: boolean
           const: true
+
+    ArchiveExportStatus:
+      type: string
+      enum: [queued, building, ready, failed, expired, cancelled]
+
+    ArchiveExportError:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+
+    ArchiveExportSummary:
+      type: object
+      additionalProperties: false
+      required: [id, status, requested_at, started_at, completed_at, expires_at, error]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        status:
+          $ref: "#/components/schemas/ArchiveExportStatus"
+        requested_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ArchiveExportError"
+
+    PostArchiveExportResponse:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          const: queued
+
+    ArchiveExportActiveError:
+      type: object
+      additionalProperties: false
+      required: [error, id]
+      properties:
+        error:
+          type: string
+          const: export_active
+        id:
+          type: string
+          minLength: 1
+
+    ArchiveExportDailyLimit:
+      type: object
+      additionalProperties: false
+      required: [limit, reset_at]
+      properties:
+        limit:
+          type: string
+          const: daily_export
+        reset_at:
+          type: string
+          format: date-time
+
+    GetArchiveExportLatestResponse:
+      type: object
+      additionalProperties: false
+      required: [export, next_allowed_at]
+      properties:
+        export:
+          nullable: true
+          allOf:
+            - $ref: "#/components/schemas/ArchiveExportSummary"
+        next_allowed_at:
+          type: string
+          format: date-time
+
+    ArchiveExportNotReady:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: not_ready
+
+    ArchiveExportDocument:
+      type: object
+      additionalProperties: false
+      description: export.json inside the archive. Counts are readings of every status.
+      required: [format_version, generated_at, counts]
+      properties:
+        format_version:
+          type: integer
+          const: 1
+        generated_at:
+          type: string
+          format: date-time
+        counts:
+          type: object
+          additionalProperties: false
+          required: [readings, pending, ready, failed]
+          properties:
+            readings:
+              type: integer
+              minimum: 0
+            pending:
+              type: integer
+              minimum: 0
+            ready:
+              type: integer
+              minimum: 0
+            failed:
+              type: integer
+              minimum: 0
 
     SessionListItem:
       type: object

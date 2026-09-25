@@ -68,6 +68,7 @@ const CONTROL_PLANE_TABLES = [
   "relationship_refresh_jobs",
   "wipe_progress",
   "account_deletions",
+  "archive_exports",
 ].join(", ");
 
 // PostgreSQL is outside the pool's per-test rollback, which D1 used to give
