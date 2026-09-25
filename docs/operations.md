@@ -1057,10 +1057,11 @@ leaves `/` with no page to serve.
 
 reading-lite-gh335.3 removed the SPA, its Pages deploy job, and `ops deploy
 web` from the repository. The Pages project `reading-lite` and its custom
-domains are dashboard state, removed by hand as below. **Status (2026-09-24):**
-steps 1–4 are done on all four hosts, and the smoke check passes on each. The
-Pages project itself is deleted after the production release of that commit,
-so an earlier merge's SPA job does not fail against a missing project.
+domains were dashboard state, removed by hand as below. **Done 2026-09-24:**
+steps 1–4 on all four hosts, then, after the production release of that commit,
+the Pages project itself. The smoke check passes on every host, and
+`reading-lite.pages.dev` no longer resolves. The steps stay here as the record
+and for any host that is ever moved off Pages the same way.
 
 The Pages custom domain is what created each host's proxied DNS record, and a
 Worker route only receives traffic for a proxied hostname (see
@@ -1086,7 +1087,14 @@ replacement takes the frontend **and** the backend's `/api/*`, `/health`, and
 
 After all four hosts pass, delete the Pages project `reading-lite` (this also
 removes its `staging` preview) and drop Pages Edit from `CLOUDFLARE_API_TOKEN`
-if it was granted. If a smoke check fails at step 2, re-point the record at
+if it was granted. The dashboard cannot delete a project with more than about
+100 deployments ([Cloudflare known issue](https://developers.cloudflare.com/pages/platform/known-issues/#delete-a-project-with-a-high-number-of-deployments)).
+Delete the deployments first with `npx wrangler pages deployment delete <id>
+--project-name reading-lite --force`, re-listing each environment with `npx
+wrangler pages deployment list --project-name reading-lite --environment
+production|preview --json` (one page at a time) until only the active
+production deployment remains, then `npx wrangler pages project delete
+reading-lite`. On 2026-09-24 that took 157 deletions. If a smoke check fails at step 2, re-point the record at
 the Pages CNAME to restore the host while you investigate.
 
 ### MCP connector

@@ -265,7 +265,7 @@ longer hands the host back to anything. Frontend rollback is `wrangler
 rollback` of the frontend Worker to a previous version, which still leaves the
 backend untouched; see
 [Frontend rollback](../operations.md#frontend-rollback). The Pages project and
-its four custom domains are removed in the Cloudflare dashboard after the
-release, replacing each Pages-created DNS record with a proxied placeholder
-first so the Worker routes keep receiving traffic; see
+its four custom domains were removed the same day, replacing each
+Pages-created DNS record with a proxied placeholder first so the Worker routes
+keep receiving traffic; see
 [Retiring the Pages SPA](../operations.md#retiring-the-pages-spa).
