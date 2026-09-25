@@ -112,7 +112,7 @@ assistive-technology checks remain acceptance work.
 | Sparse archive | One reading; explicitly insufficient history for novelty and relationships | Avoid invented comparisons or a misleading empty success state |
 | Unavailable source | Retain summary/novelty/connections; offer summary or import | Missing source does not make the whole reading unusable |
 | Removed target | Explain unavailability and offer return to previous reading | Avoid a dead end and preserve the originating relationship explanation |
-| Save URL | Validate HTTP(S) URL; create pending fixture and show status | Real intake must handle existing/initializing/conflicting owners and quotas |
+| Save URL | Validate HTTP(S) URL; create pending fixture and show status | Real intake must handle existing/conflicting owners and quotas |
 | Import Markdown | Require text, retain it in memory, explicitly say analysis was not run | Import/recovery must respect the real source and reprocessing contracts |
 | Processing | Saved, capture/summarize, connections/novelty; manual Check status | Step labels are conceptual, not a backend event stream or progress percentage |
 | Ready | Success state and Open reading | Only show completion when the backend confirms it |
@@ -236,8 +236,9 @@ reading rows. Proposed shape, final name in the Phase 3 PR:
   previous reading's id, title, and the relationship reason. It shows the previous
   title and reason above the destination and "Back to {title}". Browser Back does
   the same. A reload or shared link drops the trail and keeps the reading.
-- Save: navigation item "Save reading" opens `/save`. A 202 or initializing 409
-  navigates to the reading, which shows its status.
+- Save: navigation item "Save reading" opens `/save`. A 202 navigates to the
+  reading, which shows its status. The URL/Markdown tab is remembered for the
+  browser tab's session, not in the URL.
 - Pending and failed readings use the reading URL. There is no separate status
   route.
 

@@ -1,7 +1,7 @@
-// Saving a URL in a real browser (#431). The component tests prove what
-// renders; this proves what only a browser can: the request the form makes
-// carries the URL, the CSRF token, and the tenant pin, and the reading it
-// created is opened without a new document.
+// Saving a URL (#431) and importing Markdown (#408) in a real browser. The
+// component tests prove what renders; this proves what only a browser can:
+// the request the form makes carries its body, the CSRF token, and the tenant
+// pin, and the reading it created is opened without a new document.
 //
 // Requests only, so one viewport and theme; the matrix screenshots the page
 // and its rejected states in every project. It uses Playwright's own `test`,
@@ -10,7 +10,7 @@
 import { expect, test as base, type Page } from "@playwright/test";
 import pack from "../fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "../harness";
-import { serveReadingsInBrowser, serveSaveInBrowser, signIn } from "../test";
+import { serveImportInBrowser, serveReadingsInBrowser, serveSaveInBrowser, signIn } from "../test";
 
 const test = base.extend({
   baseURL: async ({}, use) => {
@@ -49,7 +49,7 @@ test("saves a URL and opens the reading it created, without a new document", asy
 
   await page.goto("/save");
   await expect(page.getByRole("heading", { level: 1, name: "Save reading" })).toBeVisible();
-  // The capture surface: one tab, selected, with the field under it.
+  // The capture surface: the URL tab, selected, with the field under it.
   await expect(page.getByRole("tab", { name: "URL" })).toHaveAttribute("aria-selected", "true");
   await expect(field(page)).toBeVisible();
   expect(documents).toEqual(["/save"]);
@@ -109,3 +109,54 @@ test("says a URL already in the library is, and forgets it on reload", async ({ 
   await expect(page.getByRole("heading", { level: 1, name: READY_TITLE })).toBeVisible();
   await expect(notice).toHaveCount(0);
 });
+
+// Importing Markdown (#408), landing on a reading shaped like the one an
+// import makes: the fixture pack's imported-markdown, whose metadata line says
+// so once it is ready. The paste stays in page memory; the tab is the one
+// thing the session remembers.
+test("imports Markdown and opens the reading it made", async ({ page, baseURL }) => {
+  const IMPORTED = "rd_FXMDPAGE01";
+  const SOURCE_URL = "https://notes.example/slow-reading-week";
+  const MARKDOWN = "# A slow reading week\n\nOne thing at a time.";
+  await signIn(page.context(), baseURL!);
+  await serveReadingsInBrowser(page);
+  // After the readings route, which would otherwise answer this path as an id.
+  const imports = await serveImportInBrowser(page, {
+    status: 202,
+    json: { id: IMPORTED, status: "pending", poll: `/api/readings/${IMPORTED}`, attempt_id: "att_FX0002" },
+  });
+
+  const documents: string[] = [];
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") documents.push(new URL(request.url()).pathname);
+  });
+
+  await page.goto("/save");
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Markdown" }).click();
+  await page.getByRole("textbox", { name: "Source URL" }).fill(SOURCE_URL);
+  await page.getByRole("textbox", { name: "Title (optional)" }).fill("A slow reading week");
+  await page.getByRole("textbox", { name: "Markdown" }).fill(MARKDOWN);
+  await page.getByRole("button", { name: "Import" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/readings/${IMPORTED}$`));
+  await expect(page.getByText("Imported Markdown")).toBeVisible();
+
+  expect(imports).toHaveLength(1);
+  const sent = imports[0]!;
+  expect(sent.postDataJSON()).toEqual({ source_url: SOURCE_URL, title: "A slow reading week", markdown: MARKDOWN });
+  const headers = await sent.allHeaders();
+  expect(headers["content-type"]).toBe("application/json");
+  expect(headers["x-csrf-token"]).toBeTruthy();
+  expect(headers["x-expected-tenant"]).toBeTruthy();
+  expect(documents).toEqual(["/save"]);
+
+  const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }));
+  expect(stored).not.toContain("slow reading");
+
+  // Back on /save, in a new document, the Markdown tab is the one it opens on.
+  await page.goto("/save");
+  await expect(page.getByRole("tab", { name: "Markdown" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("textbox", { name: "Markdown" })).toHaveValue("");
+});
+

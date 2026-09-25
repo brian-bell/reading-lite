@@ -45,9 +45,10 @@ const RULES: Rule[] = [
   [/^\.agents\//, ["worker"]],
 
   // app/. The Worker suite imports the browser fixture pack and, through
-  // library-page.js, library-search.ts.
+  // library-page.js, library-search.ts, and pins the Markdown import limit to
+  // the operator gates' (markdown-import-limit.ts).
   [/^app\/.*\.md$|^app\/(Dockerfile|\.dockerignore)$/, NONE],
-  [/^app\/(e2e\/fixtures\/|e2e\/[^/]+\.js$|src\/library-search\.ts$)/, ["worker", "app", "appBrowser"]],
+  [/^app\/(e2e\/fixtures\/|e2e\/[^/]+\.js$|src\/(library-search|markdown-import-limit)\.ts$)/, ["worker", "app", "appBrowser"]],
   // Unit tests, the smoke suite, and Worker config. wrangler.jsonc is mostly
   // routes and bindings; its compatibility and assets settings shape the built
   // Worker, which the app job's smoke suite serves (backend 404s, cache

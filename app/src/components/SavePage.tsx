@@ -1,26 +1,44 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { useId, useRef, useState, type FormEvent } from "react";
+import { Link, useHydrated, useNavigate } from "@tanstack/react-router";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { flushSync } from "react-dom";
 import { NetworkError } from "../api/errors";
-import { submitReading } from "../api/save";
+import { importMarkdown, submitReading } from "../api/save";
 import { whoamiQueryKey, type Identity } from "../identity";
+import {
+  firstProblemField,
+  markdownImportBody,
+  markdownImportProblems,
+  type MarkdownImportBody,
+  type MarkdownImportProblems,
+  type MarkdownImportValues,
+} from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
 import { limitSentence } from "../capture-refusal";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
 import { Icon } from "./Icon";
+import { MarkdownImportForm, type MarkdownImportFormHandle } from "./MarkdownImportForm";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, OfflineNotice, ServerError } from "./ReadingStates";
+import { TextField } from "./TextField";
 import { ViewTabs, type TabItem } from "./ViewTabs";
 
-// Saving a URL (#431, the accepted path of Phase 4). The page is under the
-// signed-in guard, so a link to it from anywhere signs the reader in and
-// returns them here.
+// Saving a URL (#431, the accepted path of Phase 4) and importing Markdown
+// (#408). The page is under the signed-in guard, so a link to it from anywhere
+// signs the reader in and returns them here.
 //
-// The tabs are the design spec's capture surface: one tab now, and Markdown
-// beside it later. The selection is local state rather than the URL — unlike
-// the reading page's views, there is nothing here worth a deep link, and a
-// half-typed URL should survive the switch.
+// The tabs are the design spec's capture surface. The selection is not in the
+// URL — unlike the reading page's views, there is nothing here worth a deep
+// link — but it is remembered for the browser tab's session (sessionStorage),
+// so a reader who imports Markdown comes back to the Markdown tab. Only the
+// tab's name is stored. What is typed into either tab is this page's state
+// and nothing else: it survives a tab switch and a refusal, and a pasted
+// Markdown never reaches browser storage.
+//
+// Both tabs end in the same intake outcomes (save.ts), so they share one
+// request and one way of handling what it answered; they differ only in the
+// fields that ask and where a rejection lands.
 //
 // A save that is accepted opens the reading it created, because that page
 // already says what is happening to it (the status card). What the backend
@@ -30,9 +48,38 @@ import { ViewTabs, type TabItem } from "./ViewTabs";
 // the page that replaces the form takes the focus it held, as the library's
 // states do.
 
-type SaveTab = "url";
+type SaveTab = "url" | "markdown";
 
-const SAVE_TABS: readonly TabItem<SaveTab>[] = [{ key: "url", label: "URL" }];
+const SAVE_TABS: readonly TabItem<SaveTab>[] = [
+  { key: "url", label: "URL" },
+  { key: "markdown", label: "Markdown" },
+];
+
+/** Where the tab is remembered for the session; see the header. */
+const SAVE_TAB_KEY = "reading-lite:save-tab";
+
+function storedTab(): SaveTab | undefined {
+  try {
+    const stored = window.sessionStorage.getItem(SAVE_TAB_KEY);
+    return SAVE_TABS.find((tab) => tab.key === stored)?.key;
+  } catch {
+    // Storage the browser refuses is a tab that is not remembered.
+    return undefined;
+  }
+}
+
+function rememberTab(tab: SaveTab) {
+  try {
+    window.sessionStorage.setItem(SAVE_TAB_KEY, tab);
+  } catch {
+    // As above: nothing to remember it in.
+  }
+}
+
+/** What a submit asks for: one request, whichever tab it came from. */
+type CaptureRequest = { kind: "url"; url: string } | { kind: "markdown"; body: MarkdownImportBody };
+
+const NO_MARKDOWN: MarkdownImportValues = { sourceUrl: "", title: "", markdown: "" };
 
 /**
  * What is said above the form without replacing it (#433). A save the backend
@@ -74,20 +121,44 @@ export function SavePage() {
   const navigate = useNavigate();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
   const expectedTenant = expectedLayoutOf(identity);
-  const [tab, setTab] = useState<SaveTab>("url");
+  // The server renders the URL tab, and while hydrating this render must
+  // agree with it, so there the remembered tab is read after hydration.
+  // Mounted in a page that is already running (a client-side navigation),
+  // it opens on the remembered tab straight away rather than flashing the URL
+  // one first.
+  const hydrated = useHydrated();
+  const [tab, setTab] = useState<SaveTab>(() => (hydrated ? storedTab() : undefined) ?? "url");
   const [url, setUrl] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  const [markdown, setMarkdown] = useState<MarkdownImportValues>(NO_MARKDOWN);
+  const [markdownProblems, setMarkdownProblems] = useState<MarkdownImportProblems>({});
   const [refused, setRefused] = useState<Refusal | null>(null);
+  /** Which tab's request the refusal answered: an import words its 503 as one. */
+  const [refusedFor, setRefusedFor] = useState<SaveTab>("url");
   const [announcement, setAnnouncement] = useState<string | null>(null);
-  const urlId = useId();
-  const problemId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
+  const markdownFormRef = useRef<MarkdownImportFormHandle>(null);
   // A second submit while the first is in flight, or held paused offline,
-  // would claim the URL twice. Cleared only once the save has settled.
+  // would claim the URL twice. Cleared only once the save has settled. One
+  // guard for both tabs: a save and an import are the same kind of write.
   const submittingRef = useRef(false);
 
+  useEffect(() => {
+    // The hydrating render's catch-up; a client-side mount already has it.
+    const remembered = storedTab();
+    if (remembered) setTab(remembered);
+  }, []);
+
+  function selectTab(next: SaveTab) {
+    setTab(next);
+    rememberTab(next);
+  }
+
   const save = useMutation({
-    mutationFn: (value: string) => submitReading(queryClient, value, expectedTenant),
+    mutationFn: (request: CaptureRequest) =>
+      request.kind === "url"
+        ? submitReading(queryClient, request.url, expectedTenant)
+        : importMarkdown(queryClient, request.body, expectedTenant),
   });
 
   function reject(message: string) {
@@ -95,10 +166,42 @@ export function SavePage() {
     inputRef.current?.focus();
   }
 
+  function rejectMarkdown(problems: MarkdownImportProblems) {
+    setMarkdownProblems(problems);
+    const first = firstProblemField(problems);
+    if (first) markdownFormRef.current?.focus(first);
+  }
+
+  /** The field a reader goes back to when the notice they pressed goes away. */
+  function focusForm(kind: SaveTab) {
+    if (kind === "url") inputRef.current?.focus();
+    else markdownFormRef.current?.focus("sourceUrl");
+  }
+
+  /** The request this tab's fields make, or undefined after rejecting them in place. */
+  function requestFor(kind: SaveTab): CaptureRequest | undefined {
+    if (kind === "url") {
+      const value = url.trim();
+      const rejected = saveUrlProblem(value);
+      if (rejected === undefined) return { kind: "url", url: value };
+      // Nothing is asked for: the reader is returned to the field with the
+      // reason, and the URL stays exactly as they typed it.
+      reject(rejected);
+      return undefined;
+    }
+    const problems = markdownImportProblems(markdown);
+    if (firstProblemField(problems) === undefined) return { kind: "markdown", body: markdownImportBody(markdown) };
+    // The same, field by field: focus goes to the first one refused, and
+    // everything typed — the Markdown above all — stays where it was.
+    rejectMarkdown(problems);
+    return undefined;
+  }
+
   /**
-   * The one way a save is made: the field's rule first, then the request. The
-   * form's submit and the offline notice's Retry both come through here, so a
-   * retry cannot get past a rule a submit would have caught.
+   * The one way a save is made: the fields' rules first, then the request.
+   * Either form's submit and a notice's retry both come through here, so a
+   * retry cannot get past a rule a submit would have caught. A retry asks
+   * again for the tab on screen, which is the form the reader can see.
    *
    * The outcome is handled in `mutate`'s own callbacks rather than the
    * mutation's, because query-core keeps a paused mutation in the cache after
@@ -107,34 +210,35 @@ export function SavePage() {
    * the observer has unsubscribed, so a save that resumes without this page
    * still reaches the backend and simply lands in the library.
    */
-  function trySubmit(raw: string) {
+  function trySubmit(kind: SaveTab) {
     if (submittingRef.current) return;
     // The notice that asked for this is about to go, and with it the button
-    // the reader pressed; focus goes back to the field, where the form's own
+    // the reader pressed; focus goes back to the form, where its own
     // rejection also puts it, rather than falling to the document.
-    if (document.activeElement?.closest(".offline-notice")) inputRef.current?.focus();
+    if (document.activeElement?.closest(".offline-notice")) focusForm(kind);
     // What the last save answered is stale the moment another is asked for,
     // including when this one never leaves: a field error beside a notice
     // still offering to retry the URL it just refused says two things at once.
     save.reset();
     setProblem(null);
+    setMarkdownProblems({});
     setRefused(null);
     setAnnouncement(null);
-    const value = raw.trim();
-    const rejected = saveUrlProblem(value);
-    if (rejected !== undefined) {
-      // Nothing is asked for: the reader is returned to the field with the
-      // reason, and the URL stays exactly as they typed it.
-      reject(rejected);
-      return;
-    }
+    const request = requestFor(kind);
+    if (request === undefined) return;
     submittingRef.current = true;
-    save.mutate(value, {
+    save.mutate(request, {
       onSuccess: async (outcome) => {
         if (outcome.kind === "invalid") {
           // The backend's rejection is the field's error, and the reader is
           // put back in the field to fix it, as the client-side rule does.
-          reject(outcome.message);
+          // For an import that is the source URL: the rules already cover
+          // everything else the backend would refuse. A reader who switched
+          // tabs while it was out is taken back to the form it rejected,
+          // rendered now so its field is there to take the focus.
+          flushSync(() => selectTab(request.kind));
+          if (request.kind === "url") reject(outcome.message);
+          else rejectMarkdown({ sourceUrl: outcome.message });
           return;
         }
         if (outcome.kind !== "accepted" && outcome.kind !== "existing") {
@@ -152,13 +256,20 @@ export function SavePage() {
             await queryClient.invalidateQueries({ queryKey: ["library"] });
           }
           setRefused(outcome);
-          setAnnouncement(noticeSentence(outcome) ?? null);
+          setRefusedFor(request.kind);
+          setAnnouncement(noticeSentence(outcome, request.kind) ?? null);
           return;
         }
         // Politely, and without taking focus: the route change moves focus to
         // the reading's heading, which is where the reader is going. A URL
         // already in the library was not saved now, so it does not say so.
-        setAnnouncement(outcome.kind === "accepted" ? "Saved. Opening the reading…" : "Opening the reading…");
+        setAnnouncement(
+          outcome.kind === "existing"
+            ? "Opening the reading…"
+            : request.kind === "url"
+              ? "Saved. Opening the reading…"
+              : "Imported. Opening the reading…",
+        );
         // The new reading belongs on every page of the library, filtered or not.
         await queryClient.invalidateQueries({ queryKey: ["library"] });
         // A failed owner is reprocessed in place under the same id, and the
@@ -184,7 +295,7 @@ export function SavePage() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    trySubmit(url);
+    trySubmit("url");
   }
 
   const view = viewOf(refused, save.isPaused, save.error);
@@ -210,55 +321,58 @@ export function SavePage() {
         return (
           <div className="page save-page">
             <PageHeading>Save reading</PageHeading>
-            <SaveNoticeBanner notice={current.notice} onRetry={() => trySubmit(url)} />
+            <SaveNoticeBanner notice={current.notice} action={refusedFor} onRetry={() => trySubmit(tab)} />
             {/* The form is a card (design spec, Forms/status cards), with the
                 tabs inside it as in the accepted prototype. */}
             <div className="save-card">
-              <ViewTabs label="What to save" idPrefix="save" tabs={SAVE_TABS} selected={tab} onSelect={setTab}>
+              <ViewTabs label="What to save" idPrefix="save" tabs={SAVE_TABS} selected={tab} onSelect={selectTab}>
                 {/* The browser's own URL check would replace our message with
                     its bubble, which is neither in the page nor linked to the
                     field. */}
-                <form className="save-form" onSubmit={onSubmit} noValidate>
-                  <div className="field">
-                    <label className="field-label" htmlFor={urlId}>
-                      URL
-                    </label>
-                    <input
-                      id={urlId}
-                      ref={inputRef}
-                      className="text-input"
-                      type="text"
-                      inputMode="url"
-                      name="url"
-                      autoComplete="url"
-                      spellCheck={false}
-                      value={url}
-                      onChange={(event) => setUrl(event.target.value)}
-                      aria-invalid={problem ? true : undefined}
-                      aria-describedby={problem ? problemId : undefined}
-                    />
-                    {problem ? (
-                      <p className="field-error" id={problemId}>
-                        {problem}
-                      </p>
-                    ) : null}
-                  </div>
-                  <div className="form-actions">
-                    {/* aria-disabled, not disabled: a disabled button is blurred
-                        by the browser, and the reader would lose their place
-                        while the save runs — and with it the focus the state
-                        page takes when one replaces this form. The submit is
-                        refused by submittingRef either way. */}
-                    <button
-                      type="submit"
-                      className="button button-primary button-leading-icon"
-                      aria-disabled={save.isPending || undefined}
-                    >
-                      <Icon name="plus" size={16} strokeWidth={2} />
-                      Save
-                    </button>
-                  </div>
-                </form>
+                {tab === "url" ? (
+                  <form className="save-form" onSubmit={onSubmit} noValidate>
+                    <TextField label="URL" problem={problem}>
+                      {(control) => (
+                        <input
+                          {...control}
+                          ref={inputRef}
+                          className="text-input"
+                          type="text"
+                          inputMode="url"
+                          name="url"
+                          autoComplete="url"
+                          spellCheck={false}
+                          value={url}
+                          onChange={(event) => setUrl(event.target.value)}
+                        />
+                      )}
+                    </TextField>
+                    <div className="form-actions">
+                      {/* aria-disabled, not disabled: a disabled button is blurred
+                          by the browser, and the reader would lose their place
+                          while the save runs — and with it the focus the state
+                          page takes when one replaces this form. The submit is
+                          refused by submittingRef either way. */}
+                      <button
+                        type="submit"
+                        className="button button-primary button-leading-icon"
+                        aria-disabled={save.isPending || undefined}
+                      >
+                        <Icon name="plus" size={16} strokeWidth={2} />
+                        Save
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <MarkdownImportForm
+                    ref={markdownFormRef}
+                    values={markdown}
+                    problems={markdownProblems}
+                    onChange={setMarkdown}
+                    onSubmit={() => trySubmit("markdown")}
+                    pending={save.isPending}
+                  />
+                )}
               </ViewTabs>
             </div>
             {/* The page's standing polite region: on screen before there is
@@ -293,13 +407,17 @@ function viewOf(refused: Refusal | null, paused: boolean, error: unknown): SaveV
  * live region announces it, and the reader must not be given two wordings of
  * the same refusal. Offline keeps its own sentences in the shared notice.
  */
-function noticeSentence(notice: SaveNotice | Refusal): string | undefined {
+function noticeSentence(notice: SaveNotice | Refusal, action: SaveTab): string | undefined {
   switch (notice.kind) {
     case "limited":
     case "guard-unavailable":
       return limitSentence(notice);
     case "unavailable":
-      return "Saving is unavailable right now.";
+      // A 503 names what could not be done (capture-refusal.ts), in the
+      // words of the button the reader pressed.
+      return action === "url" ? "Saving is unavailable right now." : "Importing is unavailable right now.";
+    case "already-processing":
+      return "This reading is already processing.";
     default:
       return undefined;
   }
@@ -318,14 +436,26 @@ function noticeSentence(notice: SaveNotice | Refusal): string | undefined {
  * own `form-status` was already there to be announced, and this one was not.
  * Offline keeps the shared default, as the library's does.
  */
-function SaveNoticeBanner({ notice, onRetry }: { notice: SaveNotice; onRetry: () => void }) {
+function SaveNoticeBanner({
+  notice,
+  action,
+  onRetry,
+}: {
+  notice: SaveNotice;
+  /** The tab whose request was refused. */
+  action: SaveTab;
+  onRetry: () => void;
+}) {
   if (notice.kind === "none") return null;
   if (notice.kind === "offline-paused") {
     return <OfflineNotice message="You're offline. This save will be sent when your connection returns." />;
   }
   if (notice.kind === "offline-failed") return <OfflineNotice onRetry={onRetry} />;
+  // An attempt already running is the backend's to finish, and asking again
+  // while it runs gets the same answer: the notice says so and offers nothing.
+  const retry = notice.kind === "already-processing" ? undefined : onRetry;
   return (
-    <InlineNotice message={noticeSentence(notice)!} actionLabel="Try again" onAction={onRetry} live={false}>
+    <InlineNotice message={noticeSentence(notice, action)!} actionLabel="Try again" onAction={retry} live={false}>
       {notice.kind === "unavailable" && notice.id ? (
         <Link className="notice-link" to="/readings/$id" params={{ id: notice.id }}>
           Open the reading

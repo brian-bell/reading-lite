@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../src/api/errors";
 import { CSRF_HEADER } from "../src/api/client";
 import { EXPECTED_TENANT_HEADER } from "../src/api/readings";
-import { submitReading } from "../src/api/save";
+import { importMarkdown, submitReading } from "../src/api/save";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 
 // The browser path: same-origin POST /api/readings with the session cookie,
@@ -150,5 +150,25 @@ describe("submitReading", () => {
     stubFetch(new Response("<html>gateway</html>", { status: 502 }));
 
     await expect(submitReading(signedIn(), "https://example.com/a", "usr_a")).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+// The import shares the save's request and its outcomes (save.test.ts owns
+// those); what is its own is where it goes and what it carries.
+describe("importMarkdown", () => {
+  it("posts the body as JSON with the session cookie, the CSRF token, and the tenant pin", async () => {
+    stubFetch(Response.json(ACCEPTED, { status: 202 }));
+    const body = { source_url: "https://example.com/a", title: "A", markdown: "# A\n\nText." };
+
+    await expect(importMarkdown(signedIn(), body, "usr_a")).resolves.toEqual({ kind: "accepted", id: "rd_FXPENDNG01" });
+
+    const request = lastRequest();
+    expect(new URL(request.url).pathname).toBe("/api/readings/import-markdown");
+    expect(request.method).toBe("POST");
+    expect(request.credentials).toBe("include");
+    expect(request.headers.get("content-type")).toBe("application/json");
+    expect(request.headers.get(CSRF_HEADER)).toBe("csrf-a");
+    expect(request.headers.get(EXPECTED_TENANT_HEADER)).toBe("usr_a");
+    await expect(request.json()).resolves.toEqual(body);
   });
 });

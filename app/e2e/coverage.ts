@@ -25,6 +25,7 @@ import {
   serveReadingsInBrowser,
   serveReprocessInBrowser,
   serveAccountDeleteInBrowser,
+  serveImportInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -93,6 +94,32 @@ function saveAndExpect(sentence: string, also?: (page: Page) => Promise<void>) {
     await saveUrl(page, "https://example.com/a");
     await expect(page.getByText(sentence).first()).toBeVisible();
     await also?.(page);
+    await page.locator("#main h1").focus();
+  };
+}
+
+/**
+ * Opens the save page's Markdown tab (#408), once hydration has attached the
+ * tabs' handlers (see saveUrl), and waits for its fields.
+ */
+async function openMarkdownTab(page: Page) {
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("tab", { name: "Markdown" }).click();
+  await expect(page.getByRole("textbox", { name: "Source URL" })).toBeVisible();
+}
+
+/**
+ * Fills the Markdown tab and presses Import, then starts the keyboard walk
+ * again from the heading, as saveAndExpect does: the click leaves focus on
+ * Import, the form's last tab stop.
+ */
+function importAndExpect(sentence: string, markdown = "# A slow reading week\n\nOne thing at a time.") {
+  return async (page: Page) => {
+    await openMarkdownTab(page);
+    await page.getByRole("textbox", { name: "Source URL" }).fill("https://notes.example/slow-reading-week");
+    await page.getByRole("textbox", { name: "Markdown" }).fill(markdown);
+    await page.getByRole("button", { name: "Import" }).click();
+    await expect(page.getByText(sentence).first()).toBeVisible();
     await page.locator("#main h1").focus();
   };
 }
@@ -409,6 +436,57 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: saveAndExpect("Saving is unavailable right now.", async (page) => {
       await expect(page.getByRole("link", { name: "Open the reading" })).toBeVisible();
     }),
+  },
+  // Importing Markdown (#408): the second tab of the save page. The tab is
+  // opened after load, so the walk starts from the heading above it.
+  {
+    name: "save-markdown",
+    essential: true,
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    prepare: async (page) => {
+      await openMarkdownTab(page);
+      await page.locator("#main h1").focus();
+    },
+  },
+  // Nothing typed: both required fields say so, and focus is on the first.
+  {
+    name: "save-markdown-invalid",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    prepare: async (page) => {
+      await openMarkdownTab(page);
+      await page.getByRole("button", { name: "Import" }).click();
+      await expect(page.getByText("Paste the Markdown you want to import.")).toBeVisible();
+      await expect(page.getByRole("textbox", { name: "Source URL" })).toBeFocused();
+    },
+  },
+  // Over the queue limit: refused in the field before anything is sent, with
+  // the paste still in it. The stub would accept, so a request that got out
+  // would leave the page.
+  {
+    name: "save-markdown-too-large",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      await serveImportInBrowser(page, { status: 202, json: { id: "rd_FXMDPAGE01" } });
+    },
+    prepare: importAndExpect("Imports are limited to 128 KB", "a".repeat(128_000)),
+  },
+  // An attempt already running over the source URL's owner: a notice with no
+  // retry, over the form and the paste.
+  {
+    name: "save-markdown-already-processing",
+    path: "/save",
+    state: "signed-in",
+    heading: "Save reading",
+    stub: async (page) => {
+      await serveImportInBrowser(page, { status: 409, json: { error: "reading already has an active attempt" } });
+    },
+    prepare: importAndExpect("This reading is already processing."),
   },
   { name: "login", anyHost: true, essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 

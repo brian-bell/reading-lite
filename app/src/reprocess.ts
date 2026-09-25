@@ -1,5 +1,5 @@
 import { ApiError } from "./api/errors";
-import { captureRefusalOf, type CaptureRefusal } from "./capture-refusal";
+import { ACTIVE_ATTEMPT, captureRefusalOf, type CaptureRefusal } from "./capture-refusal";
 import { actingTenantOf, messageOf } from "./reading";
 
 // What POST /api/readings/:id/reprocess answered (#410): Retry on a failed
@@ -28,8 +28,10 @@ export type ReprocessOutcome =
   /** 429 and 503 (capture-refusal.ts). */
   | CaptureRefusal;
 
-/** The two 409 bodies src/router.ts's `toHttp` gives a reprocess `conflict`. */
-const ACTIVE_ATTEMPT = "reading already has an active attempt";
+/**
+ * The other 409 body src/router.ts's `toHttp` gives a reprocess `conflict`,
+ * beside ACTIVE_ATTEMPT (capture-refusal.ts).
+ */
 const MARKDOWN_MISSING = "markdown content not available";
 
 /** The fallback for a 400 whose body says nothing useful. */

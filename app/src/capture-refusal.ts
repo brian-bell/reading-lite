@@ -53,6 +53,13 @@ const UnavailableSchema = z.looseObject({ id: z.string().min(1).optional().catch
  */
 const GUARD_UNAVAILABLE = "usage guard unavailable";
 
+/**
+ * The 409 body src/router.ts's `toHttp` gives an intake `conflict` over an
+ * attempt already running. Every capture write can meet it, and none of them
+ * overrides it (the app never sends `force`).
+ */
+export const ACTIVE_ATTEMPT = "reading already has an active attempt";
+
 /** The refusal a 429 or 503 is, or undefined for any answer that is not one. */
 export function captureRefusalOf(status: number, body: unknown): CaptureRefusal | undefined {
   if (status === 429) {

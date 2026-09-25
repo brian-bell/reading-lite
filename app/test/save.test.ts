@@ -160,23 +160,22 @@ describe("submitFromResponse", () => {
     expect(() => submitFromResponse(200, { status: "ready" })).toThrow(ApiError);
   });
 
-  // 409 `initializing` names the id to poll and no state: the reading's own
-  // status card is what says it is being worked on, so there is no notice.
-  it("opens the reading a 409 names, with nothing to say about it", () => {
-    expect(
-      submitFromResponse(409, {
-        error: "reading owner is still initializing",
-        id: "rd_2",
-        poll: "/api/readings/rd_2",
-      }),
-    ).toEqual({ kind: "existing", id: "rd_2" });
+  // No owner is ever half-written any more (the claim commits the reading, its
+  // URL, and its attempt together), so a 409 is only an attempt already
+  // running: a refusal with no reading to open.
+  it("reports a 409 over a running attempt as already processing", () => {
+    expect(submitFromResponse(409, { error: "reading already has an active attempt" })).toEqual({
+      kind: "already-processing",
+    });
   });
 
-  // 409 `conflict` names no reading, so there is nothing to open.
-  it("throws on a 409 with no reading to open", () => {
-    expect(() => submitFromResponse(409, { error: "reading already has an active attempt" })).toThrow(
-      "reading already has an active attempt",
-    );
+  // What the retired `initializing` 409 looked like: an id is no longer a
+  // reason to open anything, and a 409 this app cannot explain is its error.
+  it.each([
+    { error: "reading owner is still initializing", id: "rd_2", poll: "/api/readings/rd_2" },
+    { error: "markdown content not available" },
+  ])("throws on a 409 it does not recognise (%#)", (body) => {
+    expect(() => submitFromResponse(409, body)).toThrow(body.error);
   });
 
   // 403 and 412 are values, as in readingFromResponse and libraryFromResponse:
