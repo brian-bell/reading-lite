@@ -57,6 +57,12 @@ export class ContentStore {
   // zero objects, so one created between a snapshot and its batch delete is
   // caught by the next pass. Used for a purged reading's whole key_prefix and
   // for one attempt's revision prefix when that attempt lost the reading.
+  // The stored size without opening the body, or null when absent.
+  async size(relativeKey: string): Promise<number | null> {
+    const obj = await this.bucket.head(this.abs(relativeKey));
+    return obj ? obj.size : null;
+  }
+
   async deletePrefix(relativePrefix: string): Promise<number> {
     const prefix = this.abs(relativePrefix.endsWith("/") ? relativePrefix : `${relativePrefix}/`);
     let deleted = 0;

@@ -1,11 +1,12 @@
-// Archive export consumer (reading-lite-mxwx). One delivery builds one zip
-// segment — the format note, export.json, index.json, one manifest per
-// reading, captured extracted.md and raw.<ext>, report.json, and
-// checksums.sha256 — writes it to R2, then marks the row ready. Content keys
-// come from contentKeys; this module does not spell object paths. Later
-// slices add more segments and the cron that resumes or expires. The DLQ
-// marks the export failed so the active slot frees, then deletes any parts
-// the build wrote.
+// Archive export consumer (reading-lite-mxwx). One delivery builds the zip —
+// the format note, one manifest per reading, captured extracted.md and
+// raw.<ext>, export.json, index.json, report.json, and checksums.sha256 —
+// uploading a segment and its central-directory fragment to R2 each time the
+// pending entries fill ARCHIVE_EXPORT_SEGMENT_BYTES, then marks the row ready.
+// Content keys come from contentKeys; this module does not spell object
+// paths. A later slice resumes a build across deliveries and adds the cron
+// that resumes or expires. The DLQ marks the export failed so the active slot
+// frees, then deletes any parts the build wrote.
 
 import type { ArchiveExportError } from "./schemas/api";
 import { ListIndexItemSchema, ListIndexSchema, type ListIndexItem } from "./schemas/api";
@@ -39,6 +40,10 @@ import { pgReadingStoreFor, type PgReadingStore } from "./modules/stores/postgre
 export const ARCHIVE_EXPORT_QUEUE_NAMES = ["reading-lite-export", "reading-lite-staging-export"] as const;
 export const ARCHIVE_EXPORT_DLQ_NAMES = ["reading-lite-export-dlq", "reading-lite-staging-export-dlq"] as const;
 export const ARCHIVE_EXPORT_PAGE_SIZE = 100;
+// Uncompressed bytes a build holds before it uploads a segment. A segment can
+// overrun it by one reading's files (fetches are capped by FETCH_MAX_BYTES,
+// 10 MB by default), so memory stays bounded whatever the library's size.
+export const ARCHIVE_EXPORT_SEGMENT_BYTES = 16 * 1024 * 1024;
 const CHECKSUMS_FILE = "checksums.sha256";
 
 // In the zip, so the package stays readable without the repo. The longer
@@ -82,6 +87,7 @@ export interface ArchiveExportEnv {
 export interface ArchiveExportJobDeps {
   nowMs: number;
   pageSize?: number;
+  segmentBytes?: number;
 }
 
 type BuildOutcome = "ready" | "skipped" | "cancelled" | "failed";
@@ -117,11 +123,27 @@ async function readBytes(content: ContentStore, key: string | null): Promise<Uin
   return new Uint8Array(await object.arrayBuffer());
 }
 
+interface ArchivePart {
+  key: string;
+  bytes: number;
+}
+
+// A zip entry with its SHA-256, taken once and reused by checksums.sha256.
+interface HashedEntry extends ZipEntry {
+  sha256: string;
+}
+
+async function hashed(name: string, data: Uint8Array): Promise<HashedEntry> {
+  return { name, data, sha256: await sha256Bytes(data) };
+}
+
 interface PackedReading {
-  manifest: Manifest;
-  entries: ZipEntry[];
+  entries: HashedEntry[];
   missing: ArchiveMissingArtifact[];
   warnings: ArchiveContentWarning[];
+  // Every connection and tension; the dangling ones are known once the whole
+  // library has been read.
+  relationships: ArchiveDanglingRelationship[];
 }
 
 // One reading's files. extracted.md only when the row says the content was
@@ -138,7 +160,7 @@ async function packReading(
   const keys = await store.contentKeys(id);
   const rawPath = `${dir}/raw.${rawExtFromContentType(keys?.contentType ?? manifest.content_type)}`;
   const extractedPath = `${dir}/extracted.md`;
-  const entries: ZipEntry[] = [{ name: `${dir}/manifest.json`, data: jsonBytes(manifest) }];
+  const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes(manifest))];
   const missing: ArchiveMissingArtifact[] = [];
   const warnings: ArchiveContentWarning[] = [];
 
@@ -147,7 +169,7 @@ async function packReading(
     if (!extracted) {
       missing.push({ reading_id: id, kind: "extracted", path: extractedPath });
     } else {
-      entries.push({ name: extractedPath, data: extracted });
+      entries.push(await hashed(extractedPath, extracted));
       if (manifest.extracted_bytes !== undefined && extracted.byteLength !== manifest.extracted_bytes) {
         warnings.push({
           reading_id: id,
@@ -164,7 +186,8 @@ async function packReading(
   if (!raw) {
     missing.push({ reading_id: id, kind: "raw", path: rawPath });
   } else {
-    entries.push({ name: rawPath, data: raw });
+    const entry = await hashed(rawPath, raw);
+    entries.push(entry);
     if (raw.byteLength !== manifest.content_bytes) {
       warnings.push({
         reading_id: id,
@@ -174,49 +197,89 @@ async function packReading(
         actual: raw.byteLength,
       });
     }
-    const hash = await sha256Bytes(raw);
-    if (hash !== manifest.content_sha256) {
+    if (entry.sha256 !== manifest.content_sha256) {
       warnings.push({
         reading_id: id,
         code: "content_hash_mismatch",
         path: rawPath,
         expected: manifest.content_sha256,
-        actual: hash,
+        actual: entry.sha256,
       });
     }
   }
 
-  return { manifest, entries, missing, warnings };
+  const relationships: ArchiveDanglingRelationship[] = [
+    ...(manifest.connections ?? []).map((connection) => ({
+      reading_id: id,
+      kind: "connection" as const,
+      target_id: connection.id,
+    })),
+    ...(manifest.tensions ?? []).map((tension) => ({ reading_id: id, kind: "tension" as const, target_id: tension.id })),
+  ];
+  return { entries, missing, warnings, relationships };
 }
 
-function danglingRelationships(
-  packed: readonly PackedReading[],
-  exported: ReadonlySet<string>,
-): ArchiveDanglingRelationship[] {
-  const dangling: ArchiveDanglingRelationship[] = [];
-  for (const reading of packed) {
-    const id = reading.manifest.id;
-    for (const connection of reading.manifest.connections ?? []) {
-      if (!exported.has(connection.id)) {
-        dangling.push({ reading_id: id, kind: "connection", target_id: connection.id });
-      }
-    }
-    for (const tension of reading.manifest.tensions ?? []) {
-      if (!exported.has(tension.id)) {
-        dangling.push({ reading_id: id, kind: "tension", target_id: tension.id });
-      }
-    }
-  }
-  return dangling;
-}
+// Uploads the zip while it is built. Once the pending entries reach the
+// budget, their segment (local headers and data) and its central-directory
+// fragment go to R2 and leave memory, so a build holds about one segment, not
+// the library. Only checksum lines and part sizes accumulate. Offsets run
+// across segments, so the download joins segments, then fragments, then the
+// EOCD into one zip.
+class ArchiveWriter {
+  private readonly segments: ArchivePart[] = [];
+  private readonly centrals: ArchivePart[] = [];
+  private readonly checksums: Array<{ name: string; sha256: string }> = [];
+  private pending: ZipEntry[] = [];
+  private pendingBytes = 0;
+  private offset = 0;
+  private centralBytes = 0;
+  private entries = 0;
 
-async function withChecksums(entries: readonly ZipEntry[]): Promise<ZipEntry[]> {
-  const lines: string[] = [];
-  for (const entry of [...entries].sort((left, right) => compareText(left.name, right.name))) {
-    lines.push(`${await sha256Bytes(entry.data)}  ${entry.name}`);
+  constructor(
+    private readonly content: ContentStore,
+    private readonly prefix: string,
+    private readonly modifiedAt: Date,
+    private readonly segmentBytes: number,
+  ) {}
+
+  async add(entry: HashedEntry): Promise<void> {
+    this.checksums.push({ name: entry.name, sha256: entry.sha256 });
+    this.pending.push({ name: entry.name, data: entry.data });
+    this.pendingBytes += entry.data.byteLength;
+    if (this.pendingBytes >= this.segmentBytes) await this.flush();
   }
-  const body = lines.length === 0 ? "" : `${lines.join("\n")}\n`;
-  return [...entries, { name: CHECKSUMS_FILE, data: textBytes(body) }];
+
+  // Writes checksums.sha256 (every other entry, sorted by path), the last
+  // segment, and the EOCD. Returns the parts in download order.
+  async finish(): Promise<{ parts: ArchivePart[]; total_bytes: number }> {
+    const lines = sortedBy(this.checksums, (checksum) => [checksum.name])
+      .map((checksum) => `${checksum.sha256}  ${checksum.name}\n`)
+      .join("");
+    this.pending.push({ name: CHECKSUMS_FILE, data: textBytes(lines) });
+    await this.flush();
+    const eocd = writeZipEocd({ entries: this.entries, centralBytes: this.centralBytes, centralOffset: this.offset });
+    const parts = [...this.segments, ...this.centrals, await this.put("eocd", eocd)];
+    return { parts, total_bytes: parts.reduce((total, part) => total + part.bytes, 0) };
+  }
+
+  private async flush(): Promise<void> {
+    if (this.pending.length === 0) return;
+    const segment = await writeZipSegment(this.pending, { offset: this.offset, modifiedAt: this.modifiedAt });
+    const number = String(this.segments.length + 1).padStart(4, "0");
+    this.segments.push(await this.put(`segment-${number}`, segment.local));
+    this.centrals.push(await this.put(`central-${number}`, segment.central));
+    this.offset += segment.local.byteLength;
+    this.centralBytes += segment.central.byteLength;
+    this.entries += segment.entries;
+    this.pending = [];
+    this.pendingBytes = 0;
+  }
+
+  private async put(name: string, body: Uint8Array): Promise<ArchivePart> {
+    const key = `${this.prefix}/${name}`;
+    await this.content.put(key, body, "application/octet-stream");
+    return { key, bytes: body.byteLength };
+  }
 }
 
 function countStatuses(items: readonly ListIndexItem[]): {
@@ -310,81 +373,60 @@ export async function buildArchiveExport(
   const pageSize = deps.pageSize ?? ARCHIVE_EXPORT_PAGE_SIZE;
   if (!Number.isInteger(pageSize) || pageSize < 1) throw new Error("invalid export page size");
 
+  const segmentBytes = deps.segmentBytes ?? ARCHIVE_EXPORT_SEGMENT_BYTES;
+  if (!Number.isInteger(segmentBytes) || segmentBytes < 1) throw new Error("invalid export segment size");
+
   const tenant = { tenantId: envelope.tenantId as TenantId };
   const store = pgReadingStoreFor(sql, tenant);
   const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
+  const prefix = exportObjectPrefix(envelope.exportId);
+  const writer = new ArchiveWriter(content, prefix, new Date(deps.nowMs), segmentBytes);
   const listed = await collectIndex(store, pageSize);
   const kept: ListIndexItem[] = [];
-  const packed: PackedReading[] = [];
-  for (const item of listed) {
-    const loaded = await store.loadReadingById(item.id);
-    if (!loaded) continue;
-    // The listed item can be stale by now (a publish or reprocess landed
-    // between pages), so index.json and counts come from the manifest that
-    // ships beside it.
-    kept.push(ListIndexItemSchema.parse({ ...loaded.manifest, key_prefix: loaded.keyPrefix }));
-    packed.push(await packReading(store, content, loaded.manifest));
-  }
-
-  const counts = countStatuses(kept);
-  const document = archiveDocument({ generatedAtMs: deps.nowMs, counts });
-  const index = ListIndexSchema.parse({ version: 1, items: kept });
-  const exported = new Set(packed.map((reading) => reading.manifest.id));
-  const report = ArchiveReportSchema.parse({
-    format_version: 1,
-    missing_artifacts: sortedBy(
-      packed.flatMap((reading) => reading.missing),
-      (item) => [item.reading_id, item.kind, item.path],
-    ),
-    dangling_relationships: sortedBy(danglingRelationships(packed, exported), (item) => [
-      item.reading_id,
-      item.kind,
-      item.target_id,
-    ]),
-    warnings: sortedBy(
-      packed.flatMap((reading) => reading.warnings),
-      (item) => [item.reading_id, item.code, item.path],
-    ),
-  });
-  let segment;
-  let eocd;
+  const missing: ArchiveMissingArtifact[] = [];
+  const warnings: ArchiveContentWarning[] = [];
+  const relationships: ArchiveDanglingRelationship[] = [];
+  let built: { segments: { parts: ArchivePart[]; total_bytes: number }; counts: ReturnType<typeof countStatuses> };
   try {
-    segment = await writeZipSegment(
-      await withChecksums([
-        { name: "README.md", data: textBytes(ARCHIVE_README) },
-        { name: "export.json", data: jsonBytes(document) },
-        { name: "index.json", data: jsonBytes(index) },
-        ...packed.flatMap((reading) => reading.entries),
-        { name: "report.json", data: jsonBytes(report) },
-      ]),
-      { offset: 0, modifiedAt: new Date(deps.nowMs) },
-    );
-    eocd = writeZipEocd({
-      entries: segment.entries,
-      centralBytes: segment.central.byteLength,
-      centralOffset: segment.local.byteLength,
+    await writer.add(await hashed("README.md", textBytes(ARCHIVE_README)));
+    for (const item of listed) {
+      const loaded = await store.loadReadingById(item.id);
+      if (!loaded) continue;
+      // The listed item can be stale by now (a publish or reprocess landed
+      // between pages), so index.json and counts come from the manifest that
+      // ships beside it.
+      kept.push(ListIndexItemSchema.parse({ ...loaded.manifest, key_prefix: loaded.keyPrefix }));
+      const packed = await packReading(store, content, loaded.manifest);
+      for (const entry of packed.entries) await writer.add(entry);
+      missing.push(...packed.missing);
+      warnings.push(...packed.warnings);
+      relationships.push(...packed.relationships);
+    }
+
+    const counts = countStatuses(kept);
+    const exported = new Set(kept.map((item) => item.id));
+    const report = ArchiveReportSchema.parse({
+      format_version: 1,
+      missing_artifacts: sortedBy(missing, (item) => [item.reading_id, item.kind, item.path]),
+      dangling_relationships: sortedBy(
+        relationships.filter((relationship) => !exported.has(relationship.target_id)),
+        (item) => [item.reading_id, item.kind, item.target_id],
+      ),
+      warnings: sortedBy(warnings, (item) => [item.reading_id, item.code, item.path]),
     });
+    await writer.add(await hashed("export.json", jsonBytes(archiveDocument({ generatedAtMs: deps.nowMs, counts }))));
+    await writer.add(await hashed("index.json", jsonBytes(ListIndexSchema.parse({ version: 1, items: kept }))));
+    await writer.add(await hashed("report.json", jsonBytes(report)));
+    built = { segments: await writer.finish(), counts };
   } catch (error) {
     if (!(error instanceof ZipLimitError)) throw error;
+    // Parts first: if the delete throws, the redelivery or the DLQ still
+    // finds the export unfinished and removes them.
+    await content.deletePrefix(prefix);
     await failExport(sql, envelope, deps.nowMs, { code: "zip_limit" });
     return "failed";
   }
 
-  const total = segment.local.byteLength + segment.central.byteLength + eocd.byteLength;
-  const prefix = exportObjectPrefix(envelope.exportId);
-  const parts = [
-    { key: `${prefix}/segment-0001`, bytes: segment.local.byteLength, body: segment.local },
-    { key: `${prefix}/central-directory`, bytes: segment.central.byteLength, body: segment.central },
-    { key: `${prefix}/eocd`, bytes: eocd.byteLength, body: eocd },
-  ];
-  for (const part of parts) {
-    await content.put(part.key, part.body, "application/octet-stream");
-  }
-
-  const segments = {
-    parts: parts.map(({ key, bytes }) => ({ key, bytes })),
-    total_bytes: total,
-  };
   const now = toTimestamp(deps.nowMs);
   const expires = toTimestamp(deps.nowMs + ARCHIVE_EXPORT_RETENTION_MS);
   const published = await fromSql(sql).transaction(async (tx) => {
@@ -412,8 +454,8 @@ export async function buildArchiveExport(
       now,
       expires,
       now,
-      JSON.stringify(segments),
-      JSON.stringify(counts),
+      JSON.stringify(built.segments),
+      JSON.stringify(built.counts),
       envelope.exportId,
       envelope.tenantId,
     );

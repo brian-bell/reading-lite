@@ -13,6 +13,8 @@ import {
   insertSecondTenant,
   otherTenant,
 } from "../helpers/tenant-fixtures";
+import { buildArchiveExport } from "../../src/archive-export";
+import { sqlSessionFor } from "../../src/modules/db/sql";
 import { sha256Bytes } from "../../src/modules/extractor/response-bytes";
 import { contentStoreFor } from "../../src/modules/stores/content-store";
 import { ArchiveReportSchema } from "../../src/schemas/archive-report";
@@ -310,6 +312,38 @@ describe("archive export", () => {
 
     const allowed = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
     expect(allowed.res.status).toBe(202);
+  });
+
+  it("streams an export written in more parts than a Worker keeps open at once", async () => {
+    installQueue();
+    await testReadingsFor(founderTenant()).seedListItems([
+      listItem("rd_pending", "pending", "2026-01-01T00:00:00.000Z"),
+      listItem("rd_ready", "ready", "2026-02-01T00:00:00.000Z"),
+      listItem("rd_failed", "failed", "2026-03-01T00:00:00.000Z"),
+    ]);
+    const session = await redeemSession("clm_export_many_parts");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    const sql = sqlSessionFor(env);
+    try {
+      expect(await buildArchiveExport(sql, sent[0]!, env, { nowMs: NOW_MS, segmentBytes: 1 })).toBe("ready");
+    } finally {
+      await sql.end();
+    }
+    const row = await testControlPlane(env).first<{ segments: { parts: unknown[] } }>(
+      "SELECT segments FROM archive_exports WHERE id = ?",
+      id,
+    );
+    expect(row!.segments.parts.length).toBeGreaterThan(6);
+
+    const download = await request(`/api/exports/${id}/download`, { cookie: session.cookie });
+    expect(download.res.status).toBe(200);
+    const zip = new Uint8Array(await download.res.arrayBuffer());
+    expect(download.res.headers.get("content-length")).toBe(String(zip.byteLength));
+    const entries = await readZipEntries(zip);
+    expect(entries.size).toBe(8);
+    await expectChecksums(entries);
   });
 
   it("deletes a failed export's parts from the dead letter and retries when the delete throws", async () => {

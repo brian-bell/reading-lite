@@ -7,8 +7,7 @@ import {
   PostArchiveExportResponseSchema,
 } from "../schemas/api";
 import type { AppBindings } from "../middleware";
-import type { RawObject } from "../modules/stores/content-store";
-import { contentStoreFor } from "../modules/stores/content-store";
+import { contentStoreFor, type ContentStore } from "../modules/stores/content-store";
 import {
   latestArchiveExport,
   markArchiveExportFailed,
@@ -77,37 +76,50 @@ export async function handleDownloadArchiveExport(c: Context<AppBindings>): Prom
   if (owned.kind === "not_ready") return c.json(ArchiveExportNotReadySchema.parse({ error: "not_ready" }), 409);
 
   const content = contentStoreFor(c.env.READINGS_BUCKET, { tenantId: principal.tenantId }, c.env);
-  const objects: RawObject[] = [];
+  // Sizes first, bodies later: a Worker keeps only six connections open, so
+  // opening every part before streaming stalls an archive with more parts.
   for (const part of owned.segments.parts) {
-    const object = await content.get(part.key);
-    if (!object || object.size !== part.bytes || !object.body) {
-      return c.json({ error: "internal" }, 500);
-    }
-    objects.push(object);
+    const size = await content.size(part.key);
+    if (size !== part.bytes) return c.json({ error: "internal" }, 500);
   }
-  return archiveDownloadResponse(objects, owned.segments.total_bytes);
+  return archiveDownloadResponse(content, owned.segments.parts, owned.segments.total_bytes);
 }
 
-function archiveDownloadResponse(objects: readonly RawObject[], totalBytes: number): Response {
+// Opens one part at a time as the client reads, so the download holds one
+// chunk, not the archive.
+function archiveDownloadResponse(
+  content: ContentStore,
+  parts: ReadonlyArray<{ key: string; bytes: number }>,
+  totalBytes: number,
+): Response {
+  let next = 0;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
   const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        for (const object of objects) {
-          const reader = object.body!.getReader();
-          try {
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              if (value) controller.enqueue(value);
-            }
-          } finally {
-            reader.releaseLock();
+    async pull(controller) {
+      for (;;) {
+        if (!reader) {
+          const part = parts[next++];
+          if (!part) {
+            controller.close();
+            return;
           }
+          const object = await content.get(part.key);
+          if (!object?.body || object.size !== part.bytes) throw new Error(`archive part changed: ${part.key}`);
+          reader = (object.body as ReadableStream<Uint8Array>).getReader();
         }
-        controller.close();
-      } catch (error) {
-        controller.error(error);
+        const { done, value } = await reader.read();
+        if (done) {
+          reader = null;
+          continue;
+        }
+        if (value && value.byteLength > 0) {
+          controller.enqueue(value);
+          return;
+        }
       }
+    },
+    async cancel(reason) {
+      await reader?.cancel(reason);
     },
   });
   return new Response(stream, {

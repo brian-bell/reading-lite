@@ -165,6 +165,68 @@ describe("buildArchiveExport", () => {
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
   });
 
+  it("uploads each segment once it fills, before the next reading loads", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env } = await arrange(sql, db);
+    const content = contentStoreFor(bucket, { tenantId }, env);
+    const uploadedBeforeLoad: string[][] = [];
+    const watching: Sql = {
+      query: async (text, values) => {
+        if (/r\.xmin::text AS version/.test(text)) {
+          const listed = await content.list(`exports/${EXPORT_ID}`);
+          uploadedBeforeLoad.push(listed.map((object) => object.key.split("/").pop()!).sort());
+        }
+        return sql.query(text, values);
+      },
+      execute: (text, values) => sql.execute(text, values),
+      transaction: (run, opts) => sql.transaction(run, opts),
+      end: () => sql.end(),
+    };
+
+    const outcome = await buildArchiveExport(watching, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: NOW_MS,
+      segmentBytes: 1,
+    });
+    expect(outcome).toBe("ready");
+    // README.md fills the first segment; each reading's manifest the next.
+    expect(uploadedBeforeLoad).toEqual([
+      ["central-0001", "segment-0001"],
+      ["central-0001", "central-0002", "segment-0001", "segment-0002"],
+      ["central-0001", "central-0002", "central-0003", "segment-0001", "segment-0002", "segment-0003"],
+    ]);
+
+    const { row, zip, entries } = await readArchive(db, bucket, env);
+    const names = row.segments.parts.map((part) => part.key.split("/").pop()!);
+    const segments = names.filter((name) => name.startsWith("segment-"));
+    expect(segments).toHaveLength(entries.size);
+    expect(names).toEqual([...segments, ...segments.map((name) => name.replace("segment-", "central-")), "eocd"]);
+    await expectChecksums(entries);
+    const dir = mkdtempSync(join(tmpdir(), "archive-export-"));
+    const path = join(dir, "archive.zip");
+    writeFileSync(path, zip);
+    expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
+  });
+
+  it("fails a build the zip format cannot hold and deletes the parts already written", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env } = await arrange(sql, db);
+    const content = contentStoreFor(bucket, { tenantId }, env);
+    // Left by an earlier delivery of the same export.
+    await content.put(`exports/${EXPORT_ID}/segment-0001`, new Uint8Array([1, 2, 3]), "application/octet-stream");
+
+    // DOS timestamps start in 1980, so the first segment is refused.
+    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: Date.parse("1979-12-31T00:00:00.000Z"),
+    });
+    expect(outcome).toBe("failed");
+    expect(await content.list(`exports/${EXPORT_ID}`)).toEqual([]);
+    const row = await db.first<{ status: string; error: { code: string } }>(
+      "SELECT status, error FROM archive_exports WHERE id = ?",
+      EXPORT_ID,
+    );
+    expect(row).toMatchObject({ status: "failed", error: { code: "zip_limit" } });
+  });
+
   it("keeps index.json and counts on the manifest a reading had when it was loaded", async () => {
     const { db, sql } = openControlPlane();
     const { tenantId, bucket, env, readings } = await arrange(sql, db);
