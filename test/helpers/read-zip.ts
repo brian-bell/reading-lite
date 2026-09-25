@@ -1,6 +1,8 @@
 // Reads a ZIP32 file the archive writer emits: local bytes, then central
 // directory fragments, then one end-of-central-directory record with no comment.
+import { expect } from "vitest";
 import { crc32 } from "../../src/modules/archive-zip";
+import { sha256Bytes } from "../../src/modules/extractor/response-bytes";
 
 const LOCAL_SIGNATURE = 0x04034b50;
 const CENTRAL_SIGNATURE = 0x02014b50;
@@ -50,4 +52,21 @@ export async function readZipEntries(bytes: Uint8Array): Promise<Map<string, Uin
   }
   if (cursor !== eocd) throw new Error("central directory length mismatch");
   return out;
+}
+
+// checksums.sha256 lists every other entry, GNU sha256sum text mode, sorted by path.
+export async function expectChecksums(entries: Map<string, Uint8Array>): Promise<void> {
+  const text = new TextDecoder().decode(entries.get("checksums.sha256"));
+  expect(text.endsWith("\n")).toBe(true);
+  const listed = new Map<string, string>();
+  for (const line of text.trimEnd().split("\n")) {
+    const match = /^([0-9a-f]{64})  (.+)$/.exec(line);
+    expect(match, line).not.toBeNull();
+    listed.set(match![2]!, match![1]!);
+  }
+  const names = [...entries.keys()].filter((name) => name !== "checksums.sha256").sort();
+  expect([...listed.keys()].sort()).toEqual(names);
+  for (const name of names) {
+    expect(listed.get(name)).toBe(await sha256Bytes(entries.get(name)!));
+  }
 }

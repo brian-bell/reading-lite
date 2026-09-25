@@ -1,11 +1,21 @@
-// Archive export consumer (reading-lite-mxwx.1). One delivery builds one zip
-// segment — export.json, index.json, and one manifest per reading — writes
-// it to R2, then marks the row ready. Later slices add more files, more
-// segments, and the cron that resumes or expires. The DLQ marks the export
-// failed so the active slot frees, then deletes any parts the build wrote.
+// Archive export consumer (reading-lite-mxwx). One delivery builds the zip —
+// the format note, one manifest per reading, captured extracted.md and
+// raw.<ext>, export.json, index.json, report.json, and checksums.sha256 —
+// uploading a segment and its central-directory fragment to R2 each time the
+// pending entries fill ARCHIVE_EXPORT_SEGMENT_BYTES, then marks the row ready.
+// Content keys come from contentKeys; this module does not spell object
+// paths. A later slice resumes a build across deliveries and adds the cron
+// that resumes or expires. The DLQ marks the export failed so the active slot
+// frees, then deletes any parts the build wrote.
 
 import type { ArchiveExportError } from "./schemas/api";
 import { ListIndexItemSchema, ListIndexSchema, type ListIndexItem } from "./schemas/api";
+import {
+  ArchiveReportSchema,
+  type ArchiveContentWarning,
+  type ArchiveDanglingRelationship,
+  type ArchiveMissingArtifact,
+} from "./schemas/archive-report";
 import {
   ARCHIVE_EXPORT_RETENTION_MS,
   archiveDocument,
@@ -21,12 +31,50 @@ import type { TenantId } from "./control-plane/ids";
 import { toTimestamp } from "./control-plane/pg-time";
 import { ZipLimitError, writeZipEocd, writeZipSegment, type ZipEntry } from "./modules/archive-zip";
 import { sqlSessionFor, type Sql } from "./modules/db/sql";
-import { contentStoreFor } from "./modules/stores/content-store";
-import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
+import { sha256Bytes } from "./modules/extractor/response-bytes";
+import { isEmptyContent } from "./modules/manifest-drafting";
+import { contentStoreFor, type ContentStore } from "./modules/stores/content-store";
+import { rawExtFromContentType } from "./modules/stores/layout";
+import {
+  PgReadingStore,
+  pgReadingStoreFor,
+  pgTenantId,
+  type ContentKeys,
+  type ReadingSnapshot,
+} from "./modules/stores/postgres/reading-store";
 
 export const ARCHIVE_EXPORT_QUEUE_NAMES = ["reading-lite-export", "reading-lite-staging-export"] as const;
 export const ARCHIVE_EXPORT_DLQ_NAMES = ["reading-lite-export-dlq", "reading-lite-staging-export-dlq"] as const;
 export const ARCHIVE_EXPORT_PAGE_SIZE = 100;
+// Uncompressed bytes a build holds before it uploads a segment. A segment can
+// overrun it by one reading's files (fetches are capped by FETCH_MAX_BYTES,
+// 10 MB by default), so memory stays bounded whatever the library's size.
+export const ARCHIVE_EXPORT_SEGMENT_BYTES = 16 * 1024 * 1024;
+const CHECKSUMS_FILE = "checksums.sha256";
+
+// In the zip, so the package stays readable without the repo. The longer
+// contract for restore lives in docs/archive-export.md. Keep them in agreement.
+const ARCHIVE_README = `# Reading Lite archive
+
+format_version: 1
+
+A restore-oriented export of one account's library. Any unzip tool opens it.
+It does not include processing logs or account secrets.
+
+## Files
+
+- \`export.json\` — \`format_version\`, \`generated_at\`, and reading counts by status (\`readings\`, \`pending\`, \`ready\`, \`failed\`).
+- \`index.json\` — every reading, every status, in library order (\`version\` 1, \`items\`). Items use the library list shape, so each one includes \`key_prefix\`. That is the row's historical storage location, not a path in this zip. Bytes live under \`readings/<id>/\`.
+- \`readings/<id>/manifest.json\` — the reading record (summary, metadata, relationships). Same fields as the reading detail. No storage keys.
+- \`readings/<id>/extracted.md\` — captured Markdown, when \`content_status\` is \`captured\` and the object was in storage.
+- \`readings/<id>/raw.<ext>\` — the original bytes. \`<ext>\` comes from the reading's \`content_type\` (for a reading that never published, the type its bytes were stored with): \`html\`, \`md\`, \`pdf\`, \`json\`, \`txt\`, or \`bin\`.
+- \`report.json\` — gaps. \`missing_artifacts\` (an expected object was absent), \`dangling_relationships\` (a connection or tension whose target is not in this export), and \`warnings\` (the stored bytes disagree with \`content_bytes\`, \`content_sha256\`, or \`extracted_bytes\`; not checked while a reading that never published still has the placeholder \`content_bytes\` 0). Warnings are not failures: the file in the zip is what was stored. All three arrays are always present. Nothing is left out.
+- \`checksums.sha256\` — SHA-256 of every other file, GNU \`sha256sum\` text mode (\`<64 hex>  <path>\`), sorted by path. This file is not listed in itself.
+
+## Not in this zip
+
+Attempt events and logs, processing checkpoints, embeddings, internal object keys, provider credentials, sessions, tokens, and spend or quota records.
+`;
 
 export function isExportQueue(name: string): boolean {
   return (ARCHIVE_EXPORT_QUEUE_NAMES as readonly string[]).includes(name);
@@ -45,12 +93,254 @@ export interface ArchiveExportEnv {
 export interface ArchiveExportJobDeps {
   nowMs: number;
   pageSize?: number;
+  segmentBytes?: number;
 }
 
 type BuildOutcome = "ready" | "skipped" | "cancelled" | "failed";
 
+function textBytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
 function jsonBytes(value: unknown): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(value));
+  return textBytes(JSON.stringify(value));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function sortedBy<T>(items: readonly T[], key: (item: T) => readonly string[]): T[] {
+  return [...items].sort((left, right) => {
+    const leftKey = key(left);
+    const rightKey = key(right);
+    for (let index = 0; index < leftKey.length; index++) {
+      const compared = compareText(leftKey[index] ?? "", rightKey[index] ?? "");
+      if (compared !== 0) return compared;
+    }
+    return 0;
+  });
+}
+
+async function readObject(
+  content: ContentStore,
+  key: string | null,
+): Promise<{ bytes: Uint8Array; contentType: string } | null> {
+  if (key === null) return null;
+  const object = await content.get(key);
+  if (!object) return null;
+  return { bytes: new Uint8Array(await object.arrayBuffer()), contentType: object.contentType };
+}
+
+interface ArchivePart {
+  key: string;
+  bytes: number;
+}
+
+// A zip entry with its SHA-256, taken once and reused by checksums.sha256.
+interface HashedEntry extends ZipEntry {
+  sha256: string;
+}
+
+async function hashed(name: string, data: Uint8Array): Promise<HashedEntry> {
+  return { name, data, sha256: await sha256Bytes(data) };
+}
+
+interface PackedReading {
+  item: ListIndexItem;
+  entries: HashedEntry[];
+  missing: ArchiveMissingArtifact[];
+  warnings: ArchiveContentWarning[];
+  // Every connection and tension; the dangling ones are known once the whole
+  // library has been read.
+  relationships: ArchiveDanglingRelationship[];
+}
+
+interface ReadingState {
+  loaded: ReadingSnapshot;
+  keys: ContentKeys | null;
+}
+
+// The manifest and its content keys from one snapshot, so both describe the
+// same revision even when a publish lands between the two reads.
+function readReadingState(sql: Sql, tenantId: string, id: string): Promise<ReadingState | null> {
+  return sql.transaction(
+    async (tx) => {
+      const store = new PgReadingStore(tx, tenantId);
+      const loaded = await store.loadReadingById(id);
+      return loaded ? { loaded, keys: await store.contentKeys(id) } : null;
+    },
+    { repeatableRead: true },
+  );
+}
+
+// A publish after the snapshot deletes the content it superseded
+// (AttemptIo.discardSupersededContent), so a missing object is resolved once
+// more, as router.ts readContent does: a row that changed is packed from its
+// new snapshot, and an unchanged one really is missing the object. A reading
+// purged in between is left out, as one purged before its load is.
+async function packCurrentReading(
+  sql: Sql,
+  tenantId: string,
+  content: ContentStore,
+  id: string,
+): Promise<PackedReading | null> {
+  const first = await readReadingState(sql, tenantId, id);
+  if (!first) return null;
+  const packed = await packReading(content, first);
+  if (packed.missing.length === 0) return packed;
+  const again = await readReadingState(sql, tenantId, id);
+  if (!again) return null;
+  return again.loaded.version === first.loaded.version ? packed : packReading(content, again);
+}
+
+// One reading's files. extracted.md only when the row says the content was
+// captured; raw.<ext> for every reading. An expected object that is not in
+// the bucket is a missing artifact. A present object whose size or sha256
+// disagrees with the row is a warning, and the bytes still ship. A row that
+// still carries the empty-content placeholder describes no bytes, so raw
+// bytes an unpublished attempt stored ship without that comparison, named by
+// the type they were stored with rather than the placeholder's.
+async function packReading(content: ContentStore, state: ReadingState): Promise<PackedReading> {
+  const { loaded, keys } = state;
+  const manifest = loaded.manifest;
+  const id = manifest.id;
+  const dir = `readings/${id}`;
+  const described = !isEmptyContent(manifest);
+  const rowType = keys?.contentType ?? manifest.content_type;
+  const extractedPath = `${dir}/extracted.md`;
+  const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes(manifest))];
+  const missing: ArchiveMissingArtifact[] = [];
+  const warnings: ArchiveContentWarning[] = [];
+
+  if (manifest.content_status === "captured") {
+    const extracted = (await readObject(content, keys?.extractedKey ?? null))?.bytes;
+    if (!extracted) {
+      missing.push({ reading_id: id, kind: "extracted", path: extractedPath });
+    } else {
+      entries.push(await hashed(extractedPath, extracted));
+      if (manifest.extracted_bytes !== undefined && extracted.byteLength !== manifest.extracted_bytes) {
+        warnings.push({
+          reading_id: id,
+          code: "extracted_size_mismatch",
+          path: extractedPath,
+          expected: manifest.extracted_bytes,
+          actual: extracted.byteLength,
+        });
+      }
+    }
+  }
+
+  const stored = await readObject(content, keys?.rawKey ?? null);
+  const rawType = stored && !described ? stored.contentType : rowType;
+  const rawPath = `${dir}/raw.${rawExtFromContentType(rawType)}`;
+  if (!stored) {
+    missing.push({ reading_id: id, kind: "raw", path: rawPath });
+  } else {
+    const raw = stored.bytes;
+    const entry = await hashed(rawPath, raw);
+    entries.push(entry);
+    if (described && raw.byteLength !== manifest.content_bytes) {
+      warnings.push({
+        reading_id: id,
+        code: "content_size_mismatch",
+        path: rawPath,
+        expected: manifest.content_bytes,
+        actual: raw.byteLength,
+      });
+    }
+    if (described && entry.sha256 !== manifest.content_sha256) {
+      warnings.push({
+        reading_id: id,
+        code: "content_hash_mismatch",
+        path: rawPath,
+        expected: manifest.content_sha256,
+        actual: entry.sha256,
+      });
+    }
+  }
+
+  const relationships: ArchiveDanglingRelationship[] = [
+    ...(manifest.connections ?? []).map((connection) => ({
+      reading_id: id,
+      kind: "connection" as const,
+      target_id: connection.id,
+    })),
+    ...(manifest.tensions ?? []).map((tension) => ({ reading_id: id, kind: "tension" as const, target_id: tension.id })),
+  ];
+  return {
+    // The listed item can be stale by now (a publish or reprocess landed
+    // between pages), so index.json and counts come from the manifest that
+    // ships beside it.
+    item: ListIndexItemSchema.parse({ ...manifest, key_prefix: loaded.keyPrefix }),
+    entries,
+    missing,
+    warnings,
+    relationships,
+  };
+}
+
+// Uploads the zip while it is built. Once the pending entries reach the
+// budget, their segment (local headers and data) and its central-directory
+// fragment go to R2 and leave memory, so a build holds about one segment, not
+// the library. Only checksum lines and part sizes accumulate. Offsets run
+// across segments, so the download joins segments, then fragments, then the
+// EOCD into one zip.
+class ArchiveWriter {
+  private readonly segments: ArchivePart[] = [];
+  private readonly centrals: ArchivePart[] = [];
+  private readonly checksums: Array<{ name: string; sha256: string }> = [];
+  private pending: ZipEntry[] = [];
+  private pendingBytes = 0;
+  private offset = 0;
+  private centralBytes = 0;
+  private entries = 0;
+
+  constructor(
+    private readonly content: ContentStore,
+    private readonly prefix: string,
+    private readonly modifiedAt: Date,
+    private readonly segmentBytes: number,
+  ) {}
+
+  async add(entry: HashedEntry): Promise<void> {
+    this.checksums.push({ name: entry.name, sha256: entry.sha256 });
+    this.pending.push({ name: entry.name, data: entry.data });
+    this.pendingBytes += entry.data.byteLength;
+    if (this.pendingBytes >= this.segmentBytes) await this.flush();
+  }
+
+  // Writes checksums.sha256 (every other entry, sorted by path), the last
+  // segment, and the EOCD. Returns the parts in download order.
+  async finish(): Promise<{ parts: ArchivePart[]; total_bytes: number }> {
+    const lines = sortedBy(this.checksums, (checksum) => [checksum.name])
+      .map((checksum) => `${checksum.sha256}  ${checksum.name}\n`)
+      .join("");
+    this.pending.push({ name: CHECKSUMS_FILE, data: textBytes(lines) });
+    await this.flush();
+    const eocd = writeZipEocd({ entries: this.entries, centralBytes: this.centralBytes, centralOffset: this.offset });
+    const parts = [...this.segments, ...this.centrals, await this.put("eocd", eocd)];
+    return { parts, total_bytes: parts.reduce((total, part) => total + part.bytes, 0) };
+  }
+
+  private async flush(): Promise<void> {
+    if (this.pending.length === 0) return;
+    const segment = await writeZipSegment(this.pending, { offset: this.offset, modifiedAt: this.modifiedAt });
+    const number = String(this.segments.length + 1).padStart(4, "0");
+    this.segments.push(await this.put(`segment-${number}`, segment.local));
+    this.centrals.push(await this.put(`central-${number}`, segment.central));
+    this.offset += segment.local.byteLength;
+    this.centralBytes += segment.central.byteLength;
+    this.entries += segment.entries;
+    this.pending = [];
+    this.pendingBytes = 0;
+  }
+
+  private async put(name: string, body: Uint8Array): Promise<ArchivePart> {
+    const key = `${this.prefix}/${name}`;
+    await this.content.put(key, body, "application/octet-stream");
+    return { key, bytes: body.byteLength };
+  }
 }
 
 function countStatuses(items: readonly ListIndexItem[]): {
@@ -144,62 +434,57 @@ export async function buildArchiveExport(
   const pageSize = deps.pageSize ?? ARCHIVE_EXPORT_PAGE_SIZE;
   if (!Number.isInteger(pageSize) || pageSize < 1) throw new Error("invalid export page size");
 
+  const segmentBytes = deps.segmentBytes ?? ARCHIVE_EXPORT_SEGMENT_BYTES;
+  if (!Number.isInteger(segmentBytes) || segmentBytes < 1) throw new Error("invalid export segment size");
+
   const tenant = { tenantId: envelope.tenantId as TenantId };
+  const tenantId = pgTenantId(tenant);
   const store = pgReadingStoreFor(sql, tenant);
   const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
+  const prefix = exportObjectPrefix(envelope.exportId);
+  const writer = new ArchiveWriter(content, prefix, new Date(deps.nowMs), segmentBytes);
   const listed = await collectIndex(store, pageSize);
   const kept: ListIndexItem[] = [];
-  const manifests: ZipEntry[] = [];
-  for (const item of listed) {
-    const loaded = await store.loadReadingById(item.id);
-    if (!loaded) continue;
-    // The listed item can be stale by now (a publish or reprocess landed
-    // between pages), so index.json and counts come from the manifest that
-    // ships beside it.
-    kept.push(ListIndexItemSchema.parse({ ...loaded.manifest, key_prefix: loaded.keyPrefix }));
-    manifests.push({ name: `readings/${item.id}/manifest.json`, data: jsonBytes(loaded.manifest) });
-  }
-
-  const counts = countStatuses(kept);
-  const document = archiveDocument({ generatedAtMs: deps.nowMs, counts });
-  const index = ListIndexSchema.parse({ version: 1, items: kept });
-  let segment;
-  let eocd;
+  const missing: ArchiveMissingArtifact[] = [];
+  const warnings: ArchiveContentWarning[] = [];
+  const relationships: ArchiveDanglingRelationship[] = [];
+  let built: { segments: { parts: ArchivePart[]; total_bytes: number }; counts: ReturnType<typeof countStatuses> };
   try {
-    segment = await writeZipSegment(
-      [
-        { name: "export.json", data: jsonBytes(document) },
-        { name: "index.json", data: jsonBytes(index) },
-        ...manifests,
-      ],
-      { offset: 0, modifiedAt: new Date(deps.nowMs) },
-    );
-    eocd = writeZipEocd({
-      entries: segment.entries,
-      centralBytes: segment.central.byteLength,
-      centralOffset: segment.local.byteLength,
+    await writer.add(await hashed("README.md", textBytes(ARCHIVE_README)));
+    for (const item of listed) {
+      const packed = await packCurrentReading(sql, tenantId, content, item.id);
+      if (!packed) continue;
+      kept.push(packed.item);
+      for (const entry of packed.entries) await writer.add(entry);
+      missing.push(...packed.missing);
+      warnings.push(...packed.warnings);
+      relationships.push(...packed.relationships);
+    }
+
+    const counts = countStatuses(kept);
+    const exported = new Set(kept.map((item) => item.id));
+    const report = ArchiveReportSchema.parse({
+      format_version: 1,
+      missing_artifacts: sortedBy(missing, (item) => [item.reading_id, item.kind, item.path]),
+      dangling_relationships: sortedBy(
+        relationships.filter((relationship) => !exported.has(relationship.target_id)),
+        (item) => [item.reading_id, item.kind, item.target_id],
+      ),
+      warnings: sortedBy(warnings, (item) => [item.reading_id, item.code, item.path]),
     });
+    await writer.add(await hashed("export.json", jsonBytes(archiveDocument({ generatedAtMs: deps.nowMs, counts }))));
+    await writer.add(await hashed("index.json", jsonBytes(ListIndexSchema.parse({ version: 1, items: kept }))));
+    await writer.add(await hashed("report.json", jsonBytes(report)));
+    built = { segments: await writer.finish(), counts };
   } catch (error) {
     if (!(error instanceof ZipLimitError)) throw error;
+    // Parts first: if the delete throws, the redelivery or the DLQ still
+    // finds the export unfinished and removes them.
+    await content.deletePrefix(prefix);
     await failExport(sql, envelope, deps.nowMs, { code: "zip_limit" });
     return "failed";
   }
 
-  const total = segment.local.byteLength + segment.central.byteLength + eocd.byteLength;
-  const prefix = exportObjectPrefix(envelope.exportId);
-  const parts = [
-    { key: `${prefix}/segment-0001`, bytes: segment.local.byteLength, body: segment.local },
-    { key: `${prefix}/central-directory`, bytes: segment.central.byteLength, body: segment.central },
-    { key: `${prefix}/eocd`, bytes: eocd.byteLength, body: eocd },
-  ];
-  for (const part of parts) {
-    await content.put(part.key, part.body, "application/octet-stream");
-  }
-
-  const segments = {
-    parts: parts.map(({ key, bytes }) => ({ key, bytes })),
-    total_bytes: total,
-  };
   const now = toTimestamp(deps.nowMs);
   const expires = toTimestamp(deps.nowMs + ARCHIVE_EXPORT_RETENTION_MS);
   const published = await fromSql(sql).transaction(async (tx) => {
@@ -227,8 +512,8 @@ export async function buildArchiveExport(
       now,
       expires,
       now,
-      JSON.stringify(segments),
-      JSON.stringify(counts),
+      JSON.stringify(built.segments),
+      JSON.stringify(built.counts),
       envelope.exportId,
       envelope.tenantId,
     );

@@ -71,6 +71,12 @@ export const EMPTY_CONTENT = Object.freeze({
   content_sha256: "0".repeat(64),
 });
 
+/** True when a manifest still carries the placeholder: its row describes no
+ *  captured bytes, even when a running or failed attempt has stored some. */
+export function isEmptyContent(content: Pick<Manifest, "content_bytes" | "content_sha256">): boolean {
+  return content.content_bytes === EMPTY_CONTENT.content_bytes && content.content_sha256 === EMPTY_CONTENT.content_sha256;
+}
+
 function runningAttempt(
   ref: AttemptRef,
   trigger: ProcessingAttemptTrigger,

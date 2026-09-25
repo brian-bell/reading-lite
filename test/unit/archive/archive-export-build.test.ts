@@ -8,12 +8,48 @@ import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { archiveExportEnvelopeV1 } from "../../../src/control-plane/export-envelope";
 import { parseTenantId, parseUserId } from "../../../src/control-plane/ids";
 import { toTimestamp } from "../../../src/control-plane/pg-time";
-import type { Sql } from "../../../src/modules/db/sql";
+import type { Sql, SqlQuery, SqlRow } from "../../../src/modules/db/sql";
 import { contentStoreFor } from "../../../src/modules/stores/content-store";
 import type { ListIndexItem } from "../../../src/schemas/api";
+
+const FORBIDDEN_KEYS = new Set([
+  "key_prefix",
+  "raw_key",
+  "extracted_key",
+  "events",
+  "checkpoint",
+  "embedding",
+  "vector",
+  "credential",
+  "credentials",
+  "api_key",
+  "secret",
+  "secret_hmac",
+  "session",
+  "sessions",
+  "token",
+  "tokens",
+  "spend",
+  "quota",
+]);
+
+const FORBIDDEN_SEGMENT =
+  /^(attempts|processing|checkpoints?|embeddings?|vectors?|credentials?|sessions?|tokens?|spend|quota|key_prefix)$/i;
+
+function forbiddenKeys(value: unknown, path: string, found: string[]): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => forbiddenKeys(item, `${path}[${index}]`, found));
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (FORBIDDEN_KEYS.has(key)) found.push(`${path}.${key}`);
+    forbiddenKeys(child, `${path}.${key}`, found);
+  }
+}
 import { useControlPlane } from "../../helpers/control-plane-pg";
 import { memoryBucket, NODE_HYPERDRIVE } from "../../helpers/node-readings";
-import { readZipEntries } from "../../helpers/read-zip";
+import { expectChecksums, readZipEntries } from "../../helpers/read-zip";
 import { TestReadings } from "../../helpers/readings-facade";
 
 const openControlPlane = useControlPlane();
@@ -87,6 +123,31 @@ async function readArchive(db: ControlPlaneDb, bucket: R2Bucket, env: { TENANT_D
   return { row: row!, zip, entries: await readZipEntries(zip) };
 }
 
+// Runs `before` ahead of each statement, including those inside a
+// transaction, and `after` once it returns.
+function watchSql(
+  sql: Sql,
+  hooks: {
+    before?: (text: string, values: readonly unknown[]) => Promise<void>;
+    after?: (text: string) => Promise<void>;
+  },
+): Sql {
+  const watch = (handle: SqlQuery): SqlQuery => ({
+    query: async <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) => {
+      await hooks.before?.(text, values ?? []);
+      const rows = await handle.query<Row>(text, values);
+      await hooks.after?.(text);
+      return rows;
+    },
+    execute: (text, values) => handle.execute(text, values),
+  });
+  return {
+    ...watch(sql),
+    transaction: (run, opts) => sql.transaction((tx) => run(watch(tx)), opts),
+    end: () => sql.end(),
+  };
+}
+
 function jsonEntry<T>(entries: Map<string, Uint8Array>, name: string): T {
   return JSON.parse(new TextDecoder().decode(entries.get(name))) as T;
 }
@@ -105,12 +166,17 @@ describe("buildArchiveExport", () => {
     expect(row.counts).toEqual({ readings: 3, pending: 1, ready: 1, failed: 1 });
 
     expect([...entries.keys()].sort()).toEqual([
+      "README.md",
+      "checksums.sha256",
       "export.json",
       "index.json",
       "readings/rd_failed/manifest.json",
       "readings/rd_pending/manifest.json",
       "readings/rd_ready/manifest.json",
+      "report.json",
     ]);
+    await expectChecksums(entries);
+    expect(new TextDecoder().decode(entries.get("README.md"))).toContain("format_version: 1");
     expect(jsonEntry<{ counts: { readings: number } }>(entries, "export.json").counts.readings).toBe(3);
     const index = jsonEntry<{ items: Array<{ id: string; status: string }> }>(entries, "index.json");
     expect(index.items.map((entry) => entry.status).sort()).toEqual(["failed", "pending", "ready"]);
@@ -124,24 +190,108 @@ describe("buildArchiveExport", () => {
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
   });
 
+  it("uploads each segment once it fills, before the next reading loads", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env } = await arrange(sql, db);
+    const content = contentStoreFor(bucket, { tenantId }, env);
+    const uploadedBeforeLoad: string[][] = [];
+    const loaded = new Set<unknown>();
+    const watching = watchSql(sql, {
+      // The first load of each reading; one missing an object is read again.
+      before: async (text, values) => {
+        if (!/r\.xmin::text AS version/.test(text) || loaded.has(values[1])) return;
+        loaded.add(values[1]);
+        const listed = await content.list(`exports/${EXPORT_ID}`);
+        uploadedBeforeLoad.push(listed.map((object) => object.key.split("/").pop()!).sort());
+      },
+    });
+
+    const outcome = await buildArchiveExport(watching, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: NOW_MS,
+      segmentBytes: 1,
+    });
+    expect(outcome).toBe("ready");
+    // README.md fills the first segment; each reading's manifest the next.
+    expect(uploadedBeforeLoad).toEqual([
+      ["central-0001", "segment-0001"],
+      ["central-0001", "central-0002", "segment-0001", "segment-0002"],
+      ["central-0001", "central-0002", "central-0003", "segment-0001", "segment-0002", "segment-0003"],
+    ]);
+
+    const { row, zip, entries } = await readArchive(db, bucket, env);
+    const names = row.segments.parts.map((part) => part.key.split("/").pop()!);
+    const segments = names.filter((name) => name.startsWith("segment-"));
+    expect(segments).toHaveLength(entries.size);
+    expect(names).toEqual([...segments, ...segments.map((name) => name.replace("segment-", "central-")), "eocd"]);
+    await expectChecksums(entries);
+    const dir = mkdtempSync(join(tmpdir(), "archive-export-"));
+    const path = join(dir, "archive.zip");
+    writeFileSync(path, zip);
+    expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
+  });
+
+  it("ships an unpublished attempt's raw bytes under their stored type, without comparing them to the placeholder", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    // rd_pending carries the pending draft's empty-content placeholder,
+    // application/octet-stream included; its running attempt has already
+    // stored raw bytes with the type it fetched.
+    await sql.query(
+      "UPDATE readings SET content_type = 'application/octet-stream' WHERE tenant_id = $1 AND id = 'rd_pending'",
+      [TENANT_ID],
+    );
+    const html = new TextEncoder().encode("<p>Captured mid-attempt.</p>");
+    const rawKey = "readings/pending/revisions/at_running/raw.html";
+    await readings.content.put(rawKey, html, "text/html; charset=utf-8");
+    await sql.query(
+      `INSERT INTO reading_attempts (tenant_id, reading_id, id, trigger, status, started_at, raw_key)
+       VALUES ($1, 'rd_pending', 'at_running', 'submit', 'running', $2, $3)`,
+      [TENANT_ID, toTimestamp(NOW_MS), rawKey],
+    );
+
+    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: NOW_MS,
+    });
+    expect(outcome).toBe("ready");
+    const { entries } = await readArchive(db, bucket, env);
+    expect(entries.get("readings/rd_pending/raw.html")).toEqual(html);
+    const report = jsonEntry<{ warnings: Array<{ reading_id: string }> }>(entries, "report.json");
+    expect(report.warnings.filter((warning) => warning.reading_id === "rd_pending")).toEqual([]);
+  });
+
+  it("fails a build the zip format cannot hold and deletes the parts already written", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env } = await arrange(sql, db);
+    const content = contentStoreFor(bucket, { tenantId }, env);
+    // Left by an earlier delivery of the same export.
+    await content.put(`exports/${EXPORT_ID}/segment-0001`, new Uint8Array([1, 2, 3]), "application/octet-stream");
+
+    // DOS timestamps start in 1980, so the first segment is refused.
+    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: Date.parse("1979-12-31T00:00:00.000Z"),
+    });
+    expect(outcome).toBe("failed");
+    expect(await content.list(`exports/${EXPORT_ID}`)).toEqual([]);
+    const row = await db.first<{ status: string; error: { code: string } }>(
+      "SELECT status, error FROM archive_exports WHERE id = ?",
+      EXPORT_ID,
+    );
+    expect(row).toMatchObject({ status: "failed", error: { code: "zip_limit" } });
+  });
+
   it("keeps index.json and counts on the manifest a reading had when it was loaded", async () => {
     const { db, sql } = openControlPlane();
     const { tenantId, bucket, env, readings } = await arrange(sql, db);
     // rd_pending publishes after the index pages were listed and before its
     // manifest is loaded.
     let published = false;
-    const racing: Sql = {
-      query: async (text, values) => {
-        if (!published && /r\.xmin::text AS version/.test(text)) {
-          published = true;
-          await readings.restate({ id: "rd_pending", status: "ready", updated_at: "2026-09-01T00:00:00.000Z" });
-        }
-        return sql.query(text, values);
+    const racing = watchSql(sql, {
+      after: async (text) => {
+        if (published || !/FROM readings\s+WHERE tenant_id = \$1\s+ORDER BY created_at DESC/.test(text)) return;
+        published = true;
+        await readings.restate({ id: "rd_pending", status: "ready", updated_at: "2026-09-01T00:00:00.000Z" });
       },
-      execute: (text, values) => sql.execute(text, values),
-      transaction: (run, opts) => sql.transaction(run, opts),
-      end: () => sql.end(),
-    };
+    });
 
     const outcome = await buildArchiveExport(racing, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
       nowMs: NOW_MS,
@@ -160,5 +310,109 @@ describe("buildArchiveExport", () => {
     }
     expect(index.items.find((entry) => entry.id === "rd_pending")?.status).toBe("ready");
     expect(row.counts).toEqual({ readings: 3, pending: 0, ready: 2, failed: 1 });
+  });
+
+  it("leaves attempt logs, checkpoints, vectors, keys, credentials, sessions, tokens, and quota out", async () => {
+    const { db, sql } = openControlPlane();
+    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    const now = toTimestamp(NOW_MS);
+    const eventMarker = "mxwx2-attempt-event-7f3a9c1e";
+    const checkpointMarker = "mxwx2-checkpoint-7f3a9c1e";
+    const keyMarker = "mxwx2-internal-key-7f3a9c1e";
+    const jobMarker = "mxwx2-job-payload-7f3a9c1e";
+    const tokenMarker = "mxwx2-token-hmac-7f3a9c1e";
+    const sessionMarker = "mxwx2-session-hmac-7f3a9c1e";
+    const quotaMarker = "424242424242";
+    await sql.query(
+      `UPDATE readings SET last_attempt = $3::jsonb WHERE tenant_id = $1 AND id = $2`,
+      [
+        TENANT_ID,
+        "rd_ready",
+        JSON.stringify({
+          id: "at_public",
+          trigger: "submit",
+          status: "succeeded",
+          started_at: "2026-02-01T00:00:00.000Z",
+        }),
+      ],
+    );
+    await sql.query(
+      `INSERT INTO reading_attempts (
+         tenant_id, reading_id, id, trigger, status, started_at, events, checkpoint, raw_key, extracted_key
+       ) VALUES ($1, 'rd_ready', 'at_mxwx2secret', 'submit', 'succeeded', $2, $3::jsonb, $4::jsonb, $5, $6)`,
+      [
+        TENANT_ID,
+        now,
+        JSON.stringify([{ stage: "fetch_source", status: "succeeded", at: "2026-02-01T00:00:01.000Z", note: eventMarker }]),
+        JSON.stringify({ summarize: checkpointMarker }),
+        `readings/hidden/${keyMarker}/raw.html`,
+        `readings/hidden/${keyMarker}/extracted.md`,
+      ],
+    );
+    await sql.query(
+      `INSERT INTO reading_jobs (tenant_id, reading_id, attempt_id, state, payload, created_at, updated_at)
+       VALUES ($1, 'rd_ready', 'at_mxwx2secret', 'done', $2::jsonb, $3, $3)`,
+      [TENANT_ID, JSON.stringify({ leak: jobMarker }), now],
+    );
+    await readings.putEmbedding("rd_ready", Array.from({ length: 1536 }, (_, index) => (index === 0 ? 0.271828182845 : 0)));
+    await db.run(
+      `INSERT INTO api_tokens (id, user_id, name, format, secret_hmac, hash_key_version, created_at, expires_at)
+       VALUES ('tok_mxwx2excl', ?, 'ops', 'standard', ?, 1, ?, ?)`,
+      TENANT_ID,
+      tokenMarker,
+      now,
+      now,
+    );
+    await db.run(
+      `INSERT INTO sessions (
+         id, user_id, secret_hmac, hash_key_version, created_at, authenticated_at, last_seen_at,
+         idle_expires_at, absolute_expires_at, created_from_claim_id
+       ) VALUES ('ses_mxwx2excl', ?, ?, 1, ?, ?, ?, ?, ?, 'mxwx2-claim')`,
+      TENANT_ID,
+      sessionMarker,
+      now,
+      now,
+      now,
+      now,
+      now,
+    );
+    await db.run(
+      `INSERT INTO tenant_limits (
+         tenant_id, policy_version, submissions_per_hour, monthly_readings, max_concurrent_work,
+         daily_spend_microdollars, created_at, updated_at
+       ) VALUES (?, 1, 3, 40, 1, ?, ?, ?)`,
+      TENANT_ID,
+      quotaMarker,
+      now,
+      now,
+    );
+
+    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+      nowMs: NOW_MS,
+    });
+    expect(outcome).toBe("ready");
+    const { entries } = await readArchive(db, bucket, env);
+    const archive = [...entries.values()].map((bytes) => new TextDecoder().decode(bytes)).join("\n");
+    for (const marker of [eventMarker, checkpointMarker, keyMarker, jobMarker, tokenMarker, sessionMarker, quotaMarker, "0.271828182845"]) {
+      expect(archive, marker).not.toContain(marker);
+    }
+    for (const name of entries.keys()) {
+      for (const segment of name.split("/")) expect(segment, name).not.toMatch(FORBIDDEN_SEGMENT);
+    }
+
+    const index = jsonEntry<{ items: Array<{ id: string; key_prefix: string }> }>(entries, "index.json");
+    expect(index.items.map((item) => item.key_prefix).every((prefix) => prefix.length > 0)).toBe(true);
+    const leaked: string[] = [];
+    for (const [name, bytes] of entries) {
+      if (!name.endsWith(".json") || name === "index.json") continue;
+      forbiddenKeys(JSON.parse(new TextDecoder().decode(bytes)) as unknown, name, leaked);
+      for (const item of index.items) {
+        expect(new TextDecoder().decode(bytes), name).not.toContain(item.key_prefix);
+      }
+    }
+    expect(leaked).toEqual([]);
+    const ready = jsonEntry<{ last_attempt?: { id: string }; events?: unknown }>(entries, "readings/rd_ready/manifest.json");
+    expect(ready.last_attempt?.id).toBe("at_public");
+    expect(ready.events).toBeUndefined();
   });
 });
