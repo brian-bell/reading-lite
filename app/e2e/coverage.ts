@@ -11,12 +11,14 @@
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
 // edit in test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo
-// root.
+// root. Mark it `anyHost` only if it expects nothing the stub or the pack
+// supplies, so it also passes against a deployed host (E2E_BASE_URL, #392).
 
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
+import { externalBaseUrl } from "./harness";
 import { EVIDENCE_SCOPE } from "./scope";
-import { LIBRARY_STATE_SESSIONS, SESSION_COOKIE_VALUE } from "./sessions";
+import { hostSession, LIBRARY_STATE_SESSIONS, SESSION_COOKIE_VALUE } from "./sessions";
 import {
   serveDiagnosticsInBrowser,
   serveLibraryInBrowser,
@@ -43,6 +45,12 @@ export interface EvidenceCase {
   heading: string;
   /** Part of the essential scope CI runs (e2e/scope.ts). */
   essential?: true;
+  /**
+   * Expects nothing from e2e/backend-stub.js or the fixture pack: no reading,
+   * list, or stub session, and no `stub` or `session`. The only cases an
+   * external run (E2E_BASE_URL) covers; see e2e/harness.ts.
+   */
+  anyHost?: true;
   /**
    * A session cookie other than the default reader's, for a backend-stub
    * scenario (#416). Signs the context in whatever `state` says the page
@@ -80,7 +88,7 @@ function saveAndExpect(sentence: string, also?: (page: Page) => Promise<void>) {
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
-  { name: "library-signed-out", essential: true, path: "/", state: "signed-out", heading: "Sign in" },
+  { name: "library-signed-out", anyHost: true, essential: true, path: "/", state: "signed-out", heading: "Sign in" },
   // Signed in, the first page of the pack's list index, rendered on the server
   // (#413). The pack's pending, failed, reprocess-failed, and long-title rows
   // are all on it (#415), so this one page is the evidence for the badges, the
@@ -271,19 +279,24 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   // Saving a URL (#431). /save is under the signed-in guard, so signed out it
   // never renders: the reader lands on the sign-in page with the way back.
-  { name: "save-signed-out", path: "/save", state: "signed-out", heading: "Sign in" },
+  { name: "save-signed-out", anyHost: true, path: "/save", state: "signed-out", heading: "Sign in" },
   // No `prepare`: the heading already proves the page rendered, and a case
   // without one is also in the shell's reduced-motion, zoom, and reflow set
   // (shell-extras.spec.ts filters on exactly that).
-  { name: "save-signed-in", essential: true, path: "/save", state: "signed-in", heading: "Save reading" },
+  { name: "save-signed-in", anyHost: true, essential: true, path: "/save", state: "signed-in", heading: "Save reading" },
   // The two ways a URL is refused, which render identically: the rule this
   // page applies before it asks, and the backend's own 400.
   {
     name: "save-invalid-url",
+    anyHost: true,
     path: "/save",
     state: "signed-in",
     heading: "Save reading",
     prepare: async (page) => {
+      // Until hydration attaches onSubmit, Save is a native GET submit that
+      // reloads /save with an empty field. Local hydration usually wins the
+      // race; a deployed host's slower assets lose it (#392).
+      await page.waitForLoadState("networkidle");
       await saveField(page).fill("not a url");
       await page.getByRole("button", { name: "Save" }).click();
       await expect(page.getByText("Enter a full URL, like https://example.com/article.")).toBeVisible();
@@ -392,19 +405,19 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(page.getByRole("link", { name: "Open the reading" })).toBeVisible();
     }),
   },
-  { name: "login", essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
+  { name: "login", anyHost: true, essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 
   // Public legal pages (#340.2). Signed out, no identity in the server render.
   // No `prepare`: they are standing shell pages, so reduced-motion and zoom
   // inherit them the way save-signed-in does.
-  { name: "terms", essential: true, path: "/terms", state: "signed-out", heading: "Terms of Service" },
-  { name: "privacy", essential: true, path: "/privacy", state: "signed-out", heading: "Privacy Policy" },
-  { name: "dmca", essential: true, path: "/dmca", state: "signed-out", heading: "Copyright Complaints" },
+  { name: "terms", anyHost: true, essential: true, path: "/terms", state: "signed-out", heading: "Terms of Service" },
+  { name: "privacy", anyHost: true, essential: true, path: "/privacy", state: "signed-out", heading: "Privacy Policy" },
+  { name: "dmca", anyHost: true, essential: true, path: "/dmca", state: "signed-out", heading: "Copyright Complaints" },
 
   // Account (#340.1, #340.6). The sessions list and the notification settings
   // are fetched in the browser, so every signed-in case stubs both; without
   // that the frontend Worker answers /api/* with 404.
-  { name: "account-signed-out", path: "/account/security", state: "signed-out", heading: "Sign in" },
+  { name: "account-signed-out", anyHost: true, path: "/account/security", state: "signed-out", heading: "Sign in" },
   {
     name: "account-sessions",
     essential: true,
@@ -789,9 +802,11 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     },
   },
   // The pack's removed target: referenced by `attention` but never written, so
-  // the route 404s (docs/design/connected/fixture-pack.md).
+  // the route 404s (docs/design/connected/fixture-pack.md). No real host
+  // mints an `FX` id either, so it 404s there too.
   {
     name: "reading-not-found",
+    anyHost: true,
     essential: true,
     path: "/readings/rd_FXVANSHD01",
     state: "signed-in",
@@ -955,9 +970,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
 ];
 
-/** The cases this run covers: every case in full, the `essential` ones in CI. */
-export const EVIDENCE_CASES: EvidenceCase[] =
-  EVIDENCE_SCOPE === "full" ? ALL_EVIDENCE_CASES : ALL_EVIDENCE_CASES.filter((evidence) => evidence.essential);
+// An `anyHost` case that reads the stub or the pack would fail every external run.
+for (const evidence of ALL_EVIDENCE_CASES) {
+  if (evidence.anyHost && (evidence.fixture ?? evidence.session ?? evidence.stub) !== undefined) {
+    throw new Error(`${evidence.name} is anyHost but sets a fixture, session, or stub`);
+  }
+}
+
+/**
+ * The cases this run covers: every case in full, the `essential` ones in CI.
+ * Against an external host only the `anyHost` ones, and only the signed-out
+ * ones of those unless E2E_SESSION_COOKIE supplies a real session.
+ */
+export const EVIDENCE_CASES: EvidenceCase[] = ALL_EVIDENCE_CASES.filter(
+  (evidence) =>
+    (EVIDENCE_SCOPE === "full" || evidence.essential) &&
+    (!externalBaseUrl() || (evidence.anyHost && (evidence.state === "signed-out" || hostSession() !== undefined))),
+);
 
 /** Opens the Details disclosure. */
 export async function openDetails(page: Page): Promise<void> {

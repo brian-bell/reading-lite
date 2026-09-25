@@ -450,8 +450,16 @@ export async function serveAccountDeleteInBrowser(
   return { deletes };
 }
 
+/**
+ * Sets the session cookie with the backend's attributes (HttpOnly,
+ * SameSite=Lax; `url` supplies Path=/ and, on https, Secure), so a real
+ * session an external run supplies is no more exposed to page script than in
+ * production.
+ */
 export async function signIn(context: BrowserContext, baseURL: string, session = SESSION_COOKIE_VALUE): Promise<void> {
-  await context.addCookies([{ name: sessionCookieName(baseURL), value: session, url: baseURL }]);
+  await context.addCookies([
+    { name: sessionCookieName(baseURL), value: session, url: baseURL, httpOnly: true, sameSite: "Lax" },
+  ]);
 }
 
 /**

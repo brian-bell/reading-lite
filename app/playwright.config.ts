@@ -23,6 +23,7 @@ const matrixProjects = Object.entries(VIEWPORTS).flatMap(([size, viewport]) =>
   THEMES.map((theme) => ({
     name: `${size}-${theme}`,
     testMatch: /matrix\.spec\.ts/,
+    metadata: { anyHost: true },
     use: {
       ...devices["Desktop Chrome"],
       viewport,
@@ -35,6 +36,8 @@ const matrixProjects = Object.entries(VIEWPORTS).flatMap(([size, viewport]) =>
 );
 
 // Every project the suite defines; e2e/scope.ts says which ones this run keeps.
+// `metadata.anyHost` marks the projects that read only e2e/coverage.ts's
+// `anyHost` cases, the only ones an external run (E2E_BASE_URL) keeps.
 const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> = [
   ...matrixProjects,
   {
@@ -129,6 +132,7 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,
+    metadata: { anyHost: true },
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
 ];

@@ -22,6 +22,9 @@
 // Step-up (#340.7.4): a create refused for a stale sign-in links to sign-in
 // with the email locked, in a real browser. The return to the account page is
 // test/sign-in-flow.test.tsx's.
+//
+// The session cookie (#392): signIn sets it HttpOnly, as the backend does, so
+// a real session an external run supplies is never readable by page script.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
@@ -52,6 +55,11 @@ async function openAccount(page: Page, baseURL: string) {
   await expect(page.getByText("Firefox (this device)")).toBeVisible();
   return writes;
 }
+
+test("the signed-in session cookie is out of page script's reach", async ({ page, baseURL }) => {
+  await openAccount(page, baseURL!);
+  expect(await page.evaluate(() => document.cookie)).not.toMatch(/session=/);
+});
 
 function dialog(page: Page) {
   return page.getByRole("dialog", { name: "Revoke all browser sessions?" });
