@@ -30,13 +30,13 @@
       "name": "fail-provider-error",
       "id": "rd_FXERR00004",
       "status": "failed",
-      "state": "Failed, provider error: BadStatusError at embed_source"
+      "state": "Failed, provider error: OpenAIError 500 at embed_source"
     },
     {
       "name": "fail-key-problem",
       "id": "rd_FXERR00005",
       "status": "failed",
-      "state": "Failed, key problem: provider 401 at summarize"
+      "state": "Failed, key problem: OpenAIError 401 at summarize"
     },
     {
       "name": "attention",
@@ -150,7 +150,8 @@
         "message": "bad response status 403: https://registration-wall.example/members-only-report",
         "stage": "fetch_source",
         "failed_at": "2026-09-10T14:10:13.000Z",
-        "retryable": false
+        "retryable": false,
+        "http_status": 403
       },
       "last_attempt": {
         "id": "at_FXERR00001",
@@ -164,7 +165,8 @@
           "message": "bad response status 403: https://registration-wall.example/members-only-report",
           "stage": "fetch_source",
           "failed_at": "2026-09-10T14:10:13.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 403
         }
       },
       "content_type": "application/octet-stream",
@@ -222,7 +224,8 @@
         "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
         "stage": "summarize",
         "failed_at": "2026-09-09T09:05:37.000Z",
-        "retryable": true
+        "retryable": true,
+        "http_status": 429
       },
       "last_attempt": {
         "id": "at_FXERR00001",
@@ -236,7 +239,8 @@
           "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
           "stage": "summarize",
           "failed_at": "2026-09-09T09:05:37.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 429
         }
       },
       "content_type": "application/octet-stream",
@@ -254,11 +258,12 @@
       "source_type": "url",
       "status": "failed",
       "error": {
-        "code": "BadStatusError",
-        "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+        "code": "OpenAIError",
+        "message": "The server had an error while processing your request. Sorry about that!",
         "stage": "embed_source",
         "failed_at": "2026-09-08T22:18:21.000Z",
-        "retryable": true
+        "retryable": true,
+        "http_status": 500
       },
       "last_attempt": {
         "id": "at_FXERR00001",
@@ -268,11 +273,12 @@
         "started_at": "2026-09-08T22:18:03.000Z",
         "finished_at": "2026-09-08T22:18:21.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "code": "OpenAIError",
+          "message": "The server had an error while processing your request. Sorry about that!",
           "stage": "embed_source",
           "failed_at": "2026-09-08T22:18:21.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 500
         }
       },
       "content_type": "application/octet-stream",
@@ -290,11 +296,12 @@
       "source_type": "url",
       "status": "failed",
       "error": {
-        "code": "BadStatusError",
-        "message": "bad response status 401: https://api.openai.com/v1/responses",
+        "code": "OpenAIError",
+        "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
         "stage": "summarize",
         "failed_at": "2026-09-08T11:55:37.000Z",
-        "retryable": false
+        "retryable": false,
+        "http_status": 401
       },
       "last_attempt": {
         "id": "at_FXERR00001",
@@ -304,11 +311,12 @@
         "started_at": "2026-09-08T11:55:03.000Z",
         "finished_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "code": "OpenAIError",
+          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 401
         }
       },
       "content_type": "application/octet-stream",
@@ -535,7 +543,8 @@
           "message": "bad response status 503: Service Unavailable",
           "stage": "fetch_source",
           "failed_at": "2026-09-10T16:05:10.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 503
         }
       },
       "title": "The tab that never closes",
@@ -1281,7 +1290,8 @@
           "message": "bad response status 403: https://registration-wall.example/members-only-report",
           "stage": "fetch_source",
           "failed_at": "2026-09-10T14:10:13.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 403
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1295,7 +1305,8 @@
             "message": "bad response status 403: https://registration-wall.example/members-only-report",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T14:10:13.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 403
           }
         },
         "content_type": "application/octet-stream",
@@ -1317,7 +1328,8 @@
           "message": "bad response status 403: https://registration-wall.example/members-only-report",
           "stage": "fetch_source",
           "failed_at": "2026-09-10T14:10:13.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 403
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1331,7 +1343,8 @@
             "message": "bad response status 403: https://registration-wall.example/members-only-report",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T14:10:13.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 403
           }
         }
       },
@@ -1367,7 +1380,8 @@
             "message": "bad response status 403: https://registration-wall.example/members-only-report",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T14:10:13.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 403
           },
           "reading_id": "rd_FXERR00001",
           "url": "https://registration-wall.example/members-only-report",
@@ -1400,7 +1414,8 @@
                 "message": "bad response status 403: https://registration-wall.example/members-only-report",
                 "stage": "fetch_source",
                 "failed_at": "2026-09-10T14:10:13.000Z",
-                "retryable": false
+                "retryable": false,
+                "http_status": 403
               }
             }
           ]
@@ -1594,7 +1609,8 @@
           "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
           "stage": "summarize",
           "failed_at": "2026-09-09T09:05:37.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 429
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1608,7 +1624,8 @@
             "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
             "stage": "summarize",
             "failed_at": "2026-09-09T09:05:37.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 429
           }
         },
         "content_type": "application/octet-stream",
@@ -1630,7 +1647,8 @@
           "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
           "stage": "summarize",
           "failed_at": "2026-09-09T09:05:37.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 429
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1644,7 +1662,8 @@
             "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
             "stage": "summarize",
             "failed_at": "2026-09-09T09:05:37.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 429
           }
         }
       },
@@ -1680,7 +1699,8 @@
             "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
             "stage": "summarize",
             "failed_at": "2026-09-09T09:05:37.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 429
           },
           "reading_id": "rd_FXERR00003",
           "url": "https://fieldnotes.example/rate-limited-essay",
@@ -1746,7 +1766,8 @@
                 "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
                 "stage": "summarize",
                 "failed_at": "2026-09-09T09:05:37.000Z",
-                "retryable": true
+                "retryable": true,
+                "http_status": 429
               }
             }
           ]
@@ -1763,11 +1784,12 @@
         "source_type": "url",
         "status": "failed",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "code": "OpenAIError",
+          "message": "The server had an error while processing your request. Sorry about that!",
           "stage": "embed_source",
           "failed_at": "2026-09-08T22:18:21.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 500
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1777,11 +1799,12 @@
           "started_at": "2026-09-08T22:18:03.000Z",
           "finished_at": "2026-09-08T22:18:21.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+            "code": "OpenAIError",
+            "message": "The server had an error while processing your request. Sorry about that!",
             "stage": "embed_source",
             "failed_at": "2026-09-08T22:18:21.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 500
           }
         },
         "content_type": "application/octet-stream",
@@ -1799,11 +1822,12 @@
         "created_at": "2026-09-08T22:18:00.000Z",
         "updated_at": "2026-09-08T22:18:21.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "code": "OpenAIError",
+          "message": "The server had an error while processing your request. Sorry about that!",
           "stage": "embed_source",
           "failed_at": "2026-09-08T22:18:21.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 500
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1813,11 +1837,12 @@
           "started_at": "2026-09-08T22:18:03.000Z",
           "finished_at": "2026-09-08T22:18:21.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+            "code": "OpenAIError",
+            "message": "The server had an error while processing your request. Sorry about that!",
             "stage": "embed_source",
             "failed_at": "2026-09-08T22:18:21.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 500
           }
         }
       },
@@ -1849,11 +1874,12 @@
           "started_at": "2026-09-08T22:18:03.000Z",
           "finished_at": "2026-09-08T22:18:21.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+            "code": "OpenAIError",
+            "message": "The server had an error while processing your request. Sorry about that!",
             "stage": "embed_source",
             "failed_at": "2026-09-08T22:18:21.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 500
           },
           "reading_id": "rd_FXERR00004",
           "url": "https://commonplace.example/embedding-failure-essay",
@@ -1915,11 +1941,12 @@
               "at": "2026-09-08T22:18:21.000Z",
               "duration_ms": 4000,
               "error": {
-                "code": "BadStatusError",
-                "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+                "code": "OpenAIError",
+                "message": "The server had an error while processing your request. Sorry about that!",
                 "stage": "embed_source",
                 "failed_at": "2026-09-08T22:18:21.000Z",
-                "retryable": true
+                "retryable": true,
+                "http_status": 500
               }
             }
           ]
@@ -1936,11 +1963,12 @@
         "source_type": "url",
         "status": "failed",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "code": "OpenAIError",
+          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 401
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1950,11 +1978,12 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 401: https://api.openai.com/v1/responses",
+            "code": "OpenAIError",
+            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 401
           }
         },
         "content_type": "application/octet-stream",
@@ -1972,11 +2001,12 @@
         "created_at": "2026-09-08T11:55:00.000Z",
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "code": "OpenAIError",
+          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 401
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -1986,11 +2016,12 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 401: https://api.openai.com/v1/responses",
+            "code": "OpenAIError",
+            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 401
           }
         }
       },
@@ -2022,11 +2053,12 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 401: https://api.openai.com/v1/responses",
+            "code": "OpenAIError",
+            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 401
           },
           "reading_id": "rd_FXERR00005",
           "url": "https://adjacent.example/expired-key-essay",
@@ -2088,11 +2120,12 @@
               "at": "2026-09-08T11:55:37.000Z",
               "duration_ms": 20000,
               "error": {
-                "code": "BadStatusError",
-                "message": "bad response status 401: https://api.openai.com/v1/responses",
+                "code": "OpenAIError",
+                "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
                 "stage": "summarize",
                 "failed_at": "2026-09-08T11:55:37.000Z",
-                "retryable": false
+                "retryable": false,
+                "http_status": 401
               }
             }
           ]
@@ -2874,7 +2907,8 @@
             "message": "bad response status 503: Service Unavailable",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T16:05:10.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 503
           }
         },
         "title": "The tab that never closes",
@@ -2968,7 +3002,8 @@
             "message": "bad response status 503: Service Unavailable",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T16:05:10.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 503
           }
         }
       },
@@ -3015,7 +3050,8 @@
             "message": "bad response status 503: Service Unavailable",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T16:05:10.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 503
           },
           "reading_id": "rd_FXREPROC01",
           "url": "https://fieldnotes.example/the-tab-that-never-closes",
@@ -3048,7 +3084,8 @@
                 "message": "bad response status 503: Service Unavailable",
                 "stage": "fetch_source",
                 "failed_at": "2026-09-10T16:05:10.000Z",
-                "retryable": true
+                "retryable": true,
+                "http_status": 503
               }
             }
           ]
@@ -5514,7 +5551,8 @@
           "message": "bad response status 403: https://registration-wall.example/members-only-report",
           "stage": "fetch_source",
           "failed_at": "2026-09-10T14:10:13.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 403
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -5528,7 +5566,8 @@
             "message": "bad response status 403: https://registration-wall.example/members-only-report",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T14:10:13.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 403
           }
         }
       },
@@ -5574,7 +5613,8 @@
           "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
           "stage": "summarize",
           "failed_at": "2026-09-09T09:05:37.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 429
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -5588,7 +5628,8 @@
             "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
             "stage": "summarize",
             "failed_at": "2026-09-09T09:05:37.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 429
           }
         }
       },
@@ -5600,11 +5641,12 @@
         "created_at": "2026-09-08T22:18:00.000Z",
         "updated_at": "2026-09-08T22:18:21.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+          "code": "OpenAIError",
+          "message": "The server had an error while processing your request. Sorry about that!",
           "stage": "embed_source",
           "failed_at": "2026-09-08T22:18:21.000Z",
-          "retryable": true
+          "retryable": true,
+          "http_status": 500
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -5614,11 +5656,12 @@
           "started_at": "2026-09-08T22:18:03.000Z",
           "finished_at": "2026-09-08T22:18:21.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 500: https://api.openai.com/v1/embeddings",
+            "code": "OpenAIError",
+            "message": "The server had an error while processing your request. Sorry about that!",
             "stage": "embed_source",
             "failed_at": "2026-09-08T22:18:21.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 500
           }
         }
       },
@@ -5630,11 +5673,12 @@
         "created_at": "2026-09-08T11:55:00.000Z",
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "BadStatusError",
-          "message": "bad response status 401: https://api.openai.com/v1/responses",
+          "code": "OpenAIError",
+          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
-          "retryable": false
+          "retryable": false,
+          "http_status": 401
         },
         "last_attempt": {
           "id": "at_FXERR00001",
@@ -5644,11 +5688,12 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "BadStatusError",
-            "message": "bad response status 401: https://api.openai.com/v1/responses",
+            "code": "OpenAIError",
+            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
-            "retryable": false
+            "retryable": false,
+            "http_status": 401
           }
         }
       },
@@ -5787,7 +5832,8 @@
             "message": "bad response status 503: Service Unavailable",
             "stage": "fetch_source",
             "failed_at": "2026-09-10T16:05:10.000Z",
-            "retryable": true
+            "retryable": true,
+            "http_status": 503
           }
         }
       },

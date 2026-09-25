@@ -73,6 +73,8 @@ export const ReadingErrorSchema = z.looseObject({
   stage: absent(z.string()),
   failed_at: absent(z.string()),
   retryable: absent(z.boolean()),
+  /** The upstream response's HTTP status, when the backend's error class kept one. */
+  http_status: absent(z.number()),
 });
 export type ReadingError = Declared<z.output<typeof ReadingErrorSchema>>;
 

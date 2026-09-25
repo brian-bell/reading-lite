@@ -37,6 +37,7 @@ import type {
   ProcessingAttemptTrigger,
   ProcessingStage,
 } from "./schemas/manifest";
+import { HttpStatusSchema } from "./schemas/manifest";
 import { commitReadingSlot, refreshReadingSlot, releaseReadingSlot } from "./control-plane/tenant-usage-guard";
 import {
   acquireProcessingLeases,
@@ -1056,12 +1057,14 @@ function errorFromUnknown(
   stage: ProcessingStage | undefined,
   failedAt: string,
 ): ManifestError {
+  const httpStatus = HttpStatusSchema.safeParse(e instanceof Error ? (e as { status?: unknown }).status : undefined);
   return {
     code: e instanceof Error ? e.name : "unknown_error",
     message: e instanceof Error ? e.message : String(e),
     ...(stage === undefined ? {} : { stage }),
     failed_at: failedAt,
     retryable: retryableError(e),
+    ...(httpStatus.success ? { http_status: httpStatus.data } : {}),
   };
 }
 

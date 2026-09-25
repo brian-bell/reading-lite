@@ -49,8 +49,8 @@ states locally.
 | `fail-source-unreachable` | `rd_FXERR00001` | failed | `BadStatusError` at `fetch_source` — source unreachable category |
 | `fail-source-incomplete` | `rd_FXERR00002` | failed | `SourceRejectedError` at `summarize` — source incomplete category; also `gardens`' failed connection target |
 | `fail-provider-limit` | `rd_FXERR00003` | failed | `RateLimitedError` at `summarize` — provider limit category |
-| `fail-provider-error` | `rd_FXERR00004` | failed | `BadStatusError` at `embed_source` — provider error category |
-| `fail-key-problem` | `rd_FXERR00005` | failed | Provider 401 at `summarize` — key problem category (provisional until Phase 6) |
+| `fail-provider-error` | `rd_FXERR00004` | failed | `OpenAIError` (`http_status` 500) at `embed_source` — provider error category |
+| `fail-key-problem` | `rd_FXERR00005` | failed | `OpenAIError` (`http_status` 401) at `summarize` — key problem category (provisional until Phase 6) |
 | `fail-hosting-limit` | `rd_FXERR00006` | failed | `SpendAdmissionError` at `summarize` — hosting limit category |
 | `fail-stopped` | `rd_FXERR00007` | failed | `QueueRetriesExhaustedError` — stopped category; dead-letter attempt log holds only the queued `started` event |
 | `fail-unknown` | `rd_FXERR00008` | failed | `TypeError` at `query_similar` — unknown category fallback |

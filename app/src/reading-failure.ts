@@ -86,7 +86,6 @@ const PROVIDER_STAGES: ReadonlySet<string> = new Set<ProcessingStage>([
 const PROVIDER_CODES: ReadonlySet<string> = new Set([
   "AnthropicError",
   "BadEmbeddingResponseError",
-  "BadStatusError",
   "BadToolInputError",
   "NoToolUseError",
   "OpenAIError",
@@ -119,30 +118,17 @@ function categoryOf(error: ReadingError): FailureCategory {
   if (SOURCE_INCOMPLETE_CODES.has(code)) return "source-incomplete";
   if (STOPPED_CODES.has(code)) return "stopped";
   if (HOSTING_LIMIT_CODES.has(code)) return "hosting-limit";
-  // Stage separates the classes that mean two different things at two stages:
-  // BadStatusError is the site refusing us at fetch_source and the provider
-  // refusing us at summarize. It is in none of the sets above, so it still
-  // reaches this.
+  // Stage separates a class raised at more than one stage: RateLimitedError is
+  // the site at fetch_source and the provider at summarize.
   if (stage !== undefined && SOURCE_UNREACHABLE_STAGES.has(stage)) return "source-unreachable";
   if (stage !== undefined && PROVIDER_STAGES.has(stage) && PROVIDER_CODES.has(code)) {
-    const status = providerStatusOf(error.message);
+    // The provider classes keep the provider's own message, which does not
+    // repeat the status, so it is read from the field the backend records.
+    // No status lands on provider-error — never a false key problem.
+    const status = error.http_status;
     if (code === "RateLimitedError" || status === 429) return "provider-limit";
     if (status === 401 || status === 403) return "key-problem";
     return "provider-error";
   }
   return "unknown";
-}
-
-/**
- * The HTTP status inside a provider error's message. The manifest error carries
- * no status field of its own (ManifestErrorSchema is code/message/stage/…), and
- * 401 and 403 are what separate a key problem from an ordinary provider error,
- * so it is read back out of the text the class wrote: "bad response status 401:
- * …" (BadStatusError), "(status 429, retry after …)" (RateLimitedError).
- * No match means no status, which lands on `provider-error` — never a false
- * key problem.
- */
-function providerStatusOf(message: string): number | undefined {
-  const match = /\bstatus (\d{3})\b/.exec(message);
-  return match ? Number(match[1]) : undefined;
 }

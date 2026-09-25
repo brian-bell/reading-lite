@@ -1958,6 +1958,15 @@ components:
           format: date-time
         retryable:
           type: boolean
+        http_status:
+          type: integer
+          minimum: 100
+          maximum: 599
+          description: >-
+            Status of the upstream HTTP response that failed, when the error
+            class recorded one (for example a provider's 401 at `summarize`, or
+            the source site's 403 at `fetch_source`). Provider messages are the
+            provider's own text and do not repeat it.
 
     ProcessingAttemptSummary:
       type: object
