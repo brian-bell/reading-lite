@@ -71,14 +71,26 @@ function saveField(page: Page) {
 }
 
 /**
+ * Types a URL into the save page and presses Save. Until hydration attaches
+ * onSubmit, Save is a native GET submit that reloads /save with an empty
+ * field and never makes the stubbed POST. Local hydration usually wins the
+ * race; a deployed host's slower assets (#392) or a loaded parallel run
+ * (reading-lite-e35g) lose it.
+ */
+async function saveUrl(page: Page, url: string) {
+  await page.waitForLoadState("networkidle");
+  await saveField(page).fill(url);
+  await page.getByRole("button", { name: "Save" }).click();
+}
+
+/**
  * Saves a URL and waits for the answer the case stubbed (#433). The click
  * leaves focus on Save, the form's last tab stop, so the keyboard walk is
  * started again from the heading — above the notice the save put there.
  */
 function saveAndExpect(sentence: string, also?: (page: Page) => Promise<void>) {
   return async (page: Page) => {
-    await saveField(page).fill("https://example.com/a");
-    await page.getByRole("button", { name: "Save" }).click();
+    await saveUrl(page, "https://example.com/a");
     await expect(page.getByText(sentence).first()).toBeVisible();
     await also?.(page);
     await page.locator("#main h1").focus();
@@ -293,12 +305,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Save reading",
     prepare: async (page) => {
-      // Until hydration attaches onSubmit, Save is a native GET submit that
-      // reloads /save with an empty field. Local hydration usually wins the
-      // race; a deployed host's slower assets lose it (#392).
-      await page.waitForLoadState("networkidle");
-      await saveField(page).fill("not a url");
-      await page.getByRole("button", { name: "Save" }).click();
+      await saveUrl(page, "not a url");
       await expect(page.getByText("Enter a full URL, like https://example.com/article.")).toBeVisible();
       await expect(saveField(page)).toBeFocused();
     },
@@ -311,14 +318,13 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     stub: async (page) => {
       // GET-safe: the page and its reads go to the Worker, only the save is
       // answered here.
-      serveSaveInBrowser(page, {
+      await serveSaveInBrowser(page, {
         status: 400,
         json: { error: "url rejected: host is not allowed", code: "unsupported_url" },
       });
     },
     prepare: async (page) => {
-      await saveField(page).fill("https://blocked.example/a");
-      await page.getByRole("button", { name: "Save" }).click();
+      await saveUrl(page, "https://blocked.example/a");
       await expect(page.getByText("url rejected: host is not allowed")).toBeVisible();
       await expect(saveField(page)).toBeFocused();
     },
@@ -338,11 +344,10 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       // answered here, so the page's own reads still reach the Worker. 200 is
       // the owning reading's manifest: this one is ready.
       await serveReadingsInBrowser(page);
-      serveSaveInBrowser(page, { status: 200, json: pack.readings.rd_FXATTENT01 });
+      await serveSaveInBrowser(page, { status: 200, json: pack.readings.rd_FXATTENT01 });
     },
     prepare: async (page) => {
-      await saveField(page).fill("https://quieter.example/a-quieter-internet");
-      await page.getByRole("button", { name: "Save" }).click();
+      await saveUrl(page, "https://quieter.example/a-quieter-internet");
       // The save, the reading's own read, and the route change, on a machine
       // running every project at once: longer than the default wait, which
       // this is otherwise flaky against.
@@ -361,7 +366,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Save reading",
     stub: async (page) => {
-      serveSaveInBrowser(page, {
+      await serveSaveInBrowser(page, {
         status: 429,
         json: { error: "rate limited", code: "rate_limited", limit: "request_rate", reset_at: "2026-12-31T23:59:00Z" },
       });
@@ -374,7 +379,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Save reading",
     stub: async (page) => {
-      serveSaveInBrowser(page, {
+      await serveSaveInBrowser(page, {
         status: 429,
         json: { error: "quota exhausted", code: "quota_exhausted", limit: "monthly", reset_at: "2026-12-31T23:59:00Z" },
       });
@@ -387,7 +392,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Save reading",
     stub: async (page) => {
-      serveSaveInBrowser(page, { status: 429, json: { error: "usage guard unavailable" } });
+      await serveSaveInBrowser(page, { status: 429, json: { error: "usage guard unavailable" } });
     },
     prepare: saveAndExpect("Limits can't be checked right now."),
   },
@@ -398,7 +403,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "Save reading",
     stub: async (page) => {
-      serveSaveInBrowser(page, { status: 503, json: { error: "queue unavailable", id: "rd_FXPENDNG01" } });
+      await serveSaveInBrowser(page, { status: 503, json: { error: "queue unavailable", id: "rd_FXPENDNG01" } });
     },
     // The attempt exists even though nothing was enqueued, so it is worth opening.
     prepare: saveAndExpect("Saving is unavailable right now.", async (page) => {
