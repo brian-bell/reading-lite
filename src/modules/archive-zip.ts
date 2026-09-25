@@ -62,6 +62,8 @@ export interface ZipSegment {
 export interface ZipSegmentOptions {
   /** Absolute offset of this segment's first local header in the finished zip. */
   offset: number;
+  /** Entries the earlier segments already hold; the zip's total stays within ZIP32. */
+  entriesBefore?: number;
   modifiedAt: Date;
 }
 
@@ -99,7 +101,7 @@ function assertUint16(value: number, what: string): void {
   }
 }
 
-function concat(parts: readonly Uint8Array[]): Uint8Array {
+export function concat(parts: readonly Uint8Array[]): Uint8Array {
   let length = 0;
   for (const part of parts) length += part.byteLength;
   const out = new Uint8Array(length);
@@ -212,7 +214,7 @@ function centralHeader(input: {
 
 export async function writeZipSegment(entries: readonly ZipEntry[], options: ZipSegmentOptions): Promise<ZipSegment> {
   assertUint32(options.offset, "segment offset");
-  assertUint16(entries.length, "segment entries");
+  assertUint16((options.entriesBefore ?? 0) + entries.length, "zip entries");
   const stamp = dosStamp(options.modifiedAt);
   const locals: Uint8Array[] = [];
   const centrals: Uint8Array[] = [];

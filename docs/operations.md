@@ -2833,10 +2833,25 @@ npx wrangler queues create reading-lite-export
 npx wrangler queues create reading-lite-export-dlq
 ```
 
-A delivery builds the archive under the tenant's `exports/{exportId}/` prefix
-and marks the row ready. The DLQ marks a queued or building export failed and
-then deletes that prefix; a database or R2 error retries the dead letter
-instead of acknowledging it. A ready export keeps its parts.
+The archive is built under the tenant's `exports/{exportId}/` prefix, one
+segment per delivery (reading-lite-mxwx.3). A delivery claims the row by
+bumping `lease_seq`, packs up to 200 readings or 16 MiB from the stored
+`cursor`, writes `segments/segment-NNNN` and its `state-NNNN.json` to R2, then
+commits the cursor only if `lease_seq` is still the one it claimed, and sends
+itself the envelope. A delivery that lost the lease logs
+`archive_export_lease_held` and acks. After the last reading, one more
+delivery writes the closing files, `central`, and `eocd`, and marks the row
+ready. Segment keys are fixed per sequence number so a redelivery rewrites
+them; that is safe only while the consumer keeps `max_concurrency = 1`.
+
+`continuations` counts the self-sends; past `ARCHIVE_EXPORT_MAX_CONTINUATIONS`
+(600) the delivery throws, the message dead-letters, and the export fails.
+The `*/15` cron re-enqueues a queued or building export whose `updated_at` is
+older than 30 minutes (a lost continuation or message). The DLQ marks a queued
+or building export failed and then deletes that prefix; a database or R2 error
+retries the dead letter instead of acknowledging it. A ready export keeps its
+parts. A failed export does not count toward the daily limit, so the account
+can request another at once.
 
 ## Relationship refresh queue plumbing
 

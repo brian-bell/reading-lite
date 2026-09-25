@@ -24,6 +24,7 @@ import {
   handleArchiveExportDeadLetter,
   isExportDlq,
   isExportQueue,
+  resumeStalledArchiveExports,
 } from "./archive-export";
 import {
   consumeDigestMessage,
@@ -243,11 +244,12 @@ export default {
       return;
     }
     const nowMs = controller.scheduledTime;
-    // Digest and wipe fan-out must not share fate: a D1/queue throw on one
-    // path cannot skip the other for the whole */15 tick.
+    // Digest, wipe, and export work must not share fate: a database or queue
+    // throw on one path cannot skip the others for the whole */15 tick.
     const settled = await Promise.allSettled([
       fanOutDueDigests(env, { nowMs }),
       fanOutDueAccountWipes(env, { nowMs }),
+      resumeStalledArchiveExports(env, { nowMs }),
     ]);
     for (const result of settled) {
       if (result.status === "rejected") console.error(result.reason);

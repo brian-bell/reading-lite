@@ -1,16 +1,34 @@
-// Archive export consumer (reading-lite-mxwx). One delivery builds the zip —
-// the format note, one manifest per reading, captured extracted.md and
-// raw.<ext>, export.json, index.json, report.json, and checksums.sha256 —
-// uploading a segment and its central-directory fragment to R2 each time the
-// pending entries fill ARCHIVE_EXPORT_SEGMENT_BYTES, then marks the row ready.
-// Content keys come from contentKeys; this module does not spell object
-// paths. A later slice resumes a build across deliveries and adds the cron
-// that resumes or expires. The DLQ marks the export failed so the active slot
-// frees, then deletes any parts the build wrote.
+// Archive export consumer (reading-lite-mxwx). The zip — the format note, one
+// manifest per reading, captured extracted.md and raw.<ext>, export.json,
+// index.json, report.json, and checksums.sha256 — is built across deliveries,
+// one segment each (reading-lite-mxwx.3), on the account-wipe model:
+//
+// - A delivery claims the row by bumping `lease_seq` and commits only if the
+//   sequence is still the one it claimed; a delivery that lost it acks as
+//   `lease_held`, because the winner is doing the work.
+// - It packs readings from the stored cursor until the segment holds
+//   ARCHIVE_EXPORT_SEGMENT_READINGS readings or ARCHIVE_EXPORT_SEGMENT_BYTES,
+//   writes the segment and its state object to R2, then commits the cursor.
+//   R2 first, then the row; no transaction is held across R2. A delivery
+//   killed between the two is redelivered from the old cursor and rewrites
+//   the same keys, so the zip never holds a reading twice.
+// - Then it sends itself the envelope and acks. ARCHIVE_EXPORT_MAX_CONTINUATIONS
+//   bounds the self-sends, so a build that cannot finish dead-letters.
+// - Once the library is packed, a last delivery writes the closing files, the
+//   joined central directory, and the EOCD, and marks the row ready.
+//
+// The */15 cron re-enqueues a queued or building export whose row has not
+// changed in ARCHIVE_EXPORT_LEASE_MS. The DLQ marks the export failed so the
+// active slot frees, then deletes any parts the build wrote. Content keys come
+// from contentKeys; this module does not spell reading object paths.
 
+import { z } from "zod";
 import type { ArchiveExportError } from "./schemas/api";
 import { ListIndexItemSchema, ListIndexSchema, type ListIndexItem } from "./schemas/api";
 import {
+  ArchiveContentWarningSchema,
+  ArchiveDanglingRelationshipSchema,
+  ArchiveMissingArtifactSchema,
   ArchiveReportSchema,
   type ArchiveContentWarning,
   type ArchiveDanglingRelationship,
@@ -18,19 +36,23 @@ import {
 } from "./schemas/archive-report";
 import {
   ARCHIVE_EXPORT_RETENTION_MS,
+  ArchiveExportCursorSchema,
+  EMPTY_ARCHIVE_EXPORT_CURSOR,
   archiveDocument,
   markArchiveExportFailed,
+  type ArchiveExportCursor,
 } from "./control-plane/archive-exports";
 import { fromSql } from "./control-plane/db";
 import {
+  archiveExportEnvelopeV1,
   logArchiveExportEnvelopeRejected,
   parseArchiveExportEnvelope,
   type ArchiveExportEnvelopeV1,
 } from "./control-plane/export-envelope";
-import type { TenantId } from "./control-plane/ids";
-import { toTimestamp } from "./control-plane/pg-time";
-import { ZipLimitError, writeZipEocd, writeZipSegment, type ZipEntry } from "./modules/archive-zip";
-import { sqlSessionFor, type Sql } from "./modules/db/sql";
+import { parseTenantId, type TenantId } from "./control-plane/ids";
+import { fromTimestamp, toTimestamp } from "./control-plane/pg-time";
+import { ZipLimitError, concat, writeZipEocd, writeZipSegment, type ZipEntry } from "./modules/archive-zip";
+import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
 import { sha256Bytes } from "./modules/extractor/response-bytes";
 import { isEmptyContent } from "./modules/manifest-drafting";
 import { contentStoreFor, type ContentStore } from "./modules/stores/content-store";
@@ -46,10 +68,34 @@ import {
 export const ARCHIVE_EXPORT_QUEUE_NAMES = ["reading-lite-export", "reading-lite-staging-export"] as const;
 export const ARCHIVE_EXPORT_DLQ_NAMES = ["reading-lite-export-dlq", "reading-lite-staging-export-dlq"] as const;
 export const ARCHIVE_EXPORT_PAGE_SIZE = 100;
-// Uncompressed bytes a build holds before it uploads a segment. A segment can
-// overrun it by one reading's files (fetches are capped by FETCH_MAX_BYTES,
-// 10 MB by default), so memory stays bounded whatever the library's size.
+// A delivery's segment ends at whichever bound it reaches first. Bytes are
+// uncompressed, and a segment can overrun them by one reading's files
+// (fetches are capped by FETCH_MAX_BYTES, 10 MB by default), so memory stays
+// near one segment whatever the library's size.
+export const ARCHIVE_EXPORT_SEGMENT_READINGS = 200;
 export const ARCHIVE_EXPORT_SEGMENT_BYTES = 16 * 1024 * 1024;
+/**
+ * How long cron leaves a queued or building export alone after its row last
+ * changed. Every delivery writes the row, and one delivery builds one
+ * bounded segment, so a live build changes it far more often than this. It is
+ * two cron intervals rather than one because every tenant shares one export
+ * queue at concurrency 1, so a continuation can wait behind other builds.
+ * Advisory only: a duplicate that cron sends early loses the lease or finds
+ * the work done.
+ */
+export const ARCHIVE_EXPORT_LEASE_MS = 30 * 60_000;
+/**
+ * Self-sends one export may make. A continuation acks the current message and
+ * sends a fresh one with a fresh retry budget, so without a bound a build that
+ * commits a segment and then fails would never dead-letter.
+ *
+ * ZIP32 holds 65,535 entries and every reading ships at least its manifest,
+ * so a library that fits spans at most 328 segments ended by the 200-reading
+ * bound; the 4 GiB offset allows at most 256 ended by the 16 MiB bound. 600
+ * covers both with room, and a stuck build still reaches it.
+ */
+export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = 600;
+const ARCHIVE_EXPORT_RESUME_BATCH = 100;
 const CHECKSUMS_FILE = "checksums.sha256";
 
 // In the zip, so the package stays readable without the repo. The longer
@@ -88,15 +134,30 @@ export interface ArchiveExportEnv {
   HYPERDRIVE: Hyperdrive;
   READINGS_BUCKET: R2Bucket;
   TENANT_DATA_PLANE?: string;
+  ARCHIVE_EXPORT_JOBS?: Queue<ArchiveExportEnvelopeV1>;
 }
 
 export interface ArchiveExportJobDeps {
   nowMs: number;
   pageSize?: number;
+  segmentReadings?: number;
   segmentBytes?: number;
 }
 
-type BuildOutcome = "ready" | "skipped" | "cancelled" | "failed";
+type BuildOutcome = "ready" | "continue" | "lease_held" | "skipped" | "cancelled" | "failed";
+
+export class ArchiveExportContinuationBudgetError extends Error {
+  constructor(
+    public readonly exportId: string,
+    public readonly continuations: number,
+  ) {
+    super(
+      `archive_export continuation_budget_exhausted for ${exportId}: ` +
+        `${continuations}/${ARCHIVE_EXPORT_MAX_CONTINUATIONS} self-sends`,
+    );
+    this.name = "ArchiveExportContinuationBudgetError";
+  }
+}
 
 function textBytes(value: string): Uint8Array {
   return new TextEncoder().encode(value);
@@ -280,68 +341,32 @@ async function packReading(content: ContentStore, state: ReadingState): Promise<
   };
 }
 
-// Uploads the zip while it is built. Once the pending entries reach the
-// budget, their segment (local headers and data) and its central-directory
-// fragment go to R2 and leave memory, so a build holds about one segment, not
-// the library. Only checksum lines and part sizes accumulate. Offsets run
-// across segments, so the download joins segments, then fragments, then the
-// EOCD into one zip.
-class ArchiveWriter {
-  private readonly segments: ArchivePart[] = [];
-  private readonly centrals: ArchivePart[] = [];
-  private readonly checksums: Array<{ name: string; sha256: string }> = [];
-  private pending: ZipEntry[] = [];
-  private pendingBytes = 0;
-  private offset = 0;
-  private centralBytes = 0;
-  private entries = 0;
-
-  constructor(
-    private readonly content: ContentStore,
-    private readonly prefix: string,
-    private readonly modifiedAt: Date,
-    private readonly segmentBytes: number,
-  ) {}
-
-  async add(entry: HashedEntry): Promise<void> {
-    this.checksums.push({ name: entry.name, sha256: entry.sha256 });
-    this.pending.push({ name: entry.name, data: entry.data });
-    this.pendingBytes += entry.data.byteLength;
-    if (this.pendingBytes >= this.segmentBytes) await this.flush();
-  }
-
-  // Writes checksums.sha256 (every other entry, sorted by path), the last
-  // segment, and the EOCD. Returns the parts in download order.
-  async finish(): Promise<{ parts: ArchivePart[]; total_bytes: number }> {
-    const lines = sortedBy(this.checksums, (checksum) => [checksum.name])
-      .map((checksum) => `${checksum.sha256}  ${checksum.name}\n`)
-      .join("");
-    this.pending.push({ name: CHECKSUMS_FILE, data: textBytes(lines) });
-    await this.flush();
-    const eocd = writeZipEocd({ entries: this.entries, centralBytes: this.centralBytes, centralOffset: this.offset });
-    const parts = [...this.segments, ...this.centrals, await this.put("eocd", eocd)];
-    return { parts, total_bytes: parts.reduce((total, part) => total + part.bytes, 0) };
-  }
-
-  private async flush(): Promise<void> {
-    if (this.pending.length === 0) return;
-    const segment = await writeZipSegment(this.pending, { offset: this.offset, modifiedAt: this.modifiedAt });
-    const number = String(this.segments.length + 1).padStart(4, "0");
-    this.segments.push(await this.put(`segment-${number}`, segment.local));
-    this.centrals.push(await this.put(`central-${number}`, segment.central));
-    this.offset += segment.local.byteLength;
-    this.centralBytes += segment.central.byteLength;
-    this.entries += segment.entries;
-    this.pending = [];
-    this.pendingBytes = 0;
-  }
-
-  private async put(name: string, body: Uint8Array): Promise<ArchivePart> {
-    const key = `${this.prefix}/${name}`;
-    await this.content.put(key, body, "application/octet-stream");
-    return { key, bytes: body.byteLength };
-  }
+interface ChecksumLine {
+  name: string;
+  sha256: string;
 }
+
+// What a segment carries beyond its zip bytes, kept in R2 beside it: the index
+// items, report entries, and checksum lines its readings contributed, and its
+// central-directory fragment. The last delivery joins them, so no delivery
+// holds more than one segment's worth and the row stays small.
+const SegmentStateSchema = z
+  .object({
+    version: z.literal(1),
+    items: z.array(ListIndexItemSchema),
+    missing: z.array(ArchiveMissingArtifactSchema),
+    warnings: z.array(ArchiveContentWarningSchema),
+    relationships: z.array(ArchiveDanglingRelationshipSchema),
+    checksums: z.array(z.object({ name: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict()),
+    // Base64, so the fragment rides in the same object.
+    central: z.string(),
+  })
+  .strict();
+type SegmentState = z.infer<typeof SegmentStateSchema>;
+
+// Files the last delivery adds: export.json, index.json, report.json, and
+// checksums.sha256. Reading segments leave room for them in ZIP32's entries.
+const CLOSING_ENTRIES = 4;
 
 function countStatuses(items: readonly ListIndexItem[]): {
   readings: number;
@@ -358,25 +383,68 @@ function exportObjectPrefix(exportId: string): string {
   return `exports/${exportId}`;
 }
 
+// Fixed per sequence number, so a redelivery rewrites what the delivery it
+// replaces may already have written. That relies on the export consumer's
+// max_concurrency = 1: no two deliveries of one export overlap.
+function segmentKeys(prefix: string, number: number): { segment: string; state: string } {
+  const padded = String(number).padStart(4, "0");
+  return { segment: `${prefix}/segments/segment-${padded}`, state: `${prefix}/segments/state-${padded}.json` };
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (let index = 0; index < bytes.byteLength; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
+}
+
+function fromBase64(text: string): Uint8Array {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function putPart(content: ContentStore, key: string, body: Uint8Array): Promise<ArchivePart> {
+  await content.put(key, body, "application/octet-stream");
+  return { key, bytes: body.byteLength };
+}
+
+interface Lease {
+  // The lease_seq this delivery holds; every commit is conditional on it.
+  seq: number;
+  cursor: ArchiveExportCursor;
+  continuations: number;
+  // The first claim's time. Every segment's DOS timestamps and export.json's
+  // generated_at come from it, so a resumed build writes what one delivery would.
+  startedAtMs: number;
+}
+
 async function claim(
   sql: Sql,
   envelope: ArchiveExportEnvelopeV1,
   nowMs: number,
-): Promise<"build" | "skipped" | "cancelled"> {
+): Promise<Lease | "skipped" | "cancelled"> {
   const now = toTimestamp(nowMs);
   return fromSql(sql).transaction(async (tx) => {
     const user = await tx.first<{ status: string }>(
       "SELECT status FROM users WHERE id = ? FOR SHARE",
       envelope.tenantId,
     );
-    const row = await tx.first<{ status: string }>(
-      "SELECT status FROM archive_exports WHERE id = ? AND tenant_id = ? FOR UPDATE",
+    const row = await tx.first<{
+      status: string;
+      lease_seq: number;
+      cursor: unknown;
+      continuations: number;
+      started_at: string | null;
+    }>(
+      `SELECT status, lease_seq, cursor, continuations, started_at FROM archive_exports
+       WHERE id = ? AND tenant_id = ? FOR UPDATE`,
       envelope.exportId,
       envelope.tenantId,
     );
-    if (!row || row.status === "ready" || row.status === "failed" || row.status === "expired" || row.status === "cancelled") {
-      return "skipped";
-    }
+    if (!row || (row.status !== "queued" && row.status !== "building")) return "skipped";
     if (!user || user.status !== "active") {
       await tx.run(
         `UPDATE archive_exports
@@ -393,100 +461,205 @@ async function claim(
       `UPDATE archive_exports
        SET status = 'building', started_at = COALESCE(started_at, ?), updated_at = ?,
            lease_seq = lease_seq + 1
-       WHERE id = ? AND tenant_id = ? AND status IN ('queued', 'building')`,
+       WHERE id = ? AND tenant_id = ?`,
       now,
       now,
       envelope.exportId,
       envelope.tenantId,
     );
-    return "build";
+    return {
+      seq: row.lease_seq + 1,
+      cursor: row.cursor === null ? EMPTY_ARCHIVE_EXPORT_CURSOR : ArchiveExportCursorSchema.parse(row.cursor),
+      continuations: row.continuations,
+      startedAtMs: row.started_at === null ? nowMs : fromTimestamp(row.started_at),
+    };
   });
 }
 
-async function collectIndex(
-  store: ReturnType<typeof pgReadingStoreFor>,
-  pageSize: number,
-): Promise<ListIndexItem[]> {
-  const items: ListIndexItem[] = [];
-  let cursor: { createdAt: string; id: string } | null = null;
-  for (;;) {
-    const page = await store.listItemsKeyset(cursor, pageSize);
-    items.push(...page);
-    if (page.length < pageSize) return items;
-    const last = page[page.length - 1]!;
-    const next = { createdAt: last.created_at, id: last.id };
-    if (cursor && cursor.createdAt === next.createdAt && cursor.id === next.id) {
-      throw new Error("export index page did not advance");
-    }
-    cursor = next;
-  }
+interface ClaimedBuild {
+  sql: Sql;
+  envelope: ArchiveExportEnvelopeV1;
+  content: ContentStore;
+  prefix: string;
+  lease: Lease;
+  nowMs: number;
 }
 
-export async function buildArchiveExport(
-  sql: Sql,
-  envelope: ArchiveExportEnvelopeV1,
-  env: ArchiveExportEnv,
-  deps: ArchiveExportJobDeps,
-): Promise<BuildOutcome> {
-  const claimed = await claim(sql, envelope, deps.nowMs);
-  if (claimed !== "build") return claimed;
+interface SegmentBounds {
+  pageSize: number;
+  segmentReadings: number;
+  segmentBytes: number;
+}
 
-  const pageSize = deps.pageSize ?? ARCHIVE_EXPORT_PAGE_SIZE;
-  if (!Number.isInteger(pageSize) || pageSize < 1) throw new Error("invalid export page size");
+// The cursor, one more continuation, and the lease bump, only if no delivery
+// has claimed the export since this one did.
+async function commitCursor(build: ClaimedBuild, cursor: ArchiveExportCursor): Promise<boolean> {
+  const now = toTimestamp(build.nowMs);
+  const result = await fromSql(build.sql).run(
+    `UPDATE archive_exports
+     SET cursor = ?::jsonb, continuations = continuations + 1, lease_seq = lease_seq + 1, updated_at = ?
+     WHERE id = ? AND tenant_id = ? AND status = 'building' AND lease_seq = ?`,
+    JSON.stringify(ArchiveExportCursorSchema.parse(cursor)),
+    now,
+    build.envelope.exportId,
+    build.envelope.tenantId,
+    build.lease.seq,
+  );
+  return result.changes === 1;
+}
 
-  const segmentBytes = deps.segmentBytes ?? ARCHIVE_EXPORT_SEGMENT_BYTES;
-  if (!Number.isInteger(segmentBytes) || segmentBytes < 1) throw new Error("invalid export segment size");
-
+// One delivery's segment: readings from the cursor until a bound, written to
+// R2 with its state object before the cursor moves past them. The delivery
+// that packs the last reading hands the build to finalize.
+async function buildReadingsSegment(build: ClaimedBuild, bounds: SegmentBounds): Promise<"continue" | "lease_held"> {
+  const { sql, envelope, content, prefix, lease } = build;
+  // Bound the self-send before doing the work it would follow. Persisted, so
+  // the count is the export's and not one delivery's.
+  if (lease.continuations >= ARCHIVE_EXPORT_MAX_CONTINUATIONS) {
+    throw new ArchiveExportContinuationBudgetError(envelope.exportId, lease.continuations);
+  }
+  const cursor = lease.cursor;
   const tenant = { tenantId: envelope.tenantId as TenantId };
   const tenantId = pgTenantId(tenant);
   const store = pgReadingStoreFor(sql, tenant);
-  const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
-  const prefix = exportObjectPrefix(envelope.exportId);
-  const writer = new ArchiveWriter(content, prefix, new Date(deps.nowMs), segmentBytes);
-  const listed = await collectIndex(store, pageSize);
-  const kept: ListIndexItem[] = [];
+  const entries: HashedEntry[] = [];
+  const items: ListIndexItem[] = [];
   const missing: ArchiveMissingArtifact[] = [];
   const warnings: ArchiveContentWarning[] = [];
   const relationships: ArchiveDanglingRelationship[] = [];
-  let built: { segments: { parts: ArchivePart[]; total_bytes: number }; counts: ReturnType<typeof countStatuses> };
-  try {
-    await writer.add(await hashed("README.md", textBytes(ARCHIVE_README)));
-    for (const item of listed) {
-      const packed = await packCurrentReading(sql, tenantId, content, item.id);
-      if (!packed) continue;
-      kept.push(packed.item);
-      for (const entry of packed.entries) await writer.add(entry);
-      missing.push(...packed.missing);
-      warnings.push(...packed.warnings);
-      relationships.push(...packed.relationships);
-    }
+  let bytes = 0;
+  const add = (entry: HashedEntry) => {
+    entries.push(entry);
+    bytes += entry.data.byteLength;
+  };
+  if (cursor.segments.length === 0) add(await hashed("README.md", textBytes(ARCHIVE_README)));
 
-    const counts = countStatuses(kept);
-    const exported = new Set(kept.map((item) => item.id));
-    const report = ArchiveReportSchema.parse({
-      format_version: 1,
-      missing_artifacts: sortedBy(missing, (item) => [item.reading_id, item.kind, item.path]),
-      dangling_relationships: sortedBy(
-        relationships.filter((relationship) => !exported.has(relationship.target_id)),
-        (item) => [item.reading_id, item.kind, item.target_id],
-      ),
-      warnings: sortedBy(warnings, (item) => [item.reading_id, item.code, item.path]),
-    });
-    await writer.add(await hashed("export.json", jsonBytes(archiveDocument({ generatedAtMs: deps.nowMs, counts }))));
-    await writer.add(await hashed("index.json", jsonBytes(ListIndexSchema.parse({ version: 1, items: kept }))));
-    await writer.add(await hashed("report.json", jsonBytes(report)));
-    built = { segments: await writer.finish(), counts };
-  } catch (error) {
-    if (!(error instanceof ZipLimitError)) throw error;
-    // Parts first: if the delete throws, the redelivery or the DLQ still
-    // finds the export unfinished and removes them.
-    await content.deletePrefix(prefix);
-    await failExport(sql, envelope, deps.nowMs, { code: "zip_limit" });
-    return "failed";
+  let after = cursor.after;
+  let readings = 0;
+  let exhausted = false;
+  while (!exhausted && readings < bounds.segmentReadings && bytes < bounds.segmentBytes) {
+    const limit = Math.min(bounds.pageSize, bounds.segmentReadings - readings);
+    // One row past the page says whether the library ends with it.
+    const page = await store.listItemsKeyset(after && { createdAt: after.created_at, id: after.id }, limit + 1);
+    let taken = 0;
+    for (const listed of page.slice(0, limit)) {
+      const packed = await packCurrentReading(sql, tenantId, content, listed.id);
+      after = { created_at: listed.created_at, id: listed.id };
+      readings += 1;
+      taken += 1;
+      if (packed) {
+        items.push(packed.item);
+        for (const entry of packed.entries) add(entry);
+        missing.push(...packed.missing);
+        warnings.push(...packed.warnings);
+        relationships.push(...packed.relationships);
+      }
+      if (bytes >= bounds.segmentBytes) break;
+    }
+    exhausted = taken === page.length;
   }
 
-  const now = toTimestamp(deps.nowMs);
-  const expires = toTimestamp(deps.nowMs + ARCHIVE_EXPORT_RETENTION_MS);
+  let next: ArchiveExportCursor = { ...cursor, phase: exhausted ? "finalize" : "readings", after };
+  if (entries.length > 0) {
+    const keys = segmentKeys(prefix, cursor.segments.length + 1);
+    const segment = await writeZipSegment(entries, {
+      offset: cursor.offset,
+      // Room for the closing files, so a library ZIP32 cannot hold is refused
+      // on the segment that crosses the limit rather than at the end.
+      entriesBefore: cursor.entries + CLOSING_ENTRIES,
+      modifiedAt: new Date(lease.startedAtMs),
+    });
+    const part = await putPart(content, keys.segment, segment.local);
+    const state: SegmentState = SegmentStateSchema.parse({
+      version: 1,
+      items,
+      missing,
+      warnings,
+      relationships,
+      checksums: entries.map((entry) => ({ name: entry.name, sha256: entry.sha256 })),
+      central: toBase64(segment.central),
+    });
+    await content.put(keys.state, jsonBytes(state), "application/json");
+    next = {
+      ...next,
+      offset: cursor.offset + segment.local.byteLength,
+      entries: cursor.entries + segment.entries,
+      segments: [...cursor.segments, part],
+    };
+  }
+  return (await commitCursor(build, next)) ? "continue" : "lease_held";
+}
+
+async function readSegmentState(content: ContentStore, key: string): Promise<SegmentState> {
+  const object = await content.get(key);
+  if (!object) throw new Error(`archive segment state missing: ${key}`);
+  return SegmentStateSchema.parse(JSON.parse(new TextDecoder().decode(await object.arrayBuffer())));
+}
+
+// The last delivery: export.json, index.json, report.json, and
+// checksums.sha256 from every segment's state, then one central directory
+// joined from the fragments, then the EOCD. The download reads one part per
+// segment plus two. Publishes under users FOR SHARE and the lease.
+async function finalizeArchive(build: ClaimedBuild): Promise<"ready" | "cancelled" | "lease_held"> {
+  const { sql, envelope, content, prefix, lease } = build;
+  const cursor = lease.cursor;
+  const items: ListIndexItem[] = [];
+  const missing: ArchiveMissingArtifact[] = [];
+  const warnings: ArchiveContentWarning[] = [];
+  const relationships: ArchiveDanglingRelationship[] = [];
+  const checksums: ChecksumLine[] = [];
+  const centrals: Uint8Array[] = [];
+  for (let number = 1; number <= cursor.segments.length; number++) {
+    const state = await readSegmentState(content, segmentKeys(prefix, number).state);
+    items.push(...state.items);
+    missing.push(...state.missing);
+    warnings.push(...state.warnings);
+    relationships.push(...state.relationships);
+    checksums.push(...state.checksums);
+    centrals.push(fromBase64(state.central));
+  }
+
+  const counts = countStatuses(items);
+  const exported = new Set(items.map((item) => item.id));
+  const report = ArchiveReportSchema.parse({
+    format_version: 1,
+    missing_artifacts: sortedBy(missing, (item) => [item.reading_id, item.kind, item.path]),
+    dangling_relationships: sortedBy(
+      relationships.filter((relationship) => !exported.has(relationship.target_id)),
+      (item) => [item.reading_id, item.kind, item.target_id],
+    ),
+    warnings: sortedBy(warnings, (item) => [item.reading_id, item.code, item.path]),
+  });
+  const closing = [
+    await hashed("export.json", jsonBytes(archiveDocument({ generatedAtMs: lease.startedAtMs, counts }))),
+    await hashed("index.json", jsonBytes(ListIndexSchema.parse({ version: 1, items }))),
+    await hashed("report.json", jsonBytes(report)),
+  ];
+  checksums.push(...closing.map((entry) => ({ name: entry.name, sha256: entry.sha256 })));
+  const lines = sortedBy(checksums, (checksum) => [checksum.name])
+    .map((checksum) => `${checksum.sha256}  ${checksum.name}\n`)
+    .join("");
+  const segment = await writeZipSegment([...closing, { name: CHECKSUMS_FILE, data: textBytes(lines) }], {
+    offset: cursor.offset,
+    entriesBefore: cursor.entries,
+    modifiedAt: new Date(lease.startedAtMs),
+  });
+  const central = concat([...centrals, segment.central]);
+  const eocd = writeZipEocd({
+    entries: cursor.entries + segment.entries,
+    centralBytes: central.byteLength,
+    centralOffset: cursor.offset + segment.local.byteLength,
+  });
+  const parts = [
+    ...cursor.segments,
+    await putPart(content, segmentKeys(prefix, cursor.segments.length + 1).segment, segment.local),
+    await putPart(content, `${prefix}/central`, central),
+    await putPart(content, `${prefix}/eocd`, eocd),
+  ];
+  const segments = { parts, total_bytes: parts.reduce((total, part) => total + part.bytes, 0) };
+
+  const now = toTimestamp(build.nowMs);
+  const expires = toTimestamp(build.nowMs + ARCHIVE_EXPORT_RETENTION_MS);
   const published = await fromSql(sql).transaction(async (tx) => {
     const user = await tx.first<{ status: string }>(
       "SELECT status FROM users WHERE id = ? FOR SHARE",
@@ -508,19 +681,59 @@ export async function buildArchiveExport(
       `UPDATE archive_exports
        SET status = 'ready', completed_at = ?, expires_at = ?, updated_at = ?,
            segments = ?::jsonb, counts = ?::jsonb, lease_seq = lease_seq + 1
-       WHERE id = ? AND tenant_id = ? AND status = 'building'`,
+       WHERE id = ? AND tenant_id = ? AND status = 'building' AND lease_seq = ?`,
       now,
       expires,
       now,
-      JSON.stringify(built.segments),
-      JSON.stringify(built.counts),
+      JSON.stringify(segments),
+      JSON.stringify(counts),
       envelope.exportId,
       envelope.tenantId,
+      lease.seq,
     );
-    return result.changes === 1 ? ("ready" as const) : ("skipped" as const);
+    return result.changes === 1 ? ("ready" as const) : ("lease_held" as const);
   });
   if (published === "cancelled") await content.deletePrefix(prefix);
   return published;
+}
+
+function positiveInteger(value: number, what: string): number {
+  if (!Number.isInteger(value) || value < 1) throw new Error(`invalid export ${what}`);
+  return value;
+}
+
+// One delivery of an export: one segment of readings, or the finalize.
+export async function buildArchiveExport(
+  sql: Sql,
+  envelope: ArchiveExportEnvelopeV1,
+  env: ArchiveExportEnv,
+  deps: ArchiveExportJobDeps,
+): Promise<BuildOutcome> {
+  const bounds: SegmentBounds = {
+    pageSize: positiveInteger(deps.pageSize ?? ARCHIVE_EXPORT_PAGE_SIZE, "page size"),
+    segmentReadings: positiveInteger(deps.segmentReadings ?? ARCHIVE_EXPORT_SEGMENT_READINGS, "segment readings"),
+    segmentBytes: positiveInteger(deps.segmentBytes ?? ARCHIVE_EXPORT_SEGMENT_BYTES, "segment size"),
+  };
+  const content = contentStoreFor(env.READINGS_BUCKET, { tenantId: envelope.tenantId as TenantId }, env);
+  const prefix = exportObjectPrefix(envelope.exportId);
+  const lease = await claim(sql, envelope, deps.nowMs);
+  if (lease === "skipped") return lease;
+  if (lease === "cancelled") {
+    // Earlier deliveries' segments serve no one once the row is cancelled.
+    await content.deletePrefix(prefix);
+    return lease;
+  }
+  const build: ClaimedBuild = { sql, envelope, content, prefix, lease, nowMs: deps.nowMs };
+  try {
+    return lease.cursor.phase === "finalize" ? await finalizeArchive(build) : await buildReadingsSegment(build, bounds);
+  } catch (error) {
+    if (!(error instanceof ZipLimitError)) throw error;
+    // Parts first: if the delete throws, the redelivery or the DLQ still
+    // finds the export unfinished and removes them.
+    await content.deletePrefix(prefix);
+    await failExport(sql, envelope, deps.nowMs, { code: "zip_limit" });
+    return "failed";
+  }
 }
 
 async function failExport(
@@ -550,7 +763,20 @@ export async function consumeArchiveExportMessage(
   }
   const sql = sqlSessionFor(env);
   try {
-    await buildArchiveExport(sql, parsed.envelope, env, deps);
+    const outcome = await buildArchiveExport(sql, parsed.envelope, env, deps);
+    if (outcome === "continue") {
+      const queue = env.ARCHIVE_EXPORT_JOBS;
+      if (!queue) throw new Error("ARCHIVE_EXPORT_JOBS unbound");
+      await queue.send(parsed.envelope);
+    } else if (outcome === "lease_held") {
+      console.warn(
+        JSON.stringify({
+          event: "archive_export_lease_held",
+          export_id: parsed.envelope.exportId,
+          note: "another delivery claimed this export; conditional update changed no rows",
+        }),
+      );
+    }
     msg.ack();
   } catch (error) {
     console.error(error);
@@ -597,4 +823,62 @@ export async function handleArchiveExportDeadLetter(
   } finally {
     await sql.end();
   }
+}
+
+// The */15 cron. A queued or building export whose row has not changed in
+// ARCHIVE_EXPORT_LEASE_MS lost its message (a lost continuation, or a crash
+// between a commit and its self-send), so it is sent again. The row is renewed
+// first, conditional on what was read, so the next tick sees it live and a
+// delivery that moved it in between wins.
+export async function resumeStalledArchiveExports(
+  env: ArchiveExportEnv,
+  deps: { nowMs: number },
+): Promise<{ enqueued: number }> {
+  const queue = env.ARCHIVE_EXPORT_JOBS;
+  if (!queue) {
+    console.warn(JSON.stringify({ event: "archive_export_resume_skipped", reason: "queue_unbound" }));
+    return { enqueued: 0 };
+  }
+  return withSqlSession(env, async (sql) => {
+    const db = fromSql(sql);
+    const stale = toTimestamp(deps.nowMs - ARCHIVE_EXPORT_LEASE_MS);
+    const now = toTimestamp(deps.nowMs);
+    const rows = await db.all<{ id: string; tenant_id: string; lease_seq: number }>(
+      `SELECT id, tenant_id, lease_seq FROM archive_exports
+       WHERE status IN ('queued', 'building') AND updated_at < ?
+       ORDER BY updated_at
+       LIMIT ?`,
+      stale,
+      ARCHIVE_EXPORT_RESUME_BATCH,
+    );
+    let enqueued = 0;
+    for (const row of rows) {
+      try {
+        const tenantId = parseTenantId(row.tenant_id);
+        if (!tenantId) continue;
+        const renewed = await db.run(
+          `UPDATE archive_exports SET updated_at = ?
+           WHERE id = ? AND tenant_id = ? AND status IN ('queued', 'building')
+             AND lease_seq = ? AND updated_at < ?`,
+          now,
+          row.id,
+          row.tenant_id,
+          row.lease_seq,
+          stale,
+        );
+        if (renewed.changes !== 1) continue;
+        await queue.send(archiveExportEnvelopeV1({ tenantId, exportId: row.id }));
+        enqueued += 1;
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "archive_export_resume_failed",
+            export_id: row.id,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    return { enqueued };
+  });
 }

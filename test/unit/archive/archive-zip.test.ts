@@ -93,6 +93,14 @@ describe("writeZipSegment", () => {
         modifiedAt: MODIFIED,
       }),
     ).rejects.toBeInstanceOf(ZipLimitError);
+    // A later segment counts the entries the earlier ones already hold.
+    await expect(
+      writeZipSegment([{ name: "a.txt", data: new Uint8Array([1]) }], {
+        offset: 0,
+        entriesBefore: 65535,
+        modifiedAt: MODIFIED,
+      }),
+    ).rejects.toBeInstanceOf(ZipLimitError);
     expect(() => writeZipEocd({ entries: 65536, centralBytes: 0, centralOffset: 0 })).toThrow(ZipLimitError);
     await expect(
       writeZipSegment([], { offset: 0, modifiedAt: new Date("1970-01-01T00:00:00.000Z") }),

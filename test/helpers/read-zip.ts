@@ -48,6 +48,7 @@ export async function readZipEntries(bytes: Uint8Array): Promise<Map<string, Uin
     if (!data) throw new Error(`unsupported method ${method} for ${name}`);
     if (data.byteLength !== uncompressed) throw new Error(`size mismatch for ${name}`);
     if (crc32(data) !== crc) throw new Error(`crc mismatch for ${name}`);
+    if (out.has(name)) throw new Error(`duplicate entry ${name}`);
     out.set(name, data);
   }
   if (cursor !== eocd) throw new Error("central directory length mismatch");

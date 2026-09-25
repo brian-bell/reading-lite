@@ -1,6 +1,11 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { ARCHIVE_EXPORT_DAILY_WINDOW_MS } from "../../src/control-plane/archive-exports";
+import {
+  ARCHIVE_EXPORT_LEASE_MS,
+  ARCHIVE_EXPORT_MAX_CONTINUATIONS,
+  buildArchiveExport,
+} from "../../src/archive-export";
 import type { ArchiveExportEnvelopeV1 } from "../../src/control-plane/export-envelope";
 import { RECENT_AUTH_WINDOW_MS, SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import worker, { type Env } from "../../src/index";
@@ -13,7 +18,6 @@ import {
   insertSecondTenant,
   otherTenant,
 } from "../helpers/tenant-fixtures";
-import { buildArchiveExport } from "../../src/archive-export";
 import { sqlSessionFor } from "../../src/modules/db/sql";
 import { sha256Bytes } from "../../src/modules/extractor/response-bytes";
 import { contentStoreFor } from "../../src/modules/stores/content-store";
@@ -128,6 +132,18 @@ async function dispatch(queue: string, body: unknown) {
   return message;
 }
 
+// Delivers every queued envelope in order, the self-sent continuations included.
+async function drain(from = 0): Promise<void> {
+  for (let index = from; index < sent.length; index++) {
+    if (index > from + 50) throw new Error("export did not settle");
+    const message = await dispatch("reading-lite-export", sent[index]);
+    expect(message.ack).toHaveBeenCalledOnce();
+    expect(message.retry).not.toHaveBeenCalled();
+  }
+}
+
+const CRON = { scheduledTime: NOW_MS, cron: "*/15 * * * *" } as ScheduledController;
+
 describe("archive export", () => {
   it("lets a session download a zip of every reading status and hides it from another tenant", async () => {
     installQueue();
@@ -156,9 +172,7 @@ describe("archive export", () => {
     expect(early.res.status).toBe(409);
     expect(await early.res.json()).toEqual({ error: "not_ready" });
 
-    const message = await dispatch("reading-lite-export", sent[0]);
-    expect(message.ack).toHaveBeenCalledOnce();
-    expect(message.retry).not.toHaveBeenCalled();
+    await drain();
 
     const download = await request(`/api/exports/${body.id}/download`, { cookie: session.cookie });
     expect(download.res.status).toBe(200);
@@ -266,8 +280,7 @@ describe("archive export", () => {
     expect(retry.res.status).toBe(202);
     const retryBody = (await retry.res.json()) as { id: string };
     expect(retryBody.id).not.toBe(firstBody.id);
-    const built = await dispatch("reading-lite-export", sent[1]);
-    expect(built.ack).toHaveBeenCalledOnce();
+    await drain(1);
 
     const limited = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
     expect(limited.res.status).toBe(429);
@@ -317,6 +330,79 @@ describe("archive export", () => {
     expect(allowed.res.status).toBe(202);
   });
 
+  it("resumes a stalled export from the */15 cron and leaves one with a live lease alone", async () => {
+    installQueue();
+    await testReadingsFor(founderTenant()).seedListItems([
+      listItem("rd_pending", "pending", "2026-01-01T00:00:00.000Z"),
+      listItem("rd_ready", "ready", "2026-02-01T00:00:00.000Z"),
+    ]);
+    const session = await redeemSession("clm_export_cron");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    // The first delivery commits a segment and sends its continuation, which
+    // is then lost.
+    const first = await dispatch("reading-lite-export", sent[0]);
+    expect(first.ack).toHaveBeenCalledOnce();
+    expect(sent).toHaveLength(2);
+
+    await worker.scheduled(CRON, env as unknown as Env);
+    expect(sent).toHaveLength(2);
+
+    await testControlPlane(env).run(
+      "UPDATE archive_exports SET updated_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS - ARCHIVE_EXPORT_LEASE_MS - 60_000),
+      id,
+    );
+    await worker.scheduled(CRON, env as unknown as Env);
+    expect(sent).toHaveLength(3);
+    expect(sent[2]).toEqual({ version: 1, tenantId: FOUNDER_TENANT_ID, exportId: id });
+    // The resume renewed the lease, so the next tick does not send again.
+    await worker.scheduled(CRON, env as unknown as Env);
+    expect(sent).toHaveLength(3);
+
+    await drain(2);
+    const download = await request(`/api/exports/${id}/download`, { cookie: session.cookie });
+    expect(download.res.status).toBe(200);
+    const entries = await readZipEntries(new Uint8Array(await download.res.arrayBuffer()));
+    expect(entries.has("readings/rd_pending/manifest.json")).toBe(true);
+    await expectChecksums(entries);
+  });
+
+  it("dead-letters a build past its continuation budget, marks it failed, and allows another request", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_budget");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    await testControlPlane(env).run(
+      "UPDATE archive_exports SET continuations = ? WHERE id = ?",
+      ARCHIVE_EXPORT_MAX_CONTINUATIONS,
+      id,
+    );
+
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const stuck = await dispatch("reading-lite-export", sent[0]);
+      expect(stuck.ack).not.toHaveBeenCalled();
+      expect(stuck.retry).toHaveBeenCalledOnce();
+    } finally {
+      errors.mockRestore();
+    }
+    expect(sent).toHaveLength(1);
+
+    const dead = await dispatch("reading-lite-export-dlq", sent[0]);
+    expect(dead.ack).toHaveBeenCalledOnce();
+    const row = await testControlPlane(env).first<{ status: string; error: { code: string } }>(
+      "SELECT status, error FROM archive_exports WHERE id = ?",
+      id,
+    );
+    expect(row).toMatchObject({ status: "failed", error: { code: "dead_letter" } });
+
+    const again = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(again.res.status).toBe(202);
+  });
+
   it("streams an export written in more parts than a Worker keeps open at once", async () => {
     installQueue();
     await testReadingsFor(founderTenant()).seedListItems([
@@ -330,7 +416,11 @@ describe("archive export", () => {
     const { id } = (await created.res.json()) as { id: string };
     const sql = sqlSessionFor(env);
     try {
-      expect(await buildArchiveExport(sql, sent[0]!, env, { nowMs: NOW_MS, segmentBytes: 1 })).toBe("ready");
+      let outcome = "continue";
+      for (let delivery = 0; outcome === "continue" && delivery < 50; delivery++) {
+        outcome = await buildArchiveExport(sql, sent[0]!, env, { nowMs: NOW_MS, segmentBytes: 1 });
+      }
+      expect(outcome).toBe("ready");
     } finally {
       await sql.end();
     }
@@ -408,8 +498,7 @@ describe("archive export", () => {
       return "pass" as const;
     });
     try {
-      const built = await dispatch("reading-lite-export", sent[0]);
-      expect(built.ack).toHaveBeenCalledOnce();
+      await drain();
     } finally {
       republish.mockRestore();
     }
@@ -466,8 +555,7 @@ describe("archive export", () => {
     const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
     expect(created.res.status).toBe(202);
     const { id } = (await created.res.json()) as { id: string };
-    const built = await dispatch("reading-lite-export", sent[0]);
-    expect(built.ack).toHaveBeenCalledOnce();
+    await drain();
     const content = contentStoreFor(env.READINGS_BUCKET, founderTenant(), env);
     const parts = await content.list(`exports/${id}`);
     expect(parts.length).toBeGreaterThan(0);
@@ -587,9 +675,7 @@ describe("archive export", () => {
     const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
     expect(created.res.status).toBe(202);
     const { id } = (await created.res.json()) as { id: string };
-    const built = await dispatch("reading-lite-export", sent[0]);
-    expect(built.ack).toHaveBeenCalledOnce();
-    expect(built.retry).not.toHaveBeenCalled();
+    await drain();
 
     const download = await request(`/api/exports/${id}/download`, { cookie: session.cookie });
     expect(download.res.status).toBe(200);

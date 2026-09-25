@@ -3,7 +3,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildArchiveExport } from "../../../src/archive-export";
+import {
+  ARCHIVE_EXPORT_MAX_CONTINUATIONS,
+  ArchiveExportContinuationBudgetError,
+  buildArchiveExport,
+  type ArchiveExportEnv,
+  type ArchiveExportJobDeps,
+} from "../../../src/archive-export";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { archiveExportEnvelopeV1 } from "../../../src/control-plane/export-envelope";
 import { parseTenantId, parseUserId } from "../../../src/control-plane/ids";
@@ -57,6 +63,7 @@ const openControlPlane = useControlPlane();
 const NOW_MS = Date.parse("2026-08-16T12:00:00.000Z");
 const TENANT_ID = "usr_880e8400-e29b-41d4-a716-4466554400aa";
 const EXPORT_ID = "exp_00000000-0000-4000-8000-0000000000aa";
+const SECOND_EXPORT_ID = "exp_00000000-0000-4000-8000-0000000000bb";
 
 function item(id: string, status: ListIndexItem["status"], createdAt: string): ListIndexItem {
   return {
@@ -90,22 +97,59 @@ async function arrange(sql: Sql, db: ControlPlaneDb) {
     item("rd_ready", "ready", "2026-02-01T00:00:00.000Z"),
     item("rd_failed", "failed", "2026-03-01T00:00:00.000Z"),
   ]);
-  await db.run(
-    `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at)
-     VALUES (?, ?, 'queued', ?, ?)`,
-    EXPORT_ID,
-    userId,
-    now,
-    now,
-  );
+  await queueExport(db, EXPORT_ID);
   return { tenantId, bucket, env, readings };
 }
 
-async function readArchive(db: ControlPlaneDb, bucket: R2Bucket, env: { TENANT_DATA_PLANE: string }) {
+async function queueExport(db: ControlPlaneDb, exportId: string): Promise<void> {
+  const now = toTimestamp(NOW_MS);
+  await db.run(
+    `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at)
+     VALUES (?, ?, 'queued', ?, ?)`,
+    exportId,
+    parseUserId(TENANT_ID)!,
+    now,
+    now,
+  );
+}
+
+function envelopeFor(exportId = EXPORT_ID) {
+  return archiveExportEnvelopeV1({ tenantId: parseTenantId(TENANT_ID)!, exportId });
+}
+
+// Delivers the export until it settles, as the consumer's self-sends would.
+async function settle(
+  sql: Sql,
+  env: ArchiveExportEnv,
+  deps: ArchiveExportJobDeps,
+  exportId = EXPORT_ID,
+): Promise<string[]> {
+  const outcomes: string[] = [];
+  for (let delivery = 0; delivery < 50; delivery++) {
+    const outcome = await buildArchiveExport(sql, envelopeFor(exportId), env, deps);
+    outcomes.push(outcome);
+    if (outcome !== "continue") return outcomes;
+  }
+  throw new Error("export did not settle");
+}
+
+// Object keys under the export's prefix, relative to it.
+async function exportObjects(bucket: R2Bucket, env: { TENANT_DATA_PLANE: string }, exportId = EXPORT_ID) {
+  const content = contentStoreFor(bucket, { tenantId: parseTenantId(TENANT_ID)! }, env);
+  const marker = `exports/${exportId}/`;
+  return (await content.list(`exports/${exportId}`)).map((object) => object.key.slice(object.key.indexOf(marker) + marker.length)).sort();
+}
+
+async function readArchive(
+  db: ControlPlaneDb,
+  bucket: R2Bucket,
+  env: { TENANT_DATA_PLANE: string },
+  exportId = EXPORT_ID,
+) {
   const row = await db.first<{
     segments: { parts: Array<{ key: string; bytes: number }>; total_bytes: number };
     counts: { readings: number; pending: number; ready: number; failed: number };
-  }>("SELECT segments, counts FROM archive_exports WHERE id = ?", EXPORT_ID);
+  }>("SELECT segments, counts FROM archive_exports WHERE id = ?", exportId);
   const content = contentStoreFor(bucket, { tenantId: parseTenantId(TENANT_ID)! }, env);
   const parts: Uint8Array[] = [];
   for (const part of row!.segments.parts) {
@@ -139,7 +183,12 @@ function watchSql(
       await hooks.after?.(text);
       return rows;
     },
-    execute: (text, values) => handle.execute(text, values),
+    execute: async (text, values) => {
+      await hooks.before?.(text, values ?? []);
+      const changes = await handle.execute(text, values);
+      await hooks.after?.(text);
+      return changes;
+    },
   });
   return {
     ...watch(sql),
@@ -155,12 +204,11 @@ function jsonEntry<T>(entries: Map<string, Uint8Array>, name: string): T {
 describe("buildArchiveExport", () => {
   it("pages every status into one zip that unzip -t accepts", async () => {
     const { db, sql } = openControlPlane();
-    const { tenantId, bucket, env } = await arrange(sql, db);
-    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+    const { bucket, env } = await arrange(sql, db);
+    expect((await settle(sql, env, {
       nowMs: NOW_MS,
       pageSize: 1,
-    });
-    expect(outcome).toBe("ready");
+    })).at(-1)).toBe("ready");
 
     const { row, zip, entries } = await readArchive(db, bucket, env);
     expect(row.counts).toEqual({ readings: 3, pending: 1, ready: 1, failed: 1 });
@@ -190,49 +238,154 @@ describe("buildArchiveExport", () => {
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
   });
 
-  it("uploads each segment once it fills, before the next reading loads", async () => {
+  it("builds one segment per delivery, each resumed from the cursor the last one committed", async () => {
     const { db, sql } = openControlPlane();
-    const { tenantId, bucket, env } = await arrange(sql, db);
-    const content = contentStoreFor(bucket, { tenantId }, env);
-    const uploadedBeforeLoad: string[][] = [];
-    const loaded = new Set<unknown>();
-    const watching = watchSql(sql, {
-      // The first load of each reading; one missing an object is read again.
-      before: async (text, values) => {
-        if (!/r\.xmin::text AS version/.test(text) || loaded.has(values[1])) return;
-        loaded.add(values[1]);
-        const listed = await content.list(`exports/${EXPORT_ID}`);
-        uploadedBeforeLoad.push(listed.map((object) => object.key.split("/").pop()!).sort());
+    const { bucket, env } = await arrange(sql, db);
+    const stored: string[][] = [];
+    const outcomes: string[] = [];
+    for (let delivery = 0; ; delivery++) {
+      // Each delivery runs later than the last; the archive keeps the first's time.
+      const nowMs = NOW_MS + delivery * 60_000;
+      const outcome = await buildArchiveExport(sql, envelopeFor(), env, { nowMs, segmentReadings: 1 });
+      outcomes.push(outcome);
+      stored.push(await exportObjects(bucket, env));
+      if (outcome !== "continue") break;
+    }
+    expect(outcomes).toEqual(["continue", "continue", "continue", "ready"]);
+    // README.md rides with the first reading; the last delivery adds the
+    // closing files, the joined central directory, and the EOCD.
+    const segment = (number: string) => [`segments/segment-${number}`, `segments/state-${number}.json`];
+    expect(stored).toEqual(
+      [
+        segment("0001"),
+        [...segment("0001"), ...segment("0002")],
+        [...segment("0001"), ...segment("0002"), ...segment("0003")],
+        ["central", "eocd", ...segment("0001"), ...segment("0002"), ...segment("0003"), "segments/segment-0004"],
+      ].map((keys) => keys.sort()),
+    );
+    const { row, entries } = await readArchive(db, bucket, env);
+    expect(jsonEntry<{ generated_at: string }>(entries, "export.json").generated_at).toBe(new Date(NOW_MS).toISOString());
+    expect(row.segments.parts.map((part) => part.key.slice(part.key.indexOf("exports/")))).toEqual([
+      ...["0001", "0002", "0003", "0004"].map((number) => `exports/${EXPORT_ID}/segments/segment-${number}`),
+      `exports/${EXPORT_ID}/central`,
+      `exports/${EXPORT_ID}/eocd`,
+    ]);
+    const counted = await db.first<{ continuations: number }>(
+      "SELECT continuations FROM archive_exports WHERE id = ?",
+      EXPORT_ID,
+    );
+    expect(counted?.continuations).toBe(3);
+  });
+
+  it("writes the same archive in one-reading segments as in one segment", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    expect(await settle(sql, env, { nowMs: NOW_MS })).toEqual(["continue", "ready"]);
+    const whole = await readArchive(db, bucket, env);
+
+    await queueExport(db, SECOND_EXPORT_ID);
+    expect((await settle(sql, env, { nowMs: NOW_MS, segmentReadings: 1 }, SECOND_EXPORT_ID)).at(-1)).toBe("ready");
+    const split = await readArchive(db, bucket, env, SECOND_EXPORT_ID);
+
+    expect(whole.row.segments.parts).toHaveLength(4);
+    expect(split.row.segments.parts).toHaveLength(6);
+    expect(split.entries).toEqual(whole.entries);
+    const dir = mkdtempSync(join(tmpdir(), "archive-export-"));
+    const path = join(dir, "archive.zip");
+    writeFileSync(path, split.zip);
+    expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
+  });
+
+  it("resumes a delivery killed after its R2 write and before its commit, without duplicate entries", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    let commits = 0;
+    const killing = watchSql(sql, {
+      before: async (text) => {
+        if (!/SET cursor = /.test(text)) return;
+        commits += 1;
+        if (commits === 2) throw new Error("delivery killed");
       },
     });
-
-    const outcome = await buildArchiveExport(watching, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
-      nowMs: NOW_MS,
-      segmentBytes: 1,
-    });
-    expect(outcome).toBe("ready");
-    // README.md fills the first segment; each reading's manifest the next.
-    expect(uploadedBeforeLoad).toEqual([
-      ["central-0001", "segment-0001"],
-      ["central-0001", "central-0002", "segment-0001", "segment-0002"],
-      ["central-0001", "central-0002", "central-0003", "segment-0001", "segment-0002", "segment-0003"],
-    ]);
+    const deps = { nowMs: NOW_MS, segmentReadings: 1 };
+    expect(await buildArchiveExport(killing, envelopeFor(), env, deps)).toBe("continue");
+    await expect(buildArchiveExport(killing, envelopeFor(), env, deps)).rejects.toThrow("delivery killed");
+    // Its segment reached R2; the cursor still points before it.
+    expect(await exportObjects(bucket, env)).toContain("segments/segment-0002");
+    expect((await settle(killing, env, deps)).at(-1)).toBe("ready");
 
     const { row, zip, entries } = await readArchive(db, bucket, env);
-    const names = row.segments.parts.map((part) => part.key.split("/").pop()!);
-    const segments = names.filter((name) => name.startsWith("segment-"));
-    expect(segments).toHaveLength(entries.size);
-    expect(names).toEqual([...segments, ...segments.map((name) => name.replace("segment-", "central-")), "eocd"]);
+    expect([...entries.keys()].sort()).toEqual([
+      "README.md",
+      "checksums.sha256",
+      "export.json",
+      "index.json",
+      "readings/rd_failed/manifest.json",
+      "readings/rd_pending/manifest.json",
+      "readings/rd_ready/manifest.json",
+      "report.json",
+    ]);
     await expectChecksums(entries);
+    // The redelivery rewrote the same key; nothing is left beside the parts.
+    const partKeys = row.segments.parts.map((part) => part.key.slice(part.key.indexOf(`${EXPORT_ID}/`) + EXPORT_ID.length + 1));
+    const states = (await exportObjects(bucket, env)).filter((key) => key.startsWith("segments/state-"));
+    expect(await exportObjects(bucket, env)).toEqual([...partKeys, ...states].sort());
     const dir = mkdtempSync(join(tmpdir(), "archive-export-"));
     const path = join(dir, "archive.zip");
     writeFileSync(path, zip);
     expect(execFileSync("unzip", ["-t", path], { encoding: "utf8" })).toMatch(/No errors detected/);
   });
 
+  it("stands down when a later delivery took the lease, leaving the cursor where it was", async () => {
+    const { db, sql } = openControlPlane();
+    const { env } = await arrange(sql, db);
+    let taken = false;
+    const racing = watchSql(sql, {
+      before: async (text) => {
+        if (taken || !/SET cursor = /.test(text)) return;
+        taken = true;
+        await sql.query("UPDATE archive_exports SET lease_seq = lease_seq + 1 WHERE id = $1", [EXPORT_ID]);
+      },
+    });
+    expect(await buildArchiveExport(racing, envelopeFor(), env, { nowMs: NOW_MS })).toBe("lease_held");
+    const row = await db.first<{ status: string; cursor: unknown; continuations: number }>(
+      "SELECT status, cursor, continuations FROM archive_exports WHERE id = ?",
+      EXPORT_ID,
+    );
+    expect(row).toEqual({ status: "building", cursor: null, continuations: 0 });
+    expect((await settle(sql, env, { nowMs: NOW_MS })).at(-1)).toBe("ready");
+  });
+
+  it("cancels a build whose account left active between deliveries and deletes the segments it wrote", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    expect(await buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS, segmentReadings: 1 })).toBe("continue");
+    expect(await exportObjects(bucket, env)).not.toEqual([]);
+    await db.run("UPDATE users SET status = 'deleting' WHERE id = ?", TENANT_ID);
+
+    expect(await buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS, segmentReadings: 1 })).toBe("cancelled");
+    expect(await exportObjects(bucket, env)).toEqual([]);
+    const row = await db.first<{ status: string }>("SELECT status FROM archive_exports WHERE id = ?", EXPORT_ID);
+    expect(row?.status).toBe("cancelled");
+  });
+
+  it("refuses to continue past the continuation budget", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    await db.run(
+      "UPDATE archive_exports SET continuations = ? WHERE id = ?",
+      ARCHIVE_EXPORT_MAX_CONTINUATIONS,
+      EXPORT_ID,
+    );
+    await expect(buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS })).rejects.toBeInstanceOf(
+      ArchiveExportContinuationBudgetError,
+    );
+    expect(await exportObjects(bucket, env)).toEqual([]);
+  });
+
   it("ships an unpublished attempt's raw bytes under their stored type, without comparing them to the placeholder", async () => {
     const { db, sql } = openControlPlane();
-    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    const { bucket, env, readings } = await arrange(sql, db);
     // rd_pending carries the pending draft's empty-content placeholder,
     // application/octet-stream included; its running attempt has already
     // stored raw bytes with the type it fetched.
@@ -249,10 +402,9 @@ describe("buildArchiveExport", () => {
       [TENANT_ID, toTimestamp(NOW_MS), rawKey],
     );
 
-    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+    expect((await settle(sql, env, {
       nowMs: NOW_MS,
-    });
-    expect(outcome).toBe("ready");
+    })).at(-1)).toBe("ready");
     const { entries } = await readArchive(db, bucket, env);
     expect(entries.get("readings/rd_pending/raw.html")).toEqual(html);
     const report = jsonEntry<{ warnings: Array<{ reading_id: string }> }>(entries, "report.json");
@@ -264,13 +416,10 @@ describe("buildArchiveExport", () => {
     const { tenantId, bucket, env } = await arrange(sql, db);
     const content = contentStoreFor(bucket, { tenantId }, env);
     // Left by an earlier delivery of the same export.
-    await content.put(`exports/${EXPORT_ID}/segment-0001`, new Uint8Array([1, 2, 3]), "application/octet-stream");
+    await content.put(`exports/${EXPORT_ID}/segments/segment-0001`, new Uint8Array([1, 2, 3]), "application/octet-stream");
 
     // DOS timestamps start in 1980, so the first segment is refused.
-    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
-      nowMs: Date.parse("1979-12-31T00:00:00.000Z"),
-    });
-    expect(outcome).toBe("failed");
+    expect(await settle(sql, env, { nowMs: Date.parse("1979-12-31T00:00:00.000Z") })).toEqual(["failed"]);
     expect(await content.list(`exports/${EXPORT_ID}`)).toEqual([]);
     const row = await db.first<{ status: string; error: { code: string } }>(
       "SELECT status, error FROM archive_exports WHERE id = ?",
@@ -281,7 +430,7 @@ describe("buildArchiveExport", () => {
 
   it("keeps index.json and counts on the manifest a reading had when it was loaded", async () => {
     const { db, sql } = openControlPlane();
-    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    const { bucket, env, readings } = await arrange(sql, db);
     // rd_pending publishes after the index pages were listed and before its
     // manifest is loaded.
     let published = false;
@@ -293,10 +442,7 @@ describe("buildArchiveExport", () => {
       },
     });
 
-    const outcome = await buildArchiveExport(racing, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
-      nowMs: NOW_MS,
-    });
-    expect(outcome).toBe("ready");
+    expect((await settle(racing, env, { nowMs: NOW_MS })).at(-1)).toBe("ready");
     expect(published).toBe(true);
 
     const { row, entries } = await readArchive(db, bucket, env);
@@ -314,7 +460,7 @@ describe("buildArchiveExport", () => {
 
   it("leaves attempt logs, checkpoints, vectors, keys, credentials, sessions, tokens, and quota out", async () => {
     const { db, sql } = openControlPlane();
-    const { tenantId, bucket, env, readings } = await arrange(sql, db);
+    const { bucket, env, readings } = await arrange(sql, db);
     const now = toTimestamp(NOW_MS);
     const eventMarker = "mxwx2-attempt-event-7f3a9c1e";
     const checkpointMarker = "mxwx2-checkpoint-7f3a9c1e";
@@ -387,10 +533,9 @@ describe("buildArchiveExport", () => {
       now,
     );
 
-    const outcome = await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId, exportId: EXPORT_ID }), env, {
+    expect((await settle(sql, env, {
       nowMs: NOW_MS,
-    });
-    expect(outcome).toBe("ready");
+    })).at(-1)).toBe("ready");
     const { entries } = await readArchive(db, bucket, env);
     const archive = [...entries.values()].map((bytes) => new TextDecoder().decode(bytes)).join("\n");
     for (const marker of [eventMarker, checkpointMarker, keyMarker, jobMarker, tokenMarker, sessionMarker, quotaMarker, "0.271828182845"]) {
