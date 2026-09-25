@@ -13,8 +13,12 @@ import {
   insertSecondTenant,
   otherTenant,
 } from "../helpers/tenant-fixtures";
+import { sha256Bytes } from "../../src/modules/extractor/response-bytes";
 import { contentStoreFor } from "../../src/modules/stores/content-store";
-import { readZipEntries } from "../helpers/read-zip";
+import { ArchiveReportSchema } from "../../src/schemas/archive-report";
+import type { Manifest } from "../../src/schemas/manifest";
+import { sha256Hex } from "../../src/services";
+import { expectChecksums, readZipEntries } from "../helpers/read-zip";
 import { interceptSql } from "../helpers/sql-faults";
 import { testReadingsFor } from "../helpers/test-readings";
 import { testControlPlane } from "../helpers/control-plane-db";
@@ -159,12 +163,16 @@ describe("archive export", () => {
     expect(download.res.headers.get("content-length")).toBe(String(zip.byteLength));
     const entries = await readZipEntries(zip);
     expect([...entries.keys()].sort()).toEqual([
+      "README.md",
+      "checksums.sha256",
       "export.json",
       "index.json",
       "readings/rd_failed/manifest.json",
       "readings/rd_pending/manifest.json",
       "readings/rd_ready/manifest.json",
+      "report.json",
     ]);
+    await expectChecksums(entries);
     const index = JSON.parse(new TextDecoder().decode(entries.get("index.json"))) as {
       items: Array<{ id: string; status: string }>;
     };
@@ -358,5 +366,214 @@ describe("archive export", () => {
       id,
     );
     expect(row?.status).toBe("ready");
+  });
+
+  it("matches source counts and names every missing artifact and dangling relationship", async () => {
+    installQueue();
+    const readings = testReadingsFor(founderTenant());
+    const readyHtml = "<article><h1>Ready</h1><p>Body</p></article>";
+    const readyExtracted = "# Ready\n\nCaptured from the article.\n";
+    const readyRaw = new TextEncoder().encode(readyHtml);
+    const readyExtractedBytes = new TextEncoder().encode(readyExtracted);
+    const gapHtml = "<p>Pending capture, extraction missing.</p>";
+    const gapRaw = new TextEncoder().encode(gapHtml);
+    const imported = "# Imported\n\nSupplied by the reader.\n";
+    const importedRaw = new TextEncoder().encode(imported);
+    const pdf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a]);
+
+    async function reading(id: string, createdAt: string, fields: Partial<Manifest>): Promise<Manifest> {
+      const url = `https://example.com/${id}`;
+      return {
+        id,
+        url,
+        url_hash: await sha256Hex(url),
+        title: id,
+        created_at: createdAt,
+        updated_at: createdAt,
+        content_type: "application/octet-stream",
+        content_status: "failed",
+        content_bytes: 0,
+        content_sha256: "0".repeat(64),
+        status: "failed",
+        ...fields,
+      };
+    }
+
+    await readings.seed(
+      await reading("rd_readyarc", "2026-01-01T00:00:00.000Z", {
+        status: "ready",
+        title: "Ready article",
+        tldr: "A ready article.",
+        summary_markdown: "A ready article, summarized.",
+        content_type: "text/html; charset=utf-8",
+        content_status: "captured",
+        content_bytes: readyRaw.byteLength,
+        content_sha256: await sha256Bytes(readyRaw),
+        extracted_bytes: readyExtractedBytes.byteLength + 3,
+        connections: [
+          { id: "rd_mdarc", reason: "The imported note on the same topic." },
+          { id: "rd_dangling", reason: "The target is not in this library." },
+        ],
+        tensions: [
+          {
+            id: "rd_pdfarc",
+            kind: "qualifies",
+            reason: "The PDF narrows the claim.",
+            computed_at: "2026-08-01T00:00:00.000Z",
+          },
+        ],
+      }),
+      { extracted: readyExtracted, raw: { ext: "html", body: readyHtml, contentType: "text/html; charset=utf-8" } },
+    );
+    await readings.seed(
+      await reading("rd_failedarc", "2026-02-01T00:00:00.000Z", {
+        status: "failed",
+        title: "Failed capture",
+        error: { code: "empty", message: "No content captured." },
+      }),
+    );
+    await readings.seed(
+      await reading("rd_pdfarc", "2026-03-01T00:00:00.000Z", {
+        status: "ready",
+        title: "A memo",
+        content_type: "application/pdf",
+        content_status: "raw_only",
+        content_bytes: pdf.byteLength + 4,
+        content_sha256: "ab".repeat(32),
+      }),
+      { raw: { ext: "pdf", body: pdf, contentType: "application/pdf" } },
+    );
+    await readings.seed(
+      await reading("rd_mdarc", "2026-04-01T00:00:00.000Z", {
+        status: "ready",
+        source_type: "markdown",
+        title: "Imported note",
+        content_type: "text/markdown; charset=utf-8",
+        content_status: "captured",
+        content_bytes: importedRaw.byteLength,
+        content_sha256: await sha256Bytes(importedRaw),
+        extracted_bytes: importedRaw.byteLength,
+        connections: [{ id: "rd_readyarc", reason: "The article this note cites." }],
+      }),
+      { extracted: imported, raw: { ext: "md", body: imported, contentType: "text/markdown; charset=utf-8" } },
+    );
+    await readings.seed(
+      await reading("rd_gaparc", "2026-05-01T00:00:00.000Z", {
+        status: "pending",
+        title: "Extraction missing",
+        content_type: "text/html; charset=utf-8",
+        content_status: "captured",
+        content_bytes: gapRaw.byteLength,
+        content_sha256: await sha256Bytes(gapRaw),
+      }),
+      { raw: { ext: "html", body: gapHtml, contentType: "text/html; charset=utf-8" } },
+    );
+
+    const session = await redeemSession("clm_export_contents");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    const built = await dispatch("reading-lite-export", sent[0]);
+    expect(built.ack).toHaveBeenCalledOnce();
+    expect(built.retry).not.toHaveBeenCalled();
+
+    const download = await request(`/api/exports/${id}/download`, { cookie: session.cookie });
+    expect(download.res.status).toBe(200);
+    const entries = await readZipEntries(new Uint8Array(await download.res.arrayBuffer()));
+    await expectChecksums(entries);
+    expect(new TextDecoder().decode(entries.get("README.md"))).toContain("format_version: 1");
+
+    const names = [...entries.keys()].sort();
+    expect(names).toEqual(
+      [
+        "README.md",
+        "checksums.sha256",
+        "export.json",
+        "index.json",
+        "readings/rd_failedarc/manifest.json",
+        "readings/rd_gaparc/manifest.json",
+        "readings/rd_gaparc/raw.html",
+        "readings/rd_mdarc/extracted.md",
+        "readings/rd_mdarc/manifest.json",
+        "readings/rd_mdarc/raw.md",
+        "readings/rd_pdfarc/manifest.json",
+        "readings/rd_pdfarc/raw.pdf",
+        "readings/rd_readyarc/extracted.md",
+        "readings/rd_readyarc/manifest.json",
+        "readings/rd_readyarc/raw.html",
+        "report.json",
+      ].sort(),
+    );
+    expect(entries.get("readings/rd_pdfarc/raw.pdf")).toEqual(pdf);
+    expect(new TextDecoder().decode(entries.get("readings/rd_readyarc/extracted.md"))).toBe(readyExtracted);
+    expect(new TextDecoder().decode(entries.get("readings/rd_mdarc/raw.md"))).toBe(imported);
+
+    const stored = await testControlPlane(env).first<{ n: number }>(
+      "SELECT count(*)::int AS n FROM readings WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    );
+    const index = JSON.parse(new TextDecoder().decode(entries.get("index.json"))) as {
+      items: Array<{ id: string; status: string }>;
+    };
+    expect(index.items).toHaveLength(stored?.n);
+    expect(index.items.map((item) => item.status).sort()).toEqual(["failed", "pending", "ready", "ready", "ready"]);
+    expect(names.filter((name) => name.endsWith("/manifest.json"))).toHaveLength(index.items.length);
+    const document = JSON.parse(new TextDecoder().decode(entries.get("export.json"))) as {
+      format_version: number;
+      counts: { readings: number; pending: number; ready: number; failed: number };
+    };
+    expect(document).toMatchObject({ format_version: 1, counts: { readings: 5, pending: 1, ready: 3, failed: 1 } });
+
+    const report = ArchiveReportSchema.parse(JSON.parse(new TextDecoder().decode(entries.get("report.json"))));
+    expect(report.missing_artifacts).toEqual([
+      { reading_id: "rd_failedarc", kind: "raw", path: "readings/rd_failedarc/raw.bin" },
+      { reading_id: "rd_gaparc", kind: "extracted", path: "readings/rd_gaparc/extracted.md" },
+    ]);
+    expect(report.dangling_relationships).toEqual([
+      { reading_id: "rd_readyarc", kind: "connection", target_id: "rd_dangling" },
+    ]);
+    expect(report.warnings).toEqual([
+      {
+        reading_id: "rd_pdfarc",
+        code: "content_hash_mismatch",
+        path: "readings/rd_pdfarc/raw.pdf",
+        expected: "ab".repeat(32),
+        actual: await sha256Bytes(pdf),
+      },
+      {
+        reading_id: "rd_pdfarc",
+        code: "content_size_mismatch",
+        path: "readings/rd_pdfarc/raw.pdf",
+        expected: pdf.byteLength + 4,
+        actual: pdf.byteLength,
+      },
+      {
+        reading_id: "rd_readyarc",
+        code: "extracted_size_mismatch",
+        path: "readings/rd_readyarc/extracted.md",
+        expected: readyExtractedBytes.byteLength + 3,
+        actual: readyExtractedBytes.byteLength,
+      },
+    ]);
+
+    const exported = new Set(index.items.map((item) => item.id));
+    for (const item of index.items) {
+      const manifest = JSON.parse(new TextDecoder().decode(entries.get(`readings/${item.id}/manifest.json`))) as {
+        connections?: Array<{ id: string }>;
+        tensions?: Array<{ id: string }>;
+      };
+      for (const connection of manifest.connections ?? []) {
+        const dangling = report.dangling_relationships.some(
+          (gap) => gap.reading_id === item.id && gap.kind === "connection" && gap.target_id === connection.id,
+        );
+        expect(exported.has(connection.id)).not.toBe(dangling);
+      }
+      for (const tension of manifest.tensions ?? []) {
+        const dangling = report.dangling_relationships.some(
+          (gap) => gap.reading_id === item.id && gap.kind === "tension" && gap.target_id === tension.id,
+        );
+        expect(exported.has(tension.id)).not.toBe(dangling);
+      }
+    }
   });
 });
