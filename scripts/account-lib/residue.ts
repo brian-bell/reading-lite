@@ -56,9 +56,6 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   await observe("r2", async () =>
     counted(await remote.storage.listObjects(`u/${tenant}/`)),
   );
-  await observe("legacy_wipe_record", async () =>
-    counted(await remote.storage.listObjects(`wipe/${tenant}/`)),
-  );
   await observe("ready_reading_embeddings", async () => {
     // Ready does not imply searchable: non-owning duplicates and inactive
     // tenants can deliberately have no embedding. These are diagnostics, not

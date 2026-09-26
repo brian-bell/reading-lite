@@ -206,8 +206,8 @@ WEB_BASE_URL = "https://staging.readinglite.ai/"
 # is off, so a staging environment with this unset cannot rehearse deletion —
 # which is what issue #203 asks it to be able to do.
 #
-# Staging's one-time pre-tenant migration is complete: objects and vectors
-# were copied under the founder tenant before this was pinned. The migration
+# Staging's one-time pre-tenant migration is complete: objects were copied
+# under the founder tenant before this was pinned. The migration
 # command is retired; retain this pin and the tenant-activation deploy guard.
 # The retained pre-tenant readings/ and index/ objects stay in the bucket.
 # Removing this line and redeploying is a complete
@@ -467,8 +467,8 @@ WEB_BASE_URL = "https://readinglite.ai/"
 # rows are scoped by tenant_id). Pinned here so ordinary deploys keep the gate on. Removing this
 # line and deploying is a complete rollback only before post-pin writes resume;
 # after writes, freeze + reverse reconciliation or captain-accepted loss.
-# Legacy global objects and bare-id vectors are retained until a separate
-# signed-off deletion.
+# Legacy global (pre-tenant) objects are retained until a separate signed-off
+# deletion.
 TENANT_DATA_PLANE = "1"
 RETRY_MAX_ATTEMPTS = "3"
 RETRY_BASE_DELAY_MS = "500"

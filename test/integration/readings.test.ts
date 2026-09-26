@@ -2112,13 +2112,11 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     expect(res.status).toBe(400);
   });
 
-  it("writes one attempt object per stage (not one per started/succeeded event) on a successful run", async () => {
+  it("records started and succeeded events per stage on a successful run", async () => {
     const fetchFn = makeStubFetch();
     const services = makeServices(fetchFn);
     const app = createApp({ services });
     const ctx = createExecutionContext();
-
-    const putSpy = vi.spyOn(env.READINGS_BUCKET, "put");
 
     const submit = await app.fetch(
       new Request("http://t/api/readings", {
@@ -2136,18 +2134,8 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await drainQueue(services);
     await waitOnExecutionContext(ctx);
 
-    const attemptPuts = putSpy.mock.calls.filter(([key]) =>
-      typeof key === "string" && key.includes("/attempts/"),
-    ).length;
-    // Initial queued + 10 stages (write_extracted included for HTML) + final
-    // post-success write = 12. Pre-fix this was ~22 (started + finished per
-    // stage). The exact upper bound below guards against regressing back to
-    // started+finished writes for every stage.
-    expect(attemptPuts).toBeLessThanOrEqual(13);
-
-    // Diagnostic visibility must survive the de-amplification: the persisted
-    // attempt's events list still has both started and succeeded entries per
-    // stage so we can reason about timings during failure post-mortems.
+    // The persisted attempt's events list has both started and succeeded
+    // entries per stage, so timings can be reasoned about in a post-mortem.
     const diag = await app.request(
       `/api/readings/${((await submit.json()) as { id: string }).id}/diagnostics`,
       { headers: { authorization: `Bearer ${TOKEN}` } },
@@ -2160,8 +2148,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     const events = body.attempts[0]!.events;
     expect(events.some((e) => e.stage === "summarize" && e.status === "started")).toBe(true);
     expect(events.some((e) => e.stage === "summarize" && e.status === "succeeded")).toBe(true);
-
-    putSpy.mockRestore();
   });
 
   it("returns 503 from POST /api/readings when the queue binding is missing", async () => {
@@ -4582,20 +4568,17 @@ describe("cross-tenant mutation matrix", () => {
     );
     expect(await founderLookup.json()).toEqual({ id });
 
-    // And the admitted tenant gains nothing either: a DLQ job whose manifest
-    // does not exist in the admitted tenant's namespace was never owned by
-    // that tenant, so the mark must not materialize the envelope's metadata
-    // (the owner's URL and reading id) as a visible row in that tenant's list.
+    // And the admitted tenant gains nothing either: a DLQ job whose reading
+    // does not exist in the admitted tenant's rows was never owned by that
+    // tenant, so the mark must not materialize the envelope's metadata (the
+    // owner's URL and reading id) as a visible row in that tenant's list.
     const otherList = (await (
       await apiRequest(app, OTHER_TOKEN_SECRET, "/api/readings")
     ).json()) as { readings: unknown[] };
     expect(otherList.readings).toEqual([]);
-    expect(
-      await env.READINGS_BUCKET.head(`u/${OTHER_TENANT_ID}/${found!.keyPrefix}/manifest.json`),
-    ).toBeNull();
   });
 
-  it("concurrent two-tenant terminal commits keep list CAS and vectors per tenant", async () => {
+  it("concurrent two-tenant terminal commits keep lists and embeddings per tenant", async () => {
     await insertSecondTenant(env as unknown as Env);
     const services = makeServices(makeStubFetch());
     const app = createApp({ services });
@@ -4786,36 +4769,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
     expect((await apiRequest(app, TOKEN, `/api/readings/${orphanId}`)).status).toBe(404);
   });
 
-  it("completes a partial purge whose manifest is already gone", async () => {
-    const url = "https://example.com/delete-partial";
-    const { app, id } = await seedFounderReading(url);
-    const urlHash = await sha256Hex(url);
-    const diag = (await (
-      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
-    ).json()) as { key_prefix: string };
-
-    // Simulate a crashed earlier purge: the manifest object is gone but the
-    // vector, list row, pointers, and other objects remain.
-    await env.READINGS_BUCKET.delete(founderObjectKey(`${diag.key_prefix}/manifest.json`));
-
-    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
-    expect(del.status).toBe(200);
-    // The URL comes from the surviving list row, so the pointer still releases.
-    expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(true);
-
-    expect(await testReadingsFor(founderTenant()).hasEmbedding(id)).toBe(false);
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
-    const leftover = await env.READINGS_BUCKET.list({
-      prefix: founderObjectKey(`${diag.key_prefix}/`),
-    });
-    expect(leftover.objects).toEqual([]);
-    const list = (await (await apiRequest(app, TOKEN, "/api/readings")).json()) as {
-      readings: unknown[];
-    };
-    expect(list.readings).toEqual([]);
-  });
-
   it("drops a stale queued attempt for a purged reading without recreating any object", async () => {
     const idCounter = { n: 0 };
     const services = makeServices(makeStubFetch(), idCounter);
@@ -4849,31 +4802,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
       readings: unknown[];
     };
     expect(list.readings).toEqual([]);
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
-  });
-
-  it("purges a reading whose manifest is corrupt", async () => {
-    const url = "https://example.com/delete-corrupt";
-    const { app, id } = await seedFounderReading(url);
-    const urlHash = await sha256Hex(url);
-    const diag = (await (
-      await apiRequest(app, TOKEN, `/api/readings/${id}/diagnostics`)
-    ).json()) as { key_prefix: string };
-    await env.READINGS_BUCKET.put(
-      founderObjectKey(`${diag.key_prefix}/manifest.json`),
-      "definitely not json",
-    );
-
-    const del = await apiRequest(app, TOKEN, `/api/readings/${id}`, { method: "DELETE" });
-    expect(del.status).toBe(200);
-    // The URL falls back to the list row, so the owned pointer still releases.
-    expect(((await del.json()) as { by_url_released: boolean }).by_url_released).toBe(true);
-    const leftover = await env.READINGS_BUCKET.list({
-      prefix: founderObjectKey(`${diag.key_prefix}/`),
-    });
-    expect(leftover.objects).toEqual([]);
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-url/${urlHash}`))).toBeNull();
-    expect(await env.READINGS_BUCKET.head(founderObjectKey(`index/by-id/${id}`))).toBeNull();
   });
 
   it("answers a cross-tenant id like an unknown id and purges nothing", async () => {

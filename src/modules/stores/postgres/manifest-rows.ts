@@ -1,13 +1,13 @@
 // The one manifest-to-rows mapping (ADR 0005), shared by the runtime writer,
-// seed:local, the parity suite and the #348 importer. Pure: no I/O and no Node
-// imports. `writeReadingRows` is the whole-reading replace the seeders and the
-// importer use; the runtime publishes through the per-table inserts instead,
+// seed:local and the parity suite. Pure: no I/O and no Node imports.
+// `writeReadingRows` is the whole-reading replace the seeders use; the runtime
+// publishes through the per-table inserts instead,
 // because a replace would cascade away the reading's attempts, jobs and URL
 // ownership.
 //
 // A manifest cannot say whether it owns its URL, so the caller decides:
 // `ownsUrl: false` emits no reading_urls row (a failed orphan duplicate).
-// Rank duplicates with `compareUrlOwnership`, re-exported here, so importers
+// Rank duplicates with `compareUrlOwnership`, re-exported here, so seeders
 // do not fork the ready > pending > failed, then newest, rule.
 
 import type { Manifest, ProcessingAttempt } from "../../../schemas/manifest";
@@ -25,8 +25,8 @@ export interface ManifestRowsInput {
   // readings are searchable, so it is ignored (and noted) for other statuses.
   embedding?: readonly number[];
   // The runtime publishes under the attempt's id and its immutable revision
-  // keys. Omitted by the seeders and the importer, whose content sits at the
-  // legacy spelling under key_prefix.
+  // keys. Omitted by the seeders, whose content sits at the legacy spelling
+  // under key_prefix, as the 2026-09-24 import's does.
   revision?: { id: string; rawKey: string; extractedKey: string | null };
 }
 
@@ -114,8 +114,8 @@ const PUBLISHED_FIELDS = [
 ] as const;
 
 // The legacy content spelling under a stored key_prefix: where the seeders and
-// the #348 importer put a reading's objects, and where a reading no attempt
-// has captured for is read from. One rule for the writer of that revision row
+// the 2026-09-24 library import put a reading's objects, and where a reading no
+// attempt has captured for is read from. One rule for the writer of that revision row
 // and the reader that falls back to it: an extracted object exists only when
 // the content was captured.
 export function legacyContentKeys(

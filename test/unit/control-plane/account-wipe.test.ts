@@ -5,7 +5,6 @@ import {
   ACCOUNT_WIPE_RETRY_MAX_DELAY_SECONDS,
   isAccountWipeDlq,
   isAccountWipeQueue,
-  readingIdFromRelativeKey,
   wipeGraceElapsed,
   wipeLeaseHeld,
   wipeNeedsResume,
@@ -80,17 +79,6 @@ describe("parseAccountWipeEnvelope", () => {
       ok: false,
       reason: "malformed_id",
     });
-  });
-});
-
-describe("readingIdFromRelativeKey", () => {
-  it("extracts ids from by-id pointers and reading object keys", () => {
-    expect(readingIdFromRelativeKey("index/by-id/rd_0123456780")).toBe("rd_0123456780");
-    expect(readingIdFromRelativeKey("readings/2026/04/26T200000Z-rd_0123456780/manifest.json")).toBe(
-      "rd_0123456780",
-    );
-    expect(readingIdFromRelativeKey("index/list.json")).toBeNull();
-    expect(readingIdFromRelativeKey("index/by-url/deadbeef")).toBeNull();
   });
 });
 

@@ -10,7 +10,9 @@
 > routine releases or staging deletion drills. The R2 manifests, list index and
 > Vectorize namespaces it describes are legacy stores: reading state moved to
 > PostgreSQL on 2026-09-24 ([ADR 0005](decisions/0005-postgresql-storage.md),
-> [PostgreSQL cutover record](postgres-cutover.md)).
+> [PostgreSQL cutover record](postgres-cutover.md)), and those stores, bare-id
+> vectors included, were deleted on 2026-09-26 (reading-lite-gh351). Only the
+> global-layout R2 objects remain pending deletion.
 
 Operator runbook and human-approval checklist for copying the pre-tenant
 production corpus into the founder tenant namespace and flipping
@@ -626,8 +628,9 @@ Quirks worth knowing:
   REST `…/indexes/reading-lite/info` call with the API token works.
 
 Still pending: the separate, signed-off deletion of global-layout objects and
-bare-id vectors (3606 objects, 547 vectors). Until then `--tenant global`
-addresses that retained R2 copy, and only the R2-only commands accept it; the
+bare-id vectors (3606 objects, 547 vectors). (Update, 2026-09-26: the vectors
+went with the Vectorize index in reading-lite-gh351.6; the global objects
+remain.) Until then `--tenant global` addresses that retained R2 copy; the
 commands that read or delete reading rows refuse it. Live production corpus
 ops use `--tenant "$TENANT"` from whoami (see `docs/operations.md`), not
 `global`.

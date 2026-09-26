@@ -6,8 +6,7 @@
 //
 // Cloudflare only. The staging PostgreSQL database (the Neon rehearsal
 // branch) is retained: setup migrates it but never creates it, so teardown
-// has no database step. The old staging D1 is retained too, as the #348
-// importer's source; #351 retires it.
+// has no database step.
 
 import { parseArgs } from "node:util";
 import {
@@ -93,8 +92,7 @@ creates. Plans by default; --execute deletes. Idempotent — "already gone" is
 treated as success.
 
 The staging PostgreSQL database (the Neon rehearsal branch) is retained:
-setup migrates it but never creates it. The old staging D1 is retained as
-well; it is the #348 importer's source.
+setup migrates it but never creates it.
 
 This command is intentionally hard-coded to staging resource names and refuses
 production-looking names in the shared command builder. The bucket-empty step

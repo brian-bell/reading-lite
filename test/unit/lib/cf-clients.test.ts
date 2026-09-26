@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  dryRunR2,
   makeR2Client,
   refreshS3RequestDeps,
   makeR2RestClient,
@@ -32,53 +31,6 @@ describe("makeR2Client", () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 500 }));
     const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
     await expect(r2.put("k", "v")).rejects.toThrow(/R2 PUT/);
-  });
-
-  it("putIfAbsent sends If-None-Match and returns true on success", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-
-    await expect(r2.putIfAbsent("index/by-url/a", "{}", { contentType: "application/json" })).resolves.toBe(true);
-
-    const req = fetchFn.mock.calls[0]![0] as Request;
-    expect(req.method).toBe("PUT");
-    expect(req.headers.get("if-none-match")).toBe("*");
-    expect(req.headers.get("content-type")).toBe("application/json");
-  });
-
-  it("putIfAbsent returns false when R2 reports an existing object", async () => {
-    for (const status of [409, 412]) {
-      const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("exists", { status }));
-      const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-      await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(false);
-    }
-  });
-
-  it("putIfAbsent throws on non-conditional failures", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 500 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-    await expect(r2.putIfAbsent("k", "v")).rejects.toThrow(/R2 PUT k failed: 500 boom/);
-  });
-
-  it("putIfMatch sends the witnessed ETag and reports CAS conflicts", async () => {
-    const fetchFn = vi
-      .fn<(input: any, init?: any) => Promise<Response>>()
-      .mockResolvedValueOnce(new Response("", { status: 200 }))
-      .mockResolvedValueOnce(new Response("conflict", { status: 412 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-
-    await expect(r2.putIfMatch("k", "next", "abc", { contentType: "application/json" })).resolves.toBe(true);
-    await expect(r2.putIfMatch("k", "next", "newer")).resolves.toBe(false);
-    const first = fetchFn.mock.calls[0]![0] as Request;
-    expect(first.headers.get("if-match")).toBe('"abc"');
-    expect(first.headers.get("content-type")).toBe("application/json");
-  });
-
-  it("dry-run putIfAbsent logs and returns true", async () => {
-    const lines: string[] = [];
-    const r2 = dryRunR2((line) => lines.push(line));
-    await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(true);
-    expect(lines).toEqual(["[dry-run] R2 PUT if absent index/by-url/a"]);
   });
 
   it("GET returns the body text on 200", async () => {
@@ -168,20 +120,6 @@ describe("makeR2Client", () => {
     expect(req.url).toContain("prefix=index%2F");
   });
 
-  it("getBytes round-trips binary bodies with their content type", async () => {
-    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } }),
-    );
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-    const out = await r2.getBytes("readings/a/raw.pdf");
-    expect(out?.contentType).toBe("application/pdf");
-    expect([...(out?.body ?? [])]).toEqual([...bytes]);
-
-    const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
-    expect(await makeR2Client(r2Config, missFetch as unknown as typeof fetch).getBytes("k")).toBeNull();
-  });
-
   it("deletes object keys", async () => {
     const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 200 }));
     const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
@@ -191,43 +129,6 @@ describe("makeR2Client", () => {
     const req = fetchFn.mock.calls[0]![0] as Request;
     expect(req.method).toBe("DELETE");
     expect(req.url).toContain("acct123.r2.cloudflarestorage.com/reading-lite/index/list.json");
-  });
-});
-
-describe("makeR2Client getWithEtag", () => {
-  it("returns body and unquoted ETag from a single GET", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response('{"id":"rd_a"}', { status: 200, headers: { etag: '"abc123"' } }),
-    );
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-
-    await expect(r2.getWithEtag("readings/2026/rd_a/manifest.json")).resolves.toEqual({
-      body: '{"id":"rd_a"}',
-      etag: "abc123",
-    });
-    // The point of the call: one request where LIST+GET used to be two.
-    expect(fetchFn).toHaveBeenCalledOnce();
-    const req = fetchFn.mock.calls[0]![0] as Request;
-    expect(req.method).toBe("GET");
-    expect(req.url).toContain("readings/2026/rd_a/manifest.json");
-  });
-
-  it("returns null for a missing object", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-    await expect(r2.getWithEtag("missing")).resolves.toBeNull();
-  });
-
-  it("throws on a non-404 failure", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("boom", { status: 403 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 403 boom/);
-  });
-
-  it("reports an empty ETag rather than inventing one", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("{}", { status: 200 }));
-    const r2 = makeR2Client(r2Config, fetchFn as unknown as typeof fetch);
-    await expect(r2.getWithEtag("k")).resolves.toEqual({ body: "{}", etag: "" });
   });
 });
 
@@ -289,123 +190,6 @@ describe("makeR2RestClient", () => {
     expect(headers.get("authorization")).toBe("Bearer cf-token");
     expect(headers.get("content-type")).toBe("application/json");
   });
-
-  it("getBytes round-trips binary bodies; 404 is null", async () => {
-    const bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x00, 0xff]);
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response(bytes, { status: 200, headers: { "content-type": "application/pdf" } }),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    const out = await r2.getBytes("readings/a/raw.pdf");
-    expect(out?.contentType).toBe("application/pdf");
-    expect([...(out?.body ?? [])]).toEqual([...bytes]);
-
-    const missFetch = vi.fn<(input: any, init?: any) => Promise<Response>>(
-      async () => new Response("", { status: 404 }),
-    );
-    expect(await makeR2RestClient(restCfg, missFetch as unknown as typeof fetch).getBytes("k")).toBeNull();
-  });
-
-  it("putIfAbsent returns false on 412", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(
-      async () => new Response("exists", { status: 412 }),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    await expect(r2.putIfAbsent("index/by-url/a", "{}")).resolves.toBe(false);
-  });
-
-  it("putIfMatch accepts success:true and empty 2xx bodies, and returns false on conflict", async () => {
-    const fetchFn = vi
-      .fn<(input: any, init?: any) => Promise<Response>>()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, result: { etag: "next" } }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }))
-      .mockResolvedValueOnce(new Response("conflict", { status: 412 }));
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "abc")).resolves.toBe(true);
-    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "def")).resolves.toBe(true);
-    await expect(r2.putIfMatch("readings/a/manifest.json", "{}", "ghi")).resolves.toBe(false);
-    expect(new Headers(fetchFn.mock.calls[0]![1]?.headers).get("if-match")).toBe('"abc"');
-  });
-
-  it("putIfMatch rejects a 2xx Cloudflare error envelope without leaking its body", async () => {
-    const secret = "Bearer must-not-appear";
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response(
-        JSON.stringify({ success: false, errors: [{ message: `permission denied ${secret}` }] }),
-        { status: 200 },
-      ),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-
-    const error = await r2.putIfMatch("readings/a/manifest.json", "{}", "abc").catch((err) => err as Error);
-    expect(error).toBeInstanceOf(Error);
-    if (!(error instanceof Error)) throw new Error("expected putIfMatch to reject");
-    expect(error.message).toMatch(/R2 PUT readings\/a\/manifest\.json failed/);
-    expect(error.message).not.toContain(secret);
-    expect(error.message).not.toContain("permission denied");
-  });
-
-  it("putIfMatch rejects malformed 2xx and ordinary non-2xx responses with bounded errors", async () => {
-    const secret = "cf-token-must-not-leak";
-    const fetchFn = vi
-      .fn<(input: any, init?: any) => Promise<Response>>()
-      .mockResolvedValueOnce(new Response(`not-json ${secret} ${"body ".repeat(100)}`, { status: 200 }))
-      .mockResolvedValueOnce(new Response(`forbidden ${secret} ${"body ".repeat(100)}`, { status: 403 }));
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-
-    const malformed = await r2.putIfMatch("readings/a/manifest.json", "{}", "abc").catch((err) => err as Error);
-    const forbidden = await r2.putIfMatch("readings/a/manifest.json", "{}", "def").catch((err) => err as Error);
-
-    if (!(malformed instanceof Error) || !(forbidden instanceof Error)) {
-      throw new Error("expected putIfMatch to reject malformed and non-2xx responses");
-    }
-    expect(malformed.message).toBe("R2 PUT readings/a/manifest.json failed: malformed Cloudflare response");
-    expect(forbidden.message).toBe("R2 PUT readings/a/manifest.json failed: HTTP 403");
-    expect(`${malformed.message}\n${forbidden.message}`).not.toContain(secret);
-    expect(`${malformed.message}\n${forbidden.message}`).not.toContain("body body");
-  });
-});
-
-describe("makeR2RestClient getWithEtag", () => {
-  const restCfg = { accountId: "acct123", apiToken: "cf-token", bucket: "reading-lite-staging" };
-
-  it("normalizes the weak ETag the REST API returns and reads in one request", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response('{"id":"rd_a"}', { status: 200, headers: { etag: 'W/"abc123"' } }),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-
-    await expect(r2.getWithEtag("readings/2026/rd_a/manifest.json")).resolves.toEqual({
-      body: '{"id":"rd_a"}',
-      etag: "abc123",
-    });
-    expect(fetchFn).toHaveBeenCalledOnce();
-    const url = fetchFn.mock.calls[0]![0] as string;
-    expect(url).toContain("/r2/buckets/reading-lite-staging/objects/readings/2026/rd_a/manifest.json");
-  });
-
-  it("returns null for a missing object", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () => new Response("", { status: 404 }));
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    await expect(r2.getWithEtag("missing")).resolves.toBeNull();
-  });
-
-  it("throws on a non-404 failure", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response(JSON.stringify({ success: false, errors: [{ message: "nope" }] }), { status: 403 }),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 403 nope/);
-  });
-
-  it("throws rather than reporting a missing object when a failure claims success", async () => {
-    const fetchFn = vi.fn<(input: any, init?: any) => Promise<Response>>(async () =>
-      new Response(JSON.stringify({ success: true }), { status: 500 }),
-    );
-    const r2 = makeR2RestClient(restCfg, fetchFn as unknown as typeof fetch);
-    // A null here would read as "no such manifest" and quietly drop a reading.
-    await expect(r2.getWithEtag("k")).rejects.toThrow(/R2 GET k failed: 500/);
-  });
 });
 
 describe("r2InventoryClientFromVars", () => {
@@ -465,7 +249,6 @@ describe("withKeyRoot", () => {
       ops,
       client: {
         put: async (key: string) => void ops.push(`put ${key}`),
-        putIfAbsent: async (key: string) => (ops.push(`putIfAbsent ${key}`), true),
         get: async (key: string) => (ops.push(`get ${key}`), null),
         head: async (key: string) => (ops.push(`head ${key}`), false),
         delete: async (key: string) => void ops.push(`delete ${key}`),
@@ -478,13 +261,11 @@ describe("withKeyRoot", () => {
     const { ops, client } = recordingClient();
     const rooted = withKeyRoot(client, keyRoot);
     await rooted.put("index/list.json", "x");
-    await rooted.putIfAbsent("index/by-url/abc", "x");
     await rooted.get("readings/p/manifest.json");
     await rooted.head("readings/p/raw.html");
     await rooted.delete("readings/p/extracted.md");
     expect(ops).toEqual([
       `put ${keyRoot}index/list.json`,
-      `putIfAbsent ${keyRoot}index/by-url/abc`,
       `get ${keyRoot}readings/p/manifest.json`,
       `head ${keyRoot}readings/p/raw.html`,
       `delete ${keyRoot}readings/p/extracted.md`,
@@ -642,28 +423,10 @@ describe("makeR2Client request timeout and transient retry", () => {
     expect(h.fetchFn).toHaveBeenCalledTimes(2);
   });
 
-  it("does not retry an absent object or a lost CAS", async () => {
+  it("does not retry an absent object", async () => {
     const missing = harness([new Response("no", { status: 404 })]);
     await expect(missing.r2.get("k")).resolves.toBeNull();
     expect(missing.fetchFn).toHaveBeenCalledTimes(1);
-
-    const conflict = harness([new Response("conflict", { status: 412 })]);
-    await expect(conflict.r2.putIfMatch("k", "next", "abc")).resolves.toBe(false);
-    expect(conflict.fetchFn).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not retry a conditional PUT, whose repeat could see its own write", async () => {
-    // A lost response on a landed putIfAbsent would come back 412 and read as
-    // "someone else owns this URL", stranding an orphan ownership pointer.
-    const absent = harness([new Response("boom", { status: 500 })]);
-    await expect(absent.r2.putIfAbsent("index/by-url/a", "{}")).rejects.toThrow(/R2 PUT/);
-    expect(absent.fetchFn).toHaveBeenCalledTimes(1);
-
-    const cas = harness([new Response("boom", { status: 503 })]);
-    await expect(cas.r2.putIfMatch("k", "next", "abc")).rejects.toThrow(/R2 PUT/);
-    expect(cas.fetchFn).toHaveBeenCalledTimes(1);
-    // The deadline still applies to the single attempt.
-    expect(cas.signals).toEqual([30_000]);
   });
 
   it("retries an unconditional PUT, which repeats to the same bytes", async () => {

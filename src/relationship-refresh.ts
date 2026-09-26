@@ -10,7 +10,8 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  * A persisted pending batch reserves allowance before queue send. Uncertain
  * sends may redeliver the same judge identity (runAt + readingId); the judge
  * deduplicates that identity before paid work. The next cron recovers interrupted
- * continuations. Offline refresh-state.json remains owned by the operator.
+ * continuations. The operator's offline run marker (the corpus_refresh_state
+ * row) is separate and owned by `ops corpus refresh-neighbours`.
  * Scan running checks overlay applyStaleness via services.now(): a zombie
  * (TTL-expired) running target stays candidatable. In-TTL running is skipped
  * at scan time only; a later judge that sees in-TTL running defers the same

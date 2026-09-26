@@ -13,8 +13,6 @@ export interface R2PutOptions {
 
 export interface R2Client {
   put(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<void>;
-  putIfAbsent(key: string, body: Uint8Array | string, opts?: R2PutOptions): Promise<boolean>;
-  putIfMatch?(key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions): Promise<boolean>;
   get(key: string): Promise<string | null>;
   head(key: string): Promise<boolean>;
   delete(key: string): Promise<void>;
@@ -29,36 +27,16 @@ export interface R2ObjectMeta {
   // equality is a byte-identity check.
   etag: string;
   // ISO-8601 upload time as the storage API reports it, when it reports one.
-  // Optional because the many in-memory listing fakes predate it and because
-  // nothing in the copy/inventory paths depends on it — `ops account
-  // sweep-wipe-prefix` prints it so an operator can see the age of an orphaned
-  // record before deleting it.
+  // Optional because the in-memory listing fakes predate it; no command
+  // depends on it.
   lastModified?: string;
 }
 
-export interface R2ObjectBody {
-  body: Uint8Array;
-  contentType: string | null;
-}
-
-// A text read that also carries the object's ETag, so a caller that needs a
-// CAS token gets it from the GET response instead of a second LIST request.
-export interface R2ObjectText {
-  body: string;
-  // The ETag with its quotes and any weak-validator prefix stripped, matching
-  // R2ObjectMeta.etag, so a value from either surface works with putIfMatch.
-  etag: string;
-}
-
-// Inventory-grade operations: size/etag listings for exact repair plans and
-// byte-faithful reads
-// for binary-safe copies. A separate interface so the many in-memory R2Client
-// fakes in tests keep compiling; makeR2Client always returns the superset.
+// Inventory-grade operations: size/etag listings. A separate interface so the
+// in-memory R2Client fakes in tests keep compiling; makeR2Client always returns
+// the superset.
 export interface R2InventoryClient extends R2Client {
-  putIfMatch(key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions): Promise<boolean>;
   listObjects(prefix?: string): Promise<R2ObjectMeta[]>;
-  getBytes(key: string): Promise<R2ObjectBody | null>;
-  getWithEtag(key: string): Promise<R2ObjectText | null>;
 }
 
 export interface R2Config {
@@ -88,15 +66,6 @@ export interface R2RestConfig {
 //
 // Every attempt gets a fresh deadline, and the request is re-signed each time
 // because a SigV4 signature carries the timestamp it was made at.
-//
-// Conditional PUTs are the exception: they are NOT retried. A putIfAbsent or
-// putIfMatch whose response was lost may already have landed, and the retry
-// then sees its own write and returns false — "already owned" for the by-url
-// ownership claim, "CAS lost" for a manifest. Callers read that as someone
-// else holding the slot, which for the claim means an orphan pointer owning a
-// URL no reading was activated for. A thrown transient error is the honest
-// outcome there, and it is what these callers already handled. Everything
-// else — reads, listings, plain puts, deletes — repeats safely.
 //
 // One deadline spans the whole request, headers and body, because a body that
 // stops arriving mid-stream is the same stall as one that never starts. The
@@ -168,13 +137,9 @@ export function makeR2Client(
 
   // aws.sign() returns a signed Request, which we then hand to the injected
   // fetch — keeps signing intact while making the network call stubbable.
-  const send = async (
-    url: string,
-    init: RequestInit,
-    retryable = true,
-  ): Promise<Response> => {
+  const send = async (url: string, init: RequestInit): Promise<Response> => {
     for (let attempt = 0; ; attempt++) {
-      const last = !retryable || attempt >= maxAttempts - 1;
+      const last = attempt >= maxAttempts - 1;
       let wait = Math.min(S3_RETRY_CAP_MS, S3_RETRY_BASE_MS * 2 ** attempt);
       // Signed outside the try: a signing failure is a bad credential or a bad
       // key, and repeating it only delays the message by three attempts.
@@ -196,8 +161,8 @@ export function makeR2Client(
       await sleep(wait);
     }
   };
-  const signedFetch = (key: string, init: RequestInit, retryable = true): Promise<Response> =>
-    send(`${base}/${encodePath(key)}`, init, retryable);
+  const signedFetch = (key: string, init: RequestInit): Promise<Response> =>
+    send(`${base}/${encodePath(key)}`, init);
   const signedBucketFetch = (params: URLSearchParams, init: RequestInit): Promise<Response> =>
     send(`${base}?${params.toString()}`, init);
 
@@ -210,24 +175,6 @@ export function makeR2Client(
         const text = await res.text().catch(() => "");
         throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
       }
-    },
-    async putIfAbsent(key, body, opts) {
-      const headers: Record<string, string> = { "if-none-match": "*" };
-      if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
-      if (res.ok) return true;
-      if (res.status === 412 || res.status === 409) return false;
-      const text = await res.text().catch(() => "");
-      throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
-    },
-    async putIfMatch(key, body, etag, opts) {
-      const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
-      if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await signedFetch(key, { method: "PUT", body, headers }, false);
-      if (res.ok) return true;
-      if (res.status === 412 || res.status === 409) return false;
-      const text = await res.text().catch(() => "");
-      throw new Error(`R2 PUT ${key} failed: ${res.status} ${text}`);
     },
     async get(key) {
       const res = await signedFetch(key, { method: "GET" });
@@ -256,27 +203,6 @@ export function makeR2Client(
       return (await listObjects()).map((o) => o.key);
     },
     listObjects,
-    async getWithEtag(key) {
-      const res = await signedFetch(key, { method: "GET" });
-      if (res.status === 404) return null;
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
-      }
-      return { body: await res.text(), etag: normalizeEtag(res.headers.get("etag") ?? undefined) };
-    },
-    async getBytes(key) {
-      const res = await signedFetch(key, { method: "GET" });
-      if (res.status === 404) return null;
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`R2 GET ${key} failed: ${res.status} ${text}`);
-      }
-      return {
-        body: new Uint8Array(await res.arrayBuffer()),
-        contentType: res.headers.get("content-type"),
-      };
-    },
   };
 
   async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
@@ -400,37 +326,6 @@ export function makeR2RestClient(
         if (err instanceof Error && err.message.startsWith("R2 PUT")) throw err;
       }
     },
-    async putIfAbsent(key, body, opts) {
-      const headers: Record<string, string> = { "if-none-match": "*" };
-      if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await authedFetch(objectUrl(key), { method: "PUT", body, headers });
-      if (res.ok) return true;
-      if (res.status === 412 || res.status === 409) return false;
-      await throwIfUnsuccessfulJson(res, "PUT", key);
-      return false;
-    },
-    async putIfMatch(key, body, etag, opts) {
-      const headers: Record<string, string> = { "if-match": quoteEtag(etag) };
-      if (opts?.contentType) headers["content-type"] = opts.contentType;
-      const res = await authedFetch(objectUrl(key), { method: "PUT", body, headers });
-      if (res.status === 412 || res.status === 409) return false;
-      if (!res.ok) throw new Error(`R2 PUT ${key} failed: HTTP ${res.status}`);
-      const text = await res.text();
-      // Cloudflare's object-upload endpoint may return an empty 2xx body. When
-      // it does return JSON, the success flag is authoritative.
-      if (text.trim() === "") return true;
-      let envelope: { success?: unknown };
-      try {
-        envelope = JSON.parse(text) as { success?: unknown };
-      } catch {
-        throw new Error(`R2 PUT ${key} failed: malformed Cloudflare response`);
-      }
-      if (envelope.success === true) return true;
-      if (envelope.success === false) {
-        throw new Error(`R2 PUT ${key} failed: Cloudflare response success=false`);
-      }
-      throw new Error(`R2 PUT ${key} failed: malformed Cloudflare response`);
-    },
     async get(key) {
       const res = await authedFetch(objectUrl(key), { method: "GET" });
       if (res.status === 404) return null;
@@ -458,29 +353,6 @@ export function makeR2RestClient(
       return (await listObjects()).map((o) => o.key);
     },
     listObjects,
-    async getWithEtag(key) {
-      const res = await authedFetch(objectUrl(key), { method: "GET" });
-      if (res.status === 404) return null;
-      if (!res.ok) {
-        // null here means "no such manifest" to the planner, so a failed read
-        // must throw even when the envelope claims success.
-        await throwIfUnsuccessfulJson(res, "GET", key);
-        throw new Error(`R2 GET ${key} failed: ${res.status}`);
-      }
-      return { body: await res.text(), etag: normalizeEtag(res.headers.get("etag") ?? undefined) };
-    },
-    async getBytes(key) {
-      const res = await authedFetch(objectUrl(key), { method: "GET" });
-      if (res.status === 404) return null;
-      if (!res.ok) {
-        await throwIfUnsuccessfulJson(res, "GET", key);
-        return null;
-      }
-      return {
-        body: new Uint8Array(await res.arrayBuffer()),
-        contentType: res.headers.get("content-type"),
-      };
-    },
   };
 
   async function listObjects(prefix?: string): Promise<R2ObjectMeta[]> {
@@ -513,17 +385,6 @@ export function makeR2RestClient(
     } while (cursor);
     return objects;
   }
-}
-
-// R2 quotes ETags, and the REST API prefixes them with the weak validator
-// marker. Strip both so every surface reports the same token.
-function normalizeEtag(etag: string | undefined): string {
-  if (!etag) return "";
-  return etag.replace(/^W\//, "").replaceAll('"', "");
-}
-
-function quoteEtag(etag: string): string {
-  return `"${etag.replace(/^W\//, "").replaceAll('"', "")}"`;
 }
 
 // Prefer S3 credentials when both are present (existing operator .corpus.vars);
@@ -575,11 +436,6 @@ export function withKeyRoot(client: R2Client, keyRoot: string): R2Client {
   if (keyRoot === "") return client;
   return {
     put: (key, body, opts) => client.put(`${keyRoot}${key}`, body, opts),
-    putIfAbsent: (key, body, opts) => client.putIfAbsent(`${keyRoot}${key}`, body, opts),
-    ...(client.putIfMatch === undefined
-      ? {}
-      : { putIfMatch: (key: string, body: Uint8Array | string, etag: string, opts?: R2PutOptions) =>
-          client.putIfMatch!(`${keyRoot}${key}`, body, etag, opts) }),
     get: (key) => client.get(`${keyRoot}${key}`),
     head: (key) => client.head(`${keyRoot}${key}`),
     delete: (key) => client.delete(`${keyRoot}${key}`),
@@ -587,35 +443,6 @@ export function withKeyRoot(client: R2Client, keyRoot: string): R2Client {
       (await client.listKeys())
         .filter((key) => key.startsWith(keyRoot))
         .map((key) => key.slice(keyRoot.length)),
-  };
-}
-
-export function dryRunR2(log: (line: string) => void = (l) => process.stderr.write(l + "\n")): R2Client {
-  return {
-    async put(key) {
-      log(`[dry-run] R2 PUT ${key}`);
-    },
-    async putIfAbsent(key) {
-      log(`[dry-run] R2 PUT if absent ${key}`);
-      return true;
-    },
-    async putIfMatch(key) {
-      log(`[dry-run] R2 PUT if match ${key}`);
-      return true;
-    },
-    async get() {
-      return null;
-    },
-    async head() {
-      return false;
-    },
-    async delete(key) {
-      log(`[dry-run] R2 DELETE ${key}`);
-    },
-    async listKeys() {
-      log("[dry-run] R2 LIST");
-      return [];
-    },
   };
 }
 

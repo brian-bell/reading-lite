@@ -31,7 +31,6 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "refresh-connections",
     "refresh-tensions",
     "purge-connections",
-    "purge-legacy",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],
@@ -42,7 +41,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   founder: ["bootstrap"],
   extract: ["agent", "probe"],
   eval: ["summarizer"],
-  account: ["sweep-wipe-prefix", "wipe", "residue-scan"],
+  account: ["wipe", "residue-scan"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -106,7 +105,7 @@ describe("ops registry completeness", () => {
   });
 
   // The --tenant gate is single-homed in scripts/ops-lib/tenant-flag.ts and
-  // every corpus command calls it before any R2 or Vectorize traffic, so one
+  // every corpus command calls it before any R2 or database traffic, so one
   // loop over the registry pins the contract for all of them: no selector,
   // exit 2, and the usage message names the flag.
   it("every corpus command fails closed without --tenant (exit 2)", async () => {

@@ -1,5 +1,5 @@
 // Forward-only PostgreSQL migration runner (ADR 0005). Numbered SQL files in
-// db/migrations/ (migrations/ stays D1's) are applied in order, one
+// db/migrations/ are applied in order, one
 // transaction per file, under a session advisory lock so two runners cannot
 // interleave. Applied files are recorded in schema_migrations with a checksum
 // and name; an applied file that later changes, is renamed, or disappears is

@@ -181,7 +181,7 @@ PostgreSQL query is `WHERE tenant_id = $1`. Paths are under `src/modules/`:
 | `stores/postgres/reading-store.ts` | List, detail, relationship targets, URL owner, content keys |
 | `stores/postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
 | `stores/postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
-| `stores/postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding and the importer |
+| `stores/postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding |
 | `stores/content-store.ts` | R2 bytes by relative key under the tenant root |
 | `stores/layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
 | `staleness.ts` | Read-time stale-attempt annotation |
@@ -195,14 +195,13 @@ Beside the PostgreSQL stores, three storage-free modules in `stores/` hold what
 the Worker, the operator scripts and the batch pipeline share: `tenant-root.ts`
 (`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
 ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
-snapshot). The Worker binds no Vectorize index. An embedding is a row that
-deletes with its reading, so the account wipe is rows, then objects. No
-runtime or operator path reads or writes the legacy D1 database, R2 manifests,
-`index/list.json`, pointers, or Vectorize.
+snapshot). An embedding is a row that deletes with its reading, so the
+account wipe is rows, then objects. The superseded D1 databases, Vectorize
+indexes and manifest-era R2 objects were deleted in reading-lite-gh351.
 
 Staging and production pin the tenant gate. The completed founder cutover
-copied data and retained global R2 objects and unnamespaced vectors, which
-tenant operations, including account wipe, do not reach. The founder migration
+copied data and retained the global R2 objects, which tenant operations,
+including account wipe, do not reach. The founder migration
 command is retired; see the [historical cutover](founder-cutover.md).
 
 ## Authentication and background jobs
@@ -341,8 +340,7 @@ staging PostgreSQL through the operator database pairing. Each database supplies
 a read-only repeatable snapshot; only the current resolved R2 content is read.
 Its v2 local fixture packet contains tenant-rewritten reading/revision/ownership/
 relationship/embedding payloads, content blobs, source fingerprints and staging
-absence preconditions. No R2 manifest, pointer, list index or Vectorize metadata
-is used. Historical attempts are omitted; application revalidates all evidence
+absence preconditions. Historical attempts are omitted; application revalidates all evidence
 and publishes rows atomically after creating content. Preparation never applies
 the packet remotely. Their guides are
 [paid spend](paid-provider-spend.md) and [context preparation](staging-context-copy.md).

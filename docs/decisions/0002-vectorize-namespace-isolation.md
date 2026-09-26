@@ -8,8 +8,8 @@
 
 - **Status:** Superseded by [ADR 0005](0005-postgresql-storage.md) (decided
   2026-09-19, live 2026-09-24), which moved embeddings to pgvector with
-  row-level tenant scoping. The Vectorize index stays frozen until
-  `reading-lite-gh351` retires it.
+  row-level tenant scoping. Both Vectorize indexes were deleted on 2026-09-26
+  (`reading-lite-gh351.6`).
 - **Date:** 2026-08-23
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-s1k.6.1`

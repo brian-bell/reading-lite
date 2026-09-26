@@ -51,7 +51,7 @@ const LIST_COLUMNS = `id, key_prefix, url, title, tldr, tags, keywords, status, 
   similarity, source_date, created_at, updated_at, error, active_attempt, last_attempt,
   enrichment_degradation`;
 
-// Today's semantics exactly (list-index.ts): a case-insensitive substring over
+// The list search: a case-insensitive substring over
 // title, tldr, url and keywords, and a case-insensitive exact tag. strpos, not
 // LIKE, so q needs no wildcard escaping. Stored tags keep their case. No
 // trigram index yet; ADR 0005 names it as the scaling path.

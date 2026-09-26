@@ -4,11 +4,11 @@
  * another delivery repeating an uncertain charge. Only relationship fields and
  * the novelty verdict are published, in one compare-and-replace under the
  * reading's row lock. A reading's version token is the hash of the manifest its
- * rows project, which is what the R2 etag used to be; the D1 checkpoint keeps
- * calling it an etag.
+ * rows project; the relationship_refresh_jobs checkpoint still names it
+ * `source_etag`, after the R2 etag it replaced.
  * Running predicates overlay applyStaleness: a zombie (TTL-expired) attempt is
- * not running. In-TTL running defers with DeferPaidWorkError before any D1
- * checkpoint so consumeRelationshipRefresh re-enqueues the same identity.
+ * not running. In-TTL running defers with DeferPaidWorkError before any
+ * checkpoint write so consumeRelationshipRefresh re-enqueues the same identity.
  */
 import type { Env } from "./index";
 import { sha256Hex, type Services } from "./services";
@@ -108,7 +108,7 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: En
     const current = await liveTarget();
     if (!current || (await activeRefreshFounder(env, db))?.tenantId !== tenant.tenantId) return;
     // The hash identifies our exact committed manifest after a crash, without
-    // retaining a copy of the summary in the D1 checkpoint.
+    // retaining a copy of the summary in the checkpoint row.
     if (await sha256Hex(JSON.stringify(current.manifest)) !== saved.manifest_hash) {
       if (!await neighboursUnchanged(saved.neighbour_versions)) return;
       if (current.etag !== sourceEtag) return;
@@ -194,7 +194,7 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: JudgeJob, env: En
       onAuthorizedDispatch: async () => {
         await assertCurrent();
         // Revalidate after claiming: purge may have just removed its checkpoint.
-        // Cleanup also covers a committed claim whose D1 response was lost.
+        // Cleanup also covers a committed claim whose database response was lost.
         try {
           if (!await markRefreshDispatched(db, { tenantId: job.tenantId, readingId: job.readingId, runAt, owner, sourceEtag: original.etag })) throw new DOMException("refresh already dispatched", "AbortError");
           await assertCurrent();

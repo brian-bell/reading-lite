@@ -1,5 +1,5 @@
 /**
- * D1 digest_deliveries CAS. Unique (user_id, cadence, period_key) is the
+ * The digest_deliveries ledger. Unique (user_id, cadence, period_key) is the
  * idempotency key: the cron inserts pending, the consumer flips pending to
  * sent or skipped, and a redelivered job seeing sent/skipped/failed acks.
  */

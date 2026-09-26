@@ -34,12 +34,6 @@ describe("tenant activation preflight", () => {
       "r2/buckets/staging-bucket",
     ]);
   });
-  it("ignores the Vectorize binding a pre-cutover active version still carries", async () => {
-    const f = fixture();
-    f.bindings.push({ name: "READINGS_INDEX", type: "vectorize", index_name: "reading-lite-staging" } as never);
-    expect((await inspectTenantActivation(target, f.request)).ok).toBe(true);
-    expect(f.calls.some(c => c.path.startsWith("vectorize/"))).toBe(false);
-  });
   it("does no remote work when tenant mode is not requested", async () => {
     const f = fixture();
     expect((await inspectTenantActivation({ ...target, enabled: false }, f.request)).ok).toBe(true);

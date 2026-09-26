@@ -633,11 +633,11 @@ export class QueueRetriesExhaustedError extends Error {
   }
 }
 
-// Convert a dead-lettered message into a visible, retryable `failed` manifest.
-// Reuses markFailed so a reprocess of a previously-`ready` reading rolls back to
-// its preserved snapshot rather than nuking good data, and the list index stays
-// in sync. The mark requires the manifest to exist in the admitted tenant's
-// namespace and the attempt to still be active — see the guards below.
+// Convert a dead-lettered message into a visible, retryable `failed` reading.
+// Reuses markFailed so a reprocess of a previously-`ready` reading keeps its
+// published revision rather than nuking good data. The mark requires the
+// reading to exist in the admitted tenant's rows and the attempt to still be
+// active — see the guards below.
 export async function markDeadLettered(
   args: ProcessReadingArgs,
   env: Env,
