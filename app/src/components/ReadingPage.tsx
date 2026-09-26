@@ -7,7 +7,6 @@ import { readingQueryOptions } from "../reading-query";
 import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
 import { isProcessing, type Reading, type ReadingResult } from "../reading";
-import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
 import { categorize } from "../reading-failure";
 import { diagnosticsQueryKey } from "../reading-diagnostics";
 import { sourceQueryKey } from "../reading-source";
@@ -20,18 +19,18 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
-import { ReadingSource, type LoadedImages } from "./ReadingSource";
+import { ReadingSource, type ImportCopyAction, type LoadedImages } from "./ReadingSource";
 import { BackToLibrary } from "./BackToLibrary";
-import { CaptureRefusalNotice } from "./CaptureNotice";
+import { ImportCopyDialog } from "./ImportCopyDialog";
 import {
   AccountChanged,
-  InlineNotice,
   ReadingForbidden,
   ReadingLoading,
   ReadingNotFound,
   ServerError,
 } from "./ReadingStates";
 import { ReadingStatusCard } from "./ReadingStatusCard";
+import { ReprocessNoticeBanner, reprocessNoticeSentence } from "./ReprocessNotice";
 import { useReprocess, type Reprocess, type ReprocessNotice } from "./use-reprocess";
 import { useStatusWatch, type WatchStatus } from "./use-status-watch";
 import { ReadingNovelty, ReadingSummary } from "./ReadingSummary";
@@ -51,7 +50,9 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 // content, the novelty panel below either view, then the collapsed Details
 // section (#373). Connections and tensions sit beside the column on desktop
 // and after it on phones (#371). A ready reading's Reprocess sits in the
-// heading row (#410); Open original URL is still to come.
+// heading row (#410); Open original URL is still to come. Import a copy (#411)
+// is offered where the Worker could not read the page: a failed reading's
+// status card, and the Source view of a reading whose source is unavailable.
 
 export function ReadingPage({ id, view = "summary" }: { id: string; view?: ReadingView }) {
   // The route component is reused when a connection or history leads to
@@ -180,7 +181,9 @@ function ReadingSurface({
   const source = sourceLabel(reading.source_type);
   const context = hasRelationships(reading);
   const [confirming, setConfirming] = useState(false);
+  const [importing, setImporting] = useState(false);
   const reprocessRef = useRef<HTMLButtonElement>(null);
+  const cardActionRef = useRef<HTMLButtonElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
   const notice = reprocess.notice;
   const said = useSaid(notice, announcement);
@@ -189,13 +192,26 @@ function ReadingSurface({
   // would ask the reader to agree to a paid run that cannot start.
   const busy = reprocess.sending || isProcessing(reading);
 
+  /** The control a dialog gives focus back to: whichever opened it, or `fallback`. */
+  function rememberOpener(fallback: HTMLElement | null) {
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : fallback;
+  }
+
   /** A ready reading's run is confirmed every time it is asked for, from whichever control asked. */
   function confirmReprocess() {
     if (busy) return;
-    const active = document.activeElement;
-    openerRef.current = active instanceof HTMLElement && active !== document.body ? active : reprocessRef.current;
+    rememberOpener(reprocessRef.current);
     setConfirming(true);
   }
+
+  function openImport() {
+    if (busy) return;
+    rememberOpener(null);
+    setImporting(true);
+  }
+
+  const importCopy: ImportCopyAction = { onOpen: openImport, busy };
 
   function tryAgain() {
     if (reading.status === "ready") confirmReprocess();
@@ -248,10 +264,20 @@ function ReadingSurface({
           onRetry={() => {
             if (!busy) reprocess.send();
           }}
+          onImportCopy={openImport}
           sending={reprocess.sending}
+          actionRef={cardActionRef}
         />
-        {notice ? <ReprocessNoticeBanner notice={notice} onCheck={onCheck} onTryAgain={tryAgain} /> : null}
-        <ReadingViews key={reading.id} reading={reading} view={view} />
+        {notice ? (
+          <ReprocessNoticeBanner
+            notice={notice}
+            request="reprocess"
+            onTryAgain={tryAgain}
+            onCheck={onCheck}
+            onImportCopy={openImport}
+          />
+        ) : null}
+        <ReadingViews key={reading.id} reading={reading} view={view} importCopy={importCopy} />
         <ReadingNovelty reading={reading} />
         <ReadingDetails key={`details-${reading.id}`} reading={reading} />
       </article>
@@ -270,6 +296,17 @@ function ReadingSurface({
           </p>
           <p>If it fails, the current version stays.</p>
         </ConfirmDialog>
+      ) : null}
+      {importing ? (
+        <ImportCopyDialog
+          reading={reading}
+          onImport={reprocess.importCopy}
+          sending={reprocess.sending}
+          onClose={() => setImporting(false)}
+          // A failed reading's opener goes with the failure once the import
+          // starts; the card's first control is the same button throughout.
+          returnFocus={() => (openerRef.current?.isConnected ? openerRef.current : cardActionRef.current)}
+        />
       ) : null}
     </div>
   );
@@ -296,7 +333,7 @@ function useSaid(notice: ReprocessNotice | null, announcement: Said | null): str
   // stays.
   useEffect(() => {
     if (notice) {
-      lastNotice.current = reprocessNoticeSentence(notice);
+      lastNotice.current = reprocessNoticeSentence(notice, "reprocess");
       setSaid(lastNotice.current);
       return;
     }
@@ -305,74 +342,6 @@ function useSaid(notice: ReprocessNotice | null, announcement: Said | null): str
     if (gone !== null) setSaid((current) => (current === gone ? null : current));
   }, [notice]);
   return said;
-}
-
-const REPROCESS_UNAVAILABLE = "Reprocessing is unavailable right now.";
-
-/** What a refused reprocess says, in one place: the notice and the page's live region. */
-function reprocessNoticeSentence(notice: ReprocessNotice): string {
-  switch (notice.kind) {
-    case "already-processing":
-      return ALREADY_PROCESSING_SENTENCE;
-    case "markdown-missing":
-      return "The Markdown this reading was imported from is no longer available.";
-    case "invalid":
-      return notice.message;
-    case "forbidden":
-      return "You don't have permission to reprocess this reading.";
-    case "account-changed":
-      return "This tab is signed in to a different account than the page expects.";
-    case "limited":
-    case "guard-unavailable":
-    case "unavailable":
-      return captureRefusalSentence(notice, REPROCESS_UNAVAILABLE);
-    case "offline":
-      return "You're offline. Check your connection and try again.";
-    case "server-error":
-      return `Something went wrong on our side. ${notice.message}`;
-  }
-}
-
-/**
- * What stays on the page after a reprocess that did not start (acceptance
- * matrix, Capture), with the way on when there is one. Not a live region of
- * its own: the page's standing region says the same sentence.
- *
- * A 403 or 412 is a notice here, not the page-replacing state /save shows:
- * the refusal is of the write, and the reading's own read, the next time it
- * is made, replaces the page when the reading itself is no longer the
- * reader's. A 412's Reload makes it now.
- */
-function ReprocessNoticeBanner({
-  notice,
-  onCheck,
-  onTryAgain,
-}: {
-  notice: ReprocessNotice;
-  onCheck: () => void;
-  onTryAgain: () => void;
-}) {
-  const message = reprocessNoticeSentence(notice);
-  switch (notice.kind) {
-    case "already-processing":
-      // The reader is on the reading already; opening it is reading it again.
-      return <InlineNotice message={message} actionLabel="Open reading" onAction={onCheck} live={false} />;
-    case "account-changed":
-      return (
-        <InlineNotice message={message} actionLabel="Reload" onAction={() => window.location.reload()} live={false} />
-      );
-    case "markdown-missing":
-    case "invalid":
-    case "forbidden":
-      return <InlineNotice message={message} live={false} />;
-    case "limited":
-    case "guard-unavailable":
-    case "unavailable":
-      return <CaptureRefusalNotice refusal={notice} unavailable={REPROCESS_UNAVAILABLE} onTryAgain={onTryAgain} />;
-    case "offline":
-    case "server-error":
-      return <InlineNotice message={message} actionLabel="Try again" onAction={onTryAgain} live={false} />;
-  }
 }
 
 /** What each notice says, in the reader's terms. */
@@ -419,7 +388,15 @@ const VIEW_TABS: readonly TabItem<ReadingView>[] = [
  * return trail) and scroll position: the reader is choosing how to read this
  * reading, not going somewhere.
  */
-function ReadingViews({ reading, view }: { reading: Reading; view: ReadingView }) {
+function ReadingViews({
+  reading,
+  view,
+  importCopy,
+}: {
+  reading: Reading;
+  view: ReadingView;
+  importCopy: ImportCopyAction;
+}) {
   const navigate = useNavigate();
   // The images the reader loaded in the Source view live here, above the tab
   // panel, so switching to Summary and back does not turn them back into
@@ -450,7 +427,7 @@ function ReadingViews({ reading, view }: { reading: Reading; view: ReadingView }
   return (
     <ViewTabs label="View" idPrefix={VIEW_TABS_ID} tabs={VIEW_TABS} selected={view} onSelect={selectView}>
       {view === "source" ? (
-        <ReadingSource reading={reading} onReadSummary={readSummary} images={images} />
+        <ReadingSource reading={reading} onReadSummary={readSummary} images={images} importCopy={importCopy} />
       ) : (
         <ReadingSummary reading={reading} />
       )}

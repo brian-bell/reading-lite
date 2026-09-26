@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import { categorize } from "../reading-failure";
 import type { ProcessingStage, Reading, ReadingError } from "../reading";
 import { readingState } from "../reading-state";
@@ -14,10 +15,11 @@ import type { WatchStatus } from "./use-status-watch";
 // status" is the way on.
 //
 // A failed reading offers Retry, which reprocesses at once with no
-// confirmation (#410; design spec, Reading surface); Import a copy arrives
-// with #411. A ready reading whose reprocess failed keeps its prior material
-// below a card that says so; its way on is the confirmed Reprocess in the
-// heading row, never an unconfirmed Retry.
+// confirmation (#410; design spec, Reading surface), and Import a copy, which
+// reprocesses it from Markdown the reader supplies (#411). A ready reading
+// whose reprocess failed keeps its prior material below a card that says so;
+// its way on is the confirmed Reprocess in the heading row, never an
+// unconfirmed Retry.
 
 type StageLabel = "Fetching" | "Analyzing" | "Publishing";
 
@@ -61,7 +63,9 @@ export function ReadingStatusCard({
   checkFailed,
   onCheck,
   onRetry,
+  onImportCopy,
   sending,
+  actionRef,
 }: {
   reading: Reading;
   watch: WatchStatus;
@@ -69,8 +73,11 @@ export function ReadingStatusCard({
   checkFailed: boolean;
   onCheck: () => void;
   onRetry: () => void;
+  onImportCopy: () => void;
   /** A reprocess request is in flight. */
   sending: boolean;
+  /** The card's first action, which stays the same button from Retry to Check status. */
+  actionRef?: Ref<HTMLButtonElement>;
 }) {
   // `readingState` (reading-state.ts) is the shared rule, the library badge's
   // too. A running attempt decides before the manifest status does, because
@@ -86,7 +93,9 @@ export function ReadingStatusCard({
   // whatever the state: a Retry that turns the card into "being processed"
   // becomes that card's Check status, so the reader's focus stays on the
   // control they pressed instead of falling to the document — whether the
-  // retry started the attempt or found one already running.
+  // retry started the attempt or found one already running. Import a copy
+  // follows it on a failed reading and goes with the failure; its dialog gives
+  // focus back to this one.
   let action: { label: string; onClick: () => void; busy: boolean } | null = null;
   if (state.kind === "processing") action = { label: "Check status", onClick: onCheck, busy: false };
   // A ready reading whose reprocess failed has no action here: its way on is
@@ -112,11 +121,17 @@ export function ReadingStatusCard({
           <button
             type="button"
             className="button"
+            ref={actionRef}
             aria-disabled={action.busy || undefined}
             onClick={action.onClick}
           >
             {action.label}
           </button>
+          {state.kind === "failed" ? (
+            <button type="button" className="button" aria-disabled={sending || undefined} onClick={onImportCopy}>
+              Import a copy
+            </button>
+          ) : null}
         </div>
       ) : null}
     </section>

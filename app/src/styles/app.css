@@ -1289,6 +1289,18 @@ textarea {
   margin-top: var(--space-4);
 }
 
+/* Import a copy (#411): the capture form in a dialog, wide enough for the
+   Markdown, and scrolling inside the viewport on a phone. */
+.import-dialog {
+  width: min(40rem, calc(100vw - 2 * var(--space-4)));
+  max-height: calc(100dvh - 2 * var(--space-4));
+  overflow-y: auto;
+}
+
+.import-dialog .form-actions {
+  justify-content: flex-end;
+}
+
 .confirm-dialog-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1331,6 +1343,9 @@ textarea {
 }
 
 .status-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
   margin: var(--space-3) 0 0;
 }
 

@@ -5,6 +5,7 @@ import {
   markdownImportBody,
   markdownImportBytes,
   markdownImportProblems,
+  reprocessMarkdownBody,
   type MarkdownImportValues,
 } from "../src/import-markdown";
 import { MARKDOWN_IMPORT_BUDGET_BYTES } from "../src/markdown-import-limit";
@@ -40,6 +41,23 @@ describe("markdownImportBody", () => {
   // The backend refuses a title that trims to nothing; a blank one is none.
   it.each(["", "   "])("leaves a blank title out (%j)", (title) => {
     expect(markdownImportBody({ ...VALID, title })).not.toHaveProperty("title");
+  });
+});
+
+// Import a copy (#411): the same fields, sent as a reprocess's Markdown source.
+// The reading's URL is the source URL, so it is not sent, and neither is
+// `force` (acceptance matrix, Actions: "Force reprocess — never sent").
+describe("reprocessMarkdownBody", () => {
+  it("sends the Markdown exactly as pasted and a title trimmed, as a Markdown source", () => {
+    expect(reprocessMarkdownBody({ ...VALID, title: "  A title  ", markdown: "  # A\n\n" })).toEqual({
+      source: { kind: "markdown", markdown: "  # A\n\n", title: "A title" },
+    });
+  });
+
+  it("sends no title for a blank one", () => {
+    expect(reprocessMarkdownBody({ ...VALID, title: "   " })).toEqual({
+      source: { kind: "markdown", markdown: VALID.markdown },
+    });
   });
 });
 

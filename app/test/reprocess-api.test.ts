@@ -6,7 +6,7 @@ import { EXPECTED_TENANT_HEADER } from "../src/api/readings";
 import { reprocessReading } from "../src/api/reprocess";
 import { whoamiQueryKey, type Identity } from "../src/identity";
 
-// The browser path for Retry and Reprocess (#410). How forbiddenOrSwitched
+// The browser path for Retry and Reprocess (#410), and Import a copy (#411). How forbiddenOrSwitched
 // reads every identity is owned by test/save-api.test.ts; here, that a
 // reprocess's 403 goes through it.
 
@@ -40,6 +40,19 @@ describe("reprocessReading", () => {
     expect(request.headers.get(EXPECTED_TENANT_HEADER)).toBe("usr_a");
     expect(request.headers.get("content-type")).toBe("application/json");
     expect(await request.json()).toEqual({});
+  });
+
+  // Import a copy (#411): the Markdown source and nothing else, never force.
+  it("posts a Markdown source when given one", async () => {
+    const fetchMock = vi.fn(async (_request: Request) => Response.json({ id: "rd_1", attempt_id: "att_1" }, { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(whoamiQueryKey, reader);
+    const body = { source: { kind: "markdown" as const, markdown: "# A copy", title: "A title" } };
+
+    await expect(reprocessReading(queryClient, "rd_1", "usr_a", body)).resolves.toEqual({ kind: "started" });
+
+    expect(await fetchMock.mock.calls[0]![0].json()).toEqual(body);
   });
 
   describe("on a 403", () => {

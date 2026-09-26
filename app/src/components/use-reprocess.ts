@@ -3,18 +3,21 @@ import { useEffect, useRef, useState } from "react";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import { reprocessReading } from "../api/reprocess";
 import { whoamiQueryKey, type Identity } from "../identity";
+import type { ReprocessMarkdownBody } from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
 import type { ReprocessOutcome } from "../reprocess";
 
-// Retry on a failed reading and Reprocess on a ready one (#410): one request,
-// POST /api/readings/:id/reprocess, sent only when the reader asks. The page
+// Retry on a failed reading and Reprocess on a ready one (#410), and Import a
+// copy (#411): one request, POST /api/readings/:id/reprocess, sent only when
+// the reader asks. Retry's and Reprocess's answers are the page's notice;
+// Import a copy's go back to its dialog, which keeps what was pasted. The page
 // that uses this is keyed on the reading id (ReadingPage.tsx), so an answer or
 // a request in flight belongs to one reading and is gone with it.
 //
 // - Never twice at once. The backend checks for a running attempt and then
 //   writes the manifest without a condition (src/intake/activation.ts), so two
 //   requests in flight together would both start a paid run. `sendingRef`
-//   refuses a second send until the first has settled.
+//   refuses a second send, of either kind, until the first has settled.
 // - Never on its own. `retry: 0`, and `networkMode: "always"`: a save made
 //   offline is held paused and sent when the network returns (SavePage.tsx),
 //   but a paid run sent minutes later, perhaps after the reader has left,
@@ -39,8 +42,18 @@ export type ReprocessNotice =
   | { kind: "offline" }
   | { kind: "server-error"; message: string };
 
+/** What a request answered, for the caller that renders it; `undefined` when there is nothing to say. */
+export type ReprocessAnswer = { kind: "started" } | { kind: "not-found" } | ReprocessNotice;
+
 export interface Reprocess {
+  /** Retry or Reprocess: the answer becomes the page's notice. */
   send: () => void;
+  /**
+   * Import a copy: the answer is the caller's to render. Nothing when a
+   * request was already in flight, or when the session ended (the shell
+   * replaces the page).
+   */
+  importCopy: (body: ReprocessMarkdownBody) => Promise<ReprocessAnswer | undefined>;
   /** Whether a request is in flight; its controls are `aria-disabled`. */
   sending: boolean;
   /** The last answer's notice: a new object for each answer, so the same words said twice are two events. */
@@ -71,8 +84,13 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
   }, [processing, notice]);
 
   const mutation = useMutation({
-    mutationFn: () =>
-      reprocessReading(queryClient, id, expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey))),
+    mutationFn: (body: ReprocessMarkdownBody | undefined) =>
+      reprocessReading(
+        queryClient,
+        id,
+        expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey)),
+        body,
+      ),
     networkMode: "always",
     retry: 0,
     onSettled: (outcome) => {
@@ -84,30 +102,38 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
     },
   });
 
-  function send() {
-    if (sendingRef.current) return;
+  /** The one way a request is made; undefined when one is already in flight. */
+  function ask(body?: ReprocessMarkdownBody): Promise<ReprocessAnswer | undefined> | undefined {
+    if (sendingRef.current) return undefined;
     sendingRef.current = true;
+    // Whatever the page said about the last request is stale once another is made.
     setNotice(null);
-    mutation
-      .mutateAsync()
+    return mutation
+      .mutateAsync(body)
       .then(
-        (outcome) => {
-          // A started attempt shows itself through the refetch; a 404 renders
-          // the not-found state the same way.
-          if (outcome.kind !== "started" && outcome.kind !== "not-found") setNotice(outcome);
-        },
-        (error: unknown) => {
-          // A 401 is the mutation cache's (auth/session.ts): the shell
-          // replaces the page, and nothing here needs saying.
-          if (!isUnauthorized(error)) setNotice(noticeOfError(error));
-        },
+        (outcome): ReprocessAnswer => outcome,
+        // A 401 is the mutation cache's (auth/session.ts): the shell
+        // replaces the page, and nothing here needs saying.
+        (error: unknown) => (isUnauthorized(error) ? undefined : noticeOfError(error)),
       )
       .finally(() => {
         sendingRef.current = false;
       });
   }
 
-  return { send, sending: mutation.isPending, notice };
+  function send() {
+    void ask()?.then((answer) => {
+      // A started attempt shows itself through the refetch; a 404 renders
+      // the not-found state the same way.
+      if (answer && answer.kind !== "started" && answer.kind !== "not-found") setNotice(answer);
+    });
+  }
+
+  function importCopy(body: ReprocessMarkdownBody) {
+    return ask(body) ?? Promise.resolve(undefined);
+  }
+
+  return { send, importCopy, sending: mutation.isPending, notice };
 }
 
 function noticeOfError(error: unknown): ReprocessNotice {

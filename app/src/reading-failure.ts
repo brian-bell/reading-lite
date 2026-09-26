@@ -11,8 +11,8 @@ import type { ProcessingStage, ReadingError } from "./reading";
 // error classes: renaming one at the backend fails that test rather than
 // silently demoting a reading to "Unknown".
 //
-// Recovery actions (Retry, Import a copy) arrive with capture in Phase 4
-// (#339); this slice states the category and what happened.
+// This module states the category and what happened; the recovery actions,
+// Retry and Import a copy, are the status card's (ReadingStatusCard.tsx).
 
 export type FailureCategory =
   | "source-unreachable"
