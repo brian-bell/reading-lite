@@ -369,6 +369,15 @@ describe("buildArchiveExport", () => {
     expect(row?.status).toBe("cancelled");
   });
 
+  it("keeps building past 600 continuations, which one-reading segments of compressible text reach inside ZIP32", async () => {
+    const { db, sql } = openControlPlane();
+    const { env } = await arrange(sql, db);
+    const deps = { nowMs: NOW_MS, segmentReadings: 1 };
+    expect(await buildArchiveExport(sql, envelopeFor(), env, deps)).toBe("continue");
+    await db.run("UPDATE archive_exports SET continuations = 600 WHERE id = ?", EXPORT_ID);
+    expect((await settle(sql, env, deps)).at(-1)).toBe("ready");
+  });
+
   it("refuses to continue past the continuation budget", async () => {
     const { db, sql } = openControlPlane();
     const { bucket, env } = await arrange(sql, db);

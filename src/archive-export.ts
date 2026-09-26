@@ -51,7 +51,14 @@ import {
 } from "./control-plane/export-envelope";
 import { parseTenantId, type TenantId } from "./control-plane/ids";
 import { fromTimestamp, toTimestamp } from "./control-plane/pg-time";
-import { ZipLimitError, concat, writeZipEocd, writeZipSegment, type ZipEntry } from "./modules/archive-zip";
+import {
+  ZIP32_MAX_ENTRIES,
+  ZipLimitError,
+  concat,
+  writeZipEocd,
+  writeZipSegment,
+  type ZipEntry,
+} from "./modules/archive-zip";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
 import { sha256Bytes } from "./modules/extractor/response-bytes";
 import { isEmptyContent } from "./modules/manifest-drafting";
@@ -84,17 +91,23 @@ export const ARCHIVE_EXPORT_SEGMENT_BYTES = 16 * 1024 * 1024;
  * the work done.
  */
 export const ARCHIVE_EXPORT_LEASE_MS = 30 * 60_000;
+// Files the last delivery adds: export.json, index.json, report.json, and
+// checksums.sha256. Reading segments leave room for them in ZIP32's entries.
+const CLOSING_ENTRIES = 4;
 /**
  * Self-sends one export may make. A continuation acks the current message and
  * sends a fresh one with a fresh retry budget, so without a bound a build that
  * commits a segment and then fails would never dead-letter.
  *
- * ZIP32 holds 65,535 entries and every reading ships at least its manifest,
- * so a library that fits spans at most 328 segments ended by the 200-reading
- * bound; the 4 GiB offset allows at most 256 ended by the 16 MiB bound. 600
- * covers both with room, and a stuck build still reaches it.
+ * Every continuing delivery moves the cursor past at least one reading, apart
+ * from the one hand-off to finalize. ZIP32 holds 65,535 entries; README.md and
+ * the closing files take five, and every reading ships at least its manifest,
+ * so an archive that fits holds at most 65,530 readings. The segment bounds do
+ * not give a tighter figure: the byte bound counts uncompressed bytes, so
+ * compressible readings can end a segment each while the zip stays small.
  */
-export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = 600;
+const ARCHIVE_MAX_READINGS = ZIP32_MAX_ENTRIES - CLOSING_ENTRIES - 1;
+export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = ARCHIVE_MAX_READINGS + 1;
 const ARCHIVE_EXPORT_RESUME_BATCH = 100;
 const CHECKSUMS_FILE = "checksums.sha256";
 
@@ -363,10 +376,6 @@ const SegmentStateSchema = z
   })
   .strict();
 type SegmentState = z.infer<typeof SegmentStateSchema>;
-
-// Files the last delivery adds: export.json, index.json, report.json, and
-// checksums.sha256. Reading segments leave room for them in ZIP32's entries.
-const CLOSING_ENTRIES = 4;
 
 function countStatuses(items: readonly ListIndexItem[]): {
   readings: number;

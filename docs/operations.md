@@ -2845,7 +2845,8 @@ ready. Segment keys are fixed per sequence number so a redelivery rewrites
 them; that is safe only while the consumer keeps `max_concurrency = 1`.
 
 `continuations` counts the self-sends; past `ARCHIVE_EXPORT_MAX_CONTINUATIONS`
-(600) the delivery throws, the message dead-letters, and the export fails.
+(65,531, one per reading a ZIP32 archive can hold plus the hand-off to
+finalize) the delivery throws, the message dead-letters, and the export fails.
 The `*/15` cron re-enqueues a queued or building export whose `updated_at` is
 older than 30 minutes (a lost continuation or message). The DLQ marks a queued
 or building export failed and then deletes that prefix; a database or R2 error

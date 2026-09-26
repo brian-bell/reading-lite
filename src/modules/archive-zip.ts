@@ -15,6 +15,8 @@ const ZIP_VERSION = 20;
 const METHOD_STORE = 0;
 const METHOD_DEFLATE = 8;
 const UINT16_MAX = 0xffff;
+/** Entries a ZIP32 archive can hold: its central directory counts them in 16 bits. */
+export const ZIP32_MAX_ENTRIES = UINT16_MAX;
 const UINT32_MAX = 0xffffffff;
 
 const STORED_EXTENSIONS = new Set([
