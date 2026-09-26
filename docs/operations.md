@@ -1143,7 +1143,7 @@ it. The role needs DDL, including `CREATE EXTENSION vector`. Setup never
 creates the database and teardown never drops it.
 
 Teardown removes Queue consumers before deleting the Worker, then deletes the
-reading, digest, wipe, and refresh Queue/DLQ pairs, empties the bucket via the
+reading, digest, wipe, export, and refresh Queue/DLQ pairs, empties the bucket via the
 S3-compatible R2 API, and deletes the bucket: exactly the Cloudflare resources
 setup creates. The bucket-empty step needs the `CORPUS_R2_*` credentials
 above. It retains the staging PostgreSQL database.
@@ -2731,6 +2731,50 @@ races past those checks lands under `u/{tenant}/exports/`, which the wipe's
 objects phase lists, so the late object reopens a finished wipe. Teardown
 deletes the tenant's `archive_exports` rows, and the residue scan reports
 `pg.archive_exports`.
+
+### A stuck export
+
+A queued or building export holds the tenant's one active slot, so
+`POST /api/exports` answers 409 until it ends. Let the queue end it rather
+than editing the row: there is no operator cancel command yet
+(reading-lite-mxwx.9). Changing `status` by hand leaves the parts under
+`exports/{exportId}/` behind: the consumer and the DLQ delete them only when
+they end the export themselves.
+
+Two paths end a stuck export on their own:
+
+- **A lost message** (a dropped continuation, or a crash between the cursor
+  commit and the self-send) leaves the row idle. The first `*/15` tick after
+  `updated_at` is 30 minutes old renews the row and sends the envelope again,
+  so the build resumes from its cursor within about 45 minutes.
+- **A delivery that keeps failing** throws, retries (`max_retries = 3`), and
+  dead-letters. The DLQ marks the row `failed` with `{"code":"dead_letter"}`
+  and deletes the prefix. The slot frees at once, and a failed export does not
+  count toward the daily limit.
+
+A database outage long enough to exhaust the DLQ's own retries drops the dead
+letter and leaves the row building; the cron resumes it 30 minutes later, and
+the build either finishes or dead-letters again. Nothing clears it if
+`ARCHIVE_EXPORT_JOBS` is unbound (the cron logs
+`archive_export_resume_skipped`) or the cron is not firing, so fix that first.
+
+Inspect read-only, with the database variable for that environment (see
+[deploying](#deploying) for the `NEON_*` names):
+
+```sh
+psql "$NEON_MAIN_DATABASE_URL" -c "SELECT id, tenant_id, status, requested_at,
+  started_at, updated_at, lease_seq, continuations, cursor, error
+  FROM archive_exports WHERE status IN ('queued', 'building') ORDER BY updated_at"
+```
+
+`updated_at` moves on every delivery and every cron renewal; `lease_seq`
+rises once per claim; `continuations` counts self-sends. A row whose
+`updated_at` keeps moving while `lease_seq` climbs and `cursor` stays put is
+failing and on its way to the DLQ. `error` is set only on a failed row:
+`dead_letter`, `zip_limit` (past 65,535 entries or 4 GiB), or `enqueue_failed`
+(the request committed but its first send failed). In Workers Logs, look for
+`archive_export_lease_held` (a duplicate delivery lost the lease, which is
+harmless), `archive_export_resume_failed`, and the consumer's thrown error.
 
 ## Relationship refresh queue plumbing
 

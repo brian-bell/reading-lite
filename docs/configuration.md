@@ -32,7 +32,8 @@ Bindings are `READINGS_BUCKET` (R2), `HYPERDRIVE` (PostgreSQL; locally a
 passthrough to the docker-compose `postgres` service on port 54329), the
 `AUTH_RATE_GUARD`, `TENANT_USAGE_GUARD`, and `GLOBAL_USAGE_GUARD` Durable
 Objects, and, in staging and production only, the `READING_JOBS`,
-`DIGEST_JOBS`, `ACCOUNT_WIPE_JOBS`, and `RELATIONSHIP_REFRESH_JOBS` queues.
+`DIGEST_JOBS`, `ACCOUNT_WIPE_JOBS`, `ARCHIVE_EXPORT_JOBS`, and
+`RELATIONSHIP_REFRESH_JOBS` queues.
 There is no D1 or Vectorize binding.
 
 Set secrets with `wrangler secret put --env staging|production`. See
