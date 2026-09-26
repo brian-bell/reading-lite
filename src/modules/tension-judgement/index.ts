@@ -120,6 +120,27 @@ export function buildOpenAITensionRequestBody(
   };
 }
 
+// Strict tool use makes `required` and `type` binding but does not list
+// array-form `type`, so the nullable side is spelled as anyOf here rather than
+// TENSION_JUDGEMENT_JSON_SCHEMA's ["string", "null"]. TensionJudgementSchema
+// still enforces the verdict/side pairing at parse time.
+const JUDGE_TENSION_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    verdict: {
+      type: "string",
+      enum: ["none", "contradicts", "supersedes", "qualifies"],
+    },
+    side: {
+      anyOf: [{ type: "string", enum: ["a", "b"] }, { type: "null" }],
+      description: "a or b for supersedes and qualifies; null otherwise.",
+    },
+    reason: { type: "string" },
+  },
+  required: ["verdict", "side", "reason"],
+} as const;
+
 export function buildAnthropicTensionRequestBody(
   input: TensionJudgementInput,
   model: string,
@@ -142,7 +163,8 @@ export function buildAnthropicTensionRequestBody(
         name: JUDGE_TENSION_TOOL_NAME,
         description:
           "Return whether reading a and reading b are in tension, and in which direction.",
-        input_schema: TENSION_JUDGEMENT_JSON_SCHEMA,
+        input_schema: JUDGE_TENSION_INPUT_SCHEMA,
+        strict: true,
       },
     ],
     tool_choice: { type: "tool", name: JUDGE_TENSION_TOOL_NAME },

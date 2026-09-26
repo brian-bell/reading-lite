@@ -10,6 +10,11 @@ import {
   parseOpenAIRelationshipResponse,
   type RelationshipJudgementInput,
 } from "../../../src/modules/relationship-judgement";
+import { RELATIONSHIP_JUDGEMENT_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
+import {
+  strictToolSchemaViolations,
+  withoutDescriptions,
+} from "../../helpers/strict-tool-schema";
 
 const input: RelationshipJudgementInput = {
   reading: {
@@ -95,6 +100,22 @@ describe("relationship judgement prompt", () => {
       type: "tool",
       name: JUDGE_RELATIONSHIPS_TOOL_NAME,
     });
+  });
+
+  it("sends a strict Anthropic tool: the shared schema minus the string bounds", () => {
+    const tool = (
+      buildAnthropicRelationshipRequestBody(input, "claude-sonnet-5", "high") as any
+    ).tools[0];
+    // Without strict, `required` and `type` are advisory (reading-lite-wj7d).
+    expect(tool.strict).toBe(true);
+    expect(strictToolSchemaViolations(tool.input_schema)).toEqual([]);
+    // RelationshipJudgementSchema still enforces minLength at parse time.
+    const withoutMinLength = JSON.parse(
+      JSON.stringify(RELATIONSHIP_JUDGEMENT_JSON_SCHEMA, (key, value) =>
+        key === "minLength" ? undefined : value,
+      ),
+    );
+    expect(withoutDescriptions(tool.input_schema)).toEqual(withoutMinLength);
   });
 });
 

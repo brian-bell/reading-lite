@@ -10,6 +10,11 @@ import {
   parseOpenAITensionResponse,
   type TensionJudgementInput,
 } from "../../../src/modules/tension-judgement";
+import { TENSION_JUDGEMENT_JSON_SCHEMA } from "../../../src/schemas/reading-summary";
+import {
+  strictToolSchemaViolations,
+  withoutDescriptions,
+} from "../../helpers/strict-tool-schema";
 
 const input: TensionJudgementInput = {
   a: {
@@ -88,6 +93,26 @@ describe("tension judgement prompt", () => {
     expect(anthropic.tools).toHaveLength(1);
     expect(anthropic.tools[0].name).toBe(JUDGE_TENSION_TOOL_NAME);
     expect(anthropic.tool_choice).toEqual({ type: "tool", name: JUDGE_TENSION_TOOL_NAME });
+  });
+
+  it("sends a strict Anthropic tool with the shared schema's fields, spelling nullable side as anyOf", () => {
+    const tool = (buildAnthropicTensionRequestBody(input, "claude-sonnet-5", "high") as any)
+      .tools[0];
+    // Without strict, `required` and `type` are advisory (reading-lite-wj7d).
+    expect(tool.strict).toBe(true);
+    expect(strictToolSchemaViolations(tool.input_schema)).toEqual([]);
+    const schema = withoutDescriptions(tool.input_schema) as any;
+    const { side: sharedSide, ...sharedRest } = TENSION_JUDGEMENT_JSON_SCHEMA.properties;
+    const { side, ...rest } = schema.properties;
+    expect(rest).toEqual(sharedRest);
+    expect(schema.required).toEqual(TENSION_JUDGEMENT_JSON_SCHEMA.required);
+    expect(schema.additionalProperties).toBe(false);
+    expect(side).toEqual({
+      anyOf: [
+        { type: "string", enum: sharedSide.enum.filter((value) => value !== null) },
+        { type: "null" },
+      ],
+    });
   });
 });
 
