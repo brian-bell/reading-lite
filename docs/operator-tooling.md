@@ -44,9 +44,11 @@ The identity is over **inventory rows, not files on disk**:
   [Retired commands](#retired-commands).
 - 18 port + 0 Worker endpoint + 8 retire now + 1 retire in #351 + 17 unchanged = 44.
 - Completed ports, marked **ported** below, count in the port total.
-- The two `migrate` commands were added afterwards, outside the 44, and
-  retired in reading-lite-gh351.4, so `ls scripts/ops-lib/commands/` reads
-  **36**. Checking 44 against the directory listing is the wrong check.
+- The directory has moved on since. `deploy web` left with the legacy SPA
+  (reading-lite-gh335.3); the two `migrate` commands were added outside the 44
+  and retired in reading-lite-gh351.4; `corpus purge-legacy` was added in
+  reading-lite-gh351.5. So `ls scripts/ops-lib/commands/` reads **36**
+  (36 − 1 + 1). Checking 44 against the directory listing is the wrong check.
 
 `scripts/account-lib/vector-ledger.ts` and `scripts/account-lib/operator-ledger.ts`
 were deleted with them. They are libraries, not commands, and are not
@@ -104,6 +106,7 @@ because what it asserts is that the PostgreSQL schema does **not** contain them.
 | `corpus audit` | `corpus-audit.ts` | Tenant readings, and with `--deep` the attempt event log, through `scripts/pg-lib/operator-corpus.ts` | **ported** | The read is real work — the non-ready inventory. reading-lite-gh347.4.7 inventories non-ready readings from `readings` and runs orphan-duplicate detection over the returned rows as it did over the list index. |
 | `corpus drop` | `corpus-drop.ts` | Resolves selectors against tenant readings, deletes the row, then the reading's R2 content | **ported** | Dropping a reading is still real work. reading-lite-gh347.4.7 deletes the row and lets `reading_urls`, revisions, relationships and the embedding cascade; `--vectorize` went with the index. Its R2 delete covers all three `contentKeys` tiers. |
 | `corpus ingest` | `corpus-ingest.ts` | Tenant PostgreSQL readings, URL ownership and embeddings; captured bytes in R2 | **ported** | reading-lite-gh347.4.2 uses the shared transactional writer and resumes the same provider batch after interrupted publication. |
+| `corpus purge-legacy` | `corpus-purge-legacy.ts` | The tenant's R2 root, listed; its reading rows and every key they resolve | **new in #351** | Added by reading-lite-gh351.5 to delete the manifest-era objects no row references: manifests, attempt logs, processing checkpoints, `index/*` pointers and markers, superseded legacy content and orphan prefixes. See [operations](operations.md#purging-the-manifest-era-layout-reading-lite-gh3515). |
 | `corpus purge-connections` | `corpus-purge-connections.ts` | Inbound `reading_relationships` rows naming a deleted reading, removed with one `DELETE` | **ported** | The dangling-inbound problem survives: `reading_relationships` has a foreign key on the source only, so a deleted reading leaves every inbound row naming it as `target_id`. reading-lite-gh347.4.7 replaced the manifest rewrite with one `DELETE ... WHERE target_id = $1`. The CAS loop and its conflict budget went with the manifests; `--sole-writer` did not, because a publisher in flight can still commit an inbound row after the DELETE's snapshot and no statement can exclude it. A post-delete recount checks that assertion and exits 1 on leftovers. |
 | `corpus recover` | `corpus-recover.ts` | Audit input and tenant PostgreSQL readings; batch content in R2 | **ported** | reading-lite-gh347.4.7 ports monitor reads; reading-lite-gh347.4.2 ports offline activation and publication. |
 | `corpus refresh-connections` | `corpus-refresh-connections.ts` | Tenant readings and relationships; writes judged connections under `--sole-writer` | **ported** | reading-lite-gh347.4.1. A judged set becomes rows in `reading_relationships` plus the load-bearing summary flags on the current `reading_revisions` row, which are what distinguish an empty set from an uncomputed one. |

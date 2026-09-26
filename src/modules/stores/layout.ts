@@ -25,6 +25,9 @@ export const READINGS_PREFIX = "readings/";
 export const EXTRACTED_FILE = "extracted.md";
 export const RAW_PREFIX = "raw.";
 export const ATTEMPTS_PREFIX = "attempts/";
+// The manifest-era paid checkpoint, one per attempt. Checkpoints live in
+// PostgreSQL now; the spelling stays so the legacy sweep can recognise them.
+export const PROCESSING_PREFIX = "processing/";
 // Immutable per-attempt content (ADR 0005). Each attempt writes its raw and
 // extracted objects under its own id and never overwrites another's, so a
 // failed reprocess leaves the published revision's content in place.
@@ -120,7 +123,7 @@ export function r2KeyLayout(keyRoot = ""): R2KeyLayout {
     attemptKey: (keyPrefix, attemptId) =>
       abs(`${keyPrefix}/${ATTEMPTS_PREFIX}${attemptId}.json`),
     processingCheckpointKey: (keyPrefix, attemptId) =>
-      abs(`${keyPrefix}/processing/${attemptId}.json`),
+      abs(`${keyPrefix}/${PROCESSING_PREFIX}${attemptId}.json`),
     revisionsPrefix: (keyPrefix) => abs(`${keyPrefix}/${REVISIONS_PREFIX}`),
     revisionRawKey: (keyPrefix, attemptId, ext) =>
       abs(`${keyPrefix}/${REVISIONS_PREFIX}${attemptId}/${RAW_PREFIX}${ext}`),

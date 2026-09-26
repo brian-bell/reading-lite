@@ -31,6 +31,7 @@ import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions
 import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
+import { corpusPurgeLegacyCommand } from "./commands/corpus-purge-legacy";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -77,6 +78,7 @@ export const defaultRegistry: Registry = {
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
     corpusPurgeConnectionsCommand,
+    corpusPurgeLegacyCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,

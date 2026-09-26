@@ -21,8 +21,9 @@
 // row is the record — so they dangle nothing, but a drop does not sweep them
 // and they will show as residue under the tenant root. Accepted, in the same
 // spirit as the orphaned attempt JSONs the manifest-era deletion plan accepted;
-// a bucket-wide sweep of the retired layout belongs to reading-lite-gh351, not
-// to a per-reading delete that would have to guess at key spellings.
+// `ops corpus purge-legacy` (reading-lite-gh351.5) sweeps the retired layout
+// tenant-wide, which a per-reading delete could only do by guessing at key
+// spellings.
 //
 // Non-ready only by default. A ready reading owns an embedding and is the live
 // owner of its URL, so ready deletion stays an explicit staging-cleanup path:
