@@ -1538,6 +1538,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
+| `npm run ops -- corpus purge-legacy` | delete the tenant's manifest-era R2 objects that no row references (plan-first; see [below](#purging-the-manifest-era-layout-reading-lite-gh3515)) |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
 examples below all select the founder tenant. Since the production cutover, new
@@ -2254,6 +2255,42 @@ same work through the offline provider Batch API path described below.
 npm run ops -- corpus audit --tenant "$TENANT" --execute      # writes index.json + INDEX.md
 npm run ops -- corpus recover --tenant "$TENANT" --index ./index.json --execute
 ```
+
+### Purging the manifest-era layout (reading-lite-gh351.5)
+
+Since the 2026-09-24 cutover the reading rows are the record, and the old R2
+layout under a tenant's root is dead weight. `corpus purge-legacy` lists the
+tenant's root, reads its reading rows, and deletes only objects with a legacy
+reason:
+
+- each reading's `manifest.json`, `attempts/` logs and `processing/` paid
+  checkpoints (checkpoints live in PostgreSQL now);
+- `index/list.json`, `index/refresh-state.json`, the `index/by-url/` and
+  `index/by-id/` pointers and the `index/deleted/` tombstones;
+- legacy-spelled `raw.{ext}` / `extracted.md` directly under a reading's
+  `key_prefix` that no row references (a reprocess superseded them);
+- every object under a `readings/…-rd_…` prefix that has no reading row.
+
+It keeps every key a row can resolve (`contentKeysFor`: current revision,
+earlier revisions, capturing attempts, and the legacy spelling of an imported
+reading no attempt has touched), every `revisions/` object,
+`index/refresh-cursor.json` (the hosted refresh reads it), and anything it does
+not recognise, which the plan lists for inspection. `--tenant global` is
+refused; retained pre-tenant data is out of scope.
+
+```sh
+npm run ops -- corpus purge-legacy --tenant "$TENANT" --bucket reading-lite-staging
+npm run ops -- corpus purge-legacy --tenant "$TENANT" --bucket reading-lite-staging --execute
+```
+
+The listing is taken before the rows are read, so an object that looks
+orphaned really has no row. Execute builds its own plan the same way, deletes
+the bookkeeping objects, then re-checks each reading (or its absence)
+immediately before deleting that reading's content, and finally lists again:
+exit 0 means a fresh listing found nothing classified as legacy. More than
+`--max-orphan-prefixes` (default 25) prefixes without a row refuses before any
+delete, because a bucket paired with the wrong database looks exactly like
+that.
 
 ### Founder corpus migration (s1k.6)
 
