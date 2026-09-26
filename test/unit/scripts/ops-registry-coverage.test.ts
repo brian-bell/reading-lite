@@ -37,7 +37,6 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   "reading-list": ["check", "process"],
   deploy: ["worker", "wipe-check", "release"],
   db: ["migrate"],
-  migrate: ["export", "import"],
   staging: ["setup", "teardown", "smoke", "prepare-context", "token-revocation"],
   founder: ["bootstrap"],
   extract: ["agent", "probe"],

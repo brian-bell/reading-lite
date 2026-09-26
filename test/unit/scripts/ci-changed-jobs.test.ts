@@ -18,7 +18,6 @@ describe("CI job selection for pull requests", () => {
     ["the OpenAPI spec the Worker suite checks", ["docs/openapi.yaml"], only("worker")],
     ["a Worker module", ["src/router.ts"], only("worker", "ops")],
     ["a Worker test", ["test/integration/submit.test.ts"], only("worker")],
-    ["a D1 migration", ["migrations/0020_x.sql"], only("worker")],
     ["a PostgreSQL migration", ["db/migrations/0002_x.sql"], only("worker")],
     ["a deploy workflow", [".github/workflows/deploy-app.yml"], only("worker")],
     ["a frontend route", ["app/src/routes/index.tsx"], only("app", "appBrowser")],
