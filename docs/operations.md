@@ -2855,10 +2855,12 @@ parts. A failed export does not count toward the daily limit, so the account
 can request another at once.
 
 A ready export expires seven days after it finished (`expires_at`). From then
-the download returns 410 `{"error":"expired"}`. The same `*/15` cron marks the
-row `expired`, then deletes its prefix, and clears `segments` only once the
-delete succeeds; a row left `expired` with `segments` set is a delete that
-failed (`archive_export_expire_failed`) and the next tick retries it.
+the download returns 410 `{"error":"expired"}`, and the same `*/15` cron marks
+the row `expired`. It deletes the prefix six hours later
+(`ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS`), so a download that started just before
+`expires_at` can finish streaming, and clears `segments` only once the delete
+succeeds. An `expired` row past that grace with `segments` still set is a
+delete that failed (`archive_export_expire_failed`); the next tick retries it.
 
 Account deletion (reading-lite-mxwx.4): `beginAccountDeletion` cancels a queued
 or building export after the `deleting` fence, and again when rerun. A delivery

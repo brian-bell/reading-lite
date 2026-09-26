@@ -142,12 +142,13 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
 - **Archive export** — one `archive_exports` row per request, and the row is
   the job: `ARCHIVE_EXPORT_JOBS` carries only `{tenantId, exportId}`. Status
   `queued` → `building` → `ready` | `failed` | `cancelled`, and `ready` →
-  `expired` seven days after it finished, when cron deletes the zip's parts
-  under the tenant's `exports/{exportId}/`. Account deletion cancels a queued
-  or building export; the consumer re-reads `users.status` on every delivery
-  and before a segment write, and publishes `ready` only under `users FOR
-  SHARE` with the account active. The parts live under the tenant root, so the
-  wipe sweeps them (a late one reopens it), and teardown deletes the rows. See
+  `expired` seven days after it finished; cron deletes the zip's parts under
+  the tenant's `exports/{exportId}/` after a download grace. Account deletion
+  cancels a queued or building export; the consumer re-reads `users.status` on
+  every delivery and before a segment write, and publishes `ready` only under
+  `users FOR SHARE` with the account active. The parts live under the tenant
+  root, so the wipe sweeps them (a late one reopens it), and teardown deletes
+  the rows. See
   [archive export plumbing](docs/operations.md#archive-export-queue-plumbing)
   and [the format](docs/archive-export.md).
 

@@ -120,6 +120,13 @@ const ARCHIVE_MAX_READINGS = ZIP32_MAX_ENTRIES - CLOSING_ENTRIES - 1;
 export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = ARCHIVE_MAX_READINGS + 1;
 const ARCHIVE_EXPORT_RESUME_BATCH = 100;
 const ARCHIVE_EXPORT_EXPIRE_BATCH = 100;
+/**
+ * How long an expired export keeps its parts. The download refuses from
+ * `expires_at` on, but one authorized just before it opens parts lazily as the
+ * client reads, so deleting at the mark could cut it off mid-stream. Six hours
+ * covers a 4 GiB archive at about 200 KB/s.
+ */
+export const ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS = 6 * 60 * 60_000;
 const CHECKSUMS_FILE = "checksums.sha256";
 
 // In the zip, so the package stays readable without the repo. The longer
@@ -915,11 +922,12 @@ export async function resumeStalledArchiveExports(
 }
 
 // The */15 cron's expiry (reading-lite-mxwx.4). A ready export past
-// `expires_at` is marked expired, then its prefix is deleted. The row goes
-// first so nothing serves a half-deleted archive; the download also refuses a
-// ready row past `expires_at` on its own, so a late tick changes nothing a
-// client sees. `segments` stays on the row until the delete succeeds, which
-// is how the next tick finds a delete that failed.
+// `expires_at` is marked expired at once; the download also refuses a ready
+// row past `expires_at` on its own, so a late tick changes nothing a client
+// sees. Its prefix is deleted only once ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS has
+// passed too, so a download that started before `expires_at` can finish.
+// `segments` stays on the row until the delete succeeds, which is how a later
+// tick finds a delete that failed.
 export async function expireArchiveExports(
   env: ArchiveExportEnv,
   deps: { nowMs: number },
@@ -942,9 +950,10 @@ export async function expireArchiveExports(
     );
     const rows = await db.all<{ id: string; tenant_id: string }>(
       `SELECT id, tenant_id FROM archive_exports
-       WHERE status = 'expired' AND segments IS NOT NULL
-       ORDER BY updated_at
+       WHERE status = 'expired' AND segments IS NOT NULL AND expires_at <= ?
+       ORDER BY expires_at
        LIMIT ?`,
+      toTimestamp(deps.nowMs - ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS),
       ARCHIVE_EXPORT_EXPIRE_BATCH,
     );
     let deleted = 0;
