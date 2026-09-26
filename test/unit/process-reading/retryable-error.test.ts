@@ -60,9 +60,12 @@ describe("retryableError", () => {
     expect(retryableError(new TestError("TooManyRedirectsError"))).toBe(false);
   });
 
-  it("LLM-shape errors are terminal (not retryable)", () => {
-    expect(retryableError(new TestError("BadToolInputError"))).toBe(false);
-    expect(retryableError(new TestError("NoToolUseError"))).toBe(false);
+  // A summarizer tool call that misses the schema is one bad sample, not a
+  // verdict about the source: the next reprocess can succeed. A malformed
+  // embedding response is a provider contract break and stays terminal.
+  it("summarizer tool-shape slips are retryable; a bad embedding response is terminal", () => {
+    expect(retryableError(new TestError("BadToolInputError"))).toBe(true);
+    expect(retryableError(new TestError("NoToolUseError"))).toBe(true);
     expect(retryableError(new TestError("BadEmbeddingResponseError"))).toBe(false);
   });
 

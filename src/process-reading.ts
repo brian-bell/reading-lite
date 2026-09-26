@@ -1081,6 +1081,9 @@ export function retryableError(e: unknown): boolean {
     return typeof status === "number" && (status === 429 || status >= 500);
   }
   if (e.name === "FetchTimeoutError") return true;
+  // The summarizer asked twice and both tool calls missed the schema. That is
+  // a property of those samples, not a verdict about the source.
+  if (e.name === "BadToolInputError" || e.name === "NoToolUseError") return true;
   // The resolver returned nothing this time. That is a report about the
   // resolver, not a verdict about the destination (BlockedHostError and
   // TooManyRedirectsError are the verdicts, and stay terminal below), so a
