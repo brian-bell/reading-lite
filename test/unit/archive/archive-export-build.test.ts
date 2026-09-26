@@ -11,7 +11,8 @@ import {
   type ArchiveExportJobDeps,
 } from "../../../src/archive-export";
 import { beginAccountDeletion } from "../../../src/control-plane/account-delete";
-import type { ControlPlaneDb } from "../../../src/control-plane/db";
+import { cancelActiveArchiveExports, markArchiveExportFailed } from "../../../src/control-plane/archive-exports";
+import { fromSql, type ControlPlaneDb } from "../../../src/control-plane/db";
 import { archiveExportEnvelopeV1 } from "../../../src/control-plane/export-envelope";
 import { parseTenantId, parseUserId } from "../../../src/control-plane/ids";
 import { toTimestamp } from "../../../src/control-plane/pg-time";
@@ -173,19 +174,20 @@ async function readArchive(
 function watchSql(
   sql: Sql,
   hooks: {
-    before?: (text: string, values: readonly unknown[]) => Promise<void>;
+    // `handle` is the connection or transaction the statement runs on.
+    before?: (text: string, values: readonly unknown[], handle: SqlQuery) => Promise<void>;
     after?: (text: string) => Promise<void>;
   },
 ): Sql {
   const watch = (handle: SqlQuery): SqlQuery => ({
     query: async <Row extends SqlRow = SqlRow>(text: string, values?: unknown[]) => {
-      await hooks.before?.(text, values ?? []);
+      await hooks.before?.(text, values ?? [], handle);
       const rows = await handle.query<Row>(text, values);
       await hooks.after?.(text);
       return rows;
     },
     execute: async (text, values) => {
-      await hooks.before?.(text, values ?? []);
+      await hooks.before?.(text, values ?? [], handle);
       const changes = await handle.execute(text, values);
       await hooks.after?.(text);
       return changes;
@@ -339,7 +341,7 @@ describe("buildArchiveExport", () => {
 
   it("stands down when a later delivery took the lease, leaving the cursor where it was", async () => {
     const { db, sql } = openControlPlane();
-    const { env } = await arrange(sql, db);
+    const { bucket, env } = await arrange(sql, db);
     let taken = false;
     const racing = watchSql(sql, {
       before: async (text) => {
@@ -354,7 +356,76 @@ describe("buildArchiveExport", () => {
       EXPORT_ID,
     );
     expect(row).toEqual({ status: "building", cursor: null, continuations: 0 });
+    // The build is still live, so the parts this delivery wrote stay.
+    expect(await exportObjects(bucket, env)).not.toEqual([]);
     expect((await settle(sql, env, { nowMs: NOW_MS })).at(-1)).toBe("ready");
+  });
+
+  // An operator cancel (`ops export cancel`) that lands after a delivery
+  // claimed the row. The canceller's prefix delete ran before this delivery's
+  // R2 writes, so the delivery that loses its commit deletes them itself.
+  it.each([
+    { phase: "readings", commit: /SET cursor = /, before: 0, end: "cancelled" },
+    { phase: "finalize", commit: /SET status = 'ready'/, before: 1, end: "cancelled" },
+    { phase: "readings", commit: /SET cursor = /, before: 0, end: "failed" },
+  ] as const)("deletes the parts it wrote when the export is $end before its $phase commit", async ({ commit, before, end }) => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    for (let delivery = 0; delivery < before; delivery++) {
+      expect(await buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS })).toBe("continue");
+    }
+    let armed = true;
+    const cancelling = watchSql(sql, {
+      // On the statement's own handle: finalize commits inside a transaction.
+      before: async (text, _values, handle) => {
+        if (!armed || !commit.test(text)) return;
+        armed = false;
+        expect(await exportObjects(bucket, env)).not.toEqual([]);
+        const ending = { tenantId: TENANT_ID, exportId: EXPORT_ID, nowMs: NOW_MS + 1 };
+        if (end === "cancelled") await cancelActiveArchiveExports(fromSql(handle), ending);
+        else await markArchiveExportFailed(fromSql(handle), { ...ending, error: { code: "dead_letter" } });
+      },
+    });
+
+    expect(await buildArchiveExport(cancelling, envelopeFor(), env, { nowMs: NOW_MS })).toBe(end);
+    expect(armed).toBe(false);
+    expect(await exportObjects(bucket, env)).toEqual([]);
+    const row = await db.first<{ status: string }>("SELECT status FROM archive_exports WHERE id = ?", EXPORT_ID);
+    expect(row?.status).toBe(end);
+  });
+
+  it("keeps the parts when finalize loses its commit to a live delivery", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    expect(await buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS })).toBe("continue");
+    let taken = false;
+    const racing = watchSql(sql, {
+      before: async (text, _values, handle) => {
+        if (taken || !/SET status = 'ready'/.test(text)) return;
+        taken = true;
+        await handle.execute("UPDATE archive_exports SET lease_seq = lease_seq + 1 WHERE id = $1", [EXPORT_ID]);
+      },
+    });
+
+    expect(await buildArchiveExport(racing, envelopeFor(), env, { nowMs: NOW_MS })).toBe("lease_held");
+    expect(taken).toBe(true);
+    expect(await exportObjects(bucket, env)).not.toEqual([]);
+    expect((await settle(sql, env, { nowMs: NOW_MS })).at(-1)).toBe("ready");
+  });
+
+  // A delivery of an ended export sweeps what an earlier delivery left: one
+  // whose own delete failed after it lost the commit, or one that crashed
+  // between its R2 writes and its commit.
+  it.each(["cancelled", "failed"] as const)("deletes leftover parts when a delivery finds the export %s", async (end) => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    const deps = { nowMs: NOW_MS, segmentReadings: 1 };
+    expect(await buildArchiveExport(sql, envelopeFor(), env, deps)).toBe("continue");
+    await db.run(`UPDATE archive_exports SET status = ? WHERE id = ?`, end, EXPORT_ID);
+    expect(await exportObjects(bucket, env)).not.toEqual([]);
+
+    expect(await buildArchiveExport(sql, envelopeFor(), env, deps)).toBe("skipped");
+    expect(await exportObjects(bucket, env)).toEqual([]);
   });
 
   it("cancels a build whose account left active between deliveries and deletes the segments it wrote", async () => {

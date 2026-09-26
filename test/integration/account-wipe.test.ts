@@ -749,9 +749,10 @@ describe("account wipe and archive export (reading-lite-mxwx.4)", () => {
   const EXPORT_ID = "exp_00000000-0000-4000-8000-0000000000cc";
 
   // An export delivery that passed its status checks before the fence can
-  // still write its segment after the wipe's objects phase. The late parts
-  // reopen the wipe, the tenant prefix still ends empty, and teardown takes
-  // the export row with the account.
+  // still write its segment after the wipe's objects phase. Once its commit
+  // loses to the cancel it deletes those parts itself; when that delete fails
+  // too, the late parts reopen the wipe, the tenant prefix still ends empty,
+  // and teardown takes the export row with the account.
   it("reopens for an export segment written after the objects phase and ends with an empty prefix", async () => {
     await seedReadings([ID_A]);
     await db().run(
@@ -776,18 +777,26 @@ describe("account wipe and archive export (reading-lite-mxwx.4)", () => {
       }
       return put(key, value, options);
     });
+    const del = bucket.delete.bind(bucket);
+    const deleteExportParts = vi.spyOn(bucket, "delete").mockImplementation(async (keys) => {
+      if ([keys].flat().some((key) => key.includes("/exports/"))) throw new Error("R2 delete failed");
+      return del(keys);
+    });
     const sql = sqlSessionFor(env);
     try {
-      // Deletion cancelled the row, so the cursor commit loses.
-      expect(
-        await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId: TENANT, exportId: EXPORT_ID }), wipeEnv(), {
+      // Deletion cancelled the row, so the cursor commit loses, and the
+      // delivery's own delete of what it wrote fails.
+      await expect(
+        buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId: TENANT, exportId: EXPORT_ID }), wipeEnv(), {
           nowMs: NOW_MS,
         }),
-      ).toBe("lease_held");
+      ).rejects.toThrow("R2 delete failed");
     } finally {
       await sql.end();
     }
     vi.mocked(bucket.put).mockRestore();
+    expect(deleteExportParts).toHaveBeenCalled();
+    deleteExportParts.mockRestore();
     expect(raced).toBe(true);
     expect(await listPrefixKeys(`${PREFIX}exports/`)).not.toEqual([]);
 

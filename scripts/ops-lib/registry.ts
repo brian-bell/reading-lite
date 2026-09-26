@@ -6,6 +6,8 @@ import { systemPolicyCommand } from "./commands/system-policy";
 import { systemStatusCommand } from "./commands/system-status";
 import { accountWipeCommand } from "./commands/account-wipe";
 import { accountResidueScanCommand } from "./commands/account-residue-scan";
+import { exportCancelCommand } from "./commands/export-cancel";
+import { exportInspectCommand } from "./commands/export-inspect";
 // The single typed registry behind `npm run ops`. Root, group, and command
 // help all render from these definitions, so a command that is not registered
 // here does not exist as far as the operator interface is concerned. New
@@ -61,6 +63,8 @@ export const defaultRegistry: Registry = {
     // Account deletion: queueing a forced wipe and scanning a tenant for
     // deletion residue.
     { name: "account", summary: "Account-deletion housekeeping and wipe residue" },
+    // Archive exports: inspecting and cancelling a stuck export.
+    { name: "export", summary: "Archive export inspection and stuck-export cancel" },
   ],
   commands: [
     systemPolicyCommand,
@@ -97,5 +101,7 @@ export const defaultRegistry: Registry = {
     evalSummarizerCommand,
     accountWipeCommand,
     accountResidueScanCommand,
+    exportInspectCommand,
+    exportCancelCommand,
   ],
 };

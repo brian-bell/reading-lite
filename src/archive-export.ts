@@ -5,7 +5,9 @@
 //
 // - A delivery claims the row by bumping `lease_seq` and commits only if the
 //   sequence is still the one it claimed; a delivery that lost it acks as
-//   `lease_held`, because the winner is doing the work.
+//   `lease_held`, because the winner is doing the work. When what took the
+//   lease was a cancel or a failure rather than another delivery, it deletes
+//   the prefix first: its R2 writes may have landed after the canceller's.
 // - It packs readings from the stored cursor until the segment holds
 //   ARCHIVE_EXPORT_SEGMENT_READINGS readings or ARCHIVE_EXPORT_SEGMENT_BYTES,
 //   writes the segment and its state object to R2, then commits the cursor.
@@ -49,6 +51,7 @@ import {
   EMPTY_ARCHIVE_EXPORT_CURSOR,
   archiveDocument,
   cancelActiveArchiveExports,
+  exportObjectPrefix,
   markArchiveExportFailed,
   type ArchiveExportCursor,
 } from "./control-plane/archive-exports";
@@ -406,10 +409,6 @@ function countStatuses(items: readonly ListIndexItem[]): {
   return counts;
 }
 
-function exportObjectPrefix(exportId: string): string {
-  return `exports/${exportId}`;
-}
-
 // Fixed per sequence number, so a redelivery rewrites what the delivery it
 // replaces may already have written. That relies on the export consumer's
 // max_concurrency = 1: no two deliveries of one export overlap.
@@ -452,7 +451,7 @@ async function claim(
   sql: Sql,
   envelope: ArchiveExportEnvelopeV1,
   nowMs: number,
-): Promise<Lease | "skipped" | "cancelled"> {
+): Promise<Lease | "skipped" | "ended" | "cancelled"> {
   const now = toTimestamp(nowMs);
   return fromSql(sql).transaction(async (tx) => {
     const user = await tx.first<{ status: string }>(
@@ -471,6 +470,7 @@ async function claim(
       envelope.exportId,
       envelope.tenantId,
     );
+    if (row?.status === "cancelled" || row?.status === "failed") return "ended";
     if (!row || (row.status !== "queued" && row.status !== "building")) return "skipped";
     if (!user || user.status !== "active") {
       await cancelActiveArchiveExports(tx, { tenantId: envelope.tenantId, exportId: envelope.exportId, nowMs });
@@ -527,6 +527,24 @@ async function commitCursor(build: ClaimedBuild, cursor: ArchiveExportCursor): P
   return result.changes === 1;
 }
 
+// A commit that changed no rows. Either another delivery holds the lease and
+// is doing the work, or the export ended under this one: an operator cancel
+// (`ops export cancel`), account deletion, or the DLQ. Whoever ended it
+// deleted the prefix, possibly before this delivery's R2 writes, and this
+// delivery acks, so no redelivery follows to sweep them. By now those writes
+// are done, so it deletes the prefix itself; if that throws, the retry claims
+// an ended export and sweeps it. A live build keeps its parts.
+async function standDown(build: ClaimedBuild): Promise<"lease_held" | "cancelled" | "failed"> {
+  const row = await fromSql(build.sql).first<{ status: string }>(
+    "SELECT status FROM archive_exports WHERE id = ? AND tenant_id = ?",
+    build.envelope.exportId,
+    build.envelope.tenantId,
+  );
+  if (row?.status !== "cancelled" && row?.status !== "failed") return "lease_held";
+  await build.content.deletePrefix(build.prefix);
+  return row.status;
+}
+
 // Re-read right before a readings segment's R2 writes (reading-lite-mxwx.4):
 // packing takes a while, and account deletion can start meanwhile. Parts
 // first, then the row, so a failed delete retries into a claim that still
@@ -552,7 +570,7 @@ async function cancelIfInactive(build: ClaimedBuild): Promise<boolean> {
 async function buildReadingsSegment(
   build: ClaimedBuild,
   bounds: SegmentBounds,
-): Promise<"continue" | "lease_held" | "cancelled"> {
+): Promise<"continue" | "lease_held" | "cancelled" | "failed"> {
   const { sql, envelope, content, prefix, lease } = build;
   // Bound the self-send before doing the work it would follow. Persisted, so
   // the count is the export's and not one delivery's.
@@ -629,7 +647,7 @@ async function buildReadingsSegment(
       segments: [...cursor.segments, part],
     };
   }
-  return (await commitCursor(build, next)) ? "continue" : "lease_held";
+  return (await commitCursor(build, next)) ? "continue" : standDown(build);
 }
 
 async function readSegmentState(content: ContentStore, key: string): Promise<SegmentState> {
@@ -642,7 +660,7 @@ async function readSegmentState(content: ContentStore, key: string): Promise<Seg
 // checksums.sha256 from every segment's state, then one central directory
 // joined from the fragments, then the EOCD. The download reads one part per
 // segment plus two. Publishes under users FOR SHARE and the lease.
-async function finalizeArchive(build: ClaimedBuild): Promise<"ready" | "cancelled" | "lease_held"> {
+async function finalizeArchive(build: ClaimedBuild): Promise<"ready" | "cancelled" | "failed" | "lease_held"> {
   const { sql, envelope, content, prefix, lease } = build;
   const cursor = lease.cursor;
   const items: ListIndexItem[] = [];
@@ -732,7 +750,7 @@ async function finalizeArchive(build: ClaimedBuild): Promise<"ready" | "cancelle
     return result.changes === 1 ? ("ready" as const) : ("lease_held" as const);
   });
   if (published === "cancelled") await content.deletePrefix(prefix);
-  return published;
+  return published === "lease_held" ? standDown(build) : published;
 }
 
 function positiveInteger(value: number, what: string): number {
@@ -756,6 +774,13 @@ export async function buildArchiveExport(
   const prefix = exportObjectPrefix(envelope.exportId);
   const lease = await claim(sql, envelope, deps.nowMs);
   if (lease === "skipped") return lease;
+  if (lease === "ended") {
+    // A cancelled or failed export serves no one, so a delivery that finds
+    // one sweeps it: parts an earlier delivery wrote before it crashed, or
+    // left when its own delete failed after losing the commit.
+    await content.deletePrefix(prefix);
+    return "skipped";
+  }
   if (lease === "cancelled") {
     // Earlier deliveries' segments serve no one once the row is cancelled.
     await content.deletePrefix(prefix);

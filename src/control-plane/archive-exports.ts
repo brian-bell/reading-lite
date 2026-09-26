@@ -170,21 +170,34 @@ export async function markArchiveExportFailed(
 
 // Cancels the tenant's queued or building export, or only `exportId` when
 // given. Bumps lease_seq, so a delivery mid-build loses its next commit.
+// `error` says who cancelled when it was not account deletion
+// (`operator_cancelled` from `ops export cancel`). Returns the rows changed.
 export async function cancelActiveArchiveExports(
   db: ControlPlaneDb,
-  input: { tenantId: string; nowMs: number; exportId?: string },
-): Promise<void> {
+  input: { tenantId: string; nowMs: number; exportId?: string; error?: ArchiveExportError },
+): Promise<number> {
   const now = toTimestamp(input.nowMs);
-  await db.run(
+  const error = input.error === undefined ? null : JSON.stringify(ArchiveExportErrorSchema.parse(input.error));
+  const result = await db.run(
     `UPDATE archive_exports
-     SET status = 'cancelled', completed_at = ?, updated_at = ?, lease_seq = lease_seq + 1
+     SET status = 'cancelled', completed_at = ?, updated_at = ?, lease_seq = lease_seq + 1,
+         error = ?::jsonb
      WHERE tenant_id = ? AND status IN ('queued', 'building') AND (?::text IS NULL OR id = ?)`,
     now,
     now,
+    error,
     input.tenantId,
     input.exportId ?? null,
     input.exportId ?? null,
   );
+  return result.changes;
+}
+
+// An export's parts, relative to the tenant root: segments, their state
+// objects, the joined central directory, and the EOCD. The consumer, the DLQ,
+// expiry, and `ops export cancel` all delete this prefix and nothing narrower.
+export function exportObjectPrefix(exportId: string): string {
+  return `exports/${exportId}`;
 }
 
 export interface LatestArchiveExport {
