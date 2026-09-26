@@ -48,7 +48,7 @@ export function ConfirmDialog({
   const [typed, setTyped] = useState("");
   const confirmable = confirmPhrase === undefined || typed.trim() === confirmPhrase;
 
-  useModalDialog(ref, () => phraseRef.current ?? cancelRef.current);
+  useModalDialog(ref, () => (phraseRef.current ?? cancelRef.current)?.focus());
 
   function handleClose() {
     const dialog = ref.current;

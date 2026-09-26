@@ -34,7 +34,8 @@ import type { ReprocessOutcome } from "../reprocess";
 //   check 9), and after a 409 it shows the attempt that was already running.
 //   A refusal changed nothing, and its notice is not held back behind a read.
 //   A request that failed without an answer may still have reached the
-//   backend, so it is read as a started one would be.
+//   backend, so it is read as a started one would be — unless it failed
+//   offline, when it never left the browser.
 
 /** What stays on the page after an answer that did not start an attempt, until the next send (or, for already-processing, until that attempt ends). */
 export type ReprocessNotice =
@@ -93,7 +94,9 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
       ),
     networkMode: "always",
     retry: 0,
-    onSettled: (outcome) => {
+    onSettled: (outcome, error) => {
+      // Offline, the request never left the browser.
+      if (error instanceof NetworkError && error.offline) return;
       const kind = outcome?.kind ?? "started";
       return Promise.all([
         CHANGED_THE_READING.has(kind) ? queryClient.invalidateQueries({ queryKey: readingQueryKey(id) }) : undefined,

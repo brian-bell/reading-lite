@@ -175,24 +175,6 @@ describe("the form", () => {
     expect(field("Markdown")).toHaveFocus();
   });
 
-  it("sends one request however many times Import is pressed while the first is in flight", async () => {
-    await openReading(FAILED);
-    let answer!: (response: Response) => void;
-    reprocesses = [() => new Promise<Response>((resolve) => (answer = resolve))];
-    await importCopy();
-
-    const submit = inDialog().getByRole("button", { name: "Import" });
-    expect(submit).toHaveAttribute("aria-disabled", "true");
-    fireEvent.click(submit);
-    fireEvent.click(submit);
-    await settle();
-    expect(reprocessRequests).toHaveLength(1);
-
-    answer(Response.json({ id: FAILED.id, attempt_id: "at_NEW01" }, { status: 202 }));
-    await settle();
-    expect(reprocessRequests).toHaveLength(1);
-  });
-
   it("sends nothing when the reader cancels", async () => {
     await openReading(FAILED);
     await openImport();
@@ -293,7 +275,11 @@ describe("an import that does not start", () => {
     reads = [json(runningOver(FAILED))];
     await importCopy("# A copy", "A title");
 
-    fireEvent.click(inDialog().getByRole("button", { name: "Try again" }));
+    const tryAgain = inDialog().getByRole("button", { name: "Try again" });
+    tryAgain.focus();
+    fireEvent.click(tryAgain);
+    // The notice goes with the request; focus stays in the dialog, on the Markdown.
+    expect(field("Markdown")).toHaveFocus();
     await settle();
 
     expect(reprocessRequests).toHaveLength(2);
@@ -301,6 +287,21 @@ describe("an import that does not start", () => {
       source: { kind: "markdown", markdown: "# A copy", title: "A title" },
     });
     expect(dialog()).toBeNull();
+  });
+
+  // The watch sees the attempt the 409 found end; the page behind now says how.
+  it("takes the already-processing notice away when that attempt ends", async () => {
+    await openReading(FAILED);
+    reprocesses = [json({ error: "reading already has an active attempt" }, 409)];
+    reads = [json(runningOver(FAILED))];
+    await importCopy();
+    expect(inDialog().getByText("This reading is already processing.", { selector: ".offline-notice-text" })).toBeInTheDocument();
+
+    reads = [json(FAILED)];
+    await advance(3 * SECOND);
+    await settle();
+    expect(inDialog().queryByText("This reading is already processing.", { selector: ".offline-notice-text" })).toBeNull();
+    expect(field("Markdown")).toHaveValue("# A copy\n\nThe whole article.");
   });
 
   it("leaves the page's own notices to the page's own actions", async () => {

@@ -23,13 +23,13 @@ import { focusPageHeading } from "./PageHeading";
 
 export function useModalDialog(
   ref: RefObject<HTMLDialogElement | null>,
-  initialFocus: () => HTMLElement | null | undefined,
+  focusInitial: () => void,
 ) {
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
     if (!dialog.open) dialog.showModal();
-    initialFocus()?.focus();
+    focusInitial();
     return () => {
       if (!dialog.open) return;
       // Removed while open: after this commit the new page is in the DOM.

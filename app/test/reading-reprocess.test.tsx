@@ -342,6 +342,20 @@ describe("a reprocess that does not start", () => {
     expect(button("Check status")).toHaveFocus();
   });
 
+  // Try again's notice goes with the request it makes.
+  it("gives focus to Retry when Try again takes its notice away", async () => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    await openReading(failed);
+    reprocesses = [json({ error: "queue unbound" }, 503)];
+    fireEvent.click(button("Retry"));
+    await settle();
+
+    const tryAgain = button("Try again");
+    tryAgain.focus();
+    fireEvent.click(tryAgain);
+    await settle();
+    expect(button("Retry")).toHaveFocus();
+  });
 });
 
 // Only an answer that changed something is worth a read: a started attempt
@@ -363,6 +377,15 @@ describe("what is read again after an answer", () => {
     {
       name: "a quota",
       answer: () => json({ error: "hourly reading quota exceeded", code: "quota_exhausted", limit: "hourly" }, 429),
+      reading: false,
+      library: false,
+    },
+    {
+      name: "a request made offline",
+      answer: () => () => {
+        onlineManager.setOnline(false);
+        throw new TypeError("Failed to fetch");
+      },
       reading: false,
       library: false,
     },

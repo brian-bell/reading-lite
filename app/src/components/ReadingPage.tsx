@@ -215,7 +215,12 @@ function ReadingSurface({
 
   function tryAgain() {
     if (reading.status === "ready") confirmReprocess();
-    else if (!busy) reprocess.send();
+    else if (!busy) {
+      // The notice whose Try again this was goes with the send; focus goes to
+      // the card's Retry rather than the document.
+      if (document.activeElement?.closest(".offline-notice")) cardActionRef.current?.focus();
+      reprocess.send();
+    }
   }
 
   return (
@@ -304,8 +309,12 @@ function ReadingSurface({
           sending={reprocess.sending}
           onClose={() => setImporting(false)}
           // A failed reading's opener goes with the failure once the import
-          // starts; the card's first control is the same button throughout.
-          returnFocus={() => (openerRef.current?.isConnected ? openerRef.current : cardActionRef.current)}
+          // starts, and a notice's goes with the notice; the card's first
+          // control is the same button throughout, and a ready reading always
+          // has Reprocess.
+          returnFocus={() =>
+            openerRef.current?.isConnected ? openerRef.current : (cardActionRef.current ?? reprocessRef.current)
+          }
         />
       ) : null}
     </div>

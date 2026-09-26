@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   firstProblemField,
   markdownImportProblems,
@@ -7,7 +7,7 @@ import {
   type MarkdownImportValues,
   type ReprocessMarkdownBody,
 } from "../import-markdown";
-import type { Reading } from "../reading";
+import { isProcessing, type Reading } from "../reading";
 import { MarkdownImportForm, type MarkdownImportFormHandle } from "./MarkdownImportForm";
 import { useModalDialog } from "./modal-dialog";
 import { ReprocessNoticeBanner, reprocessNoticeSentence } from "./ReprocessNotice";
@@ -61,10 +61,24 @@ export function ImportCopyDialog({
   const [said, setSaid] = useState<string | null>(null);
 
   // The Markdown is what the reader came to give; the source URL is fixed.
-  useModalDialog(ref, () => {
-    const dialog = ref.current;
-    return dialog?.querySelector<HTMLTextAreaElement>("textarea[name=markdown]");
-  });
+  useModalDialog(ref, () => formRef.current?.focus("markdown"));
+
+  // "Already processing" is about the attempt the 409 found: once this dialog
+  // has seen it running and then seen it end, the notice would contradict the
+  // page behind it, as use-reprocess.ts clears the page's own.
+  const processing = isProcessing(reading);
+  const sawProcessing = useRef(false);
+  useEffect(() => {
+    if (notice?.kind !== "already-processing") {
+      sawProcessing.current = false;
+      return;
+    }
+    if (processing) sawProcessing.current = true;
+    else if (sawProcessing.current) {
+      setNotice(null);
+      setSaid(null);
+    }
+  }, [processing, notice]);
 
   function close() {
     ref.current?.close();
@@ -77,6 +91,9 @@ export function ImportCopyDialog({
 
   function submit() {
     if (sending) return;
+    // The notice whose Try again asked for this is about to go, and with it
+    // the focused button; focus goes back to the Markdown, not the document.
+    if (document.activeElement?.closest(".offline-notice")) formRef.current?.focus("markdown");
     setNotice(null);
     setSaid(null);
     // The source URL's rule is left to the backend: the reader cannot change it.
