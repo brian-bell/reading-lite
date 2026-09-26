@@ -119,7 +119,7 @@ const CLOSING_ENTRIES = 4;
 const ARCHIVE_MAX_READINGS = ZIP32_MAX_ENTRIES - CLOSING_ENTRIES - 1;
 export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = ARCHIVE_MAX_READINGS + 1;
 const ARCHIVE_EXPORT_RESUME_BATCH = 100;
-const ARCHIVE_EXPORT_EXPIRE_BATCH = 100;
+export const ARCHIVE_EXPORT_EXPIRE_BATCH = 100;
 /**
  * How long an expired export keeps its parts. The download refuses from
  * `expires_at` on, but one authorized just before it opens parts lazily as the
@@ -927,7 +927,10 @@ export async function resumeStalledArchiveExports(
 // sees. Its prefix is deleted only once ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS has
 // passed too, so a download that started before `expires_at` can finish.
 // `segments` stays on the row until the delete succeeds, which is how a later
-// tick finds a delete that failed.
+// tick finds a delete that failed. Each tick touches the rows it picks before
+// trying them and picks the least recently touched first, so a row whose
+// delete keeps failing rotates behind newer expiries instead of holding the
+// head of the batch.
 export async function expireArchiveExports(
   env: ArchiveExportEnv,
   deps: { nowMs: number },
@@ -949,10 +952,15 @@ export async function expireArchiveExports(
       ARCHIVE_EXPORT_EXPIRE_BATCH,
     );
     const rows = await db.all<{ id: string; tenant_id: string }>(
-      `SELECT id, tenant_id FROM archive_exports
-       WHERE status = 'expired' AND segments IS NOT NULL AND expires_at <= ?
-       ORDER BY expires_at
-       LIMIT ?`,
+      `UPDATE archive_exports SET updated_at = ?
+       WHERE id IN (
+         SELECT id FROM archive_exports
+         WHERE status = 'expired' AND segments IS NOT NULL AND expires_at <= ?
+         ORDER BY updated_at
+         LIMIT ?
+       ) AND status = 'expired' AND segments IS NOT NULL
+       RETURNING id, tenant_id`,
+      now,
       toTimestamp(deps.nowMs - ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS),
       ARCHIVE_EXPORT_EXPIRE_BATCH,
     );
@@ -960,17 +968,24 @@ export async function expireArchiveExports(
     for (const row of rows) {
       try {
         const tenantId = parseTenantId(row.tenant_id);
-        if (!tenantId) continue;
-        const content = contentStoreFor(env.READINGS_BUCKET, { tenantId }, env);
-        await content.deletePrefix(exportObjectPrefix(row.id));
+        if (tenantId) {
+          const content = contentStoreFor(env.READINGS_BUCKET, { tenantId }, env);
+          await content.deletePrefix(exportObjectPrefix(row.id));
+        } else {
+          // A build writes parts only under its envelope's parsed tenant and
+          // commits only where the row's tenant_id matches it, so this row
+          // points at nothing to delete. Clear it rather than retry it forever.
+          console.error(
+            JSON.stringify({ event: "archive_export_expire_failed", export_id: row.id, reason: "invalid_tenant_id" }),
+          );
+        }
         await db.run(
-          `UPDATE archive_exports SET segments = NULL, updated_at = ?
+          `UPDATE archive_exports SET segments = NULL
            WHERE id = ? AND tenant_id = ? AND status = 'expired'`,
-          now,
           row.id,
           row.tenant_id,
         );
-        deleted += 1;
+        if (tenantId) deleted += 1;
       } catch (error) {
         console.error(
           JSON.stringify({

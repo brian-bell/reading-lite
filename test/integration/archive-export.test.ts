@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ARCHIVE_EXPORT_DAILY_WINDOW_MS } from "../../src/control-plane/archive-exports";
 import {
   ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS,
+  ARCHIVE_EXPORT_EXPIRE_BATCH,
   ARCHIVE_EXPORT_LEASE_MS,
   ARCHIVE_EXPORT_MAX_CONTINUATIONS,
   buildArchiveExport,
@@ -631,6 +632,99 @@ describe("archive export", () => {
     expect(await row()).toEqual({ status: "expired", has_segments: false });
     expect(await content.list(`exports/${id}`)).toEqual([]);
     expect(await download()).toEqual({ status: 410, body: { error: "expired" } });
+  });
+
+  it("rotates an expired export whose delete keeps failing behind newer expiries", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_expiry_rotation");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    const { id } = (await created.res.json()) as { id: string };
+    await drain();
+    const cp = testControlPlane(env);
+    const content = contentStoreFor(env.READINGS_BUCKET, founderTenant(), env);
+    expect((await content.list(`exports/${id}`)).length).toBeGreaterThan(0);
+    await cp.run(
+      "UPDATE archive_exports SET status = 'expired', expires_at = ?, updated_at = ? WHERE id = ?",
+      toTimestamp(NOW_MS),
+      toTimestamp(NOW_MS),
+      id,
+    );
+    // A full batch of older expiries whose deletes always fail, sorted ahead
+    // of the new one both by expiry and by last touch.
+    await cp.run(
+      `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at, expires_at, segments)
+       SELECT 'stuck_' || n, ?, 'expired', ?, ?, ?, '[]'::jsonb FROM generate_series(1, ?) AS n`,
+      FOUNDER_TENANT_ID,
+      toTimestamp(NOW_MS - 1),
+      toTimestamp(NOW_MS - 1),
+      toTimestamp(NOW_MS - 1),
+      ARCHIVE_EXPORT_EXPIRE_BATCH,
+    );
+    const hasSegments = async (exportId: string) =>
+      (
+        await cp.first<{ has_segments: boolean }>(
+          "SELECT segments IS NOT NULL AS has_segments FROM archive_exports WHERE id = ?",
+          exportId,
+        )
+      )?.has_segments;
+
+    const list = env.READINGS_BUCKET.list.bind(env.READINGS_BUCKET);
+    const listSpy = vi.spyOn(env.READINGS_BUCKET, "list").mockImplementation(async (options) => {
+      if (options?.prefix?.includes("exports/stuck_")) throw new Error("r2 refuses");
+      return list(options);
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const tick = (offsetMs: number) =>
+      worker.scheduled(
+        { scheduledTime: NOW_MS + ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS + offsetMs, cron: CRON.cron } as ScheduledController,
+        env as unknown as Env,
+      );
+    try {
+      await tick(0);
+      expect(await hasSegments(id)).toBe(true);
+      expect(await hasSegments("stuck_1")).toBe(true);
+
+      await tick(15 * 60_000);
+    } finally {
+      listSpy.mockRestore();
+      errors.mockRestore();
+    }
+    expect(await hasSegments(id)).toBe(false);
+    expect(await content.list(`exports/${id}`)).toEqual([]);
+    expect(await hasSegments("stuck_1")).toBe(true);
+  });
+
+  it("clears an expired export whose tenant id does not parse, logging it once", async () => {
+    const cp = testControlPlane(env);
+    const past = toTimestamp(NOW_MS);
+    await cp.run(
+      `INSERT INTO users (id, email_canonical, email_display, status, email_verified_at, created_at, updated_at)
+       VALUES ('not_a_tenant', 'bad@test.example', 'bad@test.example', 'active', ?, ?, ?)`,
+      past,
+      past,
+      past,
+    );
+    await cp.run(
+      `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at, expires_at, segments)
+       VALUES ('bad_tenant_export', 'not_a_tenant', 'expired', ?, ?, ?, '[]'::jsonb)`,
+      past,
+      past,
+      past,
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const pastGrace = { scheduledTime: NOW_MS + ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS, cron: CRON.cron } as ScheduledController;
+    try {
+      await worker.scheduled(pastGrace, env as unknown as Env);
+      await worker.scheduled(pastGrace, env as unknown as Env);
+      const logged = errors.mock.calls.filter(([line]) => String(line).includes("invalid_tenant_id"));
+      expect(logged).toHaveLength(1);
+      expect(JSON.parse(String(logged[0]![0]))).toMatchObject({ export_id: "bad_tenant_export" });
+    } finally {
+      errors.mockRestore();
+    }
+    expect(
+      await cp.first("SELECT status, segments FROM archive_exports WHERE id = 'bad_tenant_export'"),
+    ).toEqual({ status: "expired", segments: null });
   });
 
   it("matches source counts and names every missing artifact and dangling relationship", async () => {

@@ -2720,7 +2720,12 @@ the row `expired`. It deletes the prefix six hours later
 (`ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS`), so a download that started just before
 `expires_at` can finish streaming, and clears `segments` only once the delete
 succeeds. An `expired` row past that grace with `segments` still set is a
-delete that failed (`archive_export_expire_failed`); the next tick retries it.
+delete that failed (`archive_export_expire_failed`); a later tick retries it.
+Each tick touches the rows it tries and takes the least recently touched
+first, so a delete that keeps failing moves behind newer expiries rather than
+blocking them. A row whose `tenant_id` does not parse is logged once with
+`reason: "invalid_tenant_id"` and its `segments` cleared: a build writes parts
+only under a parsed tenant matching the row, so there is nothing to delete.
 
 Account deletion (reading-lite-mxwx.4): `beginAccountDeletion` cancels a queued
 or building export after the `deleting` fence, and again when rerun. A delivery
