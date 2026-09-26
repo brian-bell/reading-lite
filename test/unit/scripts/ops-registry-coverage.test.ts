@@ -31,7 +31,6 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "refresh-connections",
     "refresh-tensions",
     "purge-connections",
-    "purge-legacy",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],
@@ -42,7 +41,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   founder: ["bootstrap"],
   extract: ["agent", "probe"],
   eval: ["summarizer"],
-  account: ["sweep-wipe-prefix", "wipe", "residue-scan"],
+  account: ["wipe", "residue-scan"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");

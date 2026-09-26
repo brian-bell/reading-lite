@@ -38,17 +38,17 @@ const insertChallenge = (id: string, state: string) =>
   );
 
 describe("control-plane schema", () => {
-  it("creates every D1 control-plane table except the vector ledgers", async () => {
+  it("creates every control-plane table", async () => {
     const rows = await sql().query<{ table_name: string }>(
       `SELECT table_name FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name = ANY ($1::text[])
        ORDER BY table_name COLLATE "C"`,
-      [[...CONTROL_PLANE_TABLES, "vector_ledger", "vector_ledger_retained"]],
+      [CONTROL_PLANE_TABLES],
     );
     expect(rows.map((row) => row.table_name)).toEqual(CONTROL_PLANE_TABLES);
   });
 
-  it("keeps D1's foreign keys, none cascading, and gives account_deletions none", async () => {
+  it("keeps the control plane's foreign keys, none cascading, and gives account_deletions none", async () => {
     const rows = await sql().query(
       `SELECT c.conrelid::regclass::text AS "from", a.attname AS "column",
               c.confrelid::regclass::text AS "to", c.confdeltype AS on_delete
@@ -103,7 +103,7 @@ describe("control-plane schema", () => {
     expect(typeOf("dev_mail_outbox", "id")).toBe("bigint");
   });
 
-  it("drops the Vectorize-only wipe columns", async () => {
+  it("pins wipe_progress's columns", async () => {
     const rows = await sql().query<{ column_name: string }>(
       `SELECT column_name FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = 'wipe_progress' ORDER BY column_name`,

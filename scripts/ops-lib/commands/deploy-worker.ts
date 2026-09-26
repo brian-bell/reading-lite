@@ -19,7 +19,7 @@ import { readMigrations, type MigrationFile } from "../../pg-lib/migrate";
 import { connectMigrationClient, runPendingMigrations, type MigrationConnection } from "../../pg-lib/migrate-runner";
 import { assertDatabaseUrlEnvMatches } from "../../pg-lib/operator-db";
 import { validateTenantActivation } from "../tenant-activation-preflight";
-import { checkPostgresCutover } from "../postgres-cutover";
+import { checkHyperdriveBinding } from "../hyperdrive-binding";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
 
 export type DeployEnv = "production" | "staging";
@@ -28,7 +28,7 @@ export interface DeployWorkerDeps extends BaseDeps {
   runWrangler: (args: string[]) => Promise<number>;
   validateCandidate?: (sha: string) => Promise<void>;
   validateTenantActivation: typeof validateTenantActivation;
-  checkPostgresCutover: typeof checkPostgresCutover;
+  checkHyperdriveBinding: typeof checkHyperdriveBinding;
   env: Record<string, string | undefined>;
   readMigrations: () => MigrationFile[];
   connect: (databaseUrl: string) => Promise<MigrationConnection>;
@@ -64,7 +64,7 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   if (!env) throw new UsageError(`invalid --env: ${values.env}. Expected production or staging.`);
   const execute = values.execute === true;
 
-  // Argument validation only, before the cutover guard and anything remote: a
+  // Argument validation only, before the binding check and anything remote: a
   // deploy that names the wrong database must never reach the network.
   const databaseUrlEnv = values["database-url-env"];
   if (!databaseUrlEnv) {
@@ -78,11 +78,11 @@ async function runDeployWorker(argv: string[], deps: DeployWorkerDeps): Promise<
   const wranglerArgs = buildWranglerArgs({ env, execute });
   if (releaseSha) wranglerArgs.push("--tag", releaseSha);
   const mode = execute ? "DEPLOY" : "PLAN";
-  // First, before anything remote: a storage-migration candidate must not
-  // reach an environment that has not been cut over (ADR 0005).
-  const cutover = deps.checkPostgresCutover(env, { execute });
-  if (!cutover.ok) {
-    deps.io.stderr(`[${mode}] PostgreSQL cutover guard: REFUSED. ${cutover.error}`);
+  // First, before anything remote: never upload a Worker whose Hyperdrive
+  // binding is still a placeholder (ADR 0005).
+  const binding = deps.checkHyperdriveBinding(env, { execute });
+  if (!binding.ok) {
+    deps.io.stderr(`[${mode}] Hyperdrive binding check: REFUSED. ${binding.error}`);
     if (execute) return 2;
   }
   deps.io.stderr(
@@ -206,11 +206,9 @@ is imported once by founder bootstrap and is not a runtime auth fallback.
 OPENAI_API_KEY is always required; if SUMMARIZER_PROVIDER=anthropic, also set
 ANTHROPIC_API_KEY.
 
-A wrangler.toml that binds PostgreSQL (Hyperdrive) for the target environment
-is refused until POSTGRES_CUTOVER_ENABLED for that environment is true in
-scripts/ops-lib/postgres-cutover.ts (ADR 0005). Plan mode reports the refusal;
---execute exits 2 before the preflight, the migrations or the upload, and also
-refuses a placeholder Hyperdrive id.`,
+A Hyperdrive binding whose id is still a placeholder is refused
+(scripts/ops-lib/hyperdrive-binding.ts, ADR 0005): plan mode reports it;
+--execute exits 2 before the preflight, the migrations or the upload.`,
   defaultDeps: (io: CommandIo): DeployWorkerDeps => ({
     io,
     runWrangler: async (wranglerArgs) => {
@@ -222,7 +220,7 @@ refuses a placeholder Hyperdrive id.`,
       });
     },
     validateTenantActivation,
-    checkPostgresCutover,
+    checkHyperdriveBinding,
     env: process.env,
     readMigrations: () => readMigrations(),
     connect: connectMigrationClient,

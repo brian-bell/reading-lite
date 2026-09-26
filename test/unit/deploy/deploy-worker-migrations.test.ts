@@ -58,7 +58,7 @@ function deps(
     runWrangler,
     validateTenantActivation: vi.fn(async () => ({ ok: true, message: "already enabled" })),
     // The cutover guard has its own owner: postgres-cutover.test.ts.
-    checkPostgresCutover: () => ({ ok: true, bound: false }),
+    checkHyperdriveBinding: () => ({ ok: true, bound: false }),
     env: options.env ?? { PRODUCTION_DATABASE_URL: "postgres://production", STAGING_DATABASE_URL: "postgres://staging" },
     readMigrations: () => options.pending ?? [],
     connect,
@@ -164,12 +164,12 @@ describe("ops deploy worker --database-url-env pairing", () => {
     ["production", "DATABASE_URL", "does not name a production database"],
   ])("refuses --env %s with --database-url-env %s before any remote call", async (env, name, message) => {
     const { built, runWrangler, connect } = deps();
-    const checkPostgresCutover = vi.fn(() => ({ ok: true, bound: false }) as const);
-    built.checkPostgresCutover = checkPostgresCutover;
+    const checkHyperdriveBinding = vi.fn(() => ({ ok: true, bound: false }) as const);
+    built.checkHyperdriveBinding = checkHyperdriveBinding;
     await expect(
       deployWorkerCommand.run(["--env", env, "--execute", "--database-url-env", name], built),
     ).rejects.toThrow(message);
-    expect(checkPostgresCutover).not.toHaveBeenCalled();
+    expect(checkHyperdriveBinding).not.toHaveBeenCalled();
     expect(built.validateTenantActivation).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
     expect(runWrangler).not.toHaveBeenCalled();

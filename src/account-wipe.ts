@@ -126,7 +126,6 @@ import {
   parseAccountWipeEnvelope,
   type AccountWipeEnvelopeV1,
 } from "./control-plane/wipe-envelope";
-import { BY_ID_PREFIX, READINGS_PREFIX } from "./modules/stores/layout";
 import { tenantDataPlaneEnabled, tenantKeyRoot } from "./modules/stores/tenant-root";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
 import {
@@ -134,7 +133,6 @@ import {
   deleteTenantReadings,
 } from "./modules/stores/postgres/manifest-rows";
 import { RateLimitedError } from "./modules/http-retry";
-import { parseReadingId } from "./services";
 
 export { AccountWipeProgressConflictError } from "./control-plane/wipe-progress";
 
@@ -293,24 +291,6 @@ export function wipeNeedsResume(
 /** True while cron should not enqueue a duplicate delivery. */
 export function wipeLeaseHeld(updatedAtMs: number, nowMs: number): boolean {
   return nowMs - updatedAtMs < ACCOUNT_WIPE_IN_FLIGHT_MS;
-}
-
-/**
- * The reading id a tenant-relative R2 key belongs to, or null.
- *
- * The corpus-walking rule, single-homed here for the operator commands that
- * derive reading ids from R2 keys (`ops corpus seed-vector-ledger`, the
- * bare-vector audit). `parseReadingId` enforces the Crockford alphabet.
- */
-export function readingIdFromRelativeKey(relativeKey: string): string | null {
-  if (relativeKey.startsWith(BY_ID_PREFIX)) {
-    const rest = relativeKey.slice(BY_ID_PREFIX.length);
-    const id = rest.split("/")[0] ?? "";
-    return parseReadingId(id);
-  }
-  if (!relativeKey.startsWith(READINGS_PREFIX)) return null;
-  const match = /T\d{6}Z-(rd_[0-9A-HJKMNP-TV-Z]{10})(?:\/|$)/.exec(relativeKey);
-  return match ? parseReadingId(match[1] ?? "") : null;
 }
 
 export async function listDeletingUsers(

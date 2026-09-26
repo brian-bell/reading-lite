@@ -13,7 +13,6 @@ import { accountResidueScanCommand } from "./commands/account-residue-scan";
 // their CommandDefinition to `commands` and, if needed, a new group.
 
 import type { AnyCommand, CommandGroup } from "./contract";
-import { accountSweepWipePrefixCommand } from "./commands/account-sweep-wipe-prefix";
 import { corpusAuditCommand } from "./commands/corpus-audit";
 import { dbMigrateCommand } from "./commands/db-migrate";
 import { deployWipeCheckCommand } from "./commands/deploy-wipe-check";
@@ -31,7 +30,6 @@ import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions
 import { corpusDropCommand } from "./commands/corpus-drop";
 import { corpusIngestCommand } from "./commands/corpus-ingest";
 import { corpusPurgeConnectionsCommand } from "./commands/corpus-purge-connections";
-import { corpusPurgeLegacyCommand } from "./commands/corpus-purge-legacy";
 import { corpusRecoverCommand } from "./commands/corpus-recover";
 import { corpusSweepCommand } from "./commands/corpus-sweep";
 import { importBookmarksCommand } from "./commands/import-bookmarks";
@@ -60,9 +58,8 @@ export const defaultRegistry: Registry = {
     { name: "founder", summary: "Founder control-plane bootstrap" },
     { name: "extract", summary: "Local extraction agent and probe" },
     { name: "eval", summary: "Summarizer quality evaluation" },
-    // Account-deletion housekeeping: operator work on the wipe pipeline's own
-    // bucket-root state, which is neither corpus content nor a deployment. The
-    // residue-scan and wipe operator commands of later #195 slices land here.
+    // Account deletion: queueing a forced wipe and scanning a tenant for
+    // deletion residue.
     { name: "account", summary: "Account-deletion housekeeping and wipe residue" },
   ],
   commands: [
@@ -78,7 +75,6 @@ export const defaultRegistry: Registry = {
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
     corpusPurgeConnectionsCommand,
-    corpusPurgeLegacyCommand,
     readingSubmitCommand,
     importMarkdownCommand,
     importBookmarksCommand,
@@ -99,7 +95,6 @@ export const defaultRegistry: Registry = {
     extractAgentCommand,
     extractProbeCommand,
     evalSummarizerCommand,
-    accountSweepWipePrefixCommand,
     accountWipeCommand,
     accountResidueScanCommand,
   ],

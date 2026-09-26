@@ -91,11 +91,6 @@ function harness(seedManifests: Record<string, Manifest>) {
     put: vi.fn(async (k: string, b: Uint8Array | string) => {
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
     }),
-    putIfAbsent: vi.fn(async (k: string, b: Uint8Array | string) => {
-      if (store.has(k)) return false;
-      store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
-      return true;
-    }),
     head: vi.fn(async (k: string) => store.has(k)),
     delete: vi.fn(async (k: string) => {
       store.delete(k);
@@ -944,7 +939,6 @@ describe("runBatch — resume", () => {
     await expect(runBatch([row("rd_a")], h.deps)).rejects.toThrow(/sidecar with no batch id/i);
     expect(h.batch.create).not.toHaveBeenCalled();
     expect(h.r2.put).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
   });
 
@@ -969,7 +963,6 @@ describe("runBatch — resume", () => {
 
     expect(h.batch.create).not.toHaveBeenCalled();
     expect(h.r2.put).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.corpus.publish).not.toHaveBeenCalled();
   });
 });
@@ -980,7 +973,6 @@ describe("runBatch — payload admission", () => {
 
     await expect(runBatch([row("rd_a")], { ...h.deps, maxBatchBytes: 100 })).rejects.toThrow(/re-run with --limit/);
 
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.batch.create).not.toHaveBeenCalled();
   });
@@ -994,7 +986,6 @@ describe("runBatch — payload admission", () => {
     // The extracted-only preflight must fire before similarity resolution spends
     // embedding quota, and before any eager by-url claim or remote object.
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.deps.openaiBatch!.upload).not.toHaveBeenCalled();
     expect(h.deps.openaiBatch!.create).not.toHaveBeenCalled();

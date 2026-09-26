@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { deployWorkerCommand, type DeployWorkerDeps } from "../../../scripts/ops-lib/commands/deploy-worker";
-import { checkPostgresCutover } from "../../../scripts/ops-lib/postgres-cutover";
+import { checkHyperdriveBinding } from "../../../scripts/ops-lib/hyperdrive-binding";
 
 const BOUND = `
 [[hyperdrive]]
@@ -14,11 +14,10 @@ id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 [[env.production.hyperdrive]]
 binding = "HYPERDRIVE"
-id = "00000000000000000000000000000003" # placeholder until #350
+id = "00000000000000000000000000000003" # a placeholder
 `;
-const OFF = { staging: false, production: false };
 
-function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
+function deps(check: DeployWorkerDeps["checkHyperdriveBinding"]) {
   const err: string[] = [];
   const runWrangler = vi.fn(async () => 0);
   const validateTenantActivation = vi.fn(async () => ({ ok: true, message: "already enabled" }));
@@ -27,7 +26,7 @@ function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
     io: { stdout: () => undefined, stderr: (text) => err.push(text) },
     runWrangler,
     validateTenantActivation,
-    checkPostgresCutover: check,
+    checkHyperdriveBinding: check,
     env: { STAGING_DATABASE_URL: "postgres://staging" },
     readMigrations: () => [],
     connect,
@@ -35,42 +34,28 @@ function deps(check: DeployWorkerDeps["checkPostgresCutover"]) {
   return { built, err, runWrangler, validateTenantActivation, connect };
 }
 
-describe("PostgreSQL cutover guard", () => {
-  it("refuses a bound environment while its flag is off", () => {
-    for (const env of ["staging", "production"] as const) {
-      const result = checkPostgresCutover(env, { execute: true, toml: BOUND, flags: OFF });
-      expect(result).toMatchObject({ ok: false, error: expect.stringContaining(`POSTGRES_CUTOVER_ENABLED.${env}`) });
-    }
-  });
-
-  it("does not let the staging flag unlock production", () => {
-    const flags = { staging: true, production: false };
-    expect(checkPostgresCutover("staging", { execute: true, toml: BOUND, flags })).toEqual({ ok: true, bound: true });
-    expect(checkPostgresCutover("production", { execute: true, toml: BOUND, flags }).ok).toBe(false);
-  });
-
-  it("with the flag on, refuses a placeholder Hyperdrive id on execute and tolerates it in a plan", () => {
-    const flags = { staging: true, production: true };
-    expect(checkPostgresCutover("production", { execute: true, toml: BOUND, flags })).toMatchObject({
+describe("Hyperdrive binding check", () => {
+  it("refuses a placeholder id on execute and tolerates it in a plan", () => {
+    expect(checkHyperdriveBinding("production", { execute: true, toml: BOUND })).toMatchObject({
       ok: false,
       error: expect.stringContaining("placeholder id"),
     });
-    expect(checkPostgresCutover("production", { execute: false, toml: BOUND, flags })).toEqual({ ok: true, bound: true });
+    expect(checkHyperdriveBinding("production", { execute: false, toml: BOUND })).toEqual({ ok: true, bound: true });
+    expect(checkHyperdriveBinding("staging", { execute: true, toml: BOUND })).toEqual({ ok: true, bound: true });
   });
 
-  it("leaves a config without the binding alone, whatever the flags say", () => {
+  it("leaves a config without the binding alone", () => {
     const toml = `[[env.production.r2_buckets]]\nbinding = "READINGS_BUCKET"\n`;
-    expect(checkPostgresCutover("production", { execute: true, toml, flags: OFF })).toEqual({ ok: true, bound: false });
+    expect(checkHyperdriveBinding("production", { execute: true, toml })).toEqual({ ok: true, bound: false });
   });
 
   it.each(["staging", "production"] as const)("admits %s in the checked-in config", (env) => {
-    // Real wrangler.toml, real flags: #349 cut staging over, #350 production.
-    expect(checkPostgresCutover(env, { execute: true })).toEqual({ ok: true, bound: true });
+    expect(checkHyperdriveBinding(env, { execute: true })).toEqual({ ok: true, bound: true });
   });
 });
 
-describe("ops deploy worker behind the cutover guard", () => {
-  const refuse: DeployWorkerDeps["checkPostgresCutover"] = () => ({ ok: false, error: "not cut over" });
+describe("ops deploy worker behind the binding check", () => {
+  const refuse: DeployWorkerDeps["checkHyperdriveBinding"] = () => ({ ok: false, error: "placeholder id" });
 
   it("--execute exits 2 before the activation check, the migrations or the upload", async () => {
     const { built, err, runWrangler, validateTenantActivation, connect } = deps(refuse);
@@ -78,13 +63,13 @@ describe("ops deploy worker behind the cutover guard", () => {
     expect(runWrangler).not.toHaveBeenCalled();
     expect(validateTenantActivation).not.toHaveBeenCalled();
     expect(connect).not.toHaveBeenCalled();
-    expect(err.join("\n")).toContain("PostgreSQL cutover guard: REFUSED. not cut over");
+    expect(err.join("\n")).toContain("Hyperdrive binding check: REFUSED. placeholder id");
   });
 
   it("a plan reports the refusal and still dry-runs", async () => {
     const { built, err, runWrangler } = deps(refuse);
     expect(await deployWorkerCommand.run(["--env", "staging", "--database-url-env", "STAGING_DATABASE_URL"], built)).toBe(0);
-    expect(err.join("\n")).toContain("PostgreSQL cutover guard: REFUSED");
+    expect(err.join("\n")).toContain("Hyperdrive binding check: REFUSED");
     expect(runWrangler).toHaveBeenCalledWith(["deploy", "--env", "staging", "--dry-run"]);
   });
 });

@@ -1,25 +1,14 @@
-// The PostgreSQL cutover guard (ADR 0005). The storage migration lives on a
-// long-lived candidate branch whose wrangler.toml binds Hyperdrive. Until an
-// environment is cut over, a Worker built from that config must not deploy to
-// it, so `ops deploy worker` refuses before the readiness preflight,
-// migrations or upload. deploy-app.yml gates the app/ job on the
-// Worker workflow succeeding, so a refusal here stops the whole release.
-//
-// The flag is checked in and per environment, so flipping it is a reviewable
-// commit that travels with the release: #349 flips staging on the candidate
-// branch for the rehearsal, #350 flips production. Staging never unlocks
-// production.
+// The Hyperdrive binding check `ops deploy worker` runs before anything
+// remote (ADR 0005). The Worker reaches PostgreSQL only through its HYPERDRIVE
+// binding, so an execute that would upload a placeholder config id is refused:
+// the Worker would deploy with no database behind it. Plan mode tolerates the
+// placeholder so a checkout can still dry-run.
 
 import { readFileSync } from "node:fs";
 import { defaultWranglerTomlPath, type DeployEnvName } from "../control-plane-env";
 
-export const POSTGRES_CUTOVER_ENABLED: Readonly<Record<DeployEnvName, boolean>> = {
-  staging: true,
-  production: true,
-};
-
-// Filled in by #349 (staging) and #350 (production) with `wrangler hyperdrive
-// create … --caching-disabled`.
+// The ids a checkout carries before `wrangler hyperdrive create …
+// --caching-disabled` has filled one in; the local binding uses the first.
 export const PLACEHOLDER_HYPERDRIVE_IDS = new Set([
   "00000000000000000000000000000001",
   "00000000000000000000000000000002",
@@ -32,7 +21,7 @@ export interface WranglerHyperdriveBinding {
   id: string;
 }
 
-export type PostgresCutoverCheck =
+export type HyperdriveBindingCheck =
   | { ok: true; bound: boolean }
   | { ok: false; error: string };
 
@@ -61,27 +50,13 @@ export function parseWranglerHyperdriveBindings(toml: string): WranglerHyperdriv
   return bindings;
 }
 
-export function checkPostgresCutover(
+export function checkHyperdriveBinding(
   env: DeployEnvName,
-  opts: {
-    execute: boolean;
-    toml?: string;
-    flags?: Readonly<Record<DeployEnvName, boolean>>;
-  },
-): PostgresCutoverCheck {
+  opts: { execute: boolean; toml?: string },
+): HyperdriveBindingCheck {
   const toml = opts.toml ?? readFileSync(defaultWranglerTomlPath(), "utf8");
-  const flags = opts.flags ?? POSTGRES_CUTOVER_ENABLED;
   const bound = parseWranglerHyperdriveBindings(toml).filter((binding) => binding.env === env);
   if (bound.length === 0) return { ok: true, bound: false };
-  if (!flags[env]) {
-    return {
-      ok: false,
-      error:
-        `wrangler.toml binds PostgreSQL (Hyperdrive) for ${env}, but POSTGRES_CUTOVER_ENABLED.${env} is false. ` +
-        "This commit is the storage-migration candidate and must not deploy here before the cutover. See docs/decisions/0005-postgresql-storage.md.",
-    };
-  }
-  // Second line of defence; plan mode tolerates it like the placeholder D1 id.
   const placeholder = bound.find((binding) => PLACEHOLDER_HYPERDRIVE_IDS.has(binding.id.trim().toLowerCase()) || binding.id === "");
   if (placeholder && opts.execute) {
     return {

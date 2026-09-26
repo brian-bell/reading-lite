@@ -49,11 +49,6 @@ function harness(seed: Record<string, string> = {}) {
     put: vi.fn(async (k: string, b: Uint8Array | string) => {
       store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
     }),
-    putIfAbsent: vi.fn(async (k: string, b: Uint8Array | string) => {
-      if (store.has(k)) return false;
-      store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
-      return true;
-    }),
     head: vi.fn(async (k: string) => store.has(k)),
     delete: vi.fn(async (k: string) => {
       store.delete(k);
@@ -224,7 +219,6 @@ describe("runFreshMarkdownBatch — fresh run", () => {
     );
 
     expect(h.deps.saveSidecar).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.deps.embed.embedMany).not.toHaveBeenCalled();
     expect(h.batch.create).not.toHaveBeenCalled();
@@ -250,7 +244,6 @@ describe("runFreshMarkdownBatch — fresh run", () => {
 
     expect(h.deps.embed.embedMany).toHaveBeenCalledOnce();
     expect(h.deps.saveSidecar).not.toHaveBeenCalled();
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.deps.corpus.activate).not.toHaveBeenCalled();
     expect(h.batch.create).not.toHaveBeenCalled();
   });

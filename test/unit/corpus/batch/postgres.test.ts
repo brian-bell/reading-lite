@@ -88,9 +88,6 @@ function harness(who = tenant) {
         typeof body === "string" ? body : new TextDecoder().decode(body),
       );
     }),
-    putIfAbsent: vi.fn(async () => {
-      throw new Error("no R2 claims");
-    }),
     head: vi.fn(async () => false),
     delete: vi.fn(async (key: string) => {
       objects.delete(key);
@@ -255,7 +252,6 @@ it.each(["anthropic", "openai"] as const)(
         tenant.tenantId,
       ]),
     ).toEqual([]);
-    expect(h.r2.putIfAbsent).not.toHaveBeenCalled();
     expect(h.events[0]).toBe("sidecar:activating");
   },
 );

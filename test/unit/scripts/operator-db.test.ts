@@ -3,6 +3,7 @@ import {
   assertDatabaseUrlEnvMatches,
   databaseTargetForBucket,
   deployEnvForBucket,
+  OPERATOR_DATABASES,
   resolveOperatorDatabaseUrl,
   withOperatorSql,
 } from "../../../scripts/pg-lib/operator-db";
@@ -173,5 +174,34 @@ describe("withOperatorSql", () => {
   it("does not fail successful work because the teardown rejected", async () => {
     const open = () => fakeSql(async () => { throw new Error("socket already gone"); });
     await expect(withOperatorSql("postgres://x", async () => "done", open)).resolves.toBe("done");
+  });
+});
+
+describe("bucket → database pairing against wrangler.toml", () => {
+  // Every operator command picks its database from the bucket it acts on.
+  // wrangler.toml owns the bucket names; if one moves, a command would read or
+  // write the wrong environment's rows, so pin the pair rather than trusting two
+  // copies to stay in step.
+  it("names, for each env, the bucket wrangler.toml declares", async () => {
+    const { promises: fs } = await import("node:fs");
+    const path = await import("node:path");
+    const toml = await fs.readFile(path.resolve(__dirname, "../../../wrangler.toml"), "utf8");
+
+    // Everything from `[env.<name>]` to the next TOP-LEVEL env header is that
+    // environment's block. The cut must ignore `[env.<name>.vars]` and
+    // `[[env.<name>.r2_buckets]]`, which belong to the block they sit in.
+    const blockFor = (env: string): string => {
+      const start = toml.indexOf(`\n[env.${env}]\n`);
+      expect(start, `wrangler.toml has no [env.${env}] section`).toBeGreaterThanOrEqual(0);
+      const rest = toml.slice(start + 1);
+      const next = /\n\[env\.[A-Za-z0-9_-]+\]\n/.exec(rest.slice(1));
+      return next === null ? rest : rest.slice(0, next.index + 1);
+    };
+    const valueIn = (block: string, key: string): string | undefined =>
+      new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, "m").exec(block)?.[1];
+
+    for (const [bucket, { env }] of Object.entries(OPERATOR_DATABASES)) {
+      expect(valueIn(blockFor(env), "bucket_name"), `${env} bucket_name`).toBe(bucket);
+    }
   });
 });
