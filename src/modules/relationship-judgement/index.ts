@@ -123,6 +123,39 @@ export function buildOpenAIRelationshipRequestBody(
   };
 }
 
+// Strict tool use makes `required` and `type` binding but supports no string
+// length bounds, so this is RELATIONSHIP_JUDGEMENT_JSON_SCHEMA without minLength;
+// RelationshipJudgementSchema still enforces it at parse time.
+const JUDGE_RELATIONSHIPS_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    novelty_verdict: {
+      type: "string",
+      enum: ["novel", "familiar", "duplicate"],
+    },
+    connections: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          id: {
+            type: "string",
+            description: "Non-empty id of a listed prior reading.",
+          },
+          reason: {
+            type: "string",
+            description: "Non-empty one-clause reason.",
+          },
+        },
+        required: ["id", "reason"],
+      },
+    },
+  },
+  required: ["novelty_verdict", "connections"],
+} as const;
+
 export function buildAnthropicRelationshipRequestBody(
   input: RelationshipJudgementInput,
   model: string,
@@ -144,7 +177,8 @@ export function buildAnthropicRelationshipRequestBody(
       {
         name: JUDGE_RELATIONSHIPS_TOOL_NAME,
         description: "Return the target reading's novelty verdict and connections.",
-        input_schema: RELATIONSHIP_JUDGEMENT_JSON_SCHEMA,
+        input_schema: JUDGE_RELATIONSHIPS_INPUT_SCHEMA,
+        strict: true,
       },
     ],
     tool_choice: { type: "tool", name: JUDGE_RELATIONSHIPS_TOOL_NAME },
