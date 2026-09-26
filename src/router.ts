@@ -163,7 +163,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/exports/*", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.post("/api/exports", (c) => handlePostArchiveExport(c, authNowMs()));
   app.get("/api/exports/latest", (c) => handleGetLatestArchiveExport(c, authNowMs()));
-  app.get("/api/exports/:id/download", (c) => handleDownloadArchiveExport(c));
+  app.get("/api/exports/:id/download", (c) => handleDownloadArchiveExport(c, authNowMs()));
 
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));

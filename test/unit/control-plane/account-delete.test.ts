@@ -126,6 +126,45 @@ describe("beginAccountDeletion", () => {
     expect(token.revoked_at_ms).toBe(NOW_MS + 9);
   });
 
+  // The rerun on `already_deleting` is what repairs a crash between the
+  // status write and the cancel.
+  it.each(["active", "deleting"] as const)(
+    "cancels the active archive export of an %s account and leaves finished ones",
+    async (status) => {
+      const { raw, db } = await seeded();
+      await raw.run("UPDATE users SET status = ? WHERE id = ?", status, USER);
+      for (const [id, exportStatus, requestedAtMs] of [
+        ["exp_active", "building", NOW_MS - 1],
+        ["exp_ready", "ready", NOW_MS - 2],
+        ["exp_failed", "failed", NOW_MS - 3],
+      ] as const) {
+        await raw.run(
+          `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          id,
+          USER,
+          exportStatus,
+          toTimestamp(requestedAtMs),
+          toTimestamp(requestedAtMs),
+        );
+      }
+
+      await beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS + 7 });
+
+      const rows = withMs(
+        await raw.all(
+          "SELECT id, status, completed_at, lease_seq FROM archive_exports WHERE tenant_id = ? ORDER BY id",
+          USER,
+        ),
+      );
+      expect(rows).toEqual([
+        { id: "exp_active", status: "cancelled", completed_at_ms: NOW_MS + 7, lease_seq: 1 },
+        { id: "exp_failed", status: "failed", completed_at_ms: null, lease_seq: 0 },
+        { id: "exp_ready", status: "ready", completed_at_ms: null, lease_seq: 0 },
+      ]);
+    },
+  );
+
   it("refuses a suspended account without marking deleting", async () => {
     const { raw, db } = await seeded();
     await raw.run("UPDATE users SET status = 'suspended' WHERE id = ?", USER);

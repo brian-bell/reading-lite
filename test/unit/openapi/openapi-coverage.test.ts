@@ -115,6 +115,7 @@ const REQUIRED_SCHEMAS = [
   "ArchiveExportActiveError",
   "ArchiveExportDailyLimit",
   "ArchiveExportNotReady",
+  "ArchiveExportExpired",
   "ArchiveExportDocument",
   "UserSettingsResponse",
   "PostAuthSettingsBody",

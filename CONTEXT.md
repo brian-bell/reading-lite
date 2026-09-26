@@ -100,7 +100,8 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
 
 - **Suppress** (`DELETE /api/account`, issue 195a) — recently authenticated
   session, CSRF, explicit `{ confirm: "delete" }`. Marks `users.status=deleting`
-  first, then revokes sessions and API tokens. Queue admit, DLQ, digest, and
+  first, then cancels the active **archive export** and revokes sessions and
+  API tokens. Queue admit, DLQ, digest, and
   notification skip a non-active tenant. A confirmed inactive or missing user
   skips spend and visibility. A status-lookup failure **before extract/embed**
   throws `RateLimitedError` so the queue retries. On the DLQ mark path a
@@ -137,6 +138,19 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
   [architecture](docs/architecture.md#reprocessing-and-recovery)).
   Production and staging
   `TENANT_DATA_PLANE=1`: the founder is a normal tenant.
+
+- **Archive export** — one `archive_exports` row per request, and the row is
+  the job: `ARCHIVE_EXPORT_JOBS` carries only `{tenantId, exportId}`. Status
+  `queued` → `building` → `ready` | `failed` | `cancelled`, and `ready` →
+  `expired` seven days after it finished; cron deletes the zip's parts under
+  the tenant's `exports/{exportId}/` after a download grace. Account deletion
+  cancels a queued or building export; the consumer re-reads `users.status` on
+  every delivery and before a segment write, and publishes `ready` only under
+  `users FOR SHARE` with the account active. The parts live under the tenant
+  root, so the wipe sweeps them (a late one reopens it), and teardown deletes
+  the rows. See
+  [archive export plumbing](docs/operations.md#archive-export-queue-plumbing)
+  and [the format](docs/archive-export.md).
 
 ## Digest delivery
 

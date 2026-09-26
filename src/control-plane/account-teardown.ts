@@ -508,8 +508,9 @@ function teardownStatements(
       params: [addresses, emailCanonical],
     },
     // No cascade (db/migrations/0007). The row has to go before the user or
-    // teardown cannot finish for a tenant that requested an export. Cancelling
-    // the active export at deletion start is a later slice.
+    // teardown cannot finish for a tenant that requested an export.
+    // beginAccountDeletion already cancelled any active one, and the wipe
+    // swept its parts with the tenant prefix.
     { sql: "DELETE FROM archive_exports WHERE tenant_id = ?", params: [tenantId] },
     { sql: "DELETE FROM wipe_progress WHERE tenant_id = ?", params: [tenantId] },
     // Last: everything above names it.

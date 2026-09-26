@@ -18,9 +18,17 @@
 //   joined central directory, and the EOCD, and marks the row ready.
 //
 // The */15 cron re-enqueues a queued or building export whose row has not
-// changed in ARCHIVE_EXPORT_LEASE_MS. The DLQ marks the export failed so the
-// active slot frees, then deletes any parts the build wrote. Content keys come
-// from contentKeys; this module does not spell reading object paths.
+// changed in ARCHIVE_EXPORT_LEASE_MS, and expires ready exports seven days
+// after they finished, deleting their parts. The DLQ marks the export failed
+// so the active slot frees, then deletes any parts the build wrote.
+//
+// Account deletion (reading-lite-mxwx.4): beginAccountDeletion cancels the
+// active export. A delivery re-reads users.status when it claims the row and
+// again before writing a segment, and publishes ready only under users FOR SHARE
+// with the account active; otherwise it cancels and deletes its parts. The
+// parts live under the tenant root, so the wipe sweeps whatever a racing
+// write leaves. Content keys come from contentKeys; this module does not
+// spell reading object paths.
 
 import { z } from "zod";
 import type { ArchiveExportError } from "./schemas/api";
@@ -34,11 +42,13 @@ import {
   type ArchiveDanglingRelationship,
   type ArchiveMissingArtifact,
 } from "./schemas/archive-report";
+import { tenantIsActive } from "./control-plane/account-delete";
 import {
   ARCHIVE_EXPORT_RETENTION_MS,
   ArchiveExportCursorSchema,
   EMPTY_ARCHIVE_EXPORT_CURSOR,
   archiveDocument,
+  cancelActiveArchiveExports,
   markArchiveExportFailed,
   type ArchiveExportCursor,
 } from "./control-plane/archive-exports";
@@ -109,6 +119,14 @@ const CLOSING_ENTRIES = 4;
 const ARCHIVE_MAX_READINGS = ZIP32_MAX_ENTRIES - CLOSING_ENTRIES - 1;
 export const ARCHIVE_EXPORT_MAX_CONTINUATIONS = ARCHIVE_MAX_READINGS + 1;
 const ARCHIVE_EXPORT_RESUME_BATCH = 100;
+const ARCHIVE_EXPORT_EXPIRE_BATCH = 100;
+/**
+ * How long an expired export keeps its parts. The download refuses from
+ * `expires_at` on, but one authorized just before it opens parts lazily as the
+ * client reads, so deleting at the mark could cut it off mid-stream. Six hours
+ * covers a 4 GiB archive at about 200 KB/s.
+ */
+export const ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS = 6 * 60 * 60_000;
 const CHECKSUMS_FILE = "checksums.sha256";
 
 // In the zip, so the package stays readable without the repo. The longer
@@ -455,15 +473,7 @@ async function claim(
     );
     if (!row || (row.status !== "queued" && row.status !== "building")) return "skipped";
     if (!user || user.status !== "active") {
-      await tx.run(
-        `UPDATE archive_exports
-         SET status = 'cancelled', completed_at = ?, updated_at = ?, lease_seq = lease_seq + 1
-         WHERE id = ? AND tenant_id = ? AND status IN ('queued', 'building')`,
-        now,
-        now,
-        envelope.exportId,
-        envelope.tenantId,
-      );
+      await cancelActiveArchiveExports(tx, { tenantId: envelope.tenantId, exportId: envelope.exportId, nowMs });
       return "cancelled";
     }
     await tx.run(
@@ -517,10 +527,32 @@ async function commitCursor(build: ClaimedBuild, cursor: ArchiveExportCursor): P
   return result.changes === 1;
 }
 
+// Re-read right before a readings segment's R2 writes (reading-lite-mxwx.4):
+// packing takes a while, and account deletion can start meanwhile. Parts
+// first, then the row, so a failed delete retries into a claim that still
+// finds the build unfinished and deletes them. A write that races past this
+// check lands after the fence; the wipe lists the whole tenant prefix and
+// reopens for it. Finalize needs no such check: it publishes under users FOR
+// SHARE and deletes its parts when the account has left active.
+async function cancelIfInactive(build: ClaimedBuild): Promise<boolean> {
+  const db = fromSql(build.sql);
+  if (await tenantIsActive(db, build.envelope.tenantId)) return false;
+  await build.content.deletePrefix(build.prefix);
+  await cancelActiveArchiveExports(db, {
+    tenantId: build.envelope.tenantId,
+    exportId: build.envelope.exportId,
+    nowMs: build.nowMs,
+  });
+  return true;
+}
+
 // One delivery's segment: readings from the cursor until a bound, written to
 // R2 with its state object before the cursor moves past them. The delivery
 // that packs the last reading hands the build to finalize.
-async function buildReadingsSegment(build: ClaimedBuild, bounds: SegmentBounds): Promise<"continue" | "lease_held"> {
+async function buildReadingsSegment(
+  build: ClaimedBuild,
+  bounds: SegmentBounds,
+): Promise<"continue" | "lease_held" | "cancelled"> {
   const { sql, envelope, content, prefix, lease } = build;
   // Bound the self-send before doing the work it would follow. Persisted, so
   // the count is the export's and not one delivery's.
@@ -570,6 +602,7 @@ async function buildReadingsSegment(build: ClaimedBuild, bounds: SegmentBounds):
 
   let next: ArchiveExportCursor = { ...cursor, phase: exhausted ? "finalize" : "readings", after };
   if (entries.length > 0) {
+    if (await cancelIfInactive(build)) return "cancelled";
     const keys = segmentKeys(prefix, cursor.segments.length + 1);
     const segment = await writeZipSegment(entries, {
       offset: cursor.offset,
@@ -675,15 +708,11 @@ async function finalizeArchive(build: ClaimedBuild): Promise<"ready" | "cancelle
       envelope.tenantId,
     );
     if (!user || user.status !== "active") {
-      await tx.run(
-        `UPDATE archive_exports
-         SET status = 'cancelled', completed_at = ?, updated_at = ?, lease_seq = lease_seq + 1
-         WHERE id = ? AND tenant_id = ? AND status = 'building'`,
-        now,
-        now,
-        envelope.exportId,
-        envelope.tenantId,
-      );
+      await cancelActiveArchiveExports(tx, {
+        tenantId: envelope.tenantId,
+        exportId: envelope.exportId,
+        nowMs: build.nowMs,
+      });
       return "cancelled" as const;
     }
     const result = await tx.run(
@@ -889,5 +918,69 @@ export async function resumeStalledArchiveExports(
       }
     }
     return { enqueued };
+  });
+}
+
+// The */15 cron's expiry (reading-lite-mxwx.4). A ready export past
+// `expires_at` is marked expired at once; the download also refuses a ready
+// row past `expires_at` on its own, so a late tick changes nothing a client
+// sees. Its prefix is deleted only once ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS has
+// passed too, so a download that started before `expires_at` can finish.
+// `segments` stays on the row until the delete succeeds, which is how a later
+// tick finds a delete that failed.
+export async function expireArchiveExports(
+  env: ArchiveExportEnv,
+  deps: { nowMs: number },
+): Promise<{ expired: number; deleted: number }> {
+  return withSqlSession(env, async (sql) => {
+    const db = fromSql(sql);
+    const now = toTimestamp(deps.nowMs);
+    const marked = await db.run(
+      `UPDATE archive_exports
+       SET status = 'expired', updated_at = ?, lease_seq = lease_seq + 1
+       WHERE id IN (
+         SELECT id FROM archive_exports
+         WHERE status = 'ready' AND expires_at <= ?
+         ORDER BY expires_at
+         LIMIT ?
+       ) AND status = 'ready'`,
+      now,
+      now,
+      ARCHIVE_EXPORT_EXPIRE_BATCH,
+    );
+    const rows = await db.all<{ id: string; tenant_id: string }>(
+      `SELECT id, tenant_id FROM archive_exports
+       WHERE status = 'expired' AND segments IS NOT NULL AND expires_at <= ?
+       ORDER BY expires_at
+       LIMIT ?`,
+      toTimestamp(deps.nowMs - ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS),
+      ARCHIVE_EXPORT_EXPIRE_BATCH,
+    );
+    let deleted = 0;
+    for (const row of rows) {
+      try {
+        const tenantId = parseTenantId(row.tenant_id);
+        if (!tenantId) continue;
+        const content = contentStoreFor(env.READINGS_BUCKET, { tenantId }, env);
+        await content.deletePrefix(exportObjectPrefix(row.id));
+        await db.run(
+          `UPDATE archive_exports SET segments = NULL, updated_at = ?
+           WHERE id = ? AND tenant_id = ? AND status = 'expired'`,
+          now,
+          row.id,
+          row.tenant_id,
+        );
+        deleted += 1;
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "archive_export_expire_failed",
+            export_id: row.id,
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
+    }
+    return { expired: marked.changes, deleted };
   });
 }

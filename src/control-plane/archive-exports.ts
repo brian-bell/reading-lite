@@ -1,8 +1,13 @@
 // Admission for archive export (reading-lite-mxwx). One transaction under
 // `users FOR UPDATE`, the same serialization the token cap uses: an active
 // export (partial unique index) is 409, and a queued, building, or ready
-// request inside the rolling day is 429. Failed and cancelled requests do
-// not count, so a failure frees the slot immediately.
+// request inside the rolling day is 429. Failed, cancelled, and expired
+// requests do not count, so a failure frees the slot immediately.
+//
+// Lifecycle (reading-lite-mxwx.4): account deletion cancels the active export
+// (`cancelActiveArchiveExports`), and a ready export stops serving at
+// `expires_at`, seven days after it finished, whether or not cron has marked
+// it expired yet.
 
 import { z } from "zod";
 import {
@@ -163,6 +168,25 @@ export async function markArchiveExportFailed(
   );
 }
 
+// Cancels the tenant's queued or building export, or only `exportId` when
+// given. Bumps lease_seq, so a delivery mid-build loses its next commit.
+export async function cancelActiveArchiveExports(
+  db: ControlPlaneDb,
+  input: { tenantId: string; nowMs: number; exportId?: string },
+): Promise<void> {
+  const now = toTimestamp(input.nowMs);
+  await db.run(
+    `UPDATE archive_exports
+     SET status = 'cancelled', completed_at = ?, updated_at = ?, lease_seq = lease_seq + 1
+     WHERE tenant_id = ? AND status IN ('queued', 'building') AND (?::text IS NULL OR id = ?)`,
+    now,
+    now,
+    input.tenantId,
+    input.exportId ?? null,
+    input.exportId ?? null,
+  );
+}
+
 export interface LatestArchiveExport {
   export: ArchiveExportSummary | null;
   nextAllowedAtMs: number;
@@ -189,17 +213,18 @@ export async function latestArchiveExport(
   const nextAllowedAtMs = counted
     ? Math.max(input.nowMs, fromTimestamp(counted.requested_at) + ARCHIVE_EXPORT_DAILY_WINDOW_MS)
     : input.nowMs;
-  return { export: row ? summaryOf(row) : null, nextAllowedAtMs };
+  return { export: row ? summaryOf(row, input.nowMs) : null, nextAllowedAtMs };
 }
 
 export type OwnedArchiveDownload =
   | { kind: "not_found" }
   | { kind: "not_ready" }
+  | { kind: "expired" }
   | { kind: "ready"; segments: ArchiveExportSegments };
 
 export async function ownedArchiveDownload(
   db: ControlPlaneDb,
-  input: { userId: UserId; exportId: string },
+  input: { userId: UserId; exportId: string; nowMs: number },
 ): Promise<OwnedArchiveDownload> {
   const exportId = parseExportId(input.exportId);
   if (!exportId) return { kind: "not_found" };
@@ -209,7 +234,9 @@ export async function ownedArchiveDownload(
     input.userId,
   );
   if (!row) return { kind: "not_found" };
+  if (row.status === "expired") return { kind: "expired" };
   if (row.status !== "ready") return { kind: "not_ready" };
+  if (row.expires_at === null || fromTimestamp(row.expires_at) <= input.nowMs) return { kind: "expired" };
   const segments = SegmentsSchema.parse(row.segments);
   const sum = segments.parts.reduce((total, part) => total + part.bytes, 0);
   if (sum !== segments.total_bytes) throw new Error("archive segment sizes do not add up");
@@ -227,10 +254,13 @@ export function archiveDocument(input: {
   });
 }
 
-function summaryOf(row: ExportRow): ArchiveExportSummary {
+// A ready row past `expires_at` reads as expired, as the download treats it,
+// before cron gets to it.
+function summaryOf(row: ExportRow, nowMs: number): ArchiveExportSummary {
+  const lapsed = row.status === "ready" && (row.expires_at === null || fromTimestamp(row.expires_at) <= nowMs);
   return ArchiveExportSummarySchema.parse({
     id: row.id,
-    status: row.status,
+    status: lapsed ? "expired" : row.status,
     requested_at: row.requested_at,
     started_at: row.started_at,
     completed_at: row.completed_at,

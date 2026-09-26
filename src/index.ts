@@ -21,6 +21,7 @@ import type { AccountWipeEnvelopeV1 } from "./control-plane/wipe-envelope";
 import type { ArchiveExportEnvelopeV1 } from "./control-plane/export-envelope";
 import {
   consumeArchiveExportMessage,
+  expireArchiveExports,
   handleArchiveExportDeadLetter,
   isExportDlq,
   isExportQueue,
@@ -250,6 +251,7 @@ export default {
       fanOutDueDigests(env, { nowMs }),
       fanOutDueAccountWipes(env, { nowMs }),
       resumeStalledArchiveExports(env, { nowMs }),
+      expireArchiveExports(env, { nowMs }),
     ]);
     for (const result of settled) {
       if (result.status === "rejected") console.error(result.reason);

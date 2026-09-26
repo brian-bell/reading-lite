@@ -113,6 +113,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     ["tenant_limits", "tenant_id = ?", [tenant]],
     ["digest_deliveries", "user_id = ?", [tenant]],
     ["wipe_progress", "tenant_id = ?", [tenant]],
+    ["archive_exports", "tenant_id = ?", [tenant]],
     [
       "auth_challenges",
       "user_id = ? OR completed_user_id = ? OR (user_id IS NULL AND email_canonical IN (SELECT email_canonical FROM users WHERE id = ?))",

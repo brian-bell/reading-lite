@@ -175,9 +175,10 @@ reads.
   it, and a published reading keeps its previous content, summary, and
   embedding together. Supplied Markdown takes priority over stored text. See
   [reprocessing](docs/architecture.md#reprocessing-and-recovery).
-- Keep reading, digest, and wipe queues separate. Only the reading DLQ calls
-  `markDeadLettered`, and only it marks a job `dead`; digest DLQ marks its
-  ledger failed, wipe DLQ logs and acks.
+- Keep reading, digest, wipe, and export queues separate. Only the reading DLQ
+  calls `markDeadLettered`, and only it marks a job `dead`; digest DLQ marks its
+  ledger failed, wipe DLQ logs and acks, and export DLQ marks the export failed
+  and deletes its parts.
 - No tenant, including founders and staging fixtures, is exempt from deletion.
   Wipes delete the tenant's reading rows and embeddings before its R2 objects,
   sweep rows again after, and fail closed on a database error. Teardown

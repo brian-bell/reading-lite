@@ -2,6 +2,7 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it, vi } from "vitest";
 import { ARCHIVE_EXPORT_DAILY_WINDOW_MS } from "../../src/control-plane/archive-exports";
 import {
+  ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS,
   ARCHIVE_EXPORT_LEASE_MS,
   ARCHIVE_EXPORT_MAX_CONTINUATIONS,
   buildArchiveExport,
@@ -568,6 +569,68 @@ describe("archive export", () => {
       id,
     );
     expect(row?.status).toBe("ready");
+  });
+
+  it("expires a ready export: 410 at expires_at, parts kept through the download grace, then deleted with retry", async () => {
+    installQueue();
+    const session = await redeemSession("clm_export_expiry");
+    const created = await request("/api/exports", { method: "POST", cookie: session.cookie, csrf: session.csrf });
+    expect(created.res.status).toBe(202);
+    const { id } = (await created.res.json()) as { id: string };
+    await drain();
+    const cp = testControlPlane(env);
+    const content = contentStoreFor(env.READINGS_BUCKET, founderTenant(), env);
+    const parts = await content.list(`exports/${id}`);
+    expect(parts.length).toBeGreaterThan(0);
+    const row = () =>
+      cp.first<{ status: string; has_segments: boolean }>(
+        "SELECT status, segments IS NOT NULL AS has_segments FROM archive_exports WHERE id = ?",
+        id,
+      );
+    const download = async () => {
+      const response = (await request(`/api/exports/${id}/download`, { cookie: session.cookie })).res;
+      return { status: response.status, body: response.status === 200 ? null : await response.json() };
+    };
+
+    await cp.run("UPDATE archive_exports SET expires_at = ? WHERE id = ?", toTimestamp(NOW_MS + 1), id);
+    await worker.scheduled(CRON, env as unknown as Env);
+    expect(await row()).toEqual({ status: "ready", has_segments: true });
+    expect((await download()).status).toBe(200);
+
+    // Past expires_at the download refuses, and latest reports it expired,
+    // before cron has marked the row.
+    await cp.run("UPDATE archive_exports SET expires_at = ? WHERE id = ?", toTimestamp(NOW_MS), id);
+    expect(await download()).toEqual({ status: 410, body: { error: "expired" } });
+    const latest = await request("/api/exports/latest", { cookie: session.cookie });
+    expect(((await latest.res.json()) as { export: { status: string } }).export.status).toBe("expired");
+
+    // Marked at once, but a download authorized just before expires_at may
+    // still be streaming, so the parts outlive the mark by the grace.
+    await worker.scheduled(CRON, env as unknown as Env);
+    expect(await row()).toEqual({ status: "expired", has_segments: true });
+    const graceTick = {
+      scheduledTime: NOW_MS + ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS - 1,
+      cron: CRON.cron,
+    } as ScheduledController;
+    await worker.scheduled(graceTick, env as unknown as Env);
+    expect(await content.list(`exports/${id}`)).toHaveLength(parts.length);
+
+    const pastGrace = { scheduledTime: NOW_MS + ARCHIVE_EXPORT_DOWNLOAD_GRACE_MS, cron: CRON.cron } as ScheduledController;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const deleteSpy = vi.spyOn(env.READINGS_BUCKET, "delete").mockRejectedValueOnce(new Error("r2 hiccup"));
+    try {
+      await worker.scheduled(pastGrace, env as unknown as Env);
+    } finally {
+      deleteSpy.mockRestore();
+      errors.mockRestore();
+    }
+    expect(await row()).toEqual({ status: "expired", has_segments: true });
+    expect(await content.list(`exports/${id}`)).toHaveLength(parts.length);
+
+    await worker.scheduled(pastGrace, env as unknown as Env);
+    expect(await row()).toEqual({ status: "expired", has_segments: false });
+    expect(await content.list(`exports/${id}`)).toEqual([]);
+    expect(await download()).toEqual({ status: 410, body: { error: "expired" } });
   });
 
   it("matches source counts and names every missing artifact and dangling relationship", async () => {

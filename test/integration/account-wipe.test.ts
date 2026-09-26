@@ -12,6 +12,9 @@ import {
   processAccountWipeJob,
   type AccountWipeJobDeps,
 } from "../../src/account-wipe";
+import { buildArchiveExport } from "../../src/archive-export";
+import { beginAccountDeletion } from "../../src/control-plane/account-delete";
+import { archiveExportEnvelopeV1 } from "../../src/control-plane/export-envelope";
 import { accountWipeEnvelopeV1, type AccountWipeEnvelopeV1 } from "../../src/control-plane/wipe-envelope";
 import { resolveLoginEligibility } from "../../src/control-plane/eligibility";
 import { parseTenantId } from "../../src/control-plane/ids";
@@ -23,6 +26,7 @@ import {
   type WipeProgress,
 } from "../../src/control-plane/wipe-progress";
 import worker, { type Env } from "../../src/index";
+import { sqlSessionFor } from "../../src/modules/db/sql";
 import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 import type { ListIndexItem } from "../../src/schemas/api";
 import { testControlPlane } from "../helpers/control-plane-db";
@@ -738,5 +742,66 @@ describe("account teardown from cron fan-out (195 S4)", () => {
       /progress_conflict/,
     );
     expect(await countRows("wipe_progress", "tenant_id", OTHER_TENANT_ID)).toBe(0);
+  });
+});
+
+describe("account wipe and archive export (reading-lite-mxwx.4)", () => {
+  const EXPORT_ID = "exp_00000000-0000-4000-8000-0000000000cc";
+
+  // An export delivery that passed its status checks before the fence can
+  // still write its segment after the wipe's objects phase. The late parts
+  // reopen the wipe, the tenant prefix still ends empty, and teardown takes
+  // the export row with the account.
+  it("reopens for an export segment written after the objects phase and ends with an empty prefix", async () => {
+    await seedReadings([ID_A]);
+    await db().run(
+      `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at)
+       VALUES (?, ?, 'queued', ?, ?)`,
+      EXPORT_ID,
+      OTHER_TENANT_ID,
+      toTimestamp(NOW_MS),
+      toTimestamp(NOW_MS),
+    );
+    const bucket = env.READINGS_BUCKET;
+    const put = bucket.put.bind(bucket);
+    let raced = false;
+    vi.spyOn(bucket, "put").mockImplementation(async (key, value, options) => {
+      if (!raced && key.includes("/exports/")) {
+        raced = true;
+        expect(await beginAccountDeletion(db(), { userId: OTHER_TENANT_ID, nowMs: NOW_MS })).toEqual({ kind: "started" });
+        await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+        expect(await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS })).toEqual({ enqueued: 1 });
+        expect((await processAccountWipeJob(queued[0]!, wipeEnv(), wipeDeps())).kind).toBe("complete");
+        expect(await listPrefixKeys(PREFIX)).toEqual([]);
+      }
+      return put(key, value, options);
+    });
+    const sql = sqlSessionFor(env);
+    try {
+      // Deletion cancelled the row, so the cursor commit loses.
+      expect(
+        await buildArchiveExport(sql, archiveExportEnvelopeV1({ tenantId: TENANT, exportId: EXPORT_ID }), wipeEnv(), {
+          nowMs: NOW_MS,
+        }),
+      ).toBe("lease_held");
+    } finally {
+      await sql.end();
+    }
+    vi.mocked(bucket.put).mockRestore();
+    expect(raced).toBe(true);
+    expect(await listPrefixKeys(`${PREFIX}exports/`)).not.toEqual([]);
+
+    expect(await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS + 1 })).toEqual({ enqueued: 1 });
+    expect((await processAccountWipeJob(queued[1]!, wipeEnv(), wipeDeps())).kind).toBe("complete");
+    expect(await listPrefixKeys(PREFIX)).toEqual([]);
+
+    await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS + 2 });
+    for (const [table, column] of [
+      ["users", "id"],
+      ["archive_exports", "tenant_id"],
+    ] as const) {
+      const row = await db().first<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE ${column} = ?`, OTHER_TENANT_ID);
+      expect(row?.n, table).toBe(0);
+    }
   });
 });
