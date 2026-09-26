@@ -2,6 +2,7 @@ import type { Context } from "hono";
 import {
   ArchiveExportActiveErrorSchema,
   ArchiveExportDailyLimitSchema,
+  ArchiveExportExpiredSchema,
   ArchiveExportNotReadySchema,
   GetArchiveExportLatestResponseSchema,
   PostArchiveExportResponseSchema,
@@ -66,14 +67,16 @@ export async function handleGetLatestArchiveExport(c: Context<AppBindings>, nowM
   );
 }
 
-export async function handleDownloadArchiveExport(c: Context<AppBindings>): Promise<Response> {
+export async function handleDownloadArchiveExport(c: Context<AppBindings>, nowMs: number): Promise<Response> {
   const principal = c.get("principal");
   const owned = await ownedArchiveDownload(fromSql(c.get("sql")), {
     userId: principal.userId,
     exportId: c.req.param("id") ?? "",
+    nowMs,
   });
   if (owned.kind === "not_found") return c.json({ error: "not found" }, 404);
   if (owned.kind === "not_ready") return c.json(ArchiveExportNotReadySchema.parse({ error: "not_ready" }), 409);
+  if (owned.kind === "expired") return c.json(ArchiveExportExpiredSchema.parse({ error: "expired" }), 410);
 
   const content = contentStoreFor(c.env.READINGS_BUCKET, { tenantId: principal.tenantId }, c.env);
   // Sizes first, bodies later: a Worker keeps only six connections open, so

@@ -235,7 +235,7 @@ The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
 records, retained legacy Vectorize namespace observations, and PostgreSQL rows.
 The `pg.*` sources cover readings, embeddings, corpus refresh state, relationship
 refresh jobs, users, sessions, tokens/scopes, settings, limits, digests, wipe
-progress, challenges and attributable invites. Reading children cascade from
+progress, archive exports, challenges and attributable invites. Reading children cascade from
 `readings`; embeddings also have their own observation. A failed source stays
 `unknown` without hiding residue found by any other source.
 
@@ -2853,6 +2853,22 @@ or building export failed and then deletes that prefix; a database or R2 error
 retries the dead letter instead of acknowledging it. A ready export keeps its
 parts. A failed export does not count toward the daily limit, so the account
 can request another at once.
+
+A ready export expires seven days after it finished (`expires_at`). From then
+the download returns 410 `{"error":"expired"}`. The same `*/15` cron marks the
+row `expired`, then deletes its prefix, and clears `segments` only once the
+delete succeeds; a row left `expired` with `segments` set is a delete that
+failed (`archive_export_expire_failed`) and the next tick retries it.
+
+Account deletion (reading-lite-mxwx.4): `beginAccountDeletion` cancels a queued
+or building export after the `deleting` fence, and again when rerun. A delivery
+re-reads `users.status` when it claims the row and before it writes a segment,
+and marks the export ready only under `users FOR SHARE` with the account
+active; otherwise it cancels the row and deletes the prefix. A segment that
+races past those checks lands under `u/{tenant}/exports/`, which the wipe's
+objects phase lists, so the late object reopens a finished wipe. Teardown
+deletes the tenant's `archive_exports` rows, and the residue scan reports
+`pg.archive_exports`.
 
 ## Relationship refresh queue plumbing
 

@@ -212,7 +212,8 @@ paths:
       description: |
         Session cookie. Bearer tokens are refused 403. `export` is null when
         the tenant has never requested one. `next_allowed_at` is now when no
-        queued, building, or ready request is inside the rolling day.
+        queued, building, or ready request is inside the rolling day. A ready
+        export past its `expires_at` reports `expired`, as its download does.
       responses:
         "200":
           description: Latest export, if any
@@ -246,7 +247,9 @@ paths:
       summary: Download a ready archive export
       description: |
         Session cookie. Bearer tokens are refused 403. Another tenant's id is
-        404. A row that is not ready is 409. The body is one zip: each segment's
+        404. A row that is not ready is 409. An export past its `expires_at`
+        (seven days after it finished) is 410, whether or not the cron has
+        marked it expired and deleted its parts yet. The body is one zip: each segment's
         local bytes, then each central-directory fragment, then the
         end-of-central-directory record. `Content-Length` is the summed part
         sizes and `Content-Disposition` is an attachment.
@@ -278,6 +281,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ArchiveExportNotReady"
+        "410":
+          description: The export expired; request a new one
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ArchiveExportExpired"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "500":
@@ -1714,6 +1723,15 @@ components:
         error:
           type: string
           const: not_ready
+
+    ArchiveExportExpired:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+          const: expired
 
     ArchiveExportDocument:
       type: object

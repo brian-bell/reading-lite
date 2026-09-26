@@ -10,6 +10,7 @@ import {
   type ArchiveExportEnv,
   type ArchiveExportJobDeps,
 } from "../../../src/archive-export";
+import { beginAccountDeletion } from "../../../src/control-plane/account-delete";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { archiveExportEnvelopeV1 } from "../../../src/control-plane/export-envelope";
 import { parseTenantId, parseUserId } from "../../../src/control-plane/ids";
@@ -364,6 +365,31 @@ describe("buildArchiveExport", () => {
     await db.run("UPDATE users SET status = 'deleting' WHERE id = ?", TENANT_ID);
 
     expect(await buildArchiveExport(sql, envelopeFor(), env, { nowMs: NOW_MS, segmentReadings: 1 })).toBe("cancelled");
+    expect(await exportObjects(bucket, env)).toEqual([]);
+    const row = await db.first<{ status: string }>("SELECT status FROM archive_exports WHERE id = ?", EXPORT_ID);
+    expect(row?.status).toBe("cancelled");
+  });
+
+  // Deletion starts while a delivery packs, after its claim saw the account
+  // active: the recheck before its R2 writes stops it writing anything and
+  // drops the segment an earlier delivery wrote.
+  it("writes no segment when deletion starts while a delivery packs", async () => {
+    const { db, sql } = openControlPlane();
+    const { bucket, env } = await arrange(sql, db);
+    const deps = { nowMs: NOW_MS, segmentReadings: 1 };
+    expect(await buildArchiveExport(sql, envelopeFor(), env, deps)).toBe("continue");
+    expect(await exportObjects(bucket, env)).not.toEqual([]);
+    let armed = true;
+    const deleting = watchSql(sql, {
+      before: async (text) => {
+        if (!armed || text !== "SELECT status FROM users WHERE id = $1") return;
+        armed = false;
+        await beginAccountDeletion(db, { userId: TENANT_ID, nowMs: NOW_MS + 1 });
+      },
+    });
+
+    expect(await buildArchiveExport(deleting, envelopeFor(), env, deps)).toBe("cancelled");
+    expect(armed).toBe(false);
     expect(await exportObjects(bucket, env)).toEqual([]);
     const row = await db.first<{ status: string }>("SELECT status FROM archive_exports WHERE id = ?", EXPORT_ID);
     expect(row?.status).toBe("cancelled");

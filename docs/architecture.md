@@ -243,7 +243,7 @@ Session auth still refreshes `last_seen_at`, as on any authenticated GET.
 Every prototype method is RPC-callable, so add one only for an allowlisted read.
 
 `src/index.ts` dispatches fetch, queue, and scheduled events. Cron runs every
-15 minutes for digest, wipe, and stalled-export work, with a separate gated nightly relationship
+15 minutes for digest, wipe, stalled-export, and export-expiry work, with a separate gated nightly relationship
 scan at 03:07 UTC. The job families have separate queues and DLQs:
 
 | Job | Consumer and completion |
@@ -251,7 +251,7 @@ scan at 03:07 UTC. The job families have separate queues and DLQs:
 | `READING_JOBS` | `processReading`; reading DLQ marks a reading failed |
 | `DIGEST_JOBS` | `digest-pipeline.ts`; digest DLQ only marks `digest_deliveries` failed |
 | `ACCOUNT_WIPE_JOBS` | `account-wipe.ts`; wipe DLQ logs and acks |
-| `ARCHIVE_EXPORT_JOBS` | `archive-export.ts`; one zip segment per delivery, then a self-send; export DLQ marks the export failed and deletes its parts |
+| `ARCHIVE_EXPORT_JOBS` | `archive-export.ts`; one zip segment per delivery, then a self-send; cancelled by account deletion; export DLQ marks the export failed and deletes its parts |
 | `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards and capped judge fan-out; `relationship-judge.ts` publishes relationship-only patches, DLQ logs and acks |
 
 Digest send re-reads cadence and the current verified account address. Empty

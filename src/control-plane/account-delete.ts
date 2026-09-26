@@ -1,3 +1,4 @@
+import { cancelActiveArchiveExports } from "./archive-exports";
 import { revokeAllApiTokensForUser } from "./authenticate";
 import type { ControlPlaneDb } from "./db";
 import { parseUserId } from "./ids";
@@ -27,6 +28,11 @@ import { revokeAllSessionsForUser } from "./sessions";
 // (`status !== "active"`) and admitEnvelope (`tenant_inactive`). In-flight
 // `processReading` that already passed admit rechecks status immediately
 // before visibility publish (the #179 republish race, at tenant scope).
+//
+// After the fence, the active archive export is cancelled (reading-lite-mxwx.4)
+// so it frees no slot and never reaches ready; its consumer also re-reads the
+// status on every delivery. Like revocation, it reruns on `already_deleting`,
+// so a crash after the status write is repaired by the next request.
 
 export type BeginAccountDeletionResult =
   | { kind: "started" }
@@ -66,7 +72,7 @@ export async function beginAccountDeletion(
   const user = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", userId);
   if (!user) return { kind: "not_found" };
   if (user.status === "deleting") {
-    await revokeCredentials(db, { userId, nowMs: input.nowMs });
+    await suppress(db, { userId, nowMs: input.nowMs });
     return { kind: "already_deleting" };
   }
   if (user.status !== "active") return { kind: "not_active" };
@@ -86,22 +92,23 @@ export async function beginAccountDeletion(
   if (marked.changes === 0) {
     const again = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", userId);
     if (again?.status === "deleting") {
-      await revokeCredentials(db, { userId, nowMs: input.nowMs });
+      await suppress(db, { userId, nowMs: input.nowMs });
       return { kind: "already_deleting" };
     }
     return { kind: "not_active" };
   }
 
-  await revokeCredentials(db, { userId, nowMs: input.nowMs });
+  await suppress(db, { userId, nowMs: input.nowMs });
   return { kind: "started" };
 }
 
-async function revokeCredentials(
+async function suppress(
   db: ControlPlaneDb,
   input: { userId: string; nowMs: number },
 ): Promise<void> {
   const userId = parseUserId(input.userId);
   if (!userId) return;
+  await cancelActiveArchiveExports(db, { tenantId: userId, nowMs: input.nowMs });
   await revokeAllSessionsForUser(db, {
     userId,
     nowMs: input.nowMs,

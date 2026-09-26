@@ -459,6 +459,15 @@ export const ArchiveExportNotReadySchema = z
   .strict();
 export type ArchiveExportNotReady = z.infer<typeof ArchiveExportNotReadySchema>;
 
+// 410 from the download: the export passed expires_at and its parts are gone
+// or going. The account can request a fresh one.
+export const ArchiveExportExpiredSchema = z
+  .object({
+    error: z.literal("expired"),
+  })
+  .strict();
+export type ArchiveExportExpired = z.infer<typeof ArchiveExportExpiredSchema>;
+
 // export.json inside the zip. Counts are readings of every status.
 export const ArchiveExportDocumentSchema = z
   .object({

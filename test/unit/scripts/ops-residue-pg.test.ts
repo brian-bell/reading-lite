@@ -59,7 +59,7 @@ describe("PostgreSQL residue", () => {
     ).toBe(1);
   });
 
-  it("reports retained reading, embedding and refresh rows independently", async () => {
+  it("reports retained reading, embedding, refresh and export rows independently", async () => {
     const sql = sqlFor(),
       tenant = await seedTenant(sql);
     await seedReading(sql, tenant, "rd_seed", { embedding: unitVector() });
@@ -67,11 +67,16 @@ describe("PostgreSQL residue", () => {
       "INSERT INTO corpus_refresh_state (tenant_id, state, updated_at) VALUES ($1, '{}'::jsonb, now())",
       [tenant.tenantId],
     );
+    await sql.execute(
+      "INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at) VALUES ('exp_residue', $1, 'cancelled', now(), now())",
+      [tenant.tenantId],
+    );
     const result = await scanResidue(remote(), tenant.tenantId);
     for (const source of [
       "pg.readings",
       "pg.reading_embeddings",
       "pg.corpus_refresh_state",
+      "pg.archive_exports",
       "pg.users",
     ]) {
       expect(result.findings.find((f) => f.source === source)).toMatchObject({
