@@ -615,14 +615,37 @@ textarea {
   margin: var(--space-2) 0 var(--space-4);
 }
 
+/* The latest export sits on the surface a session or token row uses, so the
+   one thing on this page with a lifecycle looks like the others that do. */
+.account-export-card {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.account-export-card[hidden] {
+  display: none;
+}
+
 .account-export-status p {
-  margin: 0 0 var(--space-3);
+  margin: 0;
   font-size: 15px;
   line-height: 1.5;
 }
 
-.account-export-status + .session-meta {
-  margin: 0 0 var(--space-3);
+.account-export-card .session-meta {
+  margin: 0;
+}
+
+/* Download is a primary button (44 px); the request beside it matches, so
+   the row's two actions share one baseline and height. */
+.account-export-card .button {
+  min-height: 44px;
 }
 
 /* Account deletion is the last section, set further apart than the rest. */

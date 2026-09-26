@@ -20,6 +20,7 @@ import {
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import { dateTimeOn } from "../reading-presentation";
+import { Icon } from "./Icon";
 import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
 
 // "Export your archive" on the account page (reading-lite-mxwx.5): the latest
@@ -148,33 +149,52 @@ export function ExportSection({ view, onRetry }: ExportSectionProps) {
           {exportLimitSentence(limitRefusal.resetAt)}
         </p>
       ) : null}
-      {/* Always in the page, so each change the polling brings is announced. */}
-      <div className="account-export-status" role="status">
-        {latest ? <ExportStatus current={current} /> : null}
-      </div>
-      {current?.status === "ready" ? (
-        <div className="form-actions">
-          {/* No `download` attribute: the backend's Content-Disposition makes this
-              a download, and Chromium sends an attribute download outside the
-              page's request handling. */}
-          <a className="button button-primary" href={exportDownloadHref(current.id)}>
-            Download archive
-          </a>
+      {/* The latest export on the card surface sessions and tokens use: its
+          badge, its sentence, then what can be done about it. The status
+          region is always in the page, so each change the polling brings is
+          announced; the badge repeats the sentence, so it is not read. */}
+      <div className="account-export-card" hidden={latest === undefined}>
+        {current ? (
+          <span className={`status-badge status-badge-${current.status}`} aria-hidden="true">
+            {EXPORT_BADGE[current.status]}
+          </span>
+        ) : null}
+        <div className="account-export-status" role="status">
+          {latest ? <ExportStatus current={current} /> : null}
         </div>
-      ) : null}
-      {latest && !inProgress ? (
-        <>
-          {nextMs !== undefined && !limitRefusal ? <p className="session-meta">{nextRequestSentence(nextMs)}</p> : null}
+        {latest && !inProgress ? (
           <div className="form-actions">
+            {current?.status === "ready" ? (
+              // No `download` attribute: the backend's Content-Disposition makes
+              // this a download, and Chromium sends an attribute download outside
+              // the page's request handling.
+              <a className="button button-primary button-leading-icon" href={exportDownloadHref(current.id)}>
+                <Icon name="download" size={16} strokeWidth={2} />
+                Download archive
+              </a>
+            ) : null}
             <button type="button" className="button" onClick={send} disabled={!canRequest}>
               {current?.status === "ready" ? "Request a new export" : "Request export"}
             </button>
           </div>
-        </>
-      ) : null}
+        ) : null}
+        {latest && !inProgress && nextMs !== undefined && !limitRefusal ? (
+          <p className="session-meta">{nextRequestSentence(nextMs)}</p>
+        ) : null}
+      </div>
     </section>
   );
 }
+
+/** The badge's word for each status: the text label the colour never stands in for. */
+const EXPORT_BADGE: Record<ArchiveExport["status"], string> = {
+  queued: "Queued",
+  building: "Building",
+  ready: "Ready",
+  failed: "Failed",
+  expired: "Expired",
+  cancelled: "Cancelled",
+};
 
 /** What the latest export is, in one or two sentences. */
 function ExportStatus({ current }: { current: ArchiveExport | null }) {

@@ -8,6 +8,7 @@ const paths = {
   desktop: "M3 3h18v13H3z M12 16v5 M7 21h10",
   user: "M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8 M4 21a8 8 0 0 1 16 0",
   close: "M6 6l12 12 M18 6L6 18",
+  download: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
 } as const;
 
 export type IconName = keyof typeof paths;
