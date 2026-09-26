@@ -30,6 +30,27 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
   contention have no counterpart. Re-resolution is bounded: it converges or
   answers `unavailable`.
 
+## Markdown inbox
+
+Markdown an agent supplies waits here for a person's review before it becomes
+a reading (reading-lite-gh423). Nothing is claimed, billed, listed or
+searchable until then.
+
+- **Inbox item** — one `inbox_items` row (`in_…`): a source URL, an optional
+  title and the Markdown itself, capped at 128,000 bytes. One item per tenant
+  URL; at most 200 per tenant; no expiry. The Markdown lives in the row, not
+  R2: it is input awaiting review, not captured content.
+- **Stage** (`POST /api/inbox`, `src/inbox/stage.ts`) — writes or overwrites
+  the URL's item (the id is kept) under the tenant's `users` row `FOR SHARE`,
+  like a claim. Before writing it resolves the URL's owner read-only: a ready
+  or pending owner is returned and nothing is staged; a failed owner is named
+  on the item. Charged against the request rate only.
+- **Promote** (a later slice) — turns an item into a reading through
+  `ReadingIntake.importMarkdown`, then deletes the item only if it is still the
+  version that was promoted (`deleteIfUnchanged`). The reading quota and paid
+  work are charged here, not at stage.
+- **Discard** — deletes an item. Not a reading purge: there is no reading.
+
 ## Reading lifecycle
 
 - **Manifest** — the API shape of a reading, projected from its `readings`
@@ -112,7 +133,8 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
   and a publish that holds the lock first completes whole. An ineligible
   tenant's reading is stored without an embedding, never searchable, and a
   deleting tenant's copy goes with the wipe. Wipe of the tenant's reading rows
-  (embeddings with them) and then its R2 prefix is a deferred shared-queue job
+  (embeddings with them) and inbox items, and then its R2 prefix, is a
+  deferred shared-queue job
   plus the */15
   cron sweep, honoring a 7-day `deleting_at` grace unless the job payload sets
   `force` (grace gates *new* wipes; cron resumes in-progress/leftover and

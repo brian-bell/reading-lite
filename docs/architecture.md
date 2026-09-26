@@ -182,6 +182,7 @@ PostgreSQL query is `WHERE tenant_id = $1`. Paths are under `src/modules/`:
 | `stores/postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
 | `stores/postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
 | `stores/postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding |
+| `stores/postgres/inbox-store.ts` | Staged Markdown awaiting review (`inbox_items`): stage, list, get, discard |
 | `stores/content-store.ts` | R2 bytes by relative key under the tenant root |
 | `stores/layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
 | `staleness.ts` | Read-time stale-attempt annotation |
@@ -196,7 +197,9 @@ the Worker, the operator scripts and the batch pipeline share: `tenant-root.ts`
 (`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
 ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
 snapshot). An embedding is a row that deletes with its reading, so the
-account wipe is rows, then objects. The superseded D1 databases, Vectorize
+account wipe is rows (readings and inbox items), then objects. Inbox items are
+the one store whose Markdown sits in PostgreSQL rather than R2: it is input
+awaiting review, capped at the queue envelope, not captured content. The superseded D1 databases, Vectorize
 indexes and manifest-era R2 objects were deleted in reading-lite-gh351.
 
 Staging and production pin the tenant gate. The completed founder cutover

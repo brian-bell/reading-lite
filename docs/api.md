@@ -105,6 +105,21 @@ connection and tension target id to `{ url, title?, status }`, resolved at read
 time from the same tenant's reading rows. It is never stored on the manifest, and
 an id absent from the map is removed or unavailable. MCP `get_reading` omits it.
 
+## Inbox routes
+
+Markdown staged for review before it becomes a reading (reading-lite-gh423).
+Staging writes only the inbox row: no reading, URL claim, attempt, job,
+embedding or queue message, and no reading quota; it is charged one request
+against the request rate. Inbox items never appear in the reading list, search,
+similarity or `/lookup`. Promote is a later slice.
+
+| Method and path | Behavior |
+|---|---|
+| `POST /api/inbox` | `{ source_url, markdown, title? }`; requires `readings:import`. 201 `{ inbox_item_id, replaced: false }` for a new item; 200 `{ inbox_item_id, replaced: true }` when it overwrites the URL's item (same id; an omitted title clears it). A ready or pending reading that owns the URL returns 200 `{ existing: true, reading }` and stages nothing; a failed owner adds `corpus_reading: { id, status }`. 413 over 128,000 bytes of Markdown; 429 `inbox_full` for a new URL at 200 items (an overwrite is allowed); 429 request rate; 403 for an account no longer active |
+| `GET /api/inbox` | `{ items }`: every item's metadata (`id`, `url`, `title`, `markdown_bytes`, `created_at`, `updated_at`), most recently staged first; requires `readings:read` |
+| `GET /api/inbox/:id` | One item with its `markdown`; 404 for an unknown id; requires `readings:read` |
+| `DELETE /api/inbox/:id` | Discards the item (204); 404 for an unknown id; requires `readings:import` |
+
 ## MCP connector
 
 `POST /mcp` is a stateless Streamable HTTP MCP server. Tools dispatch internally
