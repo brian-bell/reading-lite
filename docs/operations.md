@@ -2758,11 +2758,27 @@ the build either finishes or dead-letters again. Nothing clears it if
 `ARCHIVE_EXPORT_JOBS` is unbound (the cron logs
 `archive_export_resume_skipped`) or the cron is not firing, so fix that first.
 
-Inspect read-only, with the database variable for that environment (see
-[deploying](#deploying) for the `NEON_*` names):
+Inspect read-only. Pick the database for the environment you are diagnosing
+(see [deploying](#deploying) for the names); the last line of each block
+stops if it resolved to nothing, so `psql` never falls back to libpq's
+defaults:
 
 ```sh
-psql "$NEON_MAIN_DATABASE_URL" -c "SELECT id, tenant_id, status, requested_at,
+# Staging: cloud agents and CI have STAGING_DATABASE_URL; a laptop sources the alias.
+[ -n "${STAGING_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
+EXPORT_DB="${STAGING_DATABASE_URL:-${NEON_REHEARSAL_DATABASE_URL:-}}"
+: "${EXPORT_DB:?set STAGING_DATABASE_URL or NEON_REHEARSAL_DATABASE_URL}"
+
+# Production: CI has PRODUCTION_DATABASE_URL; a laptop sources the alias.
+[ -n "${PRODUCTION_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
+EXPORT_DB="${PRODUCTION_DATABASE_URL:-${NEON_MAIN_DATABASE_URL:-}}"
+: "${EXPORT_DB:?set PRODUCTION_DATABASE_URL or NEON_MAIN_DATABASE_URL}"
+```
+
+Run one block, then:
+
+```sh
+psql "$EXPORT_DB" -c "SELECT id, tenant_id, status, requested_at,
   started_at, updated_at, lease_seq, continuations, cursor, error
   FROM archive_exports WHERE status IN ('queued', 'building') ORDER BY updated_at"
 ```
