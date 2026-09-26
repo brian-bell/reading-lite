@@ -2,14 +2,16 @@
 
 > **Status: executed 2026-09-24.** Production has served from PostgreSQL since
 > 11:01Z and reopened writes at 11:04:43Z ([record](#production-cutover-record-2026-09-24)).
-> The legacy D1, R2 manifests and Vectorize stay frozen and intact until #351.
+> The legacy D1, R2 manifests and Vectorize stayed frozen until #351, which
+> deleted them on 2026-09-26 after verifying these restore points
+> ([storage resources](operations.md#storage-resources)).
 > Rehearsal evidence is in the comments on bead `reading-lite-gh349`; the
 > cutover's is on `reading-lite-gh350`.
 
 This is the procedure for moving production's library and control plane from
 the legacy stores into PostgreSQL (ADR [0005](decisions/0005-postgresql-storage.md))
 with one release. It is a **copy**: export only reads D1, R2 and Vectorize,
-and nothing legacy is deleted until #351. The importer's behavior and its
+and nothing legacy was deleted until #351. The importer's behavior and its
 findings are documented in
 [operations: library export and import](operations.md#library-export-and-import-reading-lite-gh348);
 this page covers the order of operations, the checks, and the rollback boundary.
@@ -40,7 +42,8 @@ Backups, on the operator laptop under `~/rl-snapshots/`:
 - `production-2026-09-24-cutover-import-report.json` and `-import.log`
 - `production-2026-09-24-cutover-post-import.dump` and
   `production-2026-09-24-cutover-pre-reopen.dump` — the PostgreSQL restore
-  points. Neon's free plan keeps 6 hours of history, so keep these until #351.
+  points. Neon's free plan keeps 6 hours of history, so keep these: #351
+  verified them restorable and lists them as archives.
 
 ## What the rehearsal proved
 
@@ -72,7 +75,7 @@ gate the cutover.
 | Compute | 0.25 CU, the rehearsal size |
 | Plan | **Free** (decided 2026-09-24). |
 | Suspend | Scale to zero after about 5 idle minutes, the free plan's behavior. The `*/15` cron queries PostgreSQL on every tick, so the compute is awake about a third of the time and a request more than 5 minutes after a tick pays about 1 s. That is accepted for one reader. |
-| History retention | 6 hours on the free plan. The post-import `pg_dump` (step 3) is the restore point for the cutover; keep it until #351. After that window, restores rely on dumps you take yourself. |
+| History retention | 6 hours on the free plan. The post-import `pg_dump` (step 3) is the restore point for the cutover; keep it as an archive. Otherwise restores rely on dumps you take yourself. |
 | Hyperdrive | `reading-lite-production` (`4aebdf8836c746f29703a04cf575b34a`, created 2026-09-24), caching disabled, against the **direct** endpoint (never `-pooler`), default origin connection limit (60). Bound in `[env.production]`. |
 | Connection strings | Use `sslmode=verify-full`; node-postgres warns that `require` will change meaning. |
 

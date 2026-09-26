@@ -11,9 +11,9 @@ before they act on it. This inventory put a decision on the record for every
 such command before any porting started. Every **port** verdict has since
 landed; the tables below describe what each surviving command reads.
 
-**This document is the source list for reading-lite-gh351.** gh351 retires from
-this list and adds nothing to it: a command or skill that is not named here is
-not retired by gh351.
+reading-lite-gh351, which retired the old storage (closed 2026-09-26), used this
+document as its source list. The commands it retired are marked **retired**
+below, with the slice that deleted them.
 
 ## Verdicts
 
@@ -22,7 +22,7 @@ not retired by gh351.
 | **port** | Survives, with its reads moved to a direct PostgreSQL connection (or, for deploy and staging, onto the new database lifecycle). A named later slice owns the port. |
 | **Worker endpoint** | Survives, with its read moved behind HTTP on the Worker instead of a direct connection. |
 | **retire now** | Its job cannot exist under the new schema. Deleted in reading-lite-gh347.4.6, with its libraries, registry entry and tests; listed under [Retired commands](#retired-commands). |
-| **retire in #351** | Its job is real today and disappears only when gh351 removes the resource it inspects. It must keep working until then, so it is **not** deleted here. |
+| **retire in #351** | Its job was real until gh351 removed the resource it inspected, so it had to keep working until then. Every command with this verdict has since been deleted. |
 | **unchanged** | Reads nothing that moved. It keeps working as written; where it resolves a handle through a module another slice rewrites, it recompiles against that module rather than changing behaviour. |
 
 `retire now` and `retire in #351` are deliberately separate verdicts. They call
@@ -47,8 +47,9 @@ The identity is over **inventory rows, not files on disk**:
 - The directory has moved on since. `deploy web` left with the legacy SPA
   (reading-lite-gh335.3); the two `migrate` commands were added outside the 44
   and retired in reading-lite-gh351.4; `corpus purge-legacy` was added in
-  reading-lite-gh351.5. So `ls scripts/ops-lib/commands/` reads **36**
-  (36 − 1 + 1). Checking 44 against the directory listing is the wrong check.
+  reading-lite-gh351.5 and retired, with `account sweep-wipe-prefix`, in
+  reading-lite-gh351.7. So `ls scripts/ops-lib/commands/` reads **34**
+  (36 − 1 − 1). Checking 44 against the directory listing is the wrong check.
 
 `scripts/account-lib/vector-ledger.ts` and `scripts/account-lib/operator-ledger.ts`
 were deleted with them. They are libraries, not commands, and are not
@@ -86,8 +87,6 @@ does not retire either command.
 The D1 migrations that created the ledger (`migrations/0010`, `0012`) stayed
 as that database's schema history while `ops migrate export` read it;
 reading-lite-gh351.4 removed the whole D1 `migrations/` directory with it.
-`test/unit/pg/control-plane-schema.test.ts` still names the ledger tables,
-because what it asserts is that the PostgreSQL schema does **not** contain them.
 
 ## Commands
 
@@ -96,7 +95,7 @@ because what it asserts is that the PostgreSQL schema does **not** contain them.
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
 | `account residue-scan` | `account-residue-scan.ts` | PostgreSQL corpus/control-plane rows, tenant R2 prefixes | **ported** | Slice 4.3 preserves independent findings and visibility limits; reading-lite-gh351.3 dropped its legacy Vectorize sources. Missing ready embeddings are diagnostics; row presence is residue. It observes deletion state and never authorizes teardown. |
-| `account sweep-wipe-prefix` | `account-sweep-wipe-prefix.ts` | The `wipe/{tenantId}/progress.json` R2 prefix, plus a `psql` `wipe_progress` query, naming the paired connection variable, printed as evidence in its pre-delete briefing | **retire in #351** | It is the tool that proves the prefix is empty before gh351 deletes it; a deletion gate that lost its in-flight-wipe evidence would be more dangerous than one that was ported. See [below](#account-sweep-wipe-prefix). |
+| `account sweep-wipe-prefix` | `account-sweep-wipe-prefix.ts` | The `wipe/{tenantId}/progress.json` R2 prefix, with a `wipe_progress` evidence query | **retired** (gh351.7) | It confirmed the prefix empty in both buckets before the legacy deletion (reading-lite-gh351.6); nothing writes the prefix, so it had no job left. See [below](#account-sweep-wipe-prefix). |
 | `account wipe` | `account-wipe.ts` | `users.status` and `wipe_progress` in PostgreSQL through `accountRemote` | **ported** | Slice 4.7 moved its handle and closes the session; 4.3 verifies the existing path. Deletion rules are unchanged. |
 
 ### corpus
@@ -106,7 +105,7 @@ because what it asserts is that the PostgreSQL schema does **not** contain them.
 | `corpus audit` | `corpus-audit.ts` | Tenant readings, and with `--deep` the attempt event log, through `scripts/pg-lib/operator-corpus.ts` | **ported** | The read is real work — the non-ready inventory. reading-lite-gh347.4.7 inventories non-ready readings from `readings` and runs orphan-duplicate detection over the returned rows as it did over the list index. |
 | `corpus drop` | `corpus-drop.ts` | Resolves selectors against tenant readings, deletes the row, then the reading's R2 content | **ported** | Dropping a reading is still real work. reading-lite-gh347.4.7 deletes the row and lets `reading_urls`, revisions, relationships and the embedding cascade; `--vectorize` went with the index. Its R2 delete covers all three `contentKeys` tiers. |
 | `corpus ingest` | `corpus-ingest.ts` | Tenant PostgreSQL readings, URL ownership and embeddings; captured bytes in R2 | **ported** | reading-lite-gh347.4.2 uses the shared transactional writer and resumes the same provider batch after interrupted publication. |
-| `corpus purge-legacy` | `corpus-purge-legacy.ts` | The tenant's R2 root, listed; its reading rows and every key they resolve | **new in #351** | Added by reading-lite-gh351.5 to delete the manifest-era objects no row references: manifests, attempt logs, processing checkpoints, `index/*` pointers and markers, superseded legacy content and orphan prefixes. See [operations](operations.md#purging-the-manifest-era-layout-reading-lite-gh3515). |
+| `corpus purge-legacy` | `corpus-purge-legacy.ts` | The tenant's R2 root, listed; its reading rows and every key they resolve | **retired** (gh351.7) | Added by reading-lite-gh351.5 to delete the manifest-era objects no row referenced. It ran on every tenant root in both buckets on 2026-09-26 (reading-lite-gh351.6) and had no job left. |
 | `corpus purge-connections` | `corpus-purge-connections.ts` | Inbound `reading_relationships` rows naming a deleted reading, removed with one `DELETE` | **ported** | The dangling-inbound problem survives: `reading_relationships` has a foreign key on the source only, so a deleted reading leaves every inbound row naming it as `target_id`. reading-lite-gh347.4.7 replaced the manifest rewrite with one `DELETE ... WHERE target_id = $1`. The CAS loop and its conflict budget went with the manifests; `--sole-writer` did not, because a publisher in flight can still commit an inbound row after the DELETE's snapshot and no statement can exclude it. A post-delete recount checks that assertion and exits 1 on leftovers. |
 | `corpus recover` | `corpus-recover.ts` | Audit input and tenant PostgreSQL readings; batch content in R2 | **ported** | reading-lite-gh347.4.7 ports monitor reads; reading-lite-gh347.4.2 ports offline activation and publication. |
 | `corpus refresh-connections` | `corpus-refresh-connections.ts` | Tenant readings and relationships; writes judged connections under `--sole-writer` | **ported** | reading-lite-gh347.4.1. A judged set becomes rows in `reading_relationships` plus the load-bearing summary flags on the current `reading_revisions` row, which are what distinguish an empty set from an uncomputed one. |
@@ -183,7 +182,7 @@ reading-lite-gh351.4, with `scripts/migrate-lib/`.
 | `staging prepare-context` | `staging-prepare-context.ts` | PostgreSQL readings, ownership, current revision and embeddings; referenced R2 bytes and destination preconditions | **ported** | Slice 4.3 emits a private v2 packet of row payloads and content. Execution only writes local files; application is separately authorized. |
 | `staging setup` | `staging-setup.ts` | The paired staging PostgreSQL database (the Neon rehearsal branch), then provisions the staging bucket and queues | **ported** | reading-lite-gh347.4.8 resolves the database through the operator-db pairing before any Cloudflare mutation and migrates it with `ops db migrate`'s runner. It never creates the database; D1 left both lists. |
 | `staging smoke` | `staging-smoke.ts` | Drives the staging origin over HTTP and checks provider outcomes | **unchanged** | HTTP against the deployed staging Worker, with the bearer token founder bootstrap imports. Its `--execute` writes readings and calls the summarization provider. |
-| `staging teardown` | `staging-teardown.ts` | Removes the Cloudflare resources `staging setup` creates | **ported** | reading-lite-gh347.4.8: Cloudflare only. The staging database is retained (setup never creates it), and so is staging's D1, the #348 importer's source, until #351. A test holds the create and delete lists equal. |
+| `staging teardown` | `staging-teardown.ts` | Removes the Cloudflare resources `staging setup` creates | **ported** | reading-lite-gh347.4.8: Cloudflare only. The staging database is retained (setup never creates it). Staging's old D1 was deleted in reading-lite-gh351.6. A test holds the create and delete lists equal. |
 | `staging token-revocation` | `staging-token-revocation.ts` | The staging origin over HTTP, plus release evidence on disk | **unchanged** | Confirmed against reading-lite-gh347.4.3's open question: it holds no control-plane SQL, so it does not move into that slice. |
 
 ### system
@@ -203,11 +202,11 @@ the D1 `vector_ledger`.
 | Command | Why it was retired |
 | --- | --- |
 | `account audit-bare-vectors` | A bare vector is unrepresentable. `reading_embeddings` has a foreign key to `readings`, so the condition it hunted cannot occur, and the ledger it queried is a table the PostgreSQL schema deliberately never creates. |
-| `corpus backfill-similarity` | A one-time backfill of a field the reading-lite-gh348 importer carries over. |
+| `corpus backfill-similarity` | A one-time backfill of a field the reading-lite-gh348 importer carried over. |
 | `corpus backfill-source-date` | The same, for `source_date`. |
 | `corpus backfill-vectors` | It repaired drift between a manifest in R2 and a vector in a separate Vectorize index. The embedding commits and cascades inside the reading's own transaction, so there is no second system to drift from. See [below](#why-backfill-vectors-is-safe-to-retire). |
 | `corpus delete-orphans` | It hunted by-url pointers with no reading behind them. `reading_urls` is unique per tenant and the claim commits with the reading, so an orphaned claim cannot be left behind. |
-| `corpus normalize-tags` | A one-time backfill of a field the gh348 importer carries over. |
+| `corpus normalize-tags` | A one-time backfill of a field the gh348 importer carried over. |
 | `corpus rebuild-list` | There is no denormalized list to rebuild. The list is a query over `readings`, which cannot drift from itself. |
 | `corpus seed-vector-ledger` | It seeded the D1 `vector_ledger`, which the PostgreSQL schema never creates: embeddings are rows of `reading_embeddings` and delete with their reading in one transaction. |
 
@@ -258,9 +257,7 @@ attempt event log behind `corpus audit --deep`, and the DELETEs.
 
 **`--tenant global` is refused** by all of them. It names the pre-tenant R2
 layout — an empty key root — and no `readings` row can carry it. Left
-resolvable it would report an empty corpus rather than a wrong question. The
-R2-only commands that still address retained pre-tenant objects keep accepting
-it.
+resolvable it would report an empty corpus rather than a wrong question.
 
 **Deletion order is row first, objects second**, the ordering `purgeReading`
 holds and the one the [deletion rules](operations.md#account-deletion) state. A
@@ -284,8 +281,9 @@ account wipe removes them with the tenant's prefix. That is the same price
 and `scripts/ops-lib/database-url-env.ts` are gone, folded into the new module.
 `system policy`, `system status`, `staging prepare-context` and
 `account-lib/remote.ts` now resolve their control-plane handle over a direct
-connection through it, and `account sweep-wipe-prefix` prints a `psql` evidence
-query naming the paired variable instead of a `wrangler d1 execute` one.
+connection through it, and `account sweep-wipe-prefix` (since retired) printed a
+`psql` evidence query naming the paired variable instead of a `wrangler d1
+execute` one.
 `scripts/corpus-lib/delete-plan.ts` and `check-corpus-lib/fetch-index.ts` went
 with the by-url pointer and the list index they read.
 
@@ -330,21 +328,11 @@ carried forward speculatively.
 
 ## `account sweep-wipe-prefix`
 
-It is **retire in #351**, and it is worth stating plainly why it is not simply
-"R2-only".
-
-It is not R2-only. It resolves the bucket's database through
-`OPERATOR_DATABASES` in `scripts/pg-lib/operator-db.ts` (and re-exports it), and
-prints a `psql` `wipe_progress` query as evidence in its pre-delete briefing —
-the evidence that distinguishes a wipe still running from records that predate
-#195 S2. Before reading-lite-gh347.4.7 it took that pairing from
-`scripts/account-lib/control-plane.ts`, which the rewrite removed, so the
-command could not be left alone and still compile.
-
-**The decision: its evidence read follows the new pairing.** Its R2 job is
-unchanged — it still sweeps the `wipe/{tenantId}/progress.json` prefix — and
-only the handle under its control-plane query moves. It is the tool that proves
-that prefix is empty before gh351 deletes it, and a deletion gate that lost its
-in-flight-wipe evidence would be more dangerous than one that was ported.
-
-gh351 inherits this decision rather than rediscovering the coupling.
+It was **retire in #351**, and it was not simply "R2-only": it resolved the
+bucket's database through `OPERATOR_DATABASES` in `scripts/pg-lib/operator-db.ts`
+and printed a `wipe_progress` query as evidence in its pre-delete briefing, the
+evidence that told a wipe still running from records that predated #195 S2.
+That made it the gate before gh351 deleted the legacy stores: on 2026-09-26 it
+found `wipe/` already empty in both buckets (reading-lite-gh351.6), and
+reading-lite-gh351.7 deleted it. The bucket-to-database pairing test it carried
+moved to `test/unit/scripts/operator-db.test.ts`.

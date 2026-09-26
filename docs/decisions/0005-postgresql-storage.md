@@ -2,7 +2,10 @@
 
 - **Status:** Accepted; live in production since the 2026-09-24 cutover
   (`reading-lite-gh350`, [record](../postgres-cutover.md#production-cutover-record-2026-09-24)).
-  Staging moved first, on 2026-09-24 (`reading-lite-gh349`).
+  Staging moved first, on 2026-09-24 (`reading-lite-gh349`). The superseded
+  stores were retired on 2026-09-26 (`reading-lite-gh351`): both D1 databases
+  and both Vectorize indexes are deleted, and the manifest-era R2 objects are
+  purged from every tenant root.
 - **Date:** 2026-09-19
 - **Decision owners:** Brian Bell
 - **Task:** `reading-lite-gh347.1`, under `reading-lite-gh347` and the epic
@@ -527,7 +530,9 @@ checked-in `POSTGRES_CUTOVER_ENABLED = { staging: false, production: false }`.
 `ops deploy worker` refuses an environment that binds Hyperdrive while its
 flag is false, before the readiness preflight, migrations or upload: plan mode
 reports the refusal, `--execute` exits 2, and execute also refuses a
-placeholder Hyperdrive id. The flag is per environment because #349 deploys
+placeholder Hyperdrive id. (Once both flags were true the flag was removed in
+`reading-lite-gh351.7`; the placeholder check remains, in
+`scripts/ops-lib/hyperdrive-binding.ts`.) The flag is per environment because #349 deploys
 the candidate to staging as the rehearsal: #349 flips staging on the branch,
 #350 flips production in a reviewable commit that travels with the release.
 Both flags are now true: staging since #515, production since #518.

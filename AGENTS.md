@@ -92,8 +92,7 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
 Run the Worker suite on Node 22 (`mise.toml` pins it; `mise exec node@22 --`
 works from a worktree that does not inherit it). Node 24 and 25 fail it in ways
 that have nothing to do with the code under test: a pool worker aborts and the
-run exits 1 with every test passing, or the run dies on an EPIPE. Nothing in
-the runtime, its tests or `npm run dev` binds or migrates a D1 database.
+run exits 1 with every test passing, or the run dies on an EPIPE.
 
 ## Where to work
 
@@ -122,8 +121,7 @@ the runtime, its tests or `npm run dev` binds or migrates a D1 database.
   manifest and list shapes. Keep manifest and API schemas, tests, and
   `docs/openapi.yaml` synchronized.
 - Reading state and embeddings live in PostgreSQL; captured content stays in
-  R2. Add no dual-write or fallback to the R2 manifests, `index/list.json`,
-  pointers, or Vectorize. Construct stores with `pgReadingStoreFor`,
+  R2. Add no second store for reading state. Construct stores with `pgReadingStoreFor`,
   `pgReadingWriterFor`, `pgSimilarityStoreFor`, and `contentStoreFor` from a
   validated `TenantContext`; every query is scoped by `tenant_id`. Session state
   does not survive Hyperdrive, so use `SET LOCAL` inside `sql.transaction`.
@@ -191,8 +189,7 @@ on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
 `WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
-tests inject `installQueueStub()`. Similarity is pgvector, and the Worker binds
-no Vectorize index.
+tests inject `installQueueStub()`. Similarity is pgvector.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
 migrates a per-checkout `reading_lite_test_<hash>` database once per run and fails fast when it is
 unreachable, and tests never connect to Neon. The pool does not roll PostgreSQL
@@ -245,9 +242,11 @@ and it is R2-only: the commands that read or delete rows refuse it, because no
 
 Production and staging pin `TENANT_DATA_PLANE=1`. Removing the pin after tenant
 writes resume requires a freeze and reverse reconciliation, or explicit
-acceptance of the hidden post-cutover data. Tenant wipes never touch global
-objects or the retained legacy D1 database and Vectorize index. Legacy deletion
-requires separate sign-off.
+acceptance of the hidden post-cutover data. Tenant wipes never touch the
+retained pre-tenant global objects; deleting them requires separate sign-off.
+The legacy D1 databases, Vectorize indexes and manifest-era R2 objects were
+deleted in reading-lite-gh351; the final inventory is in
+[storage resources](docs/operations.md#storage-resources).
 The 2026-08-31 founder migration is complete and its command is retired; do not
 rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cutover.md).
 
