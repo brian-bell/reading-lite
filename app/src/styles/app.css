@@ -602,6 +602,29 @@ textarea {
   user-select: all;
 }
 
+/* Archive export: what the zip holds and its limits, then the latest
+   export's state, then its actions. */
+.account-export-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.account-export-text + .session-meta {
+  margin: var(--space-2) 0 var(--space-4);
+}
+
+.account-export-status p {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.account-export-status + .session-meta {
+  margin: 0 0 var(--space-3);
+}
+
 /* Account deletion is the last section, set further apart than the rest. */
 .account-section + .account-delete {
   margin-top: var(--space-9);

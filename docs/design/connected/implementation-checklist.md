@@ -101,7 +101,10 @@ Phases 6 and 7 (`reading-lite-gh341`, `reading-lite-gh342`) are open.
 - [ ] Complete account/session/token/notification/digest/deletion parity.
 - [ ] Agree provider contracts, key storage/validation/rotation/removal semantics,
   in-flight jobs, billing disclosure, and key-free access to existing material.
-- [ ] Complete sample onboarding and full archive export.
+- [ ] Complete sample onboarding.
+- [ ] Complete full archive export (reading-lite-mxwx). The account page's
+  "Export your archive" section is built (reading-lite-mxwx.5); the export
+  lifecycle, queue provisioning, and staging verification remain.
 - [ ] Keep the existing SPA available until replacement and rollback checks pass.
 - [ ] Demonstrate independent frontend release/rollback with the existing release
   guards; make invited beta/open signup/source publication separate decisions.

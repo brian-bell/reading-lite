@@ -23,6 +23,8 @@ import {
   type DigestSchedule,
 } from "../digest";
 import type { EmailChangeOutcome } from "../email-change";
+import type { ExportLatest } from "../archive-export";
+import { exportsQueryOptions } from "../exports-query";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf } from "../reading";
 import {
@@ -45,6 +47,7 @@ import {
 import { settingsQueryOptions } from "../settings-query";
 import type { TokensList } from "../tokens";
 import { tokensQueryOptions } from "../tokens-query";
+import { ExportSection, type ExportSectionProps } from "./AccountExport";
 import { TokensSection, type RevealedToken, type TokensSectionProps } from "./AccountTokens";
 import { StepUpNotice } from "./StepUpNotice";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -61,7 +64,8 @@ import {
 
 // The account page (#340.1, #340.6, #340.7, #340.8; Phase 5 of #340). Email
 // change, notification settings, session management — the list, a single
-// revoke, and revoke-all — and API tokens; the common states are the
+// revoke, and revoke-all — API tokens, and the archive export
+// (reading-lite-mxwx.5, AccountExport.tsx); the common states are the
 // acceptance matrix's, shared with the library and save. A 403 or 412
 // that refuses the account (from a read, a settings save, an email-change
 // request, or a delete) is the whole page's state; a failed settings or
@@ -96,6 +100,7 @@ export function AccountPage() {
   const { data, error, fetchStatus, refetch } = useQuery(sessionsQueryOptions(queryClient, identity));
   const settingsQuery = useQuery(settingsQueryOptions(queryClient, identity));
   const tokensQuery = useQuery(tokensQueryOptions(queryClient, identity));
+  const exportsQuery = useQuery(exportsQueryOptions(queryClient, identity));
   const [confirmAll, setConfirmAll] = useState(false);
   // This device's session, while the reader is asked whether to sign it out.
   const [confirmHere, setConfirmHere] = useState<SessionListItem | null>(null);
@@ -193,10 +198,15 @@ export function AccountPage() {
     error: tokensQuery.error,
     fetchStatus: tokensQuery.fetchStatus,
   });
+  const exportsView = accountViewOf({
+    data: exportsQuery.data,
+    error: exportsQuery.error,
+    fetchStatus: exportsQuery.fetchStatus,
+  });
   const saveError = isUnauthorized(save.error) ? null : save.error;
   const saveFailure = saveError == null ? undefined : failureOf(saveError);
   const emailError = isUnauthorized(emailChange.error) ? null : emailChange.error;
-  const view = pageViewOf(sessionsView, settingsView, tokensView, emailRefusal);
+  const view = pageViewOf(sessionsView, settingsView, tokensView, exportsView, emailRefusal);
   // A state page replaces the page with any dialog open on it, and a dialog
   // removed that way fires no `close`, so its flag would stay set and the
   // dialog reopen by itself once Retry brings the page back.
@@ -335,6 +345,10 @@ export function AccountPage() {
           onReveal: setRevealedToken,
           onDismiss: () => setRevealedToken(null),
         },
+        exports: {
+          view: exportsView,
+          onRetry: () => void exportsQuery.refetch(),
+        },
         deletion: {
           confirming: confirmDelete,
           notice: deleteNotice,
@@ -377,12 +391,14 @@ function pageViewOf(
   sessions: AccountView<SessionsList>,
   settings: AccountView<UserSettings>,
   tokens: AccountView<TokensList>,
+  exports: AccountView<ExportLatest>,
   emailChange: EmailRefusal | undefined,
 ): PageView {
-  for (const view of [sessions, settings, tokens]) {
+  const reads = [sessions, settings, tokens, exports];
+  for (const view of reads) {
     if (view.kind === "forbidden") return { kind: "forbidden" };
   }
-  for (const view of [sessions, settings, tokens]) {
+  for (const view of reads) {
     if (view.kind === "account-changed") return view;
   }
   if (emailChange?.kind === "account-changed") return emailChange;
@@ -440,6 +456,7 @@ function pageFor(
     email: EmailActions;
     settings: SettingsActions;
     tokens: TokensSectionProps;
+    exports: ExportSectionProps;
     deletion: DeletionActions;
   },
 ) {
@@ -493,6 +510,7 @@ function pageFor(
             ) : null}
           </section>
           <TokensSection {...actions.tokens} />
+          <ExportSection {...actions.exports} />
           <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
           {actions.confirmAll ? (
             <ConfirmDialog
@@ -929,7 +947,8 @@ function DeleteAccountSection({
       <p className="account-delete-text">
         Deleting your account signs you out and revokes every browser session and API token right away. Your
         library and everything in it is permanently deleted after seven days, and you can't sign in to this
-        account in the meantime.
+        account in the meantime. To keep a copy, export your archive above and download it first:
+        deleting the account cancels an export that hasn't finished.
       </p>
       <p className="account-delete-text">This needs a sign-in from the last 10 minutes.</p>
       {notice?.kind === "step-up" ? (
@@ -955,6 +974,7 @@ function DeleteAccountSection({
         >
           <p>
             Every session and API token is revoked now, and your library is permanently deleted after seven days.
+            Download your archive export first if you want a copy.
           </p>
         </ConfirmDialog>
       ) : null}

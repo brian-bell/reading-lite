@@ -5,9 +5,8 @@
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
 // missing reading, sign-in, save, one trail hop, Source, Details, account
-// sessions, account deletion's confirmation and closing page, public legal
-// pages): CI runs
-// those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
+// sessions, a ready archive export, account deletion's confirmation and
+// closing page, public legal pages): CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
 // the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
 // edit in test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo
@@ -25,11 +24,14 @@ import {
   serveReadingsInBrowser,
   serveReprocessInBrowser,
   serveAccountDeleteInBrowser,
+  serveExportInBrowser,
   serveImportInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
   serveTokensInBrowser,
+  E2E_EXPORT_DAILY_LIMIT,
+  E2E_EXPORTS,
   E2E_TOKEN_SECRET,
   E2E_TOKENS,
   serveSourceInBrowser,
@@ -497,9 +499,10 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   { name: "privacy", anyHost: true, essential: true, path: "/privacy", state: "signed-out", heading: "Privacy Policy" },
   { name: "dmca", anyHost: true, essential: true, path: "/dmca", state: "signed-out", heading: "Copyright Complaints" },
 
-  // Account (#340.1, #340.6). The sessions list and the notification settings
-  // are fetched in the browser, so every signed-in case stubs both; without
-  // that the frontend Worker answers /api/* with 404.
+  // Account (#340.1, #340.6, #340.7, reading-lite-mxwx.5). The sessions list,
+  // the notification settings, the tokens, and the export status are fetched
+  // in the browser, so every signed-in case stubs all four; without that the
+  // frontend Worker answers /api/* with 404.
   { name: "account-signed-out", anyHost: true, path: "/account/security", state: "signed-out", heading: "Sign in" },
   {
     name: "account-sessions",
@@ -509,6 +512,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -528,6 +532,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "You don't have access to this.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, { status: 403, json: { error: "forbidden" } });
     },
@@ -539,6 +544,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "This tab is signed in to a different account than the page expects.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, {
         status: 412,
@@ -553,6 +559,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Something went wrong on our side.",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page, { status: 503, json: { error: "storage unavailable" } });
     },
@@ -567,6 +574,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await page.route("**/api/auth/email-change", (route) =>
@@ -588,6 +596,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -606,6 +615,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page, { status: 503, json: { error: "control plane unavailable" } });
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -622,6 +632,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -650,6 +661,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page);
@@ -669,6 +681,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -684,6 +697,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
     },
@@ -701,6 +715,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page, { create: { status: 403, json: { error: "recent authentication required" } } });
       await serveSessionsInBrowser(page);
     },
@@ -718,6 +733,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page, {
         json: {
           tokens: Array.from({ length: 10 }, (_, i) => ({ ...E2E_TOKENS.tokens[0]!, id: `tok_${i}`, name: `Job ${i + 1}` })),
@@ -731,6 +747,109 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(tokens.getByRole("button", { name: "Create token" })).toBeDisabled();
     },
   },
+  // Archive export (reading-lite-mxwx.5): each state of the latest export,
+  // and the daily limit a request meets. Ready is the major state: the
+  // download link and the day's slot it holds.
+  {
+    name: "account-export-queued",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.queued] });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await expect(exports.getByText("It's waiting to start", { exact: false })).toBeVisible();
+    },
+  },
+  {
+    name: "account-export-building",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.building] });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await expect(exports.getByText("Building your archive. This page updates when it's ready.")).toBeVisible();
+    },
+  },
+  {
+    name: "account-export-ready",
+    essential: true,
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.ready] });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await expect(exports.getByRole("link", { name: "Download archive" })).toBeVisible();
+      await expect(exports.getByRole("button", { name: "Request a new export" })).toBeDisabled();
+      await expect(exports.getByText("Your archive is ready.", { exact: false })).toBeVisible();
+    },
+  },
+  {
+    name: "account-export-failed",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.failed] });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await expect(exports.getByText("Your last export failed. You can request another now.")).toBeVisible();
+    },
+  },
+  {
+    name: "account-export-expired",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.expired] });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await expect(exports.getByText("Your last archive expired on", { exact: false })).toBeVisible();
+    },
+  },
+  {
+    name: "account-export-rate-limited",
+    path: "/account/security",
+    state: "signed-in",
+    heading: "Account",
+    stub: async (page) => {
+      await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page, { latest: [E2E_EXPORTS.none], request: E2E_EXPORT_DAILY_LIMIT });
+      await serveTokensInBrowser(page);
+      await serveSessionsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const exports = page.getByRole("region", { name: "Export your archive" });
+      await exports.getByRole("button", { name: "Request export" }).click();
+      await expect(exports.getByText("You've reached the daily export limit.", { exact: false })).toBeVisible();
+    },
+  },
   {
     name: "account-delete-step-up",
     path: "/account/security",
@@ -738,6 +857,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page, {
@@ -763,6 +883,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "Account",
     stub: async (page) => {
       await serveSettingsInBrowser(page);
+      await serveExportInBrowser(page);
       await serveTokensInBrowser(page);
       await serveSessionsInBrowser(page);
       await serveAccountDeleteInBrowser(page);

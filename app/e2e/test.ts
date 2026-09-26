@@ -454,6 +454,105 @@ export async function serveSettingsInBrowser(
   return { saves };
 }
 
+const HOUR_MS = 60 * 60 * 1000;
+/** The browser's pinned clock (the `page` fixture above): every export time is read against it. */
+const PACK_NOW_MS = Date.parse(pack.generated_at);
+const E2E_EXPORT = {
+  id: "exp_e2e",
+  requested_at: new Date(PACK_NOW_MS - HOUR_MS).toISOString(),
+  started_at: new Date(PACK_NOW_MS - HOUR_MS + 4_000).toISOString(),
+  completed_at: new Date(PACK_NOW_MS - HOUR_MS + 120_000).toISOString(),
+  expires_at: new Date(PACK_NOW_MS + 7 * 24 * HOUR_MS - HOUR_MS + 120_000).toISOString(),
+  error: null,
+};
+/** A request is allowed now: nothing counted is inside the rolling day. */
+const EXPORT_ALLOWED = new Date(PACK_NOW_MS - 30 * 24 * HOUR_MS).toISOString();
+/** A counted export an hour old holds the day's slot for 23 hours more. */
+const EXPORT_HELD = new Date(PACK_NOW_MS + 23 * HOUR_MS).toISOString();
+
+/** GET /api/exports/latest bodies, one per state (reading-lite-mxwx.5). */
+export const E2E_EXPORTS = {
+  none: { export: null, next_allowed_at: EXPORT_ALLOWED },
+  queued: {
+    export: { ...E2E_EXPORT, status: "queued", started_at: null, completed_at: null, expires_at: null },
+    next_allowed_at: EXPORT_HELD,
+  },
+  building: {
+    export: { ...E2E_EXPORT, status: "building", completed_at: null, expires_at: null },
+    next_allowed_at: EXPORT_HELD,
+  },
+  ready: { export: { ...E2E_EXPORT, status: "ready" }, next_allowed_at: EXPORT_HELD },
+  failed: {
+    export: { ...E2E_EXPORT, status: "failed", expires_at: null, error: { code: "dead_letter" } },
+    next_allowed_at: EXPORT_ALLOWED,
+  },
+  expired: {
+    export: {
+      ...E2E_EXPORT,
+      status: "expired",
+      requested_at: new Date(PACK_NOW_MS - 9 * 24 * HOUR_MS).toISOString(),
+      started_at: new Date(PACK_NOW_MS - 9 * 24 * HOUR_MS + 4_000).toISOString(),
+      completed_at: new Date(PACK_NOW_MS - 9 * 24 * HOUR_MS + 120_000).toISOString(),
+      expires_at: new Date(PACK_NOW_MS - 2 * 24 * HOUR_MS + 120_000).toISOString(),
+    },
+    next_allowed_at: EXPORT_ALLOWED,
+  },
+};
+
+/** The 429 another tab's export earns: the next request is an hour away. */
+export const E2E_EXPORT_DAILY_LIMIT = {
+  status: 429,
+  json: { limit: "daily_export", reset_at: new Date(PACK_NOW_MS + HOUR_MS).toISOString() },
+};
+
+/**
+ * GET /api/exports/latest, POST /api/exports, and the download
+ * (reading-lite-mxwx.5). Awaited for the same reason as the sessions route:
+ * the account page reads the status on mount. Each status read answers the
+ * next body of `latest` and then repeats the last, so a spec can walk an
+ * export from none through queued and building to ready. A request is
+ * recorded and answered 202, unless `request` gives the answer instead. A
+ * download is recorded and answered with a small zip as an attachment.
+ */
+export async function serveExportInBrowser(
+  page: Page,
+  answer: { latest?: unknown[]; request?: { status: number; json: unknown } } = {},
+): Promise<{ requests: Request[]; downloads: Request[] }> {
+  const requests: Request[] = [];
+  const downloads: Request[] = [];
+  const latest = [...(answer.latest ?? [E2E_EXPORTS.none])];
+  await page.route("**/api/exports**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "GET" && path === "/api/exports/latest") {
+      const body = latest.length > 1 ? latest.shift() : latest[0];
+      await route.fulfill({ status: 200, json: body });
+      return;
+    }
+    if (request.method() === "POST" && path === "/api/exports") {
+      requests.push(request);
+      await route.fulfill(answer.request ?? { status: 202, json: { id: E2E_EXPORT.id, status: "queued" } });
+      return;
+    }
+    if (request.method() === "GET" && /^\/api\/exports\/[^/]+\/download$/.test(path)) {
+      downloads.push(request);
+      // An empty zip: the end-of-central-directory record alone.
+      const body = Buffer.from([0x50, 0x4b, 0x05, 0x06, ...new Array<number>(18).fill(0)]);
+      await route.fulfill({
+        status: 200,
+        body,
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="reading-lite-archive.zip"',
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+  return { requests, downloads };
+}
+
 /**
  * Serves DELETE /api/account in the browser (#340.8). Nothing reaches the
  * backend stub: the answer is whatever the spec asks for, and each request is

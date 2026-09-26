@@ -23,6 +23,12 @@
 // with the email locked, in a real browser. The return to the account page is
 // test/sign-in-flow.test.tsx's.
 //
+// Archive export (reading-lite-mxwx.5): request, the status read again while
+// the export is queued and building, then the download, with the browser's
+// own clock driving the ten-second poll. The download must be a navigation
+// the browser saves under the backend's filename, never a blob fetch. The
+// component tests own each state's words and the limits.
+//
 // The session cookie (#392): signIn sets it HttpOnly, as the backend does, so
 // a real session an external run supplies is never readable by page script.
 
@@ -30,9 +36,11 @@ import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
 import { SESSION_EMAIL } from "../sessions";
 import {
+  E2E_EXPORTS,
   E2E_TOKEN_SECRET,
   E2E_TOKENS,
   serveAccountDeleteInBrowser,
+  serveExportInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
   serveTokensInBrowser,
@@ -48,6 +56,7 @@ const test = base.extend({
 async function openAccount(page: Page, baseURL: string) {
   await signIn(page.context(), baseURL);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveTokensInBrowser(page);
   const writes = await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -87,6 +96,7 @@ for (const close of ["Escape", "Cancel"] as const) {
 test("revokes an API token from the keyboard and keeps focus in the section", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   const { revokes } = await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -111,6 +121,7 @@ test("revokes an API token from the keyboard and keeps focus in the section", as
 test("keeps focus in the section when a revoke fails", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveTokensInBrowser(page, { revoke: { status: 503, json: { error: "control plane unavailable" } } });
   await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -126,6 +137,7 @@ test("keeps focus in the section when a revoke fails", async ({ page, baseURL })
 test("creates an API token from the keyboard and shows its value once", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   const { creates } = await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -164,6 +176,7 @@ test("creates an API token from the keyboard and shows its value once", async ({
 test("sends the expiry a reader picks in the browser's own date field", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   const { creates } = await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -204,6 +217,7 @@ test("sends the expiry a reader picks in the browser's own date field", async ({
 test("keeps focus in the section when a 409 locks the create form", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveSessionsInBrowser(page);
   // Another tab took the last slot: nine here, ten once the 409 is reread.
   let usable = 9;
@@ -232,6 +246,7 @@ test("keeps focus in the section when a 409 locks the create form", async ({ pag
 test("follows a token create's step-up link to sign-in with the email locked", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveTokensInBrowser(page, { create: { status: 403, json: { error: "recent authentication required" } } });
   await serveSessionsInBrowser(page);
   await page.goto("/account/security");
@@ -254,6 +269,7 @@ function deleteDialog(page: Page) {
 test("deletes the account from the keyboard after typing delete", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   const { deletes } = await serveAccountDeleteInBrowser(page);
@@ -281,6 +297,7 @@ test("deletes the account from the keyboard after typing delete", async ({ page,
 test("Escape after typing delete closes the dialog without a request", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   await serveSettingsInBrowser(page);
+  await serveExportInBrowser(page);
   await serveTokensInBrowser(page);
   await serveSessionsInBrowser(page);
   const { deletes } = await serveAccountDeleteInBrowser(page);
@@ -295,4 +312,37 @@ test("Escape after typing delete closes the dialog without a request", async ({ 
   await expect(deleteDialog(page)).toHaveCount(0);
   await expect(trigger).toBeFocused();
   expect(deletes).toEqual([]);
+});
+
+test("requests an export, follows it to ready, and downloads it through a plain link", async ({ page, baseURL }) => {
+  // Timers under the page's control, so ten seconds of polling take none.
+  await page.clock.install();
+  await signIn(page.context(), baseURL!);
+  await serveSettingsInBrowser(page);
+  const { requests, downloads } = await serveExportInBrowser(page, {
+    latest: [E2E_EXPORTS.none, E2E_EXPORTS.queued, E2E_EXPORTS.building, E2E_EXPORTS.ready],
+  });
+  await serveTokensInBrowser(page);
+  await serveSessionsInBrowser(page);
+  await page.goto("/account/security");
+  const exports = page.getByRole("region", { name: "Export your archive" });
+  const status = exports.getByRole("status").last();
+  await expect(exports.getByText("You haven't exported your library yet.")).toBeVisible();
+
+  await exports.getByRole("button", { name: "Request export" }).click();
+  await expect(status).toContainText("It's waiting to start");
+  expect(requests).toHaveLength(1);
+  expect(await requests[0]!.headerValue("x-csrf-token")).toBeTruthy();
+
+  await page.clock.runFor(10_000);
+  await expect(status).toContainText("Building your archive.");
+  await page.clock.runFor(10_000);
+  await expect(status).toContainText("Your archive is ready.");
+
+  const download = page.waitForEvent("download");
+  await exports.getByRole("link", { name: "Download archive" }).click();
+  expect((await download).suggestedFilename()).toBe("reading-lite-archive.zip");
+  expect(downloads).toHaveLength(1);
+  expect(new URL(downloads[0]!.url()).pathname).toBe("/api/exports/exp_e2e/download");
+  expect(downloads[0]!.isNavigationRequest()).toBe(true);
 });
