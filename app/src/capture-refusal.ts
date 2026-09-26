@@ -6,7 +6,7 @@ import { dateTimeOn } from "./reading-presentation";
 // reprocess (reprocess.ts) — and their words, so the reading page renders a
 // 429 exactly as /save does (acceptance matrix, Capture: "Request rate or
 // quota", "Usage guard unavailable"). A 503's sentence names what could not be
-// done, so each surface words that one itself.
+// done, so each surface words that one itself. CaptureNotice.tsx renders them.
 //
 // Each is a value rather than a throw: a refusal the reader can wait out
 // leaves the page as it was, with a way to ask again.
@@ -86,10 +86,23 @@ const LIMIT_REACHED: Record<string, string> = {
 /** A window the backend named that this app has never heard of. */
 const LIMIT_REACHED_UNKNOWN = "You've reached a limit.";
 
-/** What a 429 says, in one wording for every surface. */
-export function limitSentence(refusal: Extract<CaptureRefusal, { kind: "limited" | "guard-unavailable" }>): string {
-  if (refusal.kind === "guard-unavailable") return "Limits can't be checked right now.";
-  const reached = LIMIT_REACHED[refusal.limit] ?? LIMIT_REACHED_UNKNOWN;
-  const resets = dateTimeOn(refusal.resetAt);
-  return resets ? `${reached} It resets at ${resets}.` : reached;
+/** What the 409 over a running attempt says, on every surface that can meet it. */
+export const ALREADY_PROCESSING_SENTENCE = "This reading is already processing.";
+
+/**
+ * What a refusal says, in one wording for every surface. `unavailable` is the
+ * surface's own 503 sentence, which names what could not be done.
+ */
+export function captureRefusalSentence(refusal: CaptureRefusal, unavailable: string): string {
+  switch (refusal.kind) {
+    case "guard-unavailable":
+      return "Limits can't be checked right now.";
+    case "limited": {
+      const reached = LIMIT_REACHED[refusal.limit] ?? LIMIT_REACHED_UNKNOWN;
+      const resets = dateTimeOn(refusal.resetAt);
+      return resets ? `${reached} It resets at ${resets}.` : reached;
+    }
+    case "unavailable":
+      return unavailable;
+  }
 }

@@ -7,7 +7,7 @@ import { readingQueryOptions } from "../reading-query";
 import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
 import { isProcessing, type Reading, type ReadingResult } from "../reading";
-import { limitSentence } from "../capture-refusal";
+import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
 import { categorize } from "../reading-failure";
 import { diagnosticsQueryKey } from "../reading-diagnostics";
 import { sourceQueryKey } from "../reading-source";
@@ -22,6 +22,7 @@ import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
 import { ReadingSource, type LoadedImages } from "./ReadingSource";
 import { BackToLibrary } from "./BackToLibrary";
+import { CaptureRefusalNotice } from "./CaptureNotice";
 import {
   AccountChanged,
   InlineNotice,
@@ -306,11 +307,13 @@ function useSaid(notice: ReprocessNotice | null, announcement: Said | null): str
   return said;
 }
 
+const REPROCESS_UNAVAILABLE = "Reprocessing is unavailable right now.";
+
 /** What a refused reprocess says, in one place: the notice and the page's live region. */
 function reprocessNoticeSentence(notice: ReprocessNotice): string {
   switch (notice.kind) {
     case "already-processing":
-      return "This reading is already processing.";
+      return ALREADY_PROCESSING_SENTENCE;
     case "markdown-missing":
       return "The Markdown this reading was imported from is no longer available.";
     case "invalid":
@@ -321,9 +324,8 @@ function reprocessNoticeSentence(notice: ReprocessNotice): string {
       return "This tab is signed in to a different account than the page expects.";
     case "limited":
     case "guard-unavailable":
-      return limitSentence(notice);
     case "unavailable":
-      return "Reprocessing is unavailable right now.";
+      return captureRefusalSentence(notice, REPROCESS_UNAVAILABLE);
     case "offline":
       return "You're offline. Check your connection and try again.";
     case "server-error":
@@ -337,8 +339,9 @@ function reprocessNoticeSentence(notice: ReprocessNotice): string {
  * its own: the page's standing region says the same sentence.
  *
  * A 403 or 412 is a notice here, not the page-replacing state /save shows:
- * the refusal is of the write, and the reading's own refetch after every
- * answer replaces the page when the reading itself is no longer the reader's.
+ * the refusal is of the write, and the reading's own read, the next time it
+ * is made, replaces the page when the reading itself is no longer the
+ * reader's. A 412's Reload makes it now.
  */
 function ReprocessNoticeBanner({
   notice,
@@ -362,7 +365,12 @@ function ReprocessNoticeBanner({
     case "invalid":
     case "forbidden":
       return <InlineNotice message={message} live={false} />;
-    default:
+    case "limited":
+    case "guard-unavailable":
+    case "unavailable":
+      return <CaptureRefusalNotice refusal={notice} unavailable={REPROCESS_UNAVAILABLE} onTryAgain={onTryAgain} />;
+    case "offline":
+    case "server-error":
       return <InlineNotice message={message} actionLabel="Try again" onAction={onTryAgain} live={false} />;
   }
 }

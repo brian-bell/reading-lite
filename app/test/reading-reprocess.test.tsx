@@ -1,47 +1,31 @@
-import { QueryClientProvider, onlineManager } from "@tanstack/react-query";
-import {
-  Outlet,
-  RouterProvider,
-  createMemoryHistory,
-  createRootRouteWithContext,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { onlineManager } from "@tanstack/react-query";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runningOver } from "../e2e/running-over";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
-import { AppFrame } from "../src/components/AppFrame";
-import { ReadingPage } from "../src/components/ReadingPage";
-import { createQueryClient, hrefOnScreen } from "../src/auth/session";
-import { whoamiQueryKey, type Identity } from "../src/identity";
 import type { Reading } from "../src/reading";
-import { readingQueryOptions } from "../src/reading-query";
-import type { RouterContext } from "../src/router";
-import { plainSearch } from "../src/search";
+import {
+  SECOND,
+  advance,
+  json,
+  openReadingPage,
+  politeRegion,
+  reader,
+  settle as settleRounds,
+  type Answer,
+} from "./reading-page-harness";
 
 // Retry and Reprocess on the reading page (#410; acceptance matrix, Actions:
 // Reprocess, Reading detail, Capture: Already processing; status refresh
-// acceptance check 9). The browser branch of the reading query, as in
-// test/reading-refresh.test.tsx, with a stubbed backend that answers reads and
+// acceptance check 9). The browser branch of the reading query
+// (reading-page-harness.tsx), with a stubbed backend that answers reads and
 // the reprocess separately. The modal itself — Escape, the focus trap, and
 // focus returning — is the browser's and is owned by
 // e2e/specs/reprocess.spec.ts.
 
-vi.mock("@tanstack/react-start", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  createIsomorphicFn: () => {
-    let client: (...args: unknown[]) => unknown = () => {
-      throw new Error("no client branch");
-    };
-    const fn = (...args: unknown[]) => client(...args);
-    fn.server = () => fn;
-    fn.client = (implementation: typeof client) => {
-      client = implementation;
-      return fn;
-    };
-    return fn;
-  },
-}));
+vi.mock("@tanstack/react-start", async (importOriginal) =>
+  (await import("./start-client-mock")).clientBranchOnly(importOriginal),
+);
 vi.mock("@tanstack/react-start/server", () => ({ getRequest: () => new Request("https://app.example/") }));
 
 const readings = pack.readings as Record<string, Reading>;
@@ -51,91 +35,25 @@ const FAILED_FIXTURES = pack.fixtures
   .filter((fixture) => readings[fixture.id]?.status === "failed")
   .map((fixture) => ({ name: fixture.name, reading: readings[fixture.id]! }));
 
-const reader: Identity = {
-  tenant_id: "usr_a",
-  user_id: "usr_a",
-  principal: "session",
-  tenant_data_plane: true,
-  email: "a@example.com",
-  csrf_token: "csrf-a",
-};
-
-const SECOND = 1_000;
-
-type Answer = () => Response | Promise<Response>;
-
 /** Each read takes the next answer, the last one repeating; the same for reprocesses. */
 let reads: Answer[];
 let reprocesses: Answer[];
 let readRequests: Request[];
 let reprocessRequests: Request[];
 
-const json = (body: unknown, status = 200): Answer => () => Response.json(body, { status });
 const started = (id: string) => json({ id, status: "pending", poll: `/api/readings/${id}`, attempt_id: "at_NEW01" }, 202);
 
 function next(answers: Answer[]): Answer {
   return answers.length > 1 ? answers.shift()! : answers[0]!;
 }
 
-/** The reading with a new reprocess attempt running over it. */
-function runningOver(reading: Reading, stage = "fetch_source"): Reading {
-  return {
-    ...reading,
-    ...(reading.status === "failed" ? { status: "pending", error: undefined } : {}),
-    active_attempt: { id: "at_NEW01", trigger: "reprocess", status: "running", stage, started_at: "2026-09-16T10:00:00.000Z" },
-  };
-}
-
-const rootRoute = createRootRouteWithContext<RouterContext>()({
-  component: () => (
-    <AppFrame theme="system" onThemeChange={() => undefined}>
-      <Outlet />
-    </AppFrame>
-  ),
-});
-const readingRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/readings/$id",
-  loader: ({ context, params }) =>
-    context.queryClient.prefetchQuery(readingQueryOptions(context.queryClient, params.id, reader)),
-  component: function ReadingRoute() {
-    const { id } = readingRoute.useParams();
-    return <ReadingPage id={id} />;
-  },
-});
-const leftRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <p>Elsewhere</p> });
-const routeTree = rootRoute.addChildren([readingRoute, leftRoute]);
-
-async function settle() {
-  for (let i = 0; i < 5; i++) {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  }
-}
-
-async function advance(ms: number) {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms);
-  });
-}
+const settle = () => settleRounds(5);
 
 async function openReading(reading: Reading) {
   reads = [json(reading)];
-  const queryClient = createQueryClient(() => hrefOnScreen(router));
-  queryClient.setQueryData(whoamiQueryKey, reader);
-  const router = createRouter({
-    routeTree,
-    context: { queryClient },
-    ...plainSearch,
-    history: createMemoryHistory({ initialEntries: [`/readings/${reading.id}`] }),
-    Wrap: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
-  });
-  render(<RouterProvider router={router} />);
-  await settle();
-  expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+  const opened = await openReadingPage(reading);
   readRequests = [];
-  return { queryClient, router };
+  return opened;
 }
 
 function button(name: string) {
@@ -148,13 +66,6 @@ function statusCard() {
 
 function dialog(): HTMLDialogElement | null {
   return document.querySelector("dialog");
-}
-
-function politeRegion(): string {
-  return screen
-    .getAllByRole("status")
-    .map((region) => region.textContent ?? "")
-    .join("");
 }
 
 beforeEach(() => {
@@ -365,18 +276,16 @@ describe("a reprocess that does not start", () => {
     expect(politeRegion()).toContain(sentence);
     expect(button(action)).toBeInTheDocument();
     expect(button("Retry")).toBeInTheDocument();
-    // The reading is read again after every answer.
-    expect(readRequests).toHaveLength(1);
   });
 
-  // The refusal is of the write; the reading's own read, refetched after every
-  // answer, decides whether the page is still the reader's.
+  // The refusal is of the write; the reading's own read decides whether the
+  // page is still the reader's.
   it("says a 403 on the write in a notice and keeps the reading", async () => {
     const failed = FAILED_FIXTURES[0]!.reading;
     await openReading(failed);
     reprocesses = [json({ error: "forbidden" }, 403)];
-    // whoami for the 403's second read, then the reading.
-    reads = [json(reader), json(failed)];
+    // whoami, for the 403's second read.
+    reads = [json(reader)];
 
     fireEvent.click(button("Retry"));
     await settle();
@@ -435,15 +344,52 @@ describe("a reprocess that does not start", () => {
 
 });
 
+// Only an answer that changed something is worth a read: a started attempt
+// (the reading and the library's rows), a 409 whose attempt the reading
+// should show, and a 404 whose reading is gone.
+describe("what is read again after an answer", () => {
+  const LIBRARY_KEY = ["library", "first-page"];
+
+  it.each([
+    { name: "a started attempt", answer: () => started(FAILED_FIXTURES[0]!.reading.id), reading: true, library: true },
+    {
+      name: "an attempt already running",
+      answer: () => json({ error: "reading already has an active attempt" }, 409),
+      reading: true,
+      library: false,
+    },
+    { name: "a reading that is gone", answer: () => json({ error: "not found" }, 404), reading: true, library: false },
+    { name: "a queue that is not there", answer: () => json({ error: "queue unbound" }, 503), reading: false, library: false },
+    {
+      name: "a quota",
+      answer: () => json({ error: "hourly reading quota exceeded", code: "quota_exhausted", limit: "hourly" }, 429),
+      reading: false,
+      library: false,
+    },
+  ])("after $name: the reading $reading, the library $library", async ({ answer, reading, library }) => {
+    const failed = FAILED_FIXTURES[0]!.reading;
+    const { queryClient } = await openReading(failed);
+    queryClient.setQueryData(LIBRARY_KEY, { readings: [] });
+    reprocesses = [answer()];
+    reads = [json(runningOver(failed))];
+
+    fireEvent.click(button("Retry"));
+    await settle();
+
+    expect(readRequests.length > 0).toBe(reading);
+    expect(queryClient.getQueryState(LIBRARY_KEY)?.isInvalidated).toBe(library);
+  });
+});
+
 describe("Try again after a refused Reprocess", () => {
-  async function refusedReprocess(readAfter: Reading = READY) {
-    await openReading(READY);
+  async function refusedReprocess() {
+    const opened = await openReading(READY);
     reprocesses = [json({ error: "queue unbound" }, 503)];
-    reads = [json(readAfter)];
     fireEvent.click(button("Reprocess"));
     await settle();
     fireEvent.click(within(dialog()!).getByRole("button", { name: "Reprocess" }));
     await settle();
+    return opened;
   }
 
   it("asks again, and gives focus back to Try again when the reader cancels", async () => {
@@ -461,7 +407,10 @@ describe("Try again after a refused Reprocess", () => {
   });
 
   it("asks nothing while an attempt started elsewhere is running", async () => {
-    await refusedReprocess(runningOver(READY));
+    const { queryClient } = await refusedReprocess();
+    reads = [json(runningOver(READY))];
+    await act(() => queryClient.invalidateQueries({ queryKey: ["reading", READY.id] }));
+    await settle();
     fireEvent.click(button("Try again"));
     await settle();
     expect(dialog()).toBeNull();

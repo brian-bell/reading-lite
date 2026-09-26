@@ -11,6 +11,7 @@
 import { expect, test as base, type Page, type Request } from "@playwright/test";
 import pack from "../fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "../harness";
+import { runningOver } from "../running-over";
 import { serveReadingsInBrowser, serveReprocessInBrowser, signIn } from "../test";
 
 const test = base.extend({
@@ -20,15 +21,6 @@ const test = base.extend({
 });
 
 const READY = pack.readings.rd_FXATTENT01;
-
-/** The reading with a reprocess running over it, as the backend writes it. */
-function runningOver<T extends { status: string }>(reading: T) {
-  return {
-    ...reading,
-    ...(reading.status === "failed" ? { status: "pending", error: null } : {}),
-    active_attempt: { id: "at_NEW01", trigger: "reprocess", status: "running", stage: "fetch_source", started_at: pack.generated_at },
-  };
-}
 
 /** Serves reads from the pack until a reprocess is accepted, then the running attempt. */
 async function openWithReprocess(page: Page, baseURL: string, reading: { id: string; status: string }): Promise<Request[]> {
