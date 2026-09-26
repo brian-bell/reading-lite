@@ -40,7 +40,8 @@
  * objects phase ends by sweeping rows once more — a publisher that passed its
  * tenant check before the account was fenced may have committed in between,
  * and the sweep is idempotent — and the terminal write is then gated on a
- * count of the tenant's remaining `readings`. A non-zero count throws
+ * count of the tenant's remaining `readings` and `inbox_items`. A non-zero
+ * count throws
  * `AccountWipeRowsRemainingError` instead of recording a completion, because
  * a completion is what control-plane teardown hard-deletes the account on.
  * Teardown asks the same question again under its own lock.
@@ -128,6 +129,7 @@ import {
   countTenantReadings,
   deleteTenantReadings,
 } from "./modules/stores/postgres/manifest-rows";
+import { countTenantInboxItems, deleteTenantInboxItems } from "./modules/stores/postgres/inbox-store";
 import { RateLimitedError } from "./modules/http-retry";
 
 export { AccountWipeProgressConflictError } from "./control-plane/wipe-progress";
@@ -225,7 +227,7 @@ export class AccountWipeContinuationBudgetError extends Error {
 }
 
 /**
- * The sweep committed and reading rows are still there.
+ * The sweep committed and reading rows or inbox items are still there.
  *
  * Thrown instead of recording a completion, because a completion is what
  * teardown hard-deletes the `users` row on. Ordinary retry: the next delivery
@@ -238,7 +240,7 @@ export class AccountWipeRowsRemainingError extends Error {
     public readonly remaining: number,
   ) {
     super(
-      `account_wipe rows_remaining for ${tenantId}: ${remaining} reading row(s) survived the sweep`,
+      `account_wipe rows_remaining for ${tenantId}: ${remaining} reading or inbox row(s) survived the sweep`,
     );
     this.name = "AccountWipeRowsRemainingError";
   }
@@ -415,8 +417,8 @@ async function fanOutWith(
         if (!wipeGraceElapsed(row.deleting_at_ms, deps.nowMs)) continue;
       } else if (stored.completedAtMs !== null) {
         // Finished. Reopen if anything the wipe owns turned up after the fact —
-        // objects under the prefix, or reading rows a writer committed past the
-        // fence. Rows have to count on their own: teardown refuses while any
+        // objects under the prefix, or reading or inbox rows a writer committed
+        // past the fence. Rows have to count on their own: teardown refuses while any
         // stand (`rows_remain`), and if only objects reopened the wipe, a
         // tenant with a clean prefix and one stray row would be handed to
         // teardown, refused, and handed back on every tick forever, with
@@ -428,7 +430,7 @@ async function fanOutWith(
         // while leftovers are reopening the wipe.
         const leftover =
           (await tenantPrefixHasObjects(env.READINGS_BUCKET, tenantId, env)) ||
-          (await tenantHasReadingRows(db, tenantId));
+          (await tenantHasWipeRows(db, tenantId));
         if (!leftover) {
           await tearDownFinishedAccount(db, env, tenantId, deps.nowMs);
           continue;
@@ -529,7 +531,7 @@ async function runAccountWipeJob(
   const leftover =
     stored !== null && stored.completedAtMs !== null
       ? (await prefixHasObjects(env.READINGS_BUCKET, keyRoot)) ||
-        (await tenantHasReadingRows(db, tenantId))
+        (await tenantHasWipeRows(db, tenantId))
       : false;
   const resuming = wipeNeedsResume(stored, leftover);
   const force = envelope.force || stored?.force === true;
@@ -572,8 +574,9 @@ async function runAccountWipeJob(
    * The tenant's rows, in one transaction.
    *
    * Every reading the tenant owns — revisions, URLs, relationships, attempts
-   * and embeddings by cascade — and its `relationship_refresh_jobs`
-   * checkpoints, which hang off no reading row and so cascade from nothing.
+   * and embeddings by cascade — its inbox items, and its
+   * `relationship_refresh_jobs` checkpoints; the last two hang off no reading
+   * row and so cascade from nothing.
    * A leftover checkpoint cannot spend: `markRefreshDispatched` and
    * `saveRefreshResult` both write only against an `active` users row, and
    * the judge noops once the reading is gone. It is deleted here because
@@ -590,7 +593,7 @@ async function runAccountWipeJob(
   const deleteRows = async (advance?: WipePhase) => {
     const next = advance === undefined ? null : { ...progress, phase: advance, updatedAtMs: now() };
     rowsDeleted += await sql.transaction(async (tx) => {
-      const deleted = await deleteTenantReadings(tx, tenantId);
+      const deleted = (await deleteTenantReadings(tx, tenantId)) + (await deleteTenantInboxItems(tx, tenantId));
       await tx.execute("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
       if (next) await writer.write(next, fromSql(tx));
       return deleted;
@@ -679,11 +682,11 @@ async function runAccountWipeJob(
   // completion teardown would then hard-delete the account on.
   //
   // What holds the answer true is the status fence, not this transaction.
-  // `claimUrl` is the only live inserter of a `readings` row, and it takes
-  // `users` FOR SHARE and requires `active` in the same transaction as its
-  // insert: `beginAccountDeletion`'s status UPDATE therefore waited on every
-  // claim already in flight, and every later one reads `deleting` and gives
-  // up. Do not read the shared transaction as doing that job — under READ
+  // `claimUrl` is the only live inserter of a `readings` row and inbox stage
+  // the only one of an `inbox_items` row, and each takes `users` FOR SHARE
+  // and requires `active` in the same transaction as its insert:
+  // `beginAccountDeletion`'s status UPDATE therefore waited on every insert
+  // already in flight, and every later one reads `deleting` and gives up. Do not read the shared transaction as doing that job — under READ
   // COMMITTED the count takes no lock on `readings` and would not fence an
   // inserter on its own.
   //
@@ -693,7 +696,7 @@ async function runAccountWipeJob(
   // rather than stamping a completion over the owner's work.
   const completedAtMs = now();
   const done = await sql.transaction(async (tx) => {
-    const remaining = await countTenantReadings(tx, tenantId);
+    const remaining = (await countTenantReadings(tx, tenantId)) + (await countTenantInboxItems(tx, tenantId));
     if (remaining > 0) throw new AccountWipeRowsRemainingError(tenantId, remaining);
     return writer.complete(progress, completedAtMs, false, fromSql(tx));
   });
@@ -768,16 +771,20 @@ export async function handleAccountWipeDeadLetter(msg: {
 }
 
 /**
- * Reading rows the tenant still owns, as a yes/no.
+ * Reading rows or inbox items the tenant still owns, as a yes/no: the rows
+ * teardown refuses over (`rows_remain`), so the rows that must reopen a
+ * finished wipe.
  *
  * Fail-closed: an answer we could not read counts as "yes". Both callers use
  * it to decide whether a finished wipe comes back for another pass, and
  * another pass is idempotent, where wrongly concluding "nothing left" hands
  * the tenant to a teardown that will refuse it forever.
  */
-async function tenantHasReadingRows(db: ControlPlaneDb, tenantId: TenantId): Promise<boolean> {
+async function tenantHasWipeRows(db: ControlPlaneDb, tenantId: TenantId): Promise<boolean> {
   const row = await db.first<{ remaining: number }>(
-    "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
+    `SELECT (SELECT count(*) FROM readings WHERE tenant_id = ?)
+          + (SELECT count(*) FROM inbox_items WHERE tenant_id = ?) AS remaining`,
+    tenantId,
     tenantId,
   );
   return !row || row.remaining > 0;

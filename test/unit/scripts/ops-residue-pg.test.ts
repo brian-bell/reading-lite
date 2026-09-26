@@ -48,7 +48,7 @@ describe("PostgreSQL residue", () => {
     ).toBe(1);
   });
 
-  it("reports retained reading, embedding, refresh and export rows independently", async () => {
+  it("reports retained reading, embedding, inbox, refresh and export rows independently", async () => {
     const sql = sqlFor(),
       tenant = await seedTenant(sql);
     await seedReading(sql, tenant, "rd_seed", { embedding: unitVector() });
@@ -60,10 +60,16 @@ describe("PostgreSQL residue", () => {
       "INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at) VALUES ('exp_residue', $1, 'cancelled', now(), now())",
       [tenant.tenantId],
     );
+    await sql.execute(
+      `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
+       VALUES ($1, 'in_residue', 'https://example.com/residue', $2, '# staged', now(), now())`,
+      [tenant.tenantId, "d".repeat(64)],
+    );
     const result = await scanResidue(remote(), tenant.tenantId);
     for (const source of [
       "pg.readings",
       "pg.reading_embeddings",
+      "pg.inbox_items",
       "pg.corpus_refresh_state",
       "pg.archive_exports",
       "pg.users",
