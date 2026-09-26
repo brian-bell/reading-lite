@@ -21,11 +21,10 @@ describe("requireOperatorTenant", () => {
   });
 
   it("resolves 'global' and a tenant id", () => {
-    expect(requireOperatorTenant("global")).toEqual({ kind: "global", keyRoot: "", namespace: undefined });
+    expect(requireOperatorTenant("global")).toEqual({ kind: "global", keyRoot: "" });
     expect(requireOperatorTenant(TENANT_ID)).toMatchObject({
       kind: "tenant",
       tenantId: TENANT_ID,
-      namespace: TENANT_ID,
     });
   });
 });

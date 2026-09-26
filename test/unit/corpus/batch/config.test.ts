@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { resolveBatchConfig } from "../../../../scripts/corpus-lib/config";
 
 const tenantId = "usr_550e8400-e29b-41d4-a716-446655440000";
-const TENANT = { kind: "tenant", tenantId, keyRoot: `u/${tenantId}/`, namespace: tenantId } as const;
+const TENANT = { kind: "tenant", tenantId, keyRoot: `u/${tenantId}/` } as const;
 
 const full = {
   CORPUS_R2_ACCOUNT_ID: "acct",
@@ -255,7 +255,7 @@ describe("resolveBatchConfig", () => {
   it("honors CORPUS_R2_BUCKET when no --bucket flag is passed (alt bucket isn't masked)", () => {
     // The CLI must pass an *absent* flag through (not a defaulted production
     // bucket), so a .corpus.vars pointing at an alternate bucket writes there.
-    const alt = { ...full, CORPUS_R2_BUCKET: "reading-lite-staging", CORPUS_VECTORIZE_INDEX: "reading-lite-staging" };
+    const alt = { ...full, CORPUS_R2_BUCKET: "reading-lite-staging" };
     const cfg = resolveBatchConfig({ tenant: TENANT }, { vars: alt });
     expect(cfg.r2.bucket).toBe("reading-lite-staging");
     expect(cfg.databaseUrl).toBe("postgres://staging");
@@ -267,13 +267,13 @@ describe("resolveBatchConfig", () => {
 });
 
 // reading-lite-s1k.4.3: the tenant selection lands on the batch config as the
-// R2 key root every client is wrapped with and the Vectorize namespace.
+// R2 key root every client is wrapped with.
 describe("resolveBatchConfig tenant scoping", () => {
-  it("derives keyRoot and vectorize namespace from a tenant selection", () => {
+  it("derives keyRoot and the tenant selector from a tenant selection", () => {
     const tenantId = "usr_550e8400-e29b-41d4-a716-446655440000";
     const cfg = resolveBatchConfig(
       {
-        tenant: { kind: "tenant", tenantId, keyRoot: `u/${tenantId}/`, namespace: tenantId },
+        tenant: { kind: "tenant", tenantId, keyRoot: `u/${tenantId}/` },
       },
       { vars: full },
     );
@@ -282,6 +282,6 @@ describe("resolveBatchConfig tenant scoping", () => {
   });
 
   it("rejects the retained global corpus before batch work", () => {
-    expect(() => resolveBatchConfig({ tenant: { kind: "global", keyRoot: "", namespace: undefined } }, { vars: full })).toThrow(/no rows in PostgreSQL/);
+    expect(() => resolveBatchConfig({ tenant: { kind: "global", keyRoot: "" } }, { vars: full })).toThrow(/no rows in PostgreSQL/);
   });
 });

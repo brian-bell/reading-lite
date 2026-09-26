@@ -21,17 +21,6 @@ function remote(): ScanRemote {
   return {
     db: fromSql(sqlFor()),
     storage: { listObjects: async () => [] },
-    vectors: {
-      list: async () => ({ vectors: [], isTruncated: false }),
-      get: async () => [],
-      upsert: async () => {
-        throw Error("read only");
-      },
-      delete: async () => {
-        throw Error("read only");
-      },
-    },
-    probe: async () => [],
   };
 }
 

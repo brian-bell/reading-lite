@@ -4,8 +4,6 @@
  * survive teardown intentionally; they are history, not a fresh clean bill.
  */
 import type { ControlPlaneDb } from "../../src/control-plane/db";
-import type { AuditVectors } from "./vectors";
-import { enumerateNamespace } from "./vectors";
 export interface ScanRemote {
   db: ControlPlaneDb;
   /** Closes the control-plane connection. The CLI sets an exit code rather
@@ -14,8 +12,6 @@ export interface ScanRemote {
   storage: {
     listObjects(prefix: string): Promise<{ key: string }[]>;
   };
-  vectors: AuditVectors;
-  probe(namespace: string): Promise<{ id: string }[]>;
 }
 export interface Finding {
   source: string;
@@ -63,26 +59,6 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   await observe("legacy_wipe_record", async () =>
     counted(await remote.storage.listObjects(`wipe/${tenant}/`)),
   );
-  // Retained pre-cutover Vectorize evidence, independent of the live PG corpus.
-  await observe("namespace_probe", async () =>
-    counted(await remote.probe(tenant)),
-  );
-  await observe("namespace_inventory", async () => {
-    const inventory = await enumerateNamespace(remote.vectors, tenant);
-    return {
-      state: inventory.vectors.length
-        ? "residue"
-        : inventory.unknown.length
-          ? "unknown"
-          : "clear",
-      detail: {
-        ids: inventory.vectors.map((v) => v.id),
-        enumerated: inventory.enumerated,
-        pageCounts: inventory.pageCounts,
-        unhydrated: inventory.unknown,
-      },
-    };
-  });
   await observe("ready_reading_embeddings", async () => {
     // Ready does not imply searchable: non-owning duplicates and inactive
     // tenants can deliberately have no embedding. These are diagnostics, not
@@ -148,7 +124,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     source: "visibility_limits",
     state: "unknown",
     detail:
-      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Per-page vector counts are checked; totalCount is evidence only because its concurrent-mutation semantics are unspecified. Snapshot listing excludes later writes; hydration and per-id absence are single observations, not two spaced confirmations. Legacy Vectorize observations do not describe the live PostgreSQL corpus. Missing ready embeddings may be intentional; the scanner neither infers damage nor repairs them.",
+      "AuthRateGuard hashed email/IP windows cannot be attributed to a tenant. After teardown, erased address/token ownership prevents attribution of released-address invites, NULL-owner challenges, or orphan scopes. Consumed released-address invites may be inert S4 residuals. Queue/in-flight writes are not inspected. Global pre-cutover corpus is S7. Missing ready embeddings may be intentional; the scanner neither infers damage nor repairs them.",
   });
   return {
     tenant,

@@ -64,11 +64,12 @@ themselves belonged to the slices named in the table.
   transaction. reading-lite-gh347.4.2 ported the rest of this write phase.
 - `scripts/account-lib/vectors.ts`: `bareRepairAction` and `repairBareVector`,
   which were `account audit-bare-vectors`'s repair machinery and had no other
-  caller. `enumerateNamespace` stays — the residue scan uses it.
+  caller. `enumerateNamespace` stayed for the residue scan until
+  reading-lite-gh351.3 deleted the file with the scan's Vectorize sources.
 - `scripts/account-lib/residue.ts`: ledger sources were removed in 4.6. Slice
   4.3 replaced the frozen list read with PostgreSQL reading/embedding observations
-  and names control-plane sources `pg.*`. Legacy namespace enumeration remains
-  independent evidence until Vectorize retirement.
+  and names control-plane sources `pg.*`. reading-lite-gh351.3 removed the
+  legacy namespace probe and inventory ahead of the index's deletion.
 - `scripts/ops-lib/commands/staging-prepare-context.ts` and
   `scripts/staging-lib/context-copy.ts`: slice 4.3 checks destination IDs and URL
   ownership in PostgreSQL. Its v2 artifact retains `readingIds` and carries row
@@ -92,7 +93,7 @@ because what it asserts is that the PostgreSQL schema does **not** contain them.
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `account residue-scan` | `account-residue-scan.ts` | PostgreSQL corpus/control-plane rows, tenant R2 prefixes, retained legacy Vectorize evidence | **ported** | Slice 4.3 preserves independent findings and visibility limits. Missing ready embeddings are diagnostics; row presence is residue. It observes deletion state and never authorizes teardown. |
+| `account residue-scan` | `account-residue-scan.ts` | PostgreSQL corpus/control-plane rows, tenant R2 prefixes | **ported** | Slice 4.3 preserves independent findings and visibility limits; reading-lite-gh351.3 dropped its legacy Vectorize sources. Missing ready embeddings are diagnostics; row presence is residue. It observes deletion state and never authorizes teardown. |
 | `account sweep-wipe-prefix` | `account-sweep-wipe-prefix.ts` | The `wipe/{tenantId}/progress.json` R2 prefix, plus a `psql` `wipe_progress` query, naming the paired connection variable, printed as evidence in its pre-delete briefing | **retire in #351** | It is the tool that proves the prefix is empty before gh351 deletes it; a deletion gate that lost its in-flight-wipe evidence would be more dangerous than one that was ported. See [below](#account-sweep-wipe-prefix). |
 | `account wipe` | `account-wipe.ts` | `users.status` and `wipe_progress` in PostgreSQL through `accountRemote` | **ported** | Slice 4.7 moved its handle and closes the session; 4.3 verifies the existing path. Deletion rules are unchanged. |
 

@@ -18,7 +18,7 @@ Prints JSON per tenant, per-source findings and durable first-completion history
 Exit 1 for residue OR incomplete visibility, 0 only for all sources clear/expected,
 2 for usage errors. DO/address-history blind spots currently prevent a full clean
 certification. Live tenant data counts as present; inspect per-source findings.
-Reads PostgreSQL rows, tenant content, and retained legacy Vectorize evidence.
+Reads PostgreSQL rows and tenant content.
 Never repairs or deletes data. --help shows help.`,
   defaultDeps: (io) => ({ io, connect: accountRemote }),
   async run(argv, deps) {

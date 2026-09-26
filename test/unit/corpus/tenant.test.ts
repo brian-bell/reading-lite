@@ -18,7 +18,7 @@ describe("resolveOperatorTenant", () => {
     const out = resolveOperatorTenant("global");
     expect(out).toEqual({
       ok: true,
-      tenant: { kind: "global", keyRoot: "", namespace: undefined },
+      tenant: { kind: "global", keyRoot: "" },
     });
   });
 
@@ -26,8 +26,8 @@ describe("resolveOperatorTenant", () => {
     const out = resolveOperatorTenant(TENANT_ID);
     expect(out.ok).toBe(true);
     if (!out.ok) return;
-    expect(out.tenant.kind).toBe("tenant");
-    expect(out.tenant.namespace).toBe(TENANT_ID);
+    if (out.tenant.kind !== "tenant") throw new Error("expected a tenant selection");
+    expect(out.tenant.tenantId).toBe(TENANT_ID);
     // Spelling parity with the hosted data plane: the operator key root must
     // be exactly what contentStoreFor uses when TENANT_DATA_PLANE=1.
     expect(out.tenant.keyRoot).toBe(

@@ -1,6 +1,6 @@
 // The operator-side tenant selector (reading-lite-s1k.4.3). Every corpus CLI
 // command that reads or mutates corpus state must state WHOSE corpus it is
-// acting on before planning anything: either one tenant's namespace or,
+// acting on before planning anything: either one tenant's corpus or,
 // explicitly, the pre-tenant global layout. There is deliberately no default —
 // an absent selector fails closed rather than silently operating on the global
 // root, mirroring the hosted side where every store is constructed from a
@@ -8,8 +8,7 @@
 //
 // Spelling is single-homed with the worker: the key root comes from
 // tenantKeyRoot (the same function contentStoreFor uses when
-// TENANT_DATA_PLANE=1), and the legacy Vectorize namespace is the tenant id.
-// `global` maps to the empty key root and no namespace —
+// TENANT_DATA_PLANE=1). `global` maps to the empty key root —
 // the pre-tenant layout: local (TENANT_DATA_PLANE still unset),
 // and the leftover global objects both deployed
 // environments retain after their cutovers. Production and staging live corpus
@@ -19,8 +18,8 @@ import { parseTenantId } from "../../src/control-plane/ids";
 import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 
 export type OperatorTenant =
-  | { kind: "global"; keyRoot: ""; namespace: undefined }
-  | { kind: "tenant"; tenantId: string; keyRoot: string; namespace: string };
+  | { kind: "global"; keyRoot: "" }
+  | { kind: "tenant"; tenantId: string; keyRoot: string };
 
 export type ResolveOperatorTenantResult =
   | { ok: true; tenant: OperatorTenant }
@@ -54,7 +53,7 @@ export function resolveOperatorTenant(
     };
   }
   if (selector === "global") {
-    return { ok: true, tenant: { kind: "global", keyRoot: "", namespace: undefined } };
+    return { ok: true, tenant: { kind: "global", keyRoot: "" } };
   }
   const tenantId = parseTenantId(selector);
   if (!tenantId) {
@@ -69,7 +68,6 @@ export function resolveOperatorTenant(
       kind: "tenant",
       tenantId: String(tenantId),
       keyRoot: tenantKeyRoot({ tenantId }, true),
-      namespace: String(tenantId),
     },
   };
 }
