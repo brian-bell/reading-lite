@@ -1,10 +1,9 @@
 # Copy to .corpus.vars and fill in. .corpus.vars is gitignored.
 #
 # Read by `npm run corpus-recover -- --batch` (the bulk Message Batch path):
-# it uses the R2 (S3) + Vectorize + CF_API_TOKEN values below to write
-# R2/Vectorize directly, plus ANTHROPIC_API_KEY / OPENAI_API_KEY /
-# ANTHROPIC_MODEL / ANTHROPIC_SUMMARIZATION_REASONING_EFFORT from
-# .dev.vars/.prd.vars.
+# it uses the R2 (S3) + CF_API_TOKEN values below to write R2 directly,
+# plus ANTHROPIC_API_KEY / OPENAI_API_KEY / ANTHROPIC_MODEL /
+# ANTHROPIC_SUMMARIZATION_REASONING_EFFORT from .dev.vars/.prd.vars.
 # Resolution order: env var (same name) > this file > .dev.vars/.prd.vars > error.
 
 CORPUS_R2_ACCOUNT_ID=
@@ -12,5 +11,3 @@ CORPUS_R2_ACCESS_KEY=
 CORPUS_R2_SECRET_KEY=
 CORPUS_R2_BUCKET=reading-lite
 CORPUS_CF_API_TOKEN=
-CORPUS_VECTORIZE_ACCOUNT_ID=
-CORPUS_VECTORIZE_INDEX=reading-lite

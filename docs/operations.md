@@ -232,7 +232,7 @@ npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
 ```
 
 The scan prints JSON findings separately for tenant R2, old tenant `wipe/`
-records, retained legacy Vectorize namespace observations, and PostgreSQL rows.
+records, and PostgreSQL rows.
 The `pg.*` sources cover readings, embeddings, corpus refresh state, relationship
 refresh jobs, users, sessions, tokens/scopes, settings, limits, digests, wipe
 progress, archive exports, challenges and attributable invites. Reading children cascade from
@@ -272,15 +272,6 @@ report `incomplete:true` with exit 1. The storage port preserves that establishe
 visibility contract; it does not manufacture a clean certification from missing
 DO/address-history observations.
 
-The `namespace_probe` and `namespace_inventory` sources observe the retained
-pre-cutover index, not the live corpus. Cloudflare supports [paginated vector ID listing](https://developers.cloudflare.com/vectorize/best-practices/list-vectors/)
-but no namespace filter on it, so the scan enumerates the **whole index
-snapshot**, hydrates vectors through `get_by_ids` in chunks of at most 20, and
-keeps those whose actual namespace is the tenant. Snapshot pagination excludes
-later inserts; a listed ID missing during hydration is unknown, and
-HTTP/schema/cursor errors fail closed. Unnamespaced ownership remains outside the
-tenant scan and belongs to S7. The scan never deletes a vector.
-
 The forced wipe command queues the existing consumer, preserving its S1 fence
 and S2 completion record:
 
@@ -297,8 +288,8 @@ completion; cron runs teardown after the consumer completes.
 
 After deletion: scan once after the data-plane completion, then scan again after
 cron teardown. Confirm that users/child/progress rows disappeared and that the
-first-completion pair survived in `account_deletions`. Record legacy-index
-observations and DO/visibility limitations separately. For production
+first-completion pair survived in `account_deletions`. Record DO/visibility
+limitations separately. For production
 preparation, use the same commands with `--bucket reading-lite`:
 
 ```sh
@@ -310,12 +301,11 @@ The bucket selects the database through the operator pairing
 (`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL` for `reading-lite`,
 `STAGING_DATABASE_URL` or `NEON_REHEARSAL_DATABASE_URL` for staging; see
 [step 0](#step-0-the-connection-strings)). R2 uses the existing
-corpus credential resolver; Vectorize/queue REST use
-`CORPUS_VECTORIZE_ACCOUNT_ID`, then `CORPUS_R2_ACCOUNT_ID`, then
+corpus credential resolver; queue REST uses `CORPUS_R2_ACCOUNT_ID`, then
 `CLOUDFLARE_ACCOUNT_ID`, and `CORPUS_CF_API_TOKEN` or `CLOUDFLARE_API_TOKEN`.
 Use production-scoped Cloudflare credentials supplied by the operator; the
-checkout's `.corpus.vars` may be staging-scoped. The bucket fixes the Vectorize
-index and queue name; no index override is accepted. Ensure all credentials
+checkout's `.corpus.vars` may be staging-scoped. The bucket fixes the queue
+name; no override is accepted. Ensure all credentials
 identify the same account/environment.
 
 The separately executed

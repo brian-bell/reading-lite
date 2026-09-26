@@ -6,12 +6,11 @@ import type { WhoamiOutcome } from "../../../scripts/lib/reading-api";
 const TENANT_A = "usr_11111111-1111-4111-8111-111111111111";
 const TENANT_B = "usr_22222222-2222-4222-8222-222222222222";
 
-const globalTenant: OperatorTenant = { kind: "global", keyRoot: "", namespace: undefined };
+const globalTenant: OperatorTenant = { kind: "global", keyRoot: "" };
 const tenantA: OperatorTenant = {
   kind: "tenant",
   tenantId: TENANT_A,
   keyRoot: `u/${TENANT_A}/`,
-  namespace: TENANT_A,
 };
 
 function identity(tenantId: string, tenantDataPlane: boolean): WhoamiOutcome {

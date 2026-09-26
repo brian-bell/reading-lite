@@ -463,7 +463,7 @@ describe("ops corpus recover — batch routing", () => {
     expect(r.configResolves).toEqual([
       {
         resumeProvider: "anthropic",
-        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/`, namespace: TENANT },
+        tenant: { kind: "tenant", tenantId: TENANT, keyRoot: `u/${TENANT}/` },
       },
     ]);
   });
