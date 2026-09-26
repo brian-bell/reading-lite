@@ -1,55 +1,59 @@
 import { describe, expect, it, vi } from "vitest";
-import Database from "better-sqlite3";
 import {
   systemPolicyCommand,
   type PolicyDeps,
 } from "../../../scripts/ops-lib/commands/system-policy";
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { UsageError } from "../../../scripts/ops-lib/contract";
+import { useControlPlane } from "../../helpers/control-plane-pg";
 
-function fixture() {
-  const sql = new Database(":memory:");
-  // Column names mirror db/migrations/0003_control_plane.sql, which is what the
-  // command now writes against: `updated_at`, not the D1-era `updated_at_ms`.
-  // SQLite has no timestamptz, so the Date the command binds lands as text —
-  // enough to pin the column name and the versioned CAS, which is what this
-  // suite is for.
-  sql.exec(`CREATE TABLE system_policy (id INTEGER PRIMARY KEY, policy_version INTEGER, paid_work_enabled INTEGER, daily_spend_microdollars INTEGER, catalog_version INTEGER, updated_at TEXT, signup_mode TEXT);
-    INSERT INTO system_policy VALUES (1, 3, 1, 1000000, 1, '2026-01-01T00:00:00.000Z', 'closed');
-    CREATE TABLE tenant_limits (tenant_id TEXT PRIMARY KEY, policy_version INTEGER, daily_spend_microdollars INTEGER, updated_at TEXT);
-    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440000', 7, 100000, '2026-01-01T00:00:00.000Z');
-    INSERT INTO tenant_limits VALUES ('usr_550e8400-e29b-41d4-a716-446655440001', 11, 300000, '2026-01-01T00:00:00.000Z');`);
-  const db: ControlPlaneDb = {
-    transaction: (work) => work(db),
-    first: async <T>(query: string, ...args: unknown[]) =>
-      (sql.prepare(query).get(...args) as T) ?? null,
-    all: async <T>(query: string, ...args: unknown[]) =>
-      sql.prepare(query).all(...args) as T[],
-    run: vi.fn(async (query: string, ...args: unknown[]) => ({
-      // better-sqlite3 binds no Date objects; the real driver does. ISO text
-      // keeps the fixture honest about the column being a timestamp.
-      changes: sql
-        .prepare(query)
-        .run(...args.map((a) => (a instanceof Date ? a.toISOString() : a))).changes,
-    })),
-    batch: async () => {
-      throw new Error("unexpected batch");
-    },
-  };
+// The command runs against the migrated control-plane schema (migration 0003):
+// `updated_at` timestamptz, `paid_work_enabled` boolean, and tenant_limits
+// rows that need their user. Each test's writes roll back.
+const openControlPlane = useControlPlane();
+const TENANT_A = "usr_550e8400-e29b-41d4-a716-446655440000";
+const TENANT_B = "usr_550e8400-e29b-41d4-a716-446655440001";
+const SEEDED_AT = "2026-01-01T00:00:00.000Z";
+
+async function fixture() {
+  const { db: base, raw } = openControlPlane();
+  await raw.run(
+    `INSERT INTO system_policy (id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at, daily_spend_microdollars)
+     VALUES (1, 'closed', true, 3, 1, ?, 1000000)
+     ON CONFLICT (id) DO UPDATE SET signup_mode = excluded.signup_mode, paid_work_enabled = excluded.paid_work_enabled,
+       policy_version = excluded.policy_version, catalog_version = excluded.catalog_version,
+       updated_at = excluded.updated_at, daily_spend_microdollars = excluded.daily_spend_microdollars`,
+    SEEDED_AT,
+  );
+  for (const [tenant, version, budget] of [[TENANT_A, 7, 100000], [TENANT_B, 11, 300000]] as const) {
+    await raw.run(
+      `INSERT INTO users (id, email_canonical, email_display, status, email_verified_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', ?, ?, ?)`,
+      tenant, `${tenant}@test.example`, `${tenant}@test.example`, SEEDED_AT, SEEDED_AT, SEEDED_AT,
+    );
+    await raw.run(
+      `INSERT INTO tenant_limits (tenant_id, policy_version, submissions_per_hour, monthly_readings, max_concurrent_work, daily_spend_microdollars, created_at, updated_at)
+       VALUES (?, ?, 10, 100, 3, ?, ?, ?)`,
+      tenant, version, budget, SEEDED_AT, SEEDED_AT,
+    );
+  }
+  const db: ControlPlaneDb = { ...base, run: vi.fn(base.run) };
   const deps: PolicyDeps = {
     io: { stdout: vi.fn(), stderr: vi.fn() },
     connect: vi.fn(() => ({ db, close: async () => {} })),
     now: () => 123,
   };
-  const row = () =>
-    sql.prepare("SELECT * FROM system_policy").get() as Record<string, unknown>;
-  return { db, deps, row, sql };
+  const row = async () =>
+    (await raw.first<Record<string, unknown>>("SELECT * FROM system_policy WHERE id = 1"))!;
+  const limits = (tenant: string) =>
+    raw.first("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?", tenant);
+  return { db, deps, row, limits, raw };
 }
 const base = ["--env", "staging", "--paid-work", "disabled"];
 const execute = ["--execute", "--acknowledge-guard-version", "3"];
 describe("system policy", () => {
   it("plans without writing and reports before/after", async () => {
-    const { deps, db } = fixture();
+    const { deps, db } = await fixture();
     expect(await systemPolicyCommand.run(base, deps)).toBe(0);
     expect(db.run).not.toHaveBeenCalled();
     expect(deps.io.stdout).toHaveBeenCalledWith(
@@ -57,14 +61,15 @@ describe("system policy", () => {
     );
   });
   it("uses a versioned update, preserves unrelated fields, and refuses stale replay", async () => {
-    const { deps, row } = fixture();
+    const { deps, row } = await fixture();
     await systemPolicyCommand.run([...base, ...execute], deps);
-    expect(row()).toMatchObject({
+    expect(await row()).toMatchObject({
       policy_version: 4,
-      paid_work_enabled: 0,
+      paid_work_enabled: false,
       signup_mode: "closed",
-      updated_at: new Date(123).toISOString(),
+      daily_spend_microdollars: 1000000,
     });
+    expect(Date.parse(String((await row()).updated_at))).toBe(123);
     await expect(
       systemPolicyCommand.run([...base, ...execute], deps),
     ).rejects.toBeInstanceOf(UsageError);
@@ -72,65 +77,38 @@ describe("system policy", () => {
       [...base, "--execute", "--acknowledge-guard-version", "4"],
       deps,
     );
-    expect(row().policy_version).toBe(4);
+    expect((await row()).policy_version).toBe(4);
   });
   it("detects an edit between read and write", async () => {
-    const { deps, db, sql } = fixture();
+    const { deps, db, raw, row } = await fixture();
     const run = db.run;
     db.run = async (query, ...params) => {
-      sql.exec("UPDATE system_policy SET policy_version = 4");
+      await raw.run("UPDATE system_policy SET policy_version = 4 WHERE id = 1");
       return run(query, ...params);
     };
     await expect(
       systemPolicyCommand.run([...base, ...execute], deps),
     ).rejects.toThrow(/changed/);
-    expect(
-      sql.prepare("SELECT paid_work_enabled FROM system_policy").get(),
-    ).toEqual({ paid_work_enabled: 1 });
+    expect((await row()).paid_work_enabled).toBe(true);
   });
-  it("changes one tenant budget using its own version", async () => {
-    const { deps, row, sql } = fixture();
+  it("changes only the selected tenant's budget, under its own version", async () => {
+    const { deps, row, limits } = await fixture();
     await systemPolicyCommand.run(
       [
-        "--env",
-        "staging",
-        "--tenant",
-        "usr_550e8400-e29b-41d4-a716-446655440000",
-        "--daily-spend-microdollars",
-        "200000",
-        "--execute",
-        "--acknowledge-guard-version",
-        "7",
-      ],
-      deps,
-    );
-    expect(sql.prepare("SELECT * FROM tenant_limits").get()).toMatchObject({
-      policy_version: 8,
-      daily_spend_microdollars: 200000,
-    });
-    expect(row().policy_version).toBe(3);
-  });
-  it("changes only the selected tenant policy when two tenants are populated", async () => {
-    const { deps, sql } = fixture();
-    await systemPolicyCommand.run(
-      [
-        "--env", "staging", "--tenant", "usr_550e8400-e29b-41d4-a716-446655440000",
+        "--env", "staging", "--tenant", TENANT_A,
         "--daily-spend-microdollars", "200000", "--execute",
         "--acknowledge-guard-version", "7",
       ],
       deps,
     );
-    expect(sql.prepare("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?")
-      .get("usr_550e8400-e29b-41d4-a716-446655440000"))
-      .toEqual({ policy_version: 8, daily_spend_microdollars: 200000 });
-    expect(sql.prepare("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?")
-      .get("usr_550e8400-e29b-41d4-a716-446655440001"))
-      .toEqual({ policy_version: 11, daily_spend_microdollars: 300000 });
+    expect(await limits(TENANT_A)).toEqual({ policy_version: 8, daily_spend_microdollars: 200000 });
+    expect(await limits(TENANT_B)).toEqual({ policy_version: 11, daily_spend_microdollars: 300000 });
+    expect((await row()).policy_version).toBe(3);
   });
   it.each(["0", "-1", "1.5", "1e6", "9007199254740992", "nope"])(
     "refuses budget %s before connecting",
     async (value) => {
-      const { deps } = fixture();
+      const { deps } = await fixture();
       await expect(
         systemPolicyCommand.run(
           ["--env", "staging", "--daily-spend-microdollars", value],
@@ -141,9 +119,9 @@ describe("system policy", () => {
     },
   );
   it("can disable an unconfigured policy but refuses enabling without a budget/catalog", async () => {
-    const { deps, sql } = fixture();
-    sql.exec(
-      "UPDATE system_policy SET daily_spend_microdollars = NULL, catalog_version = 0",
+    const { deps, raw } = await fixture();
+    await raw.run(
+      "UPDATE system_policy SET daily_spend_microdollars = NULL, catalog_version = 0 WHERE id = 1",
     );
     await systemPolicyCommand.run([...base, ...execute], deps);
     await expect(
@@ -154,7 +132,7 @@ describe("system policy", () => {
     ).rejects.toThrow(/budget|catalog/);
   });
   it("redacts underlying adapter errors", async () => {
-    const { deps, db } = fixture();
+    const { deps, db } = await fixture();
     db.first = async () => {
       throw new Error("secret-token");
     };

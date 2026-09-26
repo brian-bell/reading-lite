@@ -44,9 +44,9 @@ The identity is over **inventory rows, not files on disk**:
   [Retired commands](#retired-commands).
 - 18 port + 0 Worker endpoint + 8 retire now + 1 retire in #351 + 17 unchanged = 44.
 - Completed ports, marked **ported** below, count in the port total.
-- The two `migrate` commands were added afterwards and are outside the 44, so
-  `ls scripts/ops-lib/commands/` reads **38**. Checking 44 against the directory
-  listing is the wrong check.
+- The two `migrate` commands were added afterwards, outside the 44, and
+  retired in reading-lite-gh351.4, so `ls scripts/ops-lib/commands/` reads
+  **36**. Checking 44 against the directory listing is the wrong check.
 
 `scripts/account-lib/vector-ledger.ts` and `scripts/account-lib/operator-ledger.ts`
 were deleted with them. They are libraries, not commands, and are not
@@ -80,9 +80,9 @@ agent` and a D1 connection to `system lease-clear`. Both already used their API
 surfaces. Correcting those verdicts moves two rows from port to unchanged; it
 does not retire either command.
 
-The D1 migrations that created the ledger (`migrations/0010`, `0012`) are left
-in place: they are that database's schema history, `ops migrate export` reads
-the database they describe, and gh351 removes what remains of D1.
+The D1 migrations that created the ledger (`migrations/0010`, `0012`) stayed
+as that database's schema history while `ops migrate export` read it;
+reading-lite-gh351.4 removed the whole D1 `migrations/` directory with it.
 `test/unit/pg/control-plane-schema.test.ts` still names the ledger tables,
 because what it asserts is that the PostgreSQL schema does **not** contain them.
 
@@ -156,12 +156,13 @@ because what it asserts is that the PostgreSQL schema does **not** contain them.
 ### migrate
 
 Added by reading-lite-gh348, after this inventory was taken. The two commands
-are not among the 44 rows the counts above reconcile.
+are not among the 44 rows the counts above reconcile. Both were deleted in
+reading-lite-gh351.4, with `scripts/migrate-lib/`.
 
 | Command | File | Reads today | Verdict | Why |
 | --- | --- | --- | --- | --- |
-| `migrate export` | `migrate-export.ts` | The legacy stores, read-only: a tenant's R2 manifests, attempt logs, pointers, tombstones and raw content; the D1 control plane by `SELECT`; Vectorize `get_by_ids` by composed id | **retire in #351** | It reads the stores gh351 deletes. It produced the final export at the production cutover (#350, [record](postgres-cutover.md)) and stays until gh351 removes those stores. |
-| `migrate import` | `migrate-import.ts` | A snapshot directory from `migrate export`; writes an empty PostgreSQL target named by `--target-env` | **retire in #351** | A one-time load that has no job left once the cutover import is done and the legacy stores are gone. |
+| `migrate export` | `migrate-export.ts` | The legacy stores, read-only: a tenant's R2 manifests, attempt logs, pointers, tombstones and raw content; the D1 control plane by `SELECT`; Vectorize `get_by_ids` by composed id | **retired** (gh351.4) | It read the stores gh351 deletes. It produced the final export at the production cutover (#350, [record](postgres-cutover.md)); with rollback off the table it had no job left. |
+| `migrate import` | `migrate-import.ts` | A snapshot directory from `migrate export`; writes an empty PostgreSQL target named by `--target-env` | **retired** (gh351.4) | A one-time load with no job left once the cutover import was done. |
 
 ### reading and reading-list
 

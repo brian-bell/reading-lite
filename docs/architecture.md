@@ -197,9 +197,8 @@ the Worker, the operator scripts and the batch pipeline share: `tenant-root.ts`
 (`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
 ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
 snapshot). The Worker binds no Vectorize index. An embedding is a row that
-deletes with its reading, so the account wipe is rows, then objects. Only the
-read-only `ops migrate export` still reads the legacy D1, manifests and
-Vectorize index, and no runtime or operator path writes R2 manifests,
+deletes with its reading, so the account wipe is rows, then objects. No
+runtime or operator path reads or writes the legacy D1 database, R2 manifests,
 `index/list.json`, pointers, or Vectorize.
 
 Staging and production pin the tenant gate. The completed founder cutover

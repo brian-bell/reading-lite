@@ -92,14 +92,8 @@ and ops floor. See [operator Node](docs/operations.md#operator-node).
 Run the Worker suite on Node 22 (`mise.toml` pins it; `mise exec node@22 --`
 works from a worktree that does not inherit it). Node 24 and 25 fail it in ways
 that have nothing to do with the code under test: a pool worker aborts and the
-run exits 1 with every test passing, or the run dies on an EPIPE. After
-switching Node versions in a tree whose `node_modules` was installed under
-another one, run `npm rebuild better-sqlite3` — otherwise the Node-pool suites
-that open a SQLite fixture fail on the native module's ABI, not on their
-assertions. Those fixtures are the last of D1: the runtime, its tests and
-`npm run dev` bind and migrate no D1 database, and `migrations/` describes
-only the retired D1 control plane that `ops migrate export` (reading-lite-gh348)
-reads.
+run exits 1 with every test passing, or the run dies on an EPIPE. Nothing in
+the runtime, its tests or `npm run dev` binds or migrates a D1 database.
 
 ## Where to work
 
@@ -256,11 +250,6 @@ objects or the retained legacy D1 database and Vectorize index. Legacy deletion
 requires separate sign-off.
 The 2026-08-31 founder migration is complete and its command is retired; do not
 rerun it for releases or drills. Preserve the [cutover evidence](docs/founder-cutover.md).
-
-The legacy library moves to PostgreSQL through `ops migrate export` (read-only
-source, frozen snapshot) and `ops migrate import` (empty target only, named by
-`--target-env`, one verified transaction); see
-[library export and import](docs/operations.md#library-export-and-import-reading-lite-gh348).
 
 Offline batch ingest/recover require `--sole-writer`, asserting that realtime
 writers are paused and drained. Preserve sidecars and their resume rules; never

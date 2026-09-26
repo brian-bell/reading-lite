@@ -433,7 +433,8 @@ it migrates local PostgreSQL and bootstraps the founder there.
 - **`migrations/` stays, unrun.** Nothing applies it; it describes the live D1
   control plane that #348 imports from. With it stay better-sqlite3 and
   `test/helpers/control-plane-sqlite.ts`, which the operator commands below
-  still use.
+  still use. (All three were removed in reading-lite-gh351.4, with the
+  importer.)
 
 Still on wrangler D1 in this candidate, for 1d: the operator commands with
 their own control-plane SQL (system policy and status, the account wipe CLI
@@ -489,7 +490,8 @@ Import order follows the foreign keys: `users` first, then `api_tokens` before
 #### Importer decisions (reading-lite-gh348)
 
 `ops migrate export` and `ops migrate import` ([operations](../operations.md#library-export-and-import-reading-lite-gh348))
-implement the mapping above. Decisions the mapping left open:
+implemented the mapping above; both were retired in reading-lite-gh351.4 after
+the production import. Decisions the mapping left open:
 
 - **Timestamps without milliseconds** are respelled. Values in `timestamptz`
   columns come back through the seam as ISO-8601 with three fraction digits.
