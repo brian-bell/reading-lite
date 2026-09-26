@@ -150,7 +150,7 @@ export const stagingSetupCommand: CommandDefinition<StagingSetupDeps> = {
 
 Migrates staging's PostgreSQL database (the Neon rehearsal branch), then
 creates the one-time Cloudflare staging resources for reading-lite: R2 bucket,
-and reading, digest, wipe, and refresh Queue + DLQ pairs.
+and reading, digest, wipe, export, and refresh Queue + DLQ pairs.
 
 Plans by default: connects read-only to list applied and pending migrations,
 and prints the wrangler commands. With no staging database variable set, or
