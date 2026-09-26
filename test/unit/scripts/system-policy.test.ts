@@ -6,25 +6,23 @@ import {
 import type { ControlPlaneDb } from "../../../src/control-plane/db";
 import { UsageError } from "../../../scripts/ops-lib/contract";
 import { useControlPlane } from "../../helpers/control-plane-pg";
+import { mintUserId } from "../../../src/control-plane/ids";
 
 // The command runs against the migrated control-plane schema (migration 0003):
 // `updated_at` timestamptz, `paid_work_enabled` boolean, and tenant_limits
 // rows that need their user. Each test's writes roll back.
+//
+// The tenants are minted per test, and their rows are written before the
+// system_policy singleton: the shared test users (usr_550e8400-…) are locked
+// by other files that then touch system_policy, and taking the two in the
+// opposite order deadlocks their rolled-back transactions against ours.
 const openControlPlane = useControlPlane();
-const TENANT_A = "usr_550e8400-e29b-41d4-a716-446655440000";
-const TENANT_B = "usr_550e8400-e29b-41d4-a716-446655440001";
 const SEEDED_AT = "2026-01-01T00:00:00.000Z";
 
 async function fixture() {
   const { db: base, raw } = openControlPlane();
-  await raw.run(
-    `INSERT INTO system_policy (id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at, daily_spend_microdollars)
-     VALUES (1, 'closed', true, 3, 1, ?, 1000000)
-     ON CONFLICT (id) DO UPDATE SET signup_mode = excluded.signup_mode, paid_work_enabled = excluded.paid_work_enabled,
-       policy_version = excluded.policy_version, catalog_version = excluded.catalog_version,
-       updated_at = excluded.updated_at, daily_spend_microdollars = excluded.daily_spend_microdollars`,
-    SEEDED_AT,
-  );
+  const TENANT_A = String(mintUserId());
+  const TENANT_B = String(mintUserId());
   for (const [tenant, version, budget] of [[TENANT_A, 7, 100000], [TENANT_B, 11, 300000]] as const) {
     await raw.run(
       `INSERT INTO users (id, email_canonical, email_display, status, email_verified_at, created_at, updated_at)
@@ -37,6 +35,14 @@ async function fixture() {
       tenant, version, budget, SEEDED_AT, SEEDED_AT,
     );
   }
+  await raw.run(
+    `INSERT INTO system_policy (id, signup_mode, paid_work_enabled, policy_version, catalog_version, updated_at, daily_spend_microdollars)
+     VALUES (1, 'closed', true, 3, 1, ?, 1000000)
+     ON CONFLICT (id) DO UPDATE SET signup_mode = excluded.signup_mode, paid_work_enabled = excluded.paid_work_enabled,
+       policy_version = excluded.policy_version, catalog_version = excluded.catalog_version,
+       updated_at = excluded.updated_at, daily_spend_microdollars = excluded.daily_spend_microdollars`,
+    SEEDED_AT,
+  );
   const db: ControlPlaneDb = { ...base, run: vi.fn(base.run) };
   const deps: PolicyDeps = {
     io: { stdout: vi.fn(), stderr: vi.fn() },
@@ -47,7 +53,7 @@ async function fixture() {
     (await raw.first<Record<string, unknown>>("SELECT * FROM system_policy WHERE id = 1"))!;
   const limits = (tenant: string) =>
     raw.first("SELECT policy_version, daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?", tenant);
-  return { db, deps, row, limits, raw };
+  return { db, deps, row, limits, raw, TENANT_A, TENANT_B };
 }
 const base = ["--env", "staging", "--paid-work", "disabled"];
 const execute = ["--execute", "--acknowledge-guard-version", "3"];
@@ -92,7 +98,7 @@ describe("system policy", () => {
     expect((await row()).paid_work_enabled).toBe(true);
   });
   it("changes only the selected tenant's budget, under its own version", async () => {
-    const { deps, row, limits } = await fixture();
+    const { deps, row, limits, TENANT_A, TENANT_B } = await fixture();
     await systemPolicyCommand.run(
       [
         "--env", "staging", "--tenant", TENANT_A,
