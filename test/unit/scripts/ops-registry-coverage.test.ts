@@ -42,6 +42,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   extract: ["agent", "probe"],
   eval: ["summarizer"],
   account: ["wipe", "residue-scan"],
+  export: ["inspect", "cancel"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");
@@ -105,24 +106,25 @@ describe("ops registry completeness", () => {
   });
 
   // The --tenant gate is single-homed in scripts/ops-lib/tenant-flag.ts and
-  // every corpus command calls it before any R2 or database traffic, so one
-  // loop over the registry pins the contract for all of them: no selector,
-  // exit 2, and the usage message names the flag.
-  it("every corpus command fails closed without --tenant (exit 2)", async () => {
+  // every corpus and export command calls it before any R2 or database
+  // traffic, so one loop over the registry pins the contract for all of them:
+  // no selector, exit 2, and the usage message names the flag.
+  it("every corpus and export command fails closed without --tenant (exit 2)", async () => {
     // Commands whose own required arguments are parsed before the tenant
     // selector; the argv here satisfies those so the failure is the tenant's.
     const MINIMAL_ARGV: Record<string, string[]> = {
-      ingest: ["--dir", "/md"],
-      drop: ["rd_f"],
-      "purge-connections": ["--id", "rd_0123456789"],
+      "corpus ingest": ["--dir", "/md"],
+      "corpus drop": ["rd_f"],
+      "corpus purge-connections": ["--id", "rd_0123456789"],
     };
-    const corpus = defaultRegistry.commands.filter((c) => c.group === "corpus");
-    expect(corpus.length).toBe(SUPPORTED_WORKFLOWS.corpus!.length);
-    for (const cmd of corpus) {
+    const gated = defaultRegistry.commands.filter((c) => c.group === "corpus" || c.group === "export");
+    expect(gated.length).toBe(SUPPORTED_WORKFLOWS.corpus!.length + SUPPORTED_WORKFLOWS.export!.length);
+    for (const cmd of gated) {
       const { io, err } = captureIo();
-      const argv = ["corpus", cmd.name, ...(MINIMAL_ARGV[cmd.name] ?? [])];
-      expect(await runCli(argv, { io }), `corpus ${cmd.name}`).toBe(2);
-      expect(err.join("\n"), `corpus ${cmd.name}`).toContain("--tenant is required");
+      const route = `${cmd.group} ${cmd.name}`;
+      const argv = [cmd.group, cmd.name, ...(MINIMAL_ARGV[route] ?? [])];
+      expect(await runCli(argv, { io }), route).toBe(2);
+      expect(err.join("\n"), route).toContain("--tenant is required");
     }
   });
 

@@ -2732,21 +2732,43 @@ or building export after the `deleting` fence, and again when rerun. A delivery
 re-reads `users.status` when it claims the row and before it writes a segment,
 and marks the export ready only under `users FOR SHARE` with the account
 active; otherwise it cancels the row and deletes the prefix. A segment that
-races past those checks lands under `u/{tenant}/exports/`, which the wipe's
-objects phase lists, so the late object reopens a finished wipe. Teardown
+races past those checks loses its commit to the cancel, and the delivery then
+deletes the prefix itself. If that delete fails, the segment stays under
+`u/{tenant}/exports/`, which the wipe's objects phase lists, so the late object
+reopens a finished wipe. Teardown
 deletes the tenant's `archive_exports` rows, and the residue scan reports
 `pg.archive_exports`.
 
 ### A stuck export
 
 A queued or building export holds the tenant's one active slot, so
-`POST /api/exports` answers 409 until it ends. Let the queue end it rather
-than editing the row: there is no operator cancel command yet
-(reading-lite-mxwx.9). Changing `status` by hand leaves the parts under
-`exports/{exportId}/` behind: the consumer and the DLQ delete them only when
-they end the export themselves.
+`POST /api/exports` answers 409 until it ends. Don't change `status` by hand:
+that leaves the parts under `exports/{exportId}/` behind, and a delivery still
+holding the lease can overwrite the change. Use the export commands. Both
+require `--tenant` (`/api/whoami`'s `tenant_id`), take
+`--bucket reading-lite-staging` for staging, and resolve the database through
+the operator-db pairing (`PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL`,
+`STAGING_DATABASE_URL` or `NEON_REHEARSAL_DATABASE_URL`). R2 access uses the
+`.corpus.vars` credentials.
 
-Two paths end a stuck export on their own:
+```sh
+npm run ops -- export inspect --tenant <usr_…> [--export <exp_…>]
+```
+
+`inspect` is read-only. It prints each row's status, times, `lease_seq`,
+`continuations`, cursor, `error`, and the objects under its prefix. A queued or
+building row also shows how long it has been idle against the 30-minute lease.
+`updated_at` moves on every delivery and every cron renewal. `lease_seq` rises
+once per claim. `continuations` counts self-sends. If `updated_at` keeps
+moving and `lease_seq` climbs while the cursor stays put, the export is failing
+and will reach the DLQ. `error` is `dead_letter`, `zip_limit` (past 65,535
+entries or 4 GiB), or `enqueue_failed` (the request committed but its first
+send failed) on a failed row, and `operator_cancelled` on a row `export cancel`
+ended. `inspect` also lists parts with no row, and flags a cancelled or failed
+row that still holds parts.
+
+Two paths end a stuck export on their own, so check first whether one of them
+will:
 
 - **A lost message** (a dropped continuation, or a crash between the cursor
   commit and the self-send) leaves the row idle. The first `*/15` tick after
@@ -2758,44 +2780,30 @@ Two paths end a stuck export on their own:
   count toward the daily limit.
 
 A database outage long enough to exhaust the DLQ's own retries drops the dead
-letter and leaves the row building; the cron resumes it 30 minutes later, and
-the build either finishes or dead-letters again. Nothing clears it if
-`ARCHIVE_EXPORT_JOBS` is unbound (the cron logs
-`archive_export_resume_skipped`) or the cron is not firing, so fix that first.
-
-Inspect read-only. Pick the database for the environment you are diagnosing
-(see [deploying](#deploying) for the names); the last line of each block
-stops if it resolved to nothing, so `psql` never falls back to libpq's
-defaults:
+letter and leaves the row building; the cron resumes it 30 minutes later.
+Neither path runs if `ARCHIVE_EXPORT_JOBS` is unbound (the cron logs
+`archive_export_resume_skipped`) or the cron is not firing. Fix that, or cancel
+the export when the slot has to free now:
 
 ```sh
-# Staging: cloud agents and CI have STAGING_DATABASE_URL; a laptop sources the alias.
-[ -n "${STAGING_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
-EXPORT_DB="${STAGING_DATABASE_URL:-${NEON_REHEARSAL_DATABASE_URL:-}}"
-: "${EXPORT_DB:?set STAGING_DATABASE_URL or NEON_REHEARSAL_DATABASE_URL}"
-
-# Production: CI has PRODUCTION_DATABASE_URL; a laptop sources the alias.
-[ -n "${PRODUCTION_DATABASE_URL:-}" ] || { set -a; . ~/.config/reading-lite/neon.env; set +a; }
-EXPORT_DB="${PRODUCTION_DATABASE_URL:-${NEON_MAIN_DATABASE_URL:-}}"
-: "${EXPORT_DB:?set PRODUCTION_DATABASE_URL or NEON_MAIN_DATABASE_URL}"
+npm run ops -- export cancel --tenant <usr_…> --export <exp_…>            # plan
+npm run ops -- export cancel --tenant <usr_…> --export <exp_…> --execute
 ```
 
-Run one block, then:
+`cancel` locks the row and changes it only from queued or building: status
+`cancelled`, `error` `{"code":"operator_cancelled"}`, `lease_seq` bumped. It
+commits, then deletes the prefix with the same loop the DLQ uses. A delivery
+still running loses its commit, so it cannot mark the export ready. It then
+deletes the prefix again, because its segment may have landed after the
+command's delete. A cancelled export does not count toward the daily limit, so
+the account can request another at once. On a row that is already cancelled or
+failed, `cancel` leaves the row alone and only sweeps the prefix. Rerun it
+after a delete that failed, or when `inspect` flags leftover parts. It refuses
+ready and expired exports: the `*/15` expiry owns their parts.
 
-```sh
-psql "$EXPORT_DB" -c "SELECT id, tenant_id, status, requested_at,
-  started_at, updated_at, lease_seq, continuations, cursor, error
-  FROM archive_exports WHERE status IN ('queued', 'building') ORDER BY updated_at"
-```
-
-`updated_at` moves on every delivery and every cron renewal; `lease_seq`
-rises once per claim; `continuations` counts self-sends. A row whose
-`updated_at` keeps moving while `lease_seq` climbs and `cursor` stays put is
-failing and on its way to the DLQ. `error` is set only on a failed row:
-`dead_letter`, `zip_limit` (past 65,535 entries or 4 GiB), or `enqueue_failed`
-(the request committed but its first send failed). In Workers Logs, look for
-`archive_export_lease_held` (a duplicate delivery lost the lease, which is
-harmless), `archive_export_resume_failed`, and the consumer's thrown error.
+In Workers Logs, look for `archive_export_lease_held` (a duplicate delivery
+lost the lease, which is harmless), `archive_export_resume_failed`, and the
+consumer's thrown error.
 
 ## Relationship refresh queue plumbing
 
