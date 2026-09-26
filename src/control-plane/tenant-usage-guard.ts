@@ -20,7 +20,7 @@ import {
 
 // TenantUsageGuard serializes one tenant's ingress request-rate token bucket,
 // paid-work reading-slot reservations (hourly + monthly), and concurrent-work
-// leases. D1 tenant_limits is the policy source of truth; callers cannot supply
+// leases. The tenant_limits row is the policy source of truth; callers cannot supply
 // limits. Missing or invalid limits, and an unavailable Durable Object, fail
 // closed.
 //

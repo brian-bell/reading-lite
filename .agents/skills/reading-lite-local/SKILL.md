@@ -18,7 +18,7 @@ Work in the current reading-lite checkout. Read its `AGENTS.md` and `app/README.
    npm run dev
    ```
 
-   This starts and migrates local Postgres (`docker compose up -d --wait postgres`, host port **54329**), applies local D1 migrations, and bootstraps the local founder. Docker must be running; if `READING_LITE_DATABASE_URL` is set in the shell or `.dev.vars`, setup starts nothing and migrates that server instead. Local magic links point at the frontend on 5174 (`WEB_BASE_URL` in `wrangler.toml`).
+   This starts and migrates local Postgres (`docker compose up -d --wait postgres`, host port **54329**), applies the PostgreSQL migrations, and bootstraps the local founder. Docker must be running; if `READING_LITE_DATABASE_URL` is set in the shell or `.dev.vars`, setup starts nothing and migrates that server instead. Local magic links point at the frontend on 5174 (`WEB_BASE_URL` in `wrangler.toml`).
 5. Start the frontend in a separate persistent exec session with working directory `app/`:
 
    ```sh

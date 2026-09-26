@@ -154,7 +154,7 @@ export interface RefreshState {
   /** When the last FULL pass ran; absent until one has. */
   last_full_run_at?: string;
   /**
-   * The ids of every row in `index/list.json` the last pass saw, sorted. One of
+   * The ids of every reading in the list the last pass saw, sorted. One of
    * these missing from a later list is a purge, which nothing else in the
    * marker can name.
    */

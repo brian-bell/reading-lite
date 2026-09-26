@@ -32,7 +32,7 @@ import {
 
 // GlobalUsageGuard is the singleton SQLite Durable Object that serializes
 // global processing concurrency and daily paid-work spend. Addressed by
-// idFromName(GLOBAL_USAGE_GUARD_NAME). D1 system_policy is the source of both
+// idFromName(GLOBAL_USAGE_GUARD_NAME). The system_policy row is the source of both
 // limits; a NULL daily spend budget fails closed rather than inventing one.
 
 type AcquireLeaseBody = { kind: "acquire_lease"; tenantId: string; attemptId: string; nowMs: number };

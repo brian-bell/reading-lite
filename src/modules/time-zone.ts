@@ -2,7 +2,7 @@
  * Write-time validation for digest schedule fields.
  *
  * Time zones are IANA names from `Intl.supportedValuesOf("timeZone")`. Some
- * ICU lists omit `UTC` even though it is a valid Intl zone and the D1 default,
+ * ICU lists omit `UTC` even though it is a valid Intl zone and the settings default,
  * so `UTC` is accepted explicitly. Aliases that `DateTimeFormat` would accept
  * (`GMT`, `Etc/UTC`, lowercase) are rejected unless they appear in the set.
  *

@@ -1,10 +1,9 @@
-// PostgreSQL similarity reads over pgvector (ADR 0005). Same method names and
-// SimilarityMatch shape as SimilarityStore, so slice 1b swaps it in and
-// aboveFloor, excludeSelf and summarizeSimilarity are reused unchanged.
-// Nothing at runtime constructs this yet.
+// PostgreSQL similarity reads over pgvector (ADR 0005), the Worker's only
+// similarity store. It returns SimilarityMatch, so aboveFloor, excludeSelf and
+// summarizeSimilarity (../similarity.ts) apply unchanged.
 //
-// Score is cosine similarity, `1 - (embedding <=> query)`, matching
-// Vectorize's cosine metric. Only ready readings are returned; the title,
+// Score is cosine similarity, `1 - (embedding <=> query)`, the same metric the
+// Vectorize index used, so the calibrated floor carried over. Only ready readings are returned; the title,
 // tldr and tags come from the reading row rather than copied vector metadata.
 //
 // The scan is exact: reading_embeddings has no HNSW index on purpose. A graph

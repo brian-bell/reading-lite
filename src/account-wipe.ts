@@ -49,12 +49,8 @@
  * PostgreSQL session; if the database throws, the delivery retries before any
  * R2 object is deleted, and no wipe reports success around rows it never saw.
  *
- * D1's wipe also deleted Vectorize vectors, seeding its own id ledger first and
- * confirming the deletes by probe. Embeddings are rows, so the wipe has no
- * ledger, seed, namespace probe or unbound-index gate, and the ledger module
- * went with `account audit-bare-vectors` (reading-lite-gh347.4.6). Vectors
- * written to Vectorize before cutover stay in the frozen legacy index until
- * #351 retires it (ADR 0005).
+ * Embeddings are rows that delete with their reading, so the wipe has no
+ * separate vector phase (ADR 0005).
  *
  * **The gate is a kill switch, not a fallback.** With `TENANT_DATA_PLANE` off
  * (or an empty key root) both fan-out and job skip with `no_tenant_prefix`.

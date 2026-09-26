@@ -7,14 +7,15 @@ import { revokeAllSessionsForUser } from "./sessions";
 
 // Account-deletion suppress (issue 195a / s1k.10.1). Marks the user `deleting`
 // and revokes credentials so queued, retry, digest, and notification paths
-// cannot resurrect data. R2+Vectorize wipe is 195b via a shared queue + cron,
-// never inline here, and neither is anything downstream of it. The users-row
+// cannot resurrect data. The data wipe (rows, then R2 objects) runs from the
+// wipe queue and cron, never inline here, and neither does anything
+// downstream of it. The users-row
 // hard-delete, the Durable Object teardown (this tenant's `TenantUsageGuard`
 // and its `GlobalUsageGuard` leases) and email reuse all live in
 // `src/control-plane/account-teardown.ts` (issue 195 S4), which the wipe cron
 // fan-out runs once the wipe has completed and the tenant prefix is confirmed
-// empty. The residue scan is still a later slice (S5). This module's job stops
-// at the fence.
+// empty; `ops account residue-scan` observes the result. This module's job
+// stops at the fence.
 //
 // `DELETE /api/account` is not `DELETE /api/readings/:id`. The latter purges
 // one reading inside a live tenant; this path fences the whole tenant.
@@ -49,17 +50,6 @@ export const ACCOUNT_DELETE_REVOCATION_REASON = "account_delete";
 export async function tenantIsActive(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
   const row = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId);
   return row?.status === "active";
-}
-
-// Confirmed `deleting`: this account is in the deletion pipeline, so an account
-// wipe may be concurrently removing its list index, manifests, and objects.
-// Strictly narrower than `!tenantIsActive`, which is also true for `suspended`
-// and for a confirmed-missing row — neither of which runs a wipe, and neither of
-// which justifies the ungated vector delete the publisher-side deletion fence
-// performs. A lookup failure is not a confirmation and must not be read as one.
-export async function tenantIsDeleting(db: ControlPlaneDb, tenantId: string): Promise<boolean> {
-  const row = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", tenantId);
-  return row?.status === "deleting";
 }
 
 export async function beginAccountDeletion(

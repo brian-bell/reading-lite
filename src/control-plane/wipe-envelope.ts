@@ -4,7 +4,7 @@
  * during grace (preserving `force` from the tenant's `wipe_progress` row). An
  * operator may enqueue the same shape with `force: true` to skip grace on a new
  * wipe. The body carries only identity and the force flag — no email, no object
- * keys. Phase, cursors, and the lease live in D1 (`wipe_progress`, see
+ * keys. Phase, cursors, and the lease live in PostgreSQL (`wipe_progress`, see
  * `./wipe-progress.ts`), not in the message, so a crash redrive resumes without
  * mutating the queue payload.
  */

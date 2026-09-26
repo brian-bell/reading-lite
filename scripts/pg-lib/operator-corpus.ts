@@ -51,8 +51,7 @@ import { resolveOperatorDatabaseUrl, withOperatorSql, type OpenOperatorSql } fro
  * `--tenant global` selects the pre-tenant R2 layout — an empty key root — and
  * no `readings` row can carry it: every row is `WHERE tenant_id = $1` and a
  * tenant id is a user id. Rather than resolve it to something that returns
- * zero rows and reads as "an empty corpus", it is refused outright. The R2-only
- * commands that still address retained pre-tenant objects keep accepting it.
+ * zero rows and reads as "an empty corpus", it is refused outright.
  */
 export function requireTenantRows(tenant: OperatorTenant): TenantContext {
   if (tenant.kind === "global") {

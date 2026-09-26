@@ -1,4 +1,4 @@
-// Shape of an item in the corpus list index (index/list.json). Mirrors a
+// Shape of an item in a tenant's reading list (PgReadingStore.allListItems). Mirrors a
 // subset of ListIndexItem (src/schemas/api.ts) — only the fields the corpus
 // health tooling reads. Kept hand-typed so scripts don't import worker code.
 export interface ListItem {

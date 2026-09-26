@@ -1,4 +1,4 @@
-// Opaque `<selector>.<256-bit secret>` credentials. D1 stores only an HMAC of
+// Opaque `<selector>.<256-bit secret>` credentials. The database stores only an HMAC of
 // the secret; the public selector is the row primary key.
 
 const SECRET_BYTES = 32;

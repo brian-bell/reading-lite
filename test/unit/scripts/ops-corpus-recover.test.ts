@@ -111,7 +111,7 @@ function makeDeps(overrides: Partial<CorpusRecoverDeps> = {}): Recorded {
       resolveConfig: (flags) => {
         configResolves.push(flags);
         // A minimal but SHAPE-HONEST config: `tenant` and `r2.bucket` are what
-        // the vector-ledger availability check reads (issue #195 S3), and a
+        // the command reads from it, and a
         // double that omitted them would make the command look broken for a
         // reason the test is not about.
         return { tenant: flags.tenant, r2: { bucket: "reading-lite" } } as never;

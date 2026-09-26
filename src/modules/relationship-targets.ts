@@ -4,8 +4,9 @@ import { applyStaleness } from "./staleness";
 
 /**
  * Read-time enrichment for `GET /api/readings/:id`: the reading's connection
- * and tension targets resolved against the same tenant's `index/list.json`.
- * Response-only — never stored on the manifest. An id with no list row is
+ * and tension targets resolved against the same tenant's readings
+ * (PgReadingStore.relationshipTargets). Response-only — never stored on the
+ * manifest. An id with no reading row is
  * removed or unavailable and is omitted, so callers render the removed card.
  */
 

@@ -58,14 +58,9 @@ export const DEFAULT_STAGING_RESOURCES: StagingResources = {
 // Staging's control plane and corpus live in PostgreSQL: the Neon rehearsal
 // branch, paired with this bucket in scripts/pg-lib/operator-db.ts. Setup
 // migrates it and teardown retains it; neither creates nor drops it, so it
-// has no entry here. The old D1 control plane (reading-lite-control-staging)
-// is deliberately absent from both lists too: it is the #348 importer's
-// source, so teardown must not delete it, and staying orphaned after the
-// cutover is expected until #351 retires it.
-//
-// The Worker binds no Vectorize index (embeddings are rows), so neither list
-// names one. The index earlier setups created, reading-lite-staging, is left
-// like the D1 database above, for #351 to retire.
+// has no entry here. Embeddings are rows, so there is no Vectorize index
+// either (the D1 database and index earlier setups created were deleted in
+// reading-lite-gh351.6).
 
 const ALREADY_EXISTS = [
   /Queue name .+ is already taken/i,

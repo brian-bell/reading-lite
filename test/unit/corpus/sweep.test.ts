@@ -344,8 +344,9 @@ describe("invalidatedByDrop", () => {
   });
 
   it("flags a keeper against readings dropped from OTHER groups in the same sweep", () => {
-    // Vectorize is global and connections cite any reading in the library, so
-    // neither signal is confined to the keeper's own duplicate group.
+    // Similarity ranks against every ready reading and connections cite any
+    // reading in the library, so neither signal is confined to the keeper's
+    // own duplicate group.
     const out = invalidatedByDrop(
       keeper.id,
       {
@@ -360,8 +361,8 @@ describe("invalidatedByDrop", () => {
   });
 
   it("does NOT flag similarity when every dropped copy was failed", () => {
-    // Only ready readings are upserted to Vectorize, so a failed or pending
-    // duplicate was never in the index and cannot have been in the keeper's
+    // Only ready readings have embeddings, so a failed or pending duplicate
+    // was never a similarity candidate and cannot have been in the keeper's
     // neighbourhood. This is the commonest sweep shape -- one ready keeper
     // beside failed copies -- so warning here would fire on almost every run
     // and train the operator to ignore the warning entirely.
