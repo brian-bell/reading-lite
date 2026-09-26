@@ -210,9 +210,10 @@ Slice 1b switched the router's reads and the whole write path together.
   summary, relationships and embedding stay intact together. That closes the
   divergence reading-lite-psu characterized and makes `preserve_ready_manifest`
   unnecessary, so it is gone from the queue message too. Content of a failed or
-  superseded attempt is deleted once the reading no longer points at it, except
-  an imported reading's legacy-spelled content, which the legacy manifest still
-  names for a rollback and which stays until #351 (reading-lite-gh346.3).
+  superseded attempt is deleted once the reading no longer points at it.
+  Between the cutover and reading-lite-gh351.2, an imported reading's
+  legacy-spelled content was the exception, kept so a rollback to the D1-era
+  Worker could serve it (reading-lite-gh346.3).
 - **Content keys before publication.** A never-published reading's content is
   found through its latest capturing attempt's row (not an unpublished
   revision); an imported reading no attempt has touched keeps the legacy

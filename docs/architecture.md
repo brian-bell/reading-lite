@@ -149,12 +149,11 @@ published reaches the same "may not write" exits with the live prefix. A
 reading keeps one revision: `publish` deletes the row of the revision it
 replaces in the same transaction and hands its keys back, and the consumer
 deletes those objects after the commit (rows first, objects second, as purge
-does). The exception is an imported reading's legacy-spelled content
-(`raw.{ext}` and `extracted.md` directly under `key_prefix`). Its legacy
-manifest still names it, so a rollback to the D1-era Worker can serve it, and it
-stays until #351 retires the legacy layout (reading-lite-gh346.3). An import
-writes its content to R2 before the row that points at it commits; a content
-write that fails claims nothing.
+does). A revision prefix goes whole; an imported reading's legacy-spelled content
+(`raw.{ext}` and `extracted.md` directly under `key_prefix`) shares that prefix
+with its other objects, so only the keys the row named go. An import writes its
+content to R2 before the row that points at it commits; a content write that
+fails claims nothing.
 
 A never-published reading serves its latest capturing attempt's content. An
 imported reading that no attempt has touched serves the legacy spelling under
