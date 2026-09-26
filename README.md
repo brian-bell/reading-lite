@@ -133,7 +133,6 @@ extraction adds description and transcript when available. See
 - [CONTEXT.md](CONTEXT.md), domain terminology.
 - [Hosted provider spend](docs/paid-provider-spend.md), budgets and accounting.
 - [Staging context preparation](docs/staging-context-copy.md), local fixture packets.
-- [System map](docs/system-map/README.md), interactive architecture overview.
 - [Product brief](docs/product/reading-lite-portfolio-brief.md) and
   [product scope](docs/product/reading-lite-scope.md), what to build and why.
 - [Architecture decisions](docs/decisions/), design history;
