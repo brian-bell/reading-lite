@@ -29,6 +29,11 @@ on:
       - '.cursor/rules/**'
       - 'LICENSE'
       - 'skills-lock.json'
+  # A manual full run of any branch, for a PR while DISABLE_PR_CI is on:
+  #   gh workflow run ci.yml --ref <branch>
+  # Its check runs land on the branch head, so they show on the PR. It never
+  # deploys: deploy-worker.yml releases only a successful `push` run on main.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -37,7 +42,8 @@ concurrency:
 jobs:
   changes:
     name: Check for code changes
-    # Toggle PR checks with the DISABLE_PR_CI repository variable; main always runs.
+    # Toggle PR checks with the DISABLE_PR_CI repository variable; main always
+    # runs, and so does a manual dispatch.
     if: github.event_name != 'pull_request' || vars.DISABLE_PR_CI != 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -63,7 +69,8 @@ jobs:
         run: |
           # A push to main already passed paths-ignore and deploys whatever
           # this run approves, so it runs every job rather than trusting an
-          # earlier commit's result. A pull request runs only the jobs whose
+          # earlier commit's result; a manual dispatch has no PR base to diff
+          # against and runs every job too. A pull request runs only the jobs whose
           # suites read its changed paths (scripts/ci-lib/changed-jobs.ts),
           # diffed from the merge base, including deleted paths; disabling
           # rename detection also checks the old path.
