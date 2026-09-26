@@ -207,7 +207,7 @@ const BUILDINGS = [
     zone: "external",
     variant: "tower",
     blurb:
-      "Always required for embeddings. Default summarizer: Responses structured output with gpt-5.6-terra and high effort in staging/production. Fail-closed provider selection.",
+      "Always required for embeddings. Local summarizer: Responses structured output with gpt-5.6-terra. Fail-closed provider selection.",
     cites: [
       "src/modules/openai-summarizer",
       "src/modules/embeddings",
@@ -226,7 +226,7 @@ const BUILDINGS = [
     zone: "external",
     variant: "annex",
     blurb:
-      "Optional summarizer when SUMMARIZER_PROVIDER=anthropic. tool_choice any (emit_reading or reject_source); system+tools cached via cache_control. No silent fallback to OpenAI.",
+      "Staging/production summarizer (SUMMARIZER_PROVIDER=anthropic, claude-sonnet-5, medium effort). tool_choice any (emit_reading or reject_source); system+tools cached via cache_control. No silent fallback to OpenAI.",
     cites: ["src/modules/anthropic", "src/modules/summarizer"],
     payload: `messages.create +\ntool_choice: any\nANTHROPIC_API_KEY required`,
   },

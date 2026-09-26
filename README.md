@@ -22,8 +22,8 @@ The account page manages sessions, API tokens, account deletion, immediate
 notification mail, and daily or weekly digests. Digest cadence `off` disables
 digests independently of immediate notifications.
 
-OpenAI is the default summarizer; Anthropic is optional. Both use OpenAI
-embeddings. The selected provider must be configured correctly; there is no
+Staging and production summarize with Anthropic (Claude Sonnet 5, medium
+effort); local development defaults to OpenAI. Both use OpenAI embeddings. The selected provider must be configured correctly; there is no
 automatic fallback. See [configuration](docs/configuration.md).
 
 ## Local development
