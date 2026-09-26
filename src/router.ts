@@ -13,12 +13,18 @@ import {
 } from "./middleware";
 import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
 import {
+  INBOX_ITEM_CAP,
+  INBOX_MARKDOWN_MAX_BYTES,
   ListReadingsQuerySchema,
+  PostInboxBodySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
   type GetReadingResponse,
+  type ListInboxResponse,
+  type PostInboxExistingResponse,
+  type PostInboxStagedResponse,
 } from "./schemas/api";
 import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
 import { sqlScope } from "./modules/db/request-sql";
@@ -26,6 +32,8 @@ import type { Sql } from "./modules/db/sql";
 import { contentStoreFor, type ContentStore, type RawObject } from "./modules/stores/content-store";
 import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
+import { pgInboxStoreFor } from "./modules/stores/postgres/inbox-store";
+import { stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
@@ -91,6 +99,10 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
     principal,
     usage: tenantUsageFor(env, String(principal.tenantId)),
   });
+}
+
+function inboxFor(principal: AuthenticatedPrincipal, services: Services, sql: Sql) {
+  return pgInboxStoreFor(sql, { tenantId: principal.tenantId }, services);
 }
 
 export function createApp(opts: AppOptions = {}) {
@@ -179,6 +191,8 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/whoami", requirePrincipal(authNowMs));
   app.use("/api/readings", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/inbox", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/inbox/*", requirePrincipal(authNowMs), requireExpectedTenant());
 
   // The principal's own identity — no scope gate: every authenticated caller
   // may learn who it is. Operator tooling uses this to verify that a bearer
@@ -234,6 +248,50 @@ export function createApp(opts: AppOptions = {}) {
       email: parsed.data.email ?? false,
     });
     return respondIntake(c, out);
+  });
+
+  // The Markdown inbox (reading-lite-gh423): staged text awaiting a person's
+  // review. Staging writes only the inbox row; see src/inbox/stage.ts.
+  app.post("/api/inbox", requireScope("readings:import"), async (c) => {
+    const json = await c.req.json().catch(() => null);
+    const parsed = PostInboxBodySchema.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: "invalid body", details: parsed.error.message }, 400);
+    }
+    if (new TextEncoder().encode(parsed.data.markdown).byteLength > INBOX_MARKDOWN_MAX_BYTES) {
+      return c.json(
+        { error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_MARKDOWN_MAX_BYTES },
+        413,
+      );
+    }
+    const principal = c.get("principal");
+    const sql = c.get("sql");
+    const out = await stageInboxItem(
+      {
+        inbox: inboxFor(principal, services, sql),
+        store: storesFor(c.env, principal, sql).store,
+        usage: tenantUsageFor(c.env, String(principal.tenantId)),
+        services,
+        pendingTtlSeconds: pendingTtlSeconds(c.env),
+      },
+      { url: parsed.data.source_url, markdown: parsed.data.markdown, title: parsed.data.title },
+    );
+    return respondInboxStage(c, out);
+  });
+
+  app.get("/api/inbox", requireScope("readings:read"), async (c) => {
+    const body: ListInboxResponse = { items: await inboxFor(c.get("principal"), services, c.get("sql")).list() };
+    return c.json(body);
+  });
+
+  app.get("/api/inbox/:id", requireScope("readings:read"), async (c) => {
+    const item = await inboxFor(c.get("principal"), services, c.get("sql")).get(c.req.param("id"));
+    return item ? c.json(item) : c.json({ error: "not found" }, 404);
+  });
+
+  app.delete("/api/inbox/:id", requireScope("readings:import"), async (c) => {
+    const discarded = await inboxFor(c.get("principal"), services, c.get("sql")).discard(c.req.param("id"));
+    return discarded ? c.body(null, 204) : c.json({ error: "not found" }, 404);
   });
 
   app.get("/api/readings", requireScope("readings:read"), async (c) => {
@@ -532,6 +590,32 @@ function quotaHttp(
     status: 429,
     headers: { "Retry-After": String(retryAfter) },
   };
+}
+
+function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Response {
+  switch (out.kind) {
+    case "staged": {
+      const body: PostInboxStagedResponse = {
+        inbox_item_id: out.item.id,
+        replaced: out.replaced,
+        ...(out.corpusReading ? { corpus_reading: out.corpusReading } : {}),
+      };
+      return c.json(body, out.replaced ? 200 : 201);
+    }
+    case "existing": {
+      const body: PostInboxExistingResponse = { existing: true, reading: out.manifest };
+      return c.json(body, 200);
+    }
+    // Not time-based: the inbox frees up only when items are promoted or
+    // discarded, so there is no Retry-After.
+    case "inbox_full":
+      return c.json({ error: "inbox is full", code: "inbox_full", limit: INBOX_ITEM_CAP }, 429);
+    // The same bodies and headers the reading verbs give these outcomes.
+    case "rate_limited":
+    case "guard_unavailable":
+    case "tenant_inactive":
+      return respondIntake(c, out);
+  }
 }
 
 function respondIntake(c: Context<AppBindings>, out: IntakeOutcome): Response {
