@@ -75,13 +75,14 @@ const CONTROL_PLANE_TABLES = [
 // the control plane. So every test starts from the state a fresh D1 gave it:
 // empty control-plane tables, then the founder bootstrap, with the test
 // tenant's limits raised and a spend ceiling set. The fixed tenants' readings
-// are cleared too, matching the per-test R2 rollback; readings a file seeds
-// for its own tenants in beforeAll (parity.test.ts) are left alone.
+// and inbox items are cleared too, matching the per-test R2 rollback; readings
+// a file seeds for its own tenants in beforeAll (parity.test.ts) are left alone.
 beforeEach(async () => {
   const sql = sqlFor(env);
   try {
     await sql.query(`TRUNCATE ${CONTROL_PLANE_TABLES} RESTART IDENTITY`);
     await sql.query("DELETE FROM readings WHERE tenant_id = ANY ($1::text[])", [[FOUNDER_TENANT_ID, OTHER_TENANT_ID]]);
+    await sql.query("DELETE FROM inbox_items WHERE tenant_id = ANY ($1::text[])", [[FOUNDER_TENANT_ID, OTHER_TENANT_ID]]);
     const db = fromSql(sql);
     await bootstrapFounder(db, {
       email: env.FOUNDER_EMAIL ?? "founder@test.example",
