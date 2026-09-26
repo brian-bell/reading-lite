@@ -43,7 +43,7 @@ Evidence: routes in `web/src/App.tsx` on current main.
 | `/save` | Not present; submit lives on the library | URL and Markdown capture page, reached from navigation | Relocate (URL form); New, approved (Markdown) |
 | `/login`, `?next=`, `?step_up=1` | Magic-link request, Turnstile when configured, return path, recent-auth step-up | Unchanged behavior | Preserve |
 | `/login/verify`, `/auth/verify` | Link redemption, cross-tab continuation, return to stored path | Both entrypoints kept | Preserve |
-| `/account/security` | Sessions, email change, immediate email, digest schedule, API tokens | Same sections, plus account deletion | Preserve; deletion is New, approved |
+| `/account/security` | Sessions, email change, immediate email, digest schedule, API tokens | Same sections, plus archive export and account deletion | Preserve; export and deletion are New, approved |
 | `/terms`, `/privacy`, `/dmca` | Public legal pages, footer links | Unchanged, public, no SSR identity | Preserve |
 | Any other path | `Navigate` to `/` with replace | Same | Preserve |
 | Provider settings | Not present | Route and contract decided in Phase 6 | Deferred |
@@ -82,9 +82,10 @@ tests are this defect; the new tests must cover it.
 | Change email | `POST /api/auth/email-change` | Security page | Account page | Preserve |
 | Immediate email and digest schedule | `GET`/`POST /api/auth/settings` | Security page | Account page | Preserve |
 | API tokens: create (scopes, expiry, 10-token cap), revoke | `/api/auth/tokens…` | Security page | Account page; one-time token display unchanged | Preserve |
+| Export your archive | `POST /api/exports`, `GET /api/exports/latest`, `GET /api/exports/:id/download` | None | Account page, between API tokens and deletion; see [archive export](#archive-export) | New, approved (reading-lite-mxwx) |
 | Delete account | `DELETE /api/account` | None | Account page; see [account deletion](#account-deletion) | New, approved (#335 story 5) |
 | Theme | — | None | System, Light, Dark in navigation | New, approved (#335 scope) |
-| Provider key lifecycle, sample library, export | Not built | — | Phase 6 | Deferred |
+| Provider key lifecycle, sample library | Not built | — | Phase 6 | Deferred |
 
 Keep the current boot-time removal of the legacy
 `reading-lite.bearerToken` localStorage entry until the old SPA is retired.
@@ -171,12 +172,44 @@ test that fails when the backend adds or renames a class.
 
 Retry on a failed reading is a reprocess; it never repeats automatically.
 
+### Archive export
+
+Placement: account page, after API tokens and before account deletion.
+Contract: [ADR 0004](../../decisions/0004-tenant-provider-credentials.md)
+("Archive export"); the zip is [the archive format](../../archive-export.md).
+
+| State | Signal | Presentation | Actions |
+| --- | --- | --- | --- |
+| None yet | `export: null` | "You haven't exported your library yet." | Request export |
+| Queued | `status = queued` | Requested time; the page updates as it goes | None while it runs |
+| Building | `status = building` | "Building your archive." The API gives no progress counts, so none are shown | None while it runs |
+| Ready | `status = ready` | Ready, with the download's expiry (seven days) | Download archive; Request a new export once `next_allowed_at` passes |
+| Failed | `status = failed` | Failed; `zip_limit` says the library is too large for one archive | Request export (a failure frees the day's slot) |
+| Expired | `status = expired` | When it expired | Request export |
+| Cancelled | `status = cancelled` | Cancelled (account deletion cancels an unfinished export) | Request export |
+| One active | `POST` 409 | "Only one can run at a time," while the other export runs | Wait |
+| Daily limit | `POST` 429 `{limit: "daily_export", reset_at}` | The limit and the time the next request is allowed | Wait |
+| Queue unavailable | `POST` 503 | Exports can't be started right now | Retry |
+
+- State the limits with the section: one export in progress and one request
+  a day. It is a hosting limit and works without a provider key.
+- Read the status every 10 seconds only while queued or building
+  (`refetchInterval`), and read it again after a request. This is a deliberate
+  exception to "the frontend does not poll pending manifests", which is about
+  readings. The status line is a live region.
+- Download through a plain same-origin `<a href="/api/exports/:id/download">`,
+  never a blob fetch: the archive can be large. The backend's
+  `Content-Disposition: attachment` makes it a download.
+- Refusals (403, 412) are the page's shared states; a failed read or request
+  stays in the section, as for tokens.
+
 ### Account deletion
 
 Placement: last section of the account page.
 
 - Explain the seven-day grace before data is wiped, and that sessions and tokens
-  are revoked immediately. Do not promise an archive export until Phase 6 ships one.
+  are revoked immediately. Point at the archive export above it, and say that
+  deletion cancels an export that hasn't finished.
 - Require typing `delete` (the API's `{ "confirm": "delete" }`) in a modal dialog.
 - A recent sign-in (10 minutes) is required. On that 403, show the existing
   step-up message and link (`/login?step_up=1&next=/account/security`).

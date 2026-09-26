@@ -1,4 +1,4 @@
-import { QueryClientProvider, onlineManager } from "@tanstack/react-query";
+import { QueryClientProvider, onlineManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Outlet,
   RouterProvider,
@@ -12,7 +12,11 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSignedIn } from "../src/auth/guards";
 import { createQueryClient, hrefOnScreen } from "../src/auth/session";
+import { accountViewOf } from "../src/account-state";
+import { EXPORT_POLL_MS, type ArchiveExport } from "../src/archive-export";
+import { ExportSection } from "../src/components/AccountExport";
 import { AccountPage } from "../src/components/AccountPage";
+import { exportsQueryOptions } from "../src/exports-query";
 import { TokensSection } from "../src/components/AccountTokens";
 import { AppFrame } from "../src/components/AppFrame";
 import { PageHeading } from "../src/components/PageHeading";
@@ -78,6 +82,9 @@ const SETTINGS = {
   digest_weekday: 1,
 };
 
+/** GET /api/exports/latest before any export, with a request allowed now. */
+const NO_EXPORT = { export: null, next_allowed_at: "2026-01-01T00:00:00.000Z" };
+
 const rootRoute = createRootRouteWithContext<RouterContext>()({
   component: () => (
     <AppFrame theme="system" onThemeChange={() => undefined}>
@@ -125,6 +132,8 @@ function mockApi(options?: {
   onListTokens?: () => Response;
   onRevokeToken?: (id: string) => Response;
   onCreateToken?: (body: { name: string; scopes: string[] }) => Response;
+  onLatestExport?: () => Response;
+  onRequestExport?: () => Response;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const request = asRequest(input);
@@ -155,6 +164,12 @@ function mockApi(options?: {
     if (request.method === "DELETE" && path.startsWith("/api/auth/tokens/")) {
       const id = decodeURIComponent(path.slice("/api/auth/tokens/".length));
       return options?.onRevokeToken?.(id) ?? Response.json({ ok: true });
+    }
+    if (path === "/api/exports/latest" && request.method === "GET") {
+      return options?.onLatestExport?.() ?? Response.json(NO_EXPORT);
+    }
+    if (path === "/api/exports" && request.method === "POST") {
+      return options?.onRequestExport?.() ?? Response.json({ id: "exp_new", status: "queued" }, { status: 202 });
     }
     if (path === "/api/auth/email-change" && request.method === "POST") {
       const body = (await request.clone().json()) as { email: string };
@@ -475,6 +490,7 @@ describe("the account page", () => {
         if (path === "/api/auth/sessions" && request.method === "GET") return Response.json(listed);
         if (path === "/api/auth/settings" && request.method === "GET") return Response.json(SETTINGS);
         if (path === "/api/auth/tokens" && request.method === "GET") return Response.json({ tokens: [] });
+        if (path === "/api/exports/latest") return Response.json(NO_EXPORT);
         return Response.json({ error: "forbidden" }, { status: 403 });
       }),
     );
@@ -1315,6 +1331,252 @@ describe("API tokens on the account page", () => {
 
 // The digest schedule (#340.6.3): saved values, the off-to-on draft, saves
 // while on, and a failed save. The draft rules themselves are digest.test.ts's.
+describe("the archive export on the account page", () => {
+  const section = () => screen.getByRole("region", { name: "Export your archive" });
+  const requestButton = () => within(section()).getByRole("button", { name: /^Request (a new )?export$/ });
+  const exported = (over: Partial<ArchiveExport> = {}): ArchiveExport => ({
+    id: "exp_1",
+    status: "ready",
+    requested_at: "2026-09-25T09:00:00.000Z",
+    started_at: "2026-09-25T09:00:05.000Z",
+    completed_at: "2026-09-25T09:02:00.000Z",
+    expires_at: "2026-10-02T09:02:00.000Z",
+    error: null,
+    ...over,
+  });
+  const latestOf = (current: ArchiveExport | null, nextMs = Date.parse(NO_EXPORT.next_allowed_at)) => ({
+    export: current,
+    next_allowed_at: new Date(nextMs).toISOString(),
+  });
+
+  // The section and its query alone, as AccountPage wires them: the polling
+  // lives in the query's options, and fake timers stay clear of the router.
+  function ExportHarness() {
+    const queryClient = useQueryClient();
+    const query = useQuery(exportsQueryOptions(queryClient, reader));
+    const view = accountViewOf({ data: query.data, error: query.error, fetchStatus: query.fetchStatus });
+    return <ExportSection view={view} onRetry={() => void query.refetch()} />;
+  }
+
+  function renderSection(content = <ExportHarness />) {
+    const queryClient = createQueryClient(() => "/");
+    queryClient.setQueryData(whoamiQueryKey, reader);
+    render(<QueryClientProvider client={queryClient}>{content}</QueryClientProvider>);
+  }
+
+  // Then a moment more, so the response a timer's request got is rendered.
+  async function advance(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  }
+
+  it("sits between API tokens and account deletion, and states its limits", async () => {
+    mockApi();
+    await openAccount();
+
+    const names = (await screen.findAllByRole("region")).map((region) => region.getAttribute("aria-labelledby"));
+    expect(names.slice(-3)).toEqual(["api-tokens-heading", "export-heading", "delete-account-heading"]);
+    expect(section()).toHaveTextContent("one export in progress and request one a day");
+    expect(section()).toHaveTextContent("works without a provider key");
+  });
+
+  it("says there is no export yet, requests one, and shows it queued", async () => {
+    let requested = false;
+    const fetchMock = mockApi({
+      onLatestExport: () => Response.json(latestOf(requested ? exported({ status: "queued", completed_at: null, expires_at: null }) : null)),
+      onRequestExport: () => {
+        requested = true;
+        return Response.json({ id: "exp_1", status: "queued" }, { status: 202 });
+      },
+    });
+    await openAccount();
+    expect(await within(section()).findByText("You haven't exported your library yet.")).toBeVisible();
+
+    await userEvent.click(requestButton());
+
+    expect(await within(section()).findByText(/^Export requested 25 September 2026, 09:00 UTC\./)).toBeVisible();
+    expect(requestsOf(fetchMock, "POST", "/api/exports")).toHaveLength(1);
+    expect(within(section()).queryByRole("button", { name: /Request/ })).not.toBeInTheDocument();
+  });
+
+  it("reads the status every ten seconds only while queued or building, then offers the download", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    const answers = [
+      exported({ status: "queued", started_at: null, completed_at: null, expires_at: null }),
+      exported({ status: "building", completed_at: null, expires_at: null }),
+      exported(),
+    ];
+    const startedAt = Date.now();
+    const readAt: number[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        readAt.push(Date.now() - startedAt);
+        return Response.json(latestOf(answers.length > 1 ? answers.shift()! : answers[0]!));
+      }),
+    );
+    renderSection();
+    await advance(0);
+    expect(within(section()).getByRole("status")).toHaveTextContent("It's waiting to start");
+
+    await advance(EXPORT_POLL_MS);
+    expect(within(section()).getByRole("status")).toHaveTextContent("Building your archive.");
+
+    await advance(EXPORT_POLL_MS);
+    expect(within(section()).getByRole("status")).toHaveTextContent(
+      "Your archive is ready. You can download it until 2 October 2026, 09:02 UTC.",
+    );
+    expect(within(section()).getByRole("link", { name: "Download archive" })).toHaveAttribute(
+      "href",
+      "/api/exports/exp_1/download",
+    );
+
+    await advance(6 * EXPORT_POLL_MS);
+    expect(readAt).toEqual([0, EXPORT_POLL_MS, 2 * EXPORT_POLL_MS]);
+  });
+
+  it.each([
+    [exported({ status: "failed", expires_at: null, error: { code: "dead_letter" } }), "Your last export failed. You can request another now."],
+    [exported({ status: "failed", expires_at: null, error: { code: "zip_limit" } }), "too large for one archive"],
+    [exported({ status: "expired" }), "Your last archive expired on 2 October 2026, 09:02 UTC."],
+    [exported({ status: "cancelled", expires_at: null }), "Your last export was cancelled."],
+  ])("says what became of an export that is $status, and offers another", (current, sentence) => {
+    renderSection(<ExportSection view={{ kind: "ready", value: latestOf(current) }} onRetry={() => undefined} />);
+
+    expect(within(section()).getByRole("status")).toHaveTextContent(sentence);
+    expect(within(section()).queryByRole("link", { name: "Download archive" })).not.toBeInTheDocument();
+    expect(requestButton()).toBeEnabled();
+  });
+
+  it("keeps Request off while a ready export holds the day's slot, and turns it on when the day is over", () => {
+    const now = Date.parse("2026-09-25T12:00:00Z");
+    vi.useFakeTimers({ now, toFake: ["setTimeout", "clearTimeout", "Date"] });
+    renderSection(
+      <ExportSection view={{ kind: "ready", value: latestOf(exported(), now + 60_000) }} onRetry={() => undefined} />,
+    );
+
+    expect(requestButton()).toHaveTextContent("Request a new export");
+    expect(requestButton()).toBeDisabled();
+    expect(within(section()).getByText("You can request another export at 25 September 2026, 12:01 UTC.")).toBeVisible();
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+
+    expect(requestButton()).toBeEnabled();
+    expect(within(section()).queryByText(/You can request another export at/)).not.toBeInTheDocument();
+  });
+
+  it("explains a 409 while the other export runs, reading the status again", async () => {
+    let reads = 0;
+    mockApi({
+      onLatestExport: () =>
+        Response.json(latestOf(reads++ === 0 ? null : exported({ status: "building", completed_at: null, expires_at: null }))),
+      onRequestExport: () => Response.json({ error: "export_active", id: "exp_1" }, { status: 409 }),
+    });
+    await openAccount();
+    await within(section()).findByText("You haven't exported your library yet.");
+
+    await userEvent.click(requestButton());
+
+    expect(await within(section()).findByText("An export is already in progress. Only one can run at a time.")).toBeVisible();
+    expect(within(section()).getByText("Building your archive. This page updates when it's ready.")).toBeVisible();
+  });
+
+  it("explains a 429 with the time the next request is allowed, and holds Request until then", async () => {
+    const resetMs = Date.now() + 3_600_000;
+    // The status read after the refusal still says a request is allowed: the
+    // 429's own reset holds the button.
+    mockApi({
+      onRequestExport: () =>
+        Response.json({ limit: "daily_export", reset_at: new Date(resetMs).toISOString() }, { status: 429 }),
+    });
+    await openAccount();
+    await within(section()).findByText("You haven't exported your library yet.");
+
+    await userEvent.click(requestButton());
+
+    const warning = await within(section()).findByText(/^You've reached the daily export limit\./);
+    expect(warning).toHaveTextContent(/You can request another at .+ UTC\.$/);
+    expect(requestButton()).toBeDisabled();
+    expect(within(section()).queryByText(/You can request another export at/)).not.toBeInTheDocument();
+  });
+
+  it("says when the export queue is unavailable, and Retry asks again", async () => {
+    let requests = 0;
+    const fetchMock = mockApi({
+      onRequestExport: () =>
+        requests++ === 0
+          ? Response.json({ error: "export queue unavailable" }, { status: 503 })
+          : Response.json({ id: "exp_1", status: "queued" }, { status: 202 }),
+    });
+    await openAccount();
+    await within(section()).findByText("You haven't exported your library yet.");
+
+    await userEvent.click(requestButton());
+    expect(await within(section()).findByText("Exports can't be started right now. Try again in a few minutes.")).toBeVisible();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(requestsOf(fetchMock, "POST", "/api/exports")).toHaveLength(2));
+    await waitFor(() => expect(within(section()).queryByText(/can't be started/)).not.toBeInTheDocument());
+  });
+
+  it("shows a failed request in the section, and Retry reads the status without requesting again", async () => {
+    const fetchMock = mockApi({
+      onRequestExport: () => Response.json({ error: "control plane unavailable" }, { status: 500 }),
+    });
+    await openAccount();
+    await within(section()).findByText("You haven't exported your library yet.");
+
+    await userEvent.click(requestButton());
+    expect(await within(section()).findByText("Something went wrong on our side. The export wasn't requested.")).toBeVisible();
+    expect(within(section()).getByText("control plane unavailable")).toBeVisible();
+    const reads = requestsOf(fetchMock, "GET", "/api/exports/latest").length;
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(requestsOf(fetchMock, "GET", "/api/exports/latest")).toHaveLength(reads + 1));
+    expect(requestsOf(fetchMock, "POST", "/api/exports")).toHaveLength(1);
+    expect(within(section()).queryByText(/wasn't requested/)).not.toBeInTheDocument();
+  });
+
+  it("shows a status 5xx inside the section, keeps the rest of the page, and Retry reads it again", async () => {
+    let fail = true;
+    mockApi({
+      onLatestExport: () => {
+        if (!fail) return Response.json(NO_EXPORT);
+        fail = false;
+        return Response.json({ error: "control plane unavailable" }, { status: 503 });
+      },
+    });
+    await openAccount();
+
+    expect(await within(section()).findByText("control plane unavailable")).toBeVisible();
+    expect(await screen.findByText("Firefox (this device)")).toBeVisible();
+
+    await userEvent.click(within(section()).getByRole("button", { name: "Retry" }));
+
+    expect(await within(section()).findByText("You haven't exported your library yet.")).toBeVisible();
+  });
+
+  it.each([
+    [403, "You don't have access to this."],
+    [412, "This tab is signed in to a different account than the page expects."],
+  ])("shows the page's refusal state for a status read %i", async (status, heading) => {
+    const body =
+      status === 412 ? { error: "expected tenant mismatch", acting_tenant: "usr_b" } : { error: "forbidden" };
+    mockApi({ onLatestExport: () => Response.json(body, { status }) });
+    await openAccount();
+
+    await waitFor(() => expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(heading));
+  });
+});
+
 describe("the digest schedule on the account page", () => {
   const cadence = () => screen.getByRole("combobox", { name: "Cadence" });
   const WEEKLY = { ...SETTINGS, digest_cadence: "weekly", time_zone: "Europe/London", digest_hour_local: 7, digest_weekday: 3 };
@@ -1612,7 +1874,7 @@ describe("account deletion", () => {
     expect(last).toHaveAccessibleName("Delete account");
     expect(last).toHaveTextContent("revokes every browser session and API token right away");
     expect(last).toHaveTextContent("permanently deleted after seven days");
-    expect(last).not.toHaveTextContent(/export|download|archive/i);
+    expect(last).toHaveTextContent("export your archive above and download it first");
   });
 
   it("enables Delete only once delete is typed, and sends nothing until then", async () => {
