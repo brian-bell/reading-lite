@@ -73,37 +73,36 @@ const SYSTEM_PROMPT = `${LIBRARIAN_INSTRUCTIONS}
 
 Call exactly one tool. Call emit_reading when the extracted source is a full article or transcript. Call reject_source when it is not. Do not write free-form prose.`;
 
-// Must advertise exactly the constraints ReadingSummarySchema enforces at parse
-// time (strictness + bounds); a tool call valid per this contract must never
-// fail parseEmitReadingResult. Guarded by an alignment test against
-// READING_SUMMARY_JSON_SCHEMA — descriptions are the only allowed addition.
+// Sent with strict tool use, so the API guarantees every call matches it:
+// without strict, `required` and `type` are advisory, and production Sonnet 5
+// omitted `tags` and sent `keywords` as a string. Strict tool use supports no
+// string length bounds, no maxItems, and minItems of 0 or 1 only, so this is
+// READING_SUMMARY_JSON_SCHEMA with exactly those keywords removed and stated in
+// descriptions instead. ReadingSummarySchema still enforces them at parse time,
+// and summarizeReading asks once more when a call misses one. Guarded by an
+// alignment test against READING_SUMMARY_JSON_SCHEMA.
 const EMIT_READING_INPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
     title: {
       type: "string",
-      minLength: 1,
-      maxLength: 120,
       description: "Article title (5-120 chars).",
     },
-    tldr: { type: "string", minLength: 1, description: "1-3 sentence summary." },
+    tldr: { type: "string", description: "1-3 sentence summary." },
     tags: {
       type: "array",
       minItems: 1,
-      maxItems: 6,
-      items: { type: "string", minLength: 1 },
-      description: "Broad topical buckets.",
+      items: { type: "string" },
+      description: "Broad topical buckets (1-6 non-empty items).",
     },
     keywords: {
       type: "array",
-      minItems: 3,
-      maxItems: 15,
-      items: { type: "string", minLength: 1 },
-      description: "Specific noun phrases.",
+      items: { type: "string" },
+      description: "Specific noun phrases (3-15 non-empty items).",
     },
-    people: { type: "array", items: { type: "string", minLength: 1 } },
-    orgs: { type: "array", items: { type: "string", minLength: 1 } },
+    people: { type: "array", items: { type: "string" } },
+    orgs: { type: "array", items: { type: "string" } },
     novelty_verdict: {
       type: "string",
       enum: ["novel", "familiar", "duplicate"],
@@ -117,12 +116,10 @@ const EMIT_READING_INPUT_SCHEMA = {
         properties: {
           id: {
             type: "string",
-            minLength: 1,
             description: "Reading id from the prior library.",
           },
           reason: {
             type: "string",
-            minLength: 1,
             description: "One-clause reason for the connection.",
           },
         },
@@ -131,7 +128,6 @@ const EMIT_READING_INPUT_SCHEMA = {
     },
     summary_markdown: {
       type: "string",
-      minLength: 1,
       description: "2-6 short paragraphs in markdown.",
     },
   },
@@ -154,7 +150,6 @@ const REJECT_SOURCE_INPUT_SCHEMA = {
   properties: {
     reason: {
       type: "string",
-      minLength: 1,
       description:
         "Why the extracted source is not a full article or transcript.",
     },
@@ -209,12 +204,14 @@ export function buildSummarizeRequestBody(
         description:
           "Emit the structured reading record when the extracted source is a full article or transcript.",
         input_schema: EMIT_READING_INPUT_SCHEMA,
+        strict: true,
       },
       {
         name: REJECT_SOURCE_TOOL_NAME,
         description:
           "Reject the input when it is a teaser, metadata-only page, or a summary of the URL rather than a full article or transcript.",
         input_schema: REJECT_SOURCE_INPUT_SCHEMA,
+        strict: true,
       },
     ],
     tool_choice: { type: "any" },
@@ -299,17 +296,45 @@ export async function summarizeReading(
     },
     body: JSON.stringify(body),
   };
-  const response = deps.retry
-    ? await fetchWithRetry(deps.fetch, ANTHROPIC_MESSAGES_URL, init, deps.retry)
-    : await deps.fetch(ANTHROPIC_MESSAGES_URL, init);
+  // A call that misses a bound strict tool use cannot express (or skips the
+  // tool) is one bad sample, so ask once more. Each call is its own paid
+  // dispatch through deps.fetch; the returned usage covers both.
+  let spent: AnthropicMessageResponse["usage"] | undefined;
+  for (let call = 1; ; call++) {
+    const response = deps.retry
+      ? await fetchWithRetry(deps.fetch, ANTHROPIC_MESSAGES_URL, init, deps.retry)
+      : await deps.fetch(ANTHROPIC_MESSAGES_URL, init);
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new AnthropicError(response.status, anthropicErrorMessage(text, response.status));
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new AnthropicError(response.status, anthropicErrorMessage(text, response.status));
+    }
+
+    const json = (await response.json()) as AnthropicMessageResponse;
+    spent = spent ? addUsage(spent, json.usage) : json.usage;
+    try {
+      return parseEmitReadingResult(json.content, spent);
+    } catch (e) {
+      const slip = e instanceof BadToolInputError || e instanceof NoToolUseError;
+      if (!slip || call >= SUMMARIZE_CALLS) throw e;
+    }
   }
+}
 
-  const json = (await response.json()) as AnthropicMessageResponse;
-  return parseEmitReadingResult(json.content, json.usage);
+const SUMMARIZE_CALLS = 2;
+
+function addUsage(
+  a: AnthropicMessageResponse["usage"],
+  b: AnthropicMessageResponse["usage"],
+): AnthropicMessageResponse["usage"] {
+  return {
+    input_tokens: a.input_tokens + b.input_tokens,
+    output_tokens: a.output_tokens + b.output_tokens,
+    cache_creation_input_tokens:
+      (a.cache_creation_input_tokens ?? 0) + (b.cache_creation_input_tokens ?? 0),
+    cache_read_input_tokens:
+      (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0),
+  };
 }
 
 function anthropicErrorMessage(text: string, status: number): string {

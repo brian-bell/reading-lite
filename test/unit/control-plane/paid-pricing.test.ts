@@ -135,6 +135,11 @@ describe("runtime paid-request pricing", () => {
       "https://api.anthropic.com/v1/messages",
       request({ ...buildAnthropicRequest(summaryInput, "claude-sonnet-5", "low"), service_tier: "priority" }),
     )).resolves.toBeNull();
+    const anthropicBody = buildAnthropicRequest(summaryInput, "claude-sonnet-5", "low") as { tools: Array<Record<string, unknown>> };
+    await expect(quotePaidRequest(
+      "https://api.anthropic.com/v1/messages",
+      request({ ...anthropicBody, tools: anthropicBody.tools.map((tool) => ({ ...tool, strict: "yes" })) }),
+    )).resolves.toBeNull();
     await expect(quotePaidRequest("https://api.openai.com/v1/embeddings", {
       method: "POST",
       headers: JSON_HEADERS,

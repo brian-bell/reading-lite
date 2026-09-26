@@ -289,8 +289,11 @@ limits; they do not prove DNS rebinding impossible.
 
 `embeddings` uses `text-embedding-3-small` at 1536 dimensions. `summarizer`
 selects and normalizes provider results; `openai-summarizer` uses Responses with
-strict structured output, and `anthropic` uses `emit_reading` / `reject_source`
-tools. Preserve the Anthropic system/tool cache prefix. `http-retry` retries
+strict structured output, and `anthropic` uses strict `emit_reading` /
+`reject_source` tools. Strict tool use cannot express string length bounds,
+`maxItems`, or `minItems` above 1, so zod enforces those at parse time and the
+realtime path calls once more when a tool call misses one (or skips the tool).
+Preserve the Anthropic system/tool cache prefix. `http-retry` retries
 network/5xx failures with bounded exponential backoff and jitter; 429 exits to
 the caller. Invalid provider, credentials, or effort fail closed.
 

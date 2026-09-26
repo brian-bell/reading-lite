@@ -52,6 +52,18 @@ function toolUseResponse(input: unknown, usage: Partial<Record<string, number>> 
   };
 }
 
+function textOnlyResponse() {
+  return {
+    id: "msg_01",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-5",
+    stop_reason: "end_turn",
+    content: [{ type: "text", text: "I refuse to use the tool" }],
+    usage: { input_tokens: 10, output_tokens: 10 },
+  };
+}
+
 describe("summarizeReading", () => {
   it("returns the parsed reading + usage on success", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
@@ -151,36 +163,46 @@ describe("summarizeReading", () => {
     expect(e.message).toContain("slow down");
   });
 
-  it("throws NoToolUseError when response has no tool_use block", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () =>
-      ok({
-        id: "msg_01",
-        type: "message",
-        role: "assistant",
-        model: "claude-sonnet-5",
-        stop_reason: "end_turn",
-        content: [{ type: "text", text: "I refuse to use the tool" }],
-        usage: { input_tokens: 10, output_tokens: 10 },
-      }),
+  // Strict tool use cannot advertise every bound the parser enforces, and a
+  // slip is a property of one sample, not of the source. One more call is
+  // cheaper than a failed attempt; each call is a separate paid dispatch.
+  it.each([
+    ["an invalid tool input", toolUseResponse({ ...validToolInput, tags: [] })],
+    ["no tool_use block", textOnlyResponse()],
+  ])("calls the model once more after %s and returns the second result", async (_, first) => {
+    const responses = [
+      ok({ ...first, usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 0 } }),
+      ok(toolUseResponse(validToolInput, { cache_read_input_tokens: 80 })),
+    ];
+    const fetchFn = vi.fn<typeof fetch>(async () => responses.shift()!);
+    const out = await summarizeReading(
+      { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
+      { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
     );
-    await expect(
-      summarizeReading(
-        { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
-        { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
-      ),
-    ).rejects.toBeInstanceOf(NoToolUseError);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn.mock.calls[1]![1]!.body).toBe(fetchFn.mock.calls[0]![1]!.body);
+    expect(out.reading).toEqual(validToolInput);
+    // Usage reports both calls; both were billed.
+    expect(out.usage).toEqual({
+      input_tokens: 200,
+      output_tokens: 100,
+      cache_creation_input_tokens: 0,
+      cache_read_input_tokens: 80,
+    });
   });
 
-  it("throws BadToolInputError when tool input fails schema validation", async () => {
-    const fetchFn = vi.fn<typeof fetch>(async () =>
-      ok(toolUseResponse({ ...validToolInput, novelty_verdict: "maybe" })),
-    );
+  it.each([
+    ["BadToolInputError", () => toolUseResponse({ ...validToolInput, novelty_verdict: "maybe" }), BadToolInputError],
+    ["NoToolUseError", () => textOnlyResponse(), NoToolUseError],
+  ])("throws %s when the second call is still unusable", async (_, response, errorClass) => {
+    const fetchFn = vi.fn<typeof fetch>(async () => ok(response()));
     await expect(
       summarizeReading(
         { url: "https://example.com/a", extractedText: "x", similarReadings: [] },
         { fetch: fetchFn, apiKey: "sk", model: "claude-sonnet-5", effort: "low" },
       ),
-    ).rejects.toBeInstanceOf(BadToolInputError);
+    ).rejects.toBeInstanceOf(errorClass);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   it("throws SourceRejectedError when the model rejects a non-source extraction", async () => {
@@ -210,6 +232,8 @@ describe("summarizeReading", () => {
     expect(error).toMatchObject({
       message: "metadata-only YouTube floor, no transcript",
     });
+    // A rejection is a verdict about the source; asking again only pays twice.
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 
   it("propagates RateLimitedError on 429 (no in-process retry)", async () => {
@@ -273,6 +297,9 @@ describe("buildSummarizeRequestBody", () => {
       EMIT_READING_TOOL_NAME,
       REJECT_SOURCE_TOOL_NAME,
     ]);
+    // Without strict tool use, `required` and `type` are advisory: production
+    // Sonnet 5 omitted `tags` and sent `keywords` as a string.
+    expect(body.tools.map((tool: { strict?: unknown }) => tool.strict)).toEqual([true, true]);
     const lastSystem = body.system[body.system.length - 1];
     expect(lastSystem.cache_control).toEqual({ type: "ephemeral" });
     expect(body.messages[0].role).toBe("user");
@@ -307,29 +334,43 @@ describe("buildSummarizeRequestBody", () => {
     expect(JSON.stringify(buildSummarizeRequestBody(input, "claude-opus-4-8", "low"))).toBe(sent);
   });
 
-  it("advertises a tool schema exactly as strict as the parser's contract", () => {
+  it("advertises the parser's contract minus what strict tool use cannot express", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },
       "claude-opus-4-8",
       "low",
     ) as Record<string, any>;
-    // The parser validates with the strict ReadingSummarySchema; the advertised
-    // JSON schema must carry the same constraints (additionalProperties, bounds)
-    // so a tool call that is valid per the tool contract can never fail parsing.
-    // Descriptions are the only allowed addition.
-    const stripDescriptions = (node: unknown): unknown => {
-      if (Array.isArray(node)) return node.map(stripDescriptions);
+    // Strict tool use supports no string length bounds, no maxItems, and
+    // minItems of 0 or 1 only. The tool schema is READING_SUMMARY_JSON_SCHEMA
+    // with exactly those keywords removed (descriptions state them instead);
+    // ReadingSummarySchema still enforces them at parse time, and
+    // summarizeReading asks once more when a call misses one.
+    const strictSubset = (node: unknown): unknown => {
+      if (Array.isArray(node)) return node.map(strictSubset);
       if (node && typeof node === "object") {
         return Object.fromEntries(
           Object.entries(node)
-            .filter(([key]) => key !== "description")
-            .map(([key, value]) => [key, stripDescriptions(value)]),
+            .filter(([key, value]) =>
+              key !== "description" &&
+              key !== "minLength" &&
+              key !== "maxLength" &&
+              key !== "maxItems" &&
+              !(key === "minItems" && typeof value === "number" && value > 1),
+            )
+            .map(([key, value]) => [key, strictSubset(value)]),
         );
       }
       return node;
     };
-    expect(stripDescriptions(body.tools[0].input_schema)).toEqual(
-      READING_SUMMARY_JSON_SCHEMA,
+    expect(strictSubset(body.tools[0].input_schema)).toEqual(
+      strictSubset(READING_SUMMARY_JSON_SCHEMA),
+    );
+    expect(strictSubset(body.tools[0].input_schema)).toEqual(
+      JSON.parse(
+        JSON.stringify(body.tools[0].input_schema, (key, value) =>
+          key === "description" ? undefined : value,
+        ),
+      ),
     );
   });
 

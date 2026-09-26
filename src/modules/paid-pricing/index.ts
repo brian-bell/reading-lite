@@ -345,7 +345,9 @@ function isHostedAnthropicMessage(body: Record<string, unknown>): boolean {
 }
 
 function isHostedAnthropicTool(value: unknown): boolean {
-  return isExactRecord(value, ["name", "description", "input_schema"]) && typeof value.name === "string" && value.name.length > 0 && typeof value.description === "string" && isRecord(value.input_schema);
+  return isRecord(value) && hasAllAndOnlyKeys(value, ["name", "description", "input_schema"], ["strict"])
+    && (value.strict === undefined || value.strict === true)
+    && typeof value.name === "string" && value.name.length > 0 && typeof value.description === "string" && isRecord(value.input_schema);
 }
 
 function isHostedToolChoice(value: unknown, tools: unknown[]): boolean {
