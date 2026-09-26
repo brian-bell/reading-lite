@@ -115,12 +115,12 @@ describe("ops corpus purge-legacy", () => {
     expect(out).toContain(`${keyPrefixFor(A)}/raw.html`);
     expect(out).toContain(`${f.pO}/  2 object(s)`);
     expect(out).toContain("unrecognized  exports/exp_1/part-0001.zip");
-    expect(out).toContain("PLAN");
+    expect(out).toContain("Re-run with --execute --sole-writer");
   });
 
   it("deletes exactly the tenant's legacy objects, then verifies with a fresh listing", async () => {
     const f = await fixture();
-    expect(await f.run("--execute")).toBe(0);
+    expect(await f.run("--execute", "--sole-writer")).toBe(0);
     expect([...f.bucket.objects].sort()).toEqual([...f.kept].sort());
     expect(f.io.all()).toContain("Verified");
   });
@@ -129,8 +129,25 @@ describe("ops corpus purge-legacy", () => {
   // is an orphan. Refused before any delete.
   it("refuses to execute when orphan prefixes exceed the limit", async () => {
     const f = await fixture();
-    expect(await f.run("--execute", "--max-orphan-prefixes", "0")).toBe(1);
+    expect(await f.run("--execute", "--sole-writer", "--max-orphan-prefixes", "0")).toBe(1);
     expect(f.bucket.storage.delete).not.toHaveBeenCalled();
+  });
+
+  // An import writes its revision objects before claimUrl commits the row, so
+  // a rowless prefix may be a claim in flight. Only a paused writer rules that out.
+  it("refuses to delete orphan prefixes on --execute without --sole-writer", async () => {
+    const f = await fixture();
+    expect(await f.run("--execute")).toBe(1);
+    expect(f.bucket.storage.delete).not.toHaveBeenCalled();
+    expect(f.io.err.join("\n")).toContain("requires --sole-writer");
+  });
+
+  // Nothing live writes the other legacy keys, so without orphans no pause is needed.
+  it("executes without --sole-writer when the plan has no orphan prefixes", async () => {
+    const f = await fixture();
+    for (const key of [...f.bucket.objects]) if (key.startsWith(`${f.root}${f.pO}/`)) f.bucket.objects.delete(key);
+    expect(await f.run("--execute")).toBe(0);
+    expect([...f.bucket.objects].sort()).toEqual([...f.kept].sort());
   });
 
   it("re-checks an orphan prefix immediately before deleting it", async () => {
@@ -143,7 +160,7 @@ describe("ops corpus purge-legacy", () => {
       seeded = true;
       await seedReading(f.sql, f.tenant, ORPHAN, { createdAt: ORPHAN_CREATED });
     });
-    expect(await f.run("--execute")).toBe(1);
+    expect(await f.run("--execute", "--sole-writer")).toBe(1);
     expect(f.bucket.objects).toContain(`${f.root}${f.pO}/raw.html`);
     expect(f.bucket.objects).toContain(`${f.root}${f.pO}/manifest.json`);
     expect(f.io.all()).toContain("Skipped after re-check");
@@ -152,7 +169,7 @@ describe("ops corpus purge-legacy", () => {
   it("fails the run when a delete errors, naming the key", async () => {
     const f = await fixture();
     f.bucket.failOn.add(`${f.root}index/list.json`);
-    expect(await f.run("--execute")).toBe(1);
+    expect(await f.run("--execute", "--sole-writer")).toBe(1);
     expect(f.io.err.join("\n")).toContain("delete error  index/list.json");
     expect(f.bucket.objects).toContain(`${f.root}index/list.json`);
   });

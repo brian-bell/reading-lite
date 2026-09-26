@@ -9,14 +9,20 @@
 // prefixes with no row at all. scripts/corpus-lib/legacy-objects.ts decides
 // which object is which; anything it does not recognise stays.
 //
-// Order is the safety argument. The listing comes first and the rows second:
-// a reading's row commits before any of its objects are written, so every
-// listed object whose reading exists has a row the later read sees, and an
-// object that looks orphaned really has none (or its reading was purged, rows
-// first). Execute builds its own plan the same way, then re-checks each
+// Order is most of the safety argument. The listing comes first and the rows
+// second, so every listed object whose reading has a row is seen with that
+// row. Execute builds its own plan the same way, then re-checks each
 // reading's keys, or its absence, immediately before deleting per-reading
 // objects, and finally lists again to prove nothing classified as legacy is
 // left.
+//
+// Order cannot settle an orphan prefix. An import writes its revision objects
+// to R2 before claimUrl commits the row that points at them (captureArtifacts),
+// so a prefix with no row may be a claim in flight, and no listing or re-check
+// can tell it from a dead one. Deleting orphan prefixes therefore requires
+// --sole-writer: the operator asserts the realtime writer is paused and
+// drained. Everything else the sweep removes is a key no live writer creates,
+// so a run with no orphan prefixes needs no pause.
 //
 // Pointed at the wrong database, every prefix would look orphaned. A tenant
 // whose rows are missing therefore trips --max-orphan-prefixes before any
@@ -27,6 +33,7 @@ import type { R2ObjectMeta } from "../../lib/cf-clients";
 import { loadDotVars } from "../../lib/dotvars";
 import { mapWithConcurrency } from "../../lib/concurrency";
 import { resolveBucket } from "../../corpus-lib/config";
+import { soleWriterGuard } from "../../corpus-lib/sole-writer";
 import { classifyLegacyObjects, type LegacyPlan, type LegacyReading, type Removal } from "../../corpus-lib/legacy-objects";
 import { operatorKeyRoot } from "../../corpus-lib/tenant";
 import { DATABASE_URL_ENV_FLAG_HELP, openOperatorSql, type OpenOperatorSql } from "../../pg-lib/operator-db";
@@ -55,6 +62,7 @@ interface Args {
   tenant: string | undefined;
   databaseUrlEnv: string | undefined;
   execute: boolean;
+  soleWriter: boolean;
   maxOrphanPrefixes: number;
 }
 
@@ -68,6 +76,7 @@ function parsePurgeArgs(argv: string[]): Args {
         tenant: { type: "string" },
         "database-url-env": { type: "string" },
         execute: { type: "boolean", default: false },
+        "sole-writer": { type: "boolean", default: false },
         "max-orphan-prefixes": { type: "string" },
       },
     }));
@@ -81,6 +90,7 @@ function parsePurgeArgs(argv: string[]): Args {
     tenant: values.tenant,
     databaseUrlEnv: values["database-url-env"],
     execute: values.execute === true,
+    soleWriter: values["sole-writer"] === true,
     maxOrphanPrefixes: Number(max),
   };
 }
@@ -215,8 +225,23 @@ async function runCorpusPurgeLegacy(argv: string[], deps: CorpusPurgeLegacyDeps)
         return 1;
       }
       if (!args.execute) {
-        io.stdout("\nPLAN — nothing changed. Re-run with --execute to delete.");
+        const flags = snap.orphanPrefixes.length ? "--execute --sole-writer (writer paused)" : "--execute";
+        io.stdout(`\nPLAN — nothing changed. Re-run with ${flags} to delete.`);
         return 0;
+      }
+      // An orphan prefix may be an import between its R2 writes and its claim:
+      // see the header.
+      if (snap.orphanPrefixes.length > 0) {
+        const verdict = soleWriterGuard({
+          execute: true,
+          acknowledged: args.soleWriter,
+          tool: "ops corpus purge-legacy (orphan prefixes)",
+        });
+        if (verdict.message) io.stderr(`\n${verdict.message}`);
+        if (!verdict.proceed) {
+          io.stderr("Nothing was deleted.");
+          return 1;
+        }
       }
 
       // Bookkeeping objects first (nothing a row resolves), then each
@@ -289,6 +314,9 @@ Options:
   --max-orphan-prefixes <n>
                    Refuse when more prefixes than this have no row (default ${DEFAULT_MAX_ORPHAN_PREFIXES}).
   --execute        Delete, re-checking each reading first, then list again to verify.
+  --sole-writer    Required with --execute when the plan has orphan prefixes: assert
+                   the realtime writer is paused and drained. An import writes its
+                   content before its row commits, so a rowless prefix may be in flight.
   --help           Show this message.`,
   defaultDeps: (io: CommandIo): CorpusPurgeLegacyDeps => ({
     io,

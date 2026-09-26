@@ -1538,7 +1538,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
-| `npm run ops -- corpus purge-legacy` | delete the tenant's manifest-era R2 objects that no row references (plan-first; see [below](#purging-the-manifest-era-layout-reading-lite-gh3515)) |
+| `npm run ops -- corpus purge-legacy` | delete the tenant's manifest-era R2 objects that no row references (plan-first; deleting orphan prefixes requires `--sole-writer`; see [below](#purging-the-manifest-era-layout-reading-lite-gh3515)) |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
 examples below all select the founder tenant. Since the production cutover, new
@@ -2281,16 +2281,25 @@ refused; retained pre-tenant data is out of scope.
 ```sh
 npm run ops -- corpus purge-legacy --tenant "$TENANT" --bucket reading-lite-staging
 npm run ops -- corpus purge-legacy --tenant "$TENANT" --bucket reading-lite-staging --execute
+# only when the plan lists orphan prefixes, with the realtime writer paused and drained:
+npm run ops -- corpus purge-legacy --tenant "$TENANT" --bucket reading-lite-staging --execute --sole-writer
 ```
 
-The listing is taken before the rows are read, so an object that looks
-orphaned really has no row. Execute builds its own plan the same way, deletes
-the bookkeeping objects, then re-checks each reading (or its absence)
+The listing is taken before the rows are read, so every listed object whose
+reading has a row is seen with it. Execute builds its own plan the same way,
+deletes the bookkeeping objects, then re-checks each reading (or its absence)
 immediately before deleting that reading's content, and finally lists again:
 exit 0 means a fresh listing found nothing classified as legacy. More than
 `--max-orphan-prefixes` (default 25) prefixes without a row refuses before any
 delete, because a bucket paired with the wrong database looks exactly like
 that.
+
+An orphan prefix is the one thing order cannot settle. A Markdown import
+writes its revision objects before `claimUrl` commits the row that points at
+them, so a prefix with no row may be an import in flight. When the plan has
+orphan prefixes, `--execute` refuses before any delete unless `--sole-writer`
+asserts the realtime writer is paused and drained. A plan without them needs no
+pause, because nothing live writes the other keys the sweep removes.
 
 ### Founder corpus migration (s1k.6)
 
