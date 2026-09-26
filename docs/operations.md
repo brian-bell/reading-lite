@@ -622,6 +622,13 @@ npm run ops -- deploy worker --env production --execute \
   --database-url-env NEON_MAIN_DATABASE_URL
 ```
 
+Pull request CI can be switched off with the `DISABLE_PR_CI` repository
+variable (`true` skips every PR job; `main` always runs). While it is off, run
+the full suite for a branch by hand with `gh workflow run ci.yml --ref <branch>`:
+the check runs land on the branch head and show on its PR, and a dispatched run
+never deploys, because `deploy-worker.yml` releases only a successful `push`
+run on `main`.
+
 Code merges to `main` start one coordinated production chain. Root Markdown,
 `docs/`, and the other non-code paths listed in CI skip runtime checks and
 production deployment; documentation-only PRs still run path classification. After `.github/workflows/ci.yml`
