@@ -12,10 +12,10 @@ The table lists application defaults and checked-in overrides.
 | `PENDING_TTL_SECONDS` | `900` | A `pending` manifest whose active attempt is older than this is treated as stale; reads surface it as failed, and a new attempt may supersede it. |
 | `FETCH_TIMEOUT_MS` | `20000` | Hard timeout for the source URL fetch. |
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap of 10 MiB on source response size. |
-| `SUMMARIZER_PROVIDER` | `openai` | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
+| `SUMMARIZER_PROVIDER` | `openai` locally; `anthropic` in staging and production | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
 | `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
 | `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging and production | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
-| `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging and production | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5 accepts `low`, `medium`, `high`, `xhigh`, or `max`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with thinking disabled, fail closed. |
+| `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `medium` in staging and production | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5 accepts `low`, `medium`, `high`, `xhigh`, or `max`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with thinking disabled, fail closed. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails on a verified Resend domain. Empty skips send. May include a display name (`Reading Lite <noreply@readinglite.app>`). Production uses that form; staging uses `RL Staging <noreply@staging.readinglite.app>`. |
 | `EMAIL_TO` | `""` | Unused. Immediate notifications go to the current verified account email, `users.email_display`. |

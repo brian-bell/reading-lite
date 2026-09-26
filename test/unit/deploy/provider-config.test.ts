@@ -71,7 +71,7 @@ describe("checked-in summarizer provider configuration", () => {
       );
     }
     expect(envVar(wrangler, "production", "SUMMARIZER_PROVIDER")).toBe(
-      "openai",
+      "anthropic",
     );
     expect(envVar(wrangler, "production", "OPENAI_SUMMARIZATION_MODEL")).toBe(
       "gpt-5.6-terra",
@@ -84,7 +84,7 @@ describe("checked-in summarizer provider configuration", () => {
     );
     expect(
       envVar(wrangler, "production", "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT"),
-    ).toBe("high");
+    ).toBe("medium");
   });
 
   it("keeps test and dotenv examples aligned with the provider variables", () => {
@@ -109,12 +109,12 @@ describe("checked-in summarizer provider configuration", () => {
     expect(devExample).toContain("ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=low");
 
     const stgExample = read(".stg.vars.example");
-    expect(stgExample).toContain("SUMMARIZER_PROVIDER=openai");
+    expect(stgExample).toContain("SUMMARIZER_PROVIDER=anthropic");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=high");
     expect(stgExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5");
     expect(stgExample).toContain(
-      "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=high",
+      "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium",
     );
   });
 });

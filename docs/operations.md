@@ -432,8 +432,10 @@ Public widget key `TURNSTILE_SITE_KEY` is a `[vars]` value, not a secret.
 
 Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
 `OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `high` in
-staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` uses the same
-defaults and is applied only when `SUMMARIZER_PROVIDER=anthropic`. Claude Sonnet
+staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` is `low` locally
+and `medium` in staging/production, and is applied only when
+`SUMMARIZER_PROVIDER=anthropic`. Staging and production summarize, and run
+nightly relationship-refresh judgements, with Anthropic; local uses OpenAI. Claude Sonnet
 5 (`ANTHROPIC_MODEL=claude-sonnet-5`) accepts `low`, `medium`, `high`, `xhigh`,
 or `max` on `output_config.effort`; invalid values, efforts the configured
 model cannot take, and model/effort pairs that 400 with
