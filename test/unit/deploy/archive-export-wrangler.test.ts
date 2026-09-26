@@ -16,6 +16,13 @@ describe("archive export wrangler wiring", () => {
     expect(wrangler).toContain('dead_letter_queue = "reading-lite-staging-export-dlq"');
     expect(wrangler).toMatch(/queue = "reading-lite-export"\s*\nmax_batch_size = 1/);
     expect(wrangler).toMatch(/queue = "reading-lite-staging-export"\s*\nmax_batch_size = 1/);
+    // One delivery at a time: a redelivered segment rewrites its fixed key,
+    // which is only safe while no two deliveries of an export overlap.
+    for (const queue of ["reading-lite-export", "reading-lite-staging-export"]) {
+      expect(wrangler).toMatch(
+        new RegExp(`\\[\\[env\\.\\w+\\.queues\\.consumers\\]\\]\\nqueue = "${queue}"\\n(?:\\w+ = .*\\n)*?max_concurrency = 1\\n`),
+      );
+    }
     expect(testToml).not.toMatch(/binding = "ARCHIVE_EXPORT_JOBS"/);
   });
 });

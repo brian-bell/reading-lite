@@ -32,21 +32,45 @@ export interface ArchiveExportSegments {
   total_bytes: number;
 }
 
+const PartSchema = z
+  .object({
+    key: z.string().min(1),
+    bytes: z.number().int().nonnegative(),
+  })
+  .strict();
+
 const SegmentsSchema = z
   .object({
-    parts: z
-      .array(
-        z
-          .object({
-            key: z.string().min(1),
-            bytes: z.number().int().nonnegative(),
-          })
-          .strict(),
-      )
-      .min(1),
+    parts: z.array(PartSchema).min(1),
     total_bytes: z.number().int().nonnegative(),
   })
   .strict();
+
+// Where a build stands between deliveries (reading-lite-mxwx.3). `after` is
+// the last reading listed, in library order; `segments` are the local-header
+// segments committed so far, in zip order. `offset` and `entries` are where
+// the next segment starts. Everything per reading lives in each segment's R2
+// state object, so the row does not grow with the library.
+export const ArchiveExportCursorSchema = z
+  .object({
+    version: z.literal(1),
+    phase: z.enum(["readings", "finalize"]),
+    after: z.object({ created_at: z.string().min(1), id: z.string().min(1) }).strict().nullable(),
+    offset: z.number().int().nonnegative(),
+    entries: z.number().int().nonnegative(),
+    segments: z.array(PartSchema),
+  })
+  .strict();
+export type ArchiveExportCursor = z.infer<typeof ArchiveExportCursorSchema>;
+
+export const EMPTY_ARCHIVE_EXPORT_CURSOR: ArchiveExportCursor = {
+  version: 1,
+  phase: "readings",
+  after: null,
+  offset: 0,
+  entries: 0,
+  segments: [],
+};
 
 interface ExportRow {
   id: string;
