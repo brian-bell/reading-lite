@@ -72,6 +72,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
   for (const [table, predicate, params] of [
     ["readings", "tenant_id = ?", [tenant]],
     ["reading_embeddings", "tenant_id = ?", [tenant]],
+    ["inbox_items", "tenant_id = ?", [tenant]],
     ["corpus_refresh_state", "tenant_id = ?", [tenant]],
     ["relationship_refresh_jobs", "tenant_id = ?", [tenant]],
     ["users", "id = ?", [tenant]],

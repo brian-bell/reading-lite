@@ -64,6 +64,7 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     await migrate(client, migrations);
     // CASCADE covers revisions, URLs, relationships and embeddings.
     await client.query("TRUNCATE readings CASCADE");
+    await client.query("TRUNCATE inbox_items");
     // Node-pool tests roll their control-plane rows back, but a test that
     // commits one (or a killed run) must not leave it for every later run to
     // see: control-plane assertions read whole tables.

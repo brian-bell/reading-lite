@@ -43,6 +43,8 @@ tags:
     description: Corpus read and write paths
   - name: exports
     description: Session archive export
+  - name: inbox
+    description: Staged Markdown awaiting review before it becomes a reading
 security:
   - bearerAuth: []
   - sessionCookie: []
@@ -1264,6 +1266,160 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
 
+  /api/inbox:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      tags: [inbox]
+      operationId: stageInboxItem
+      summary: Stage Markdown in the inbox
+      description: |
+        Writes one inbox item and nothing else: no reading, URL claim,
+        attempt, job, embedding or queue message, and no reading quota. It is
+        charged one request against the request rate. The item is not in the
+        library, search, similarity or `/lookup`.
+
+        One item per URL: re-staging a URL overwrites its Markdown and title
+        (an omitted title clears it) and keeps its id (200, `replaced: true`).
+        A ready or pending reading that already owns the URL is returned
+        (200 `existing`), nothing is staged, and any item staged for the URL
+        earlier is discarded. A failed owner is named as
+        `corpus_reading`. An item must fit the 128,000-byte promote message
+        (413) and a tenant is capped at 200 items (429 `inbox_full` for a new URL; an overwrite is
+        always allowed).
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostInboxBody"
+      responses:
+        "200":
+          description: Staged item overwritten, or an existing ready or pending owner
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/PostInboxStagedResponse"
+                  - $ref: "#/components/schemas/PostInboxExistingResponse"
+        "201":
+          description: New inbox item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostInboxStagedResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "413":
+          description: |
+            The JSON serialization of `source_url`, `title` and `markdown`
+            is over 126,976 bytes (UTF-8): the 128,000-byte promote message
+            less 1,024 bytes for its envelope. An untitled item for a failed
+            owner is measured with the owner's title, which promote keeps.
+            Also returned, before parsing, for a request body too large to
+            hold an acceptable item, whether or not it declares a
+            Content-Length.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxMarkdownTooLargeResponse"
+        "429":
+          description: |
+            Request rate exceeded or usage guard unavailable (with
+            `Retry-After`), or the inbox is full (`inbox_full`, no
+            `Retry-After`: it frees up only when items are discarded or
+            promoted).
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/QuotaDeniedResponse"
+                  - $ref: "#/components/schemas/UsageGuardUnavailableResponse"
+                  - $ref: "#/components/schemas/InboxFullResponse"
+      x-required-scope: readings:import
+    get:
+      tags: [inbox]
+      operationId: listInbox
+      summary: List inbox items
+      description: Every item's metadata, without Markdown, most recently staged first.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Inbox items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListInboxResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+  /api/inbox/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/InboxItemId"
+    get:
+      tags: [inbox]
+      operationId: getInboxItem
+      summary: Get an inbox item with its Markdown
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Inbox item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+    delete:
+      tags: [inbox]
+      operationId: discardInboxItem
+      summary: Discard an inbox item
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "204":
+          description: Discarded
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:import
+
 components:
   securitySchemes:
     sessionCookie:
@@ -1288,6 +1444,14 @@ components:
         type: string
         minLength: 1
         description: Reading id (typically `rd_…`)
+    InboxItemId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^in_"
+        description: Inbox item id (`in_…`)
     ExpectedTenant:
       name: X-Expected-Tenant
       in: header
@@ -2054,6 +2218,138 @@ components:
         email:
           type: boolean
           description: Defaults to false on import
+
+    PostInboxBody:
+      type: object
+      additionalProperties: false
+      required: [source_url, markdown]
+      properties:
+        source_url:
+          $ref: "#/components/schemas/HttpUrl"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        markdown:
+          type: string
+          minLength: 1
+          description: |
+            With `source_url` and `title`, at most 126,976 bytes as
+            serialized JSON in UTF-8 (413 above)
+
+    InboxItemMeta:
+      description: |
+        An inbox item without its Markdown. The field set lives in
+        InboxItemFields so InboxItem can extend it; both stay closed.
+      allOf:
+        - $ref: "#/components/schemas/InboxItemFields"
+      unevaluatedProperties: false
+
+    InboxItemFields:
+      type: object
+      required: [id, url, title, markdown_bytes, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: "^in_"
+        url:
+          type: string
+        title:
+          type: [string, "null"]
+        markdown_bytes:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: Moves forward on every re-stage
+
+    InboxItem:
+      allOf:
+        - $ref: "#/components/schemas/InboxItemFields"
+        - type: object
+          required: [markdown]
+          properties:
+            markdown:
+              type: string
+              minLength: 1
+      unevaluatedProperties: false
+
+    ListInboxResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items:
+            $ref: "#/components/schemas/InboxItemMeta"
+
+    PostInboxStagedResponse:
+      type: object
+      additionalProperties: false
+      required: [inbox_item_id, replaced]
+      properties:
+        inbox_item_id:
+          type: string
+          pattern: "^in_"
+        replaced:
+          type: boolean
+          description: True when this overwrote the item already staged for the URL
+        corpus_reading:
+          type: object
+          additionalProperties: false
+          required: [id, status]
+          description: A failed reading that owns the URL; promoting re-imports it in place
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              const: failed
+
+    PostInboxExistingResponse:
+      type: object
+      additionalProperties: false
+      required: [existing, reading]
+      properties:
+        existing:
+          type: boolean
+          const: true
+        reading:
+          $ref: "#/components/schemas/Manifest"
+
+    InboxMarkdownTooLargeResponse:
+      type: object
+      additionalProperties: false
+      required: [error, code, limit_bytes]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          const: markdown_too_large
+        limit_bytes:
+          type: integer
+          const: 126976
+
+    InboxFullResponse:
+      type: object
+      additionalProperties: false
+      required: [error, code, limit]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          const: inbox_full
+        limit:
+          type: integer
+          const: 200
 
     ReprocessMarkdownSource:
       type: object

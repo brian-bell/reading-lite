@@ -127,9 +127,9 @@ export type AccountTeardownResult =
    */
   | { kind: "wipe_reopened" }
   /**
-   * Reading rows the tenant still owns, seen under the lock. Nothing was
-   * deleted: `readings` has no foreign key to `users`, so dropping the users
-   * row would orphan them beyond any tenant-keyed recovery.
+   * Reading rows or inbox items the tenant still owns, seen under the lock.
+   * Nothing was deleted: neither table has a foreign key to `users`, so
+   * dropping the users row would orphan them beyond any tenant-keyed recovery.
    */
   | { kind: "rows_remain"; remaining: number };
 
@@ -257,37 +257,55 @@ export async function tearDownAccount(
     );
     if (!wipe || wipe.completed_at === null) return { kind: "wipe_reopened" };
     // The wipe's own completion guard already asserted this, but that was
-    // before this transaction took its locks, and `readings` names no `users`
-    // row for PostgreSQL to refuse the delete over (ADR 0005). Asked here,
-    // under the lock, it is the last moment the answer can still be acted on:
-    // afterwards the tenant is gone from `listDeletingUsers` and nothing
-    // enumerates those rows again.
+    // before this transaction took its locks, and neither `readings` nor
+    // `inbox_items` names a `users` row for PostgreSQL to refuse the delete
+    // over (ADR 0005, db/migrations/0008). Asked here, under the lock, it is
+    // the last moment the answer can still be acted on: afterwards the tenant
+    // is gone from `listDeletingUsers` and nothing enumerates those rows again.
     //
     // The `users` lock above is what makes the count hold through the commit;
-    // this statement takes no lock of its own. `claimUrl`, the only live
-    // inserter of a `readings` row, takes `users` FOR SHARE in the same
-    // transaction as its insert: a claim already in flight blocks that FOR
+    // this statement takes no lock of its own. `claimUrl` and inbox stage, the
+    // only live inserters of these rows, take `users` FOR SHARE in the same
+    // transaction as their insert: one already in flight blocks that FOR
     // UPDATE until it commits, so this count sees its row and answers
-    // `rows_remain`; a claim arriving later blocks until this transaction
-    // commits and then finds no active `users` row. Unlike the prefix verdict
-    // above, which is taken before the lock, this one cannot be raced.
-    const left = await tx.first<{ remaining: number }>(
-      "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = ?",
-      tenantId,
-    );
+    // `rows_remain`; one arriving later blocks until this transaction commits
+    // and then finds no active `users` row. The same fence is why teardown's
+    // statements below need no delete for either table: it could only ever
+    // delete nothing. Unlike the prefix verdict above, which is taken before
+    // the lock, this one cannot be raced.
+    const remaining = await countTenantDataRows(tx, tenantId);
     // Fail closed, like the prefix verdict above. `count(*)` always returns a
     // row, so a missing one means the seam is broken rather than that the
     // tenant is clean — and this is the one question teardown must not guess
     // at, because the delete it gates is irreversible. Throwing leaves every
     // row in place for the next tick, which is what the caller expects.
-    if (!left) throw new Error(`account_teardown could not count readings for ${tenantId}`);
-    if (left.remaining > 0) return { kind: "rows_remain", remaining: left.remaining };
+    if (remaining === null) throw new Error(`account_teardown could not count reading rows for ${tenantId}`);
+    if (remaining > 0) return { kind: "rows_remain", remaining };
     let rowsDeleted = 0;
     for (const statement of teardownStatements(tenantId, addresses)) {
       rowsDeleted += (await tx.run(statement.sql, ...statement.params)).changes;
     }
     return { kind: "torn_down", tenantId, rowsDeleted };
   });
+}
+
+/**
+ * The tenant rows teardown refuses over (`rows_remain`): reading rows and
+ * inbox items, neither of which names a `users` row (ADR 0005,
+ * db/migrations/0008). Single-homed because three callers ask it — the wipe's
+ * completion guard, the wipe's reopen check and teardown's under-lock count —
+ * and a table counted by one but not the others either records a completion
+ * teardown refuses, or bounces the tenant between teardown and fan-out
+ * forever. Null when the count could not be read; each caller fails closed.
+ */
+export async function countTenantDataRows(db: ControlPlaneDb, tenantId: string): Promise<number | null> {
+  const row = await db.first<{ remaining: number }>(
+    `SELECT (SELECT count(*) FROM readings WHERE tenant_id = ?)
+          + (SELECT count(*) FROM inbox_items WHERE tenant_id = ?) AS remaining`,
+    tenantId,
+    tenantId,
+  );
+  return row ? row.remaining : null;
 }
 
 /**

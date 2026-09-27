@@ -27,6 +27,7 @@ import {
 } from "../../src/control-plane/wipe-progress";
 import worker, { type Env } from "../../src/index";
 import { sqlSessionFor } from "../../src/modules/db/sql";
+import { sha256Hex } from "../../src/services";
 import { tenantKeyRoot } from "../../src/modules/stores/tenant-root";
 import type { ListIndexItem } from "../../src/schemas/api";
 import { testControlPlane } from "../helpers/control-plane-db";
@@ -151,6 +152,28 @@ async function refreshJobIds(tenantId: string): Promise<string[]> {
     tenantId,
   );
   return rows.map((row) => row.reading_id);
+}
+
+// An inbox item (db/migrations/0008): Markdown staged under no reading row.
+async function seedInboxItem(tenantId: string, id: string): Promise<void> {
+  await db().run(
+    `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '# staged', ?, ?)`,
+    tenantId,
+    id,
+    `https://example.com/${id}`,
+    await sha256Hex(`https://example.com/${id}`),
+    toTimestamp(NOW_MS),
+    toTimestamp(NOW_MS),
+  );
+}
+
+async function inboxItemIds(tenantId: string): Promise<string[]> {
+  const rows = await db().all<{ id: string }>(
+    "SELECT id FROM inbox_items WHERE tenant_id = ? ORDER BY id",
+    tenantId,
+  );
+  return rows.map((row) => row.id);
 }
 
 async function listPrefixKeys(prefix: string): Promise<string[]> {
@@ -363,6 +386,23 @@ describe("account wipe job", () => {
     expect(await refreshJobIds(FOUNDER_TENANT_ID)).toEqual([ID_A]);
   });
 
+  // Inbox items hang off no reading row either, and teardown refuses while
+  // any stand, so the wipe deletes them with the tenant's readings.
+  it("deletes the tenant's inbox items with its rows, and leaves another tenant's alone", async () => {
+    await seedReadings([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    await seedInboxItem(OTHER_TENANT_ID, "in_A");
+    await seedInboxItem(OTHER_TENANT_ID, "in_B");
+    await seedInboxItem(FOUNDER_TENANT_ID, "in_A");
+
+    const result = await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps());
+
+    // rows_deleted counts reading rows only.
+    expect(result).toMatchObject({ kind: "complete", rows_deleted: 1 });
+    expect(await inboxItemIds(OTHER_TENANT_ID)).toEqual([]);
+    expect(await inboxItemIds(FOUNDER_TENANT_ID)).toEqual(["in_A"]);
+  });
+
   // The rows phase is one transaction: readings, refresh checkpoints, and the
   // phase advance. A sibling that takes the lease over mid-phase makes the
   // closing CAS change no rows, and the deletes must go back with it - the
@@ -390,6 +430,28 @@ describe("account wipe job", () => {
 
   // "Complete" is what teardown hard-deletes the account on, so it has to mean
   // the rows are gone rather than that a DELETE reported a count.
+  it("refuses to record a completion while an inbox item survives the sweep", async () => {
+    await seedReadings([ID_A]);
+    await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
+    let staged = false;
+    const bucket = watchedBucket(env.READINGS_BUCKET, {
+      afterList: async () => {
+        if (staged) return;
+        staged = true;
+        await seedInboxItem(OTHER_TENANT_ID, "in_LATE");
+      },
+    });
+    interceptSql(/DELETE FROM inbox_items WHERE tenant_id/, (call) => (call === 1 ? "pass" : []));
+
+    await expect(
+      processAccountWipeJob(envelope(), wipeEnv({ READINGS_BUCKET: bucket }), wipeDeps()),
+    ).rejects.toThrow(/rows_remaining/);
+
+    vi.restoreAllMocks();
+    expect(await inboxItemIds(OTHER_TENANT_ID)).toEqual(["in_LATE"]);
+    expect(await readProgress()).toMatchObject({ phase: "objects", completedAtMs: null });
+  });
+
   it("refuses to record a completion while reading rows survive the sweep", async () => {
     await seedReadings([ID_A]);
     await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
@@ -714,11 +776,14 @@ describe("account teardown from cron fan-out (195 S4)", () => {
   // Teardown refuses such a tenant (`rows_remain`) and nothing else deletes
   // the row, so if only objects reopened the wipe this tenant would be handed
   // to teardown, refused, and handed back on every tick forever.
-  it("reopens the wipe for a leftover row even when the prefix is clean", async () => {
+  it.each([
+    ["reading row", () => testReadingsFor(otherTenant()).seedListItems([listItem(ID_B)])],
+    ["inbox item", () => seedInboxItem(OTHER_TENANT_ID, "in_LEFTOVER")],
+  ] as const)("reopens the wipe for a leftover %s even when the prefix is clean", async (_label, seedLeftover) => {
     await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
     await seedProgress({ phase: "done", completedAtMs: NOW_MS, firstCompletedAtMs: NOW_MS });
     // A row with no objects under the tenant root.
-    await testReadingsFor(otherTenant()).seedListItems([listItem(ID_B)]);
+    await seedLeftover();
     expect(await listPrefixKeys(PREFIX)).toEqual([]);
 
     await fanOutDueAccountWipes(wipeEnv(), { nowMs: NOW_MS + ACCOUNT_WIPE_IN_FLIGHT_MS });
@@ -731,6 +796,7 @@ describe("account teardown from cron fan-out (195 S4)", () => {
 
     expect((await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps())).kind).toBe("complete");
     expect(await readingIds()).toEqual([]);
+    expect(await inboxItemIds(OTHER_TENANT_ID)).toEqual([]);
   });
 
   it("refuses to recreate a progress row for a torn-down tenant", async () => {

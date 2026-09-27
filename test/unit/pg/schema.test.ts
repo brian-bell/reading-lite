@@ -57,3 +57,48 @@ describe("reading schema", () => {
     ).rejects.toThrow(/expected 1536 dimensions/);
   });
 });
+
+describe("inbox schema", () => {
+  const URL_HASH = "a".repeat(64);
+  const insert = (markdown: string, urlHash = URL_HASH) =>
+    client.query(
+      `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
+       VALUES ('t_schema', 'in_schema', 'https://example.com/', $1, $2, now(), now())`,
+      [urlHash, markdown],
+    );
+  // Each case rolls back, so nothing reaches the shared database.
+  const inTransaction = async (work: () => Promise<unknown>) => {
+    await client.query("BEGIN");
+    try {
+      await work();
+    } finally {
+      await client.query("ROLLBACK");
+    }
+  };
+
+  it("leads the primary key with tenant_id and holds one item per tenant URL", async () => {
+    const pk = await client.query(
+      `SELECT kcu.column_name FROM information_schema.table_constraints tc
+       JOIN information_schema.key_column_usage kcu USING (constraint_schema, constraint_name)
+       WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = 'inbox_items'
+       ORDER BY kcu.ordinal_position`,
+    );
+    expect(pk.rows).toEqual([{ column_name: "tenant_id" }, { column_name: "id" }]);
+    const unique = await client.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint
+       WHERE conrelid = 'inbox_items'::regclass AND contype = 'u'`,
+    );
+    expect(unique.rows).toEqual([{ def: "UNIQUE (tenant_id, url_hash)" }]);
+  });
+
+  // Bytes, not characters: "é" is two bytes in UTF-8.
+  it("caps markdown at 128_000 bytes", async () => {
+    await inTransaction(() => insert("é".repeat(64_000)));
+    await expect(inTransaction(() => insert(`${"é".repeat(64_000)}a`))).rejects.toThrow(/inbox_items_markdown_check/);
+    await expect(inTransaction(() => insert(""))).rejects.toThrow(/inbox_items_markdown_check/);
+  });
+
+  it("requires a sha256 url_hash", async () => {
+    await expect(inTransaction(() => insert("# hi", "not-a-hash"))).rejects.toThrow(/inbox_items_url_hash_check/);
+  });
+});

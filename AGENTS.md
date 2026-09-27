@@ -101,6 +101,7 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 | HTTP and MCP | `src/router.ts`, `src/middleware.ts`, `src/mcp/` |
 | Frontend server reads | `src/frontend-reads.ts` (`FrontendReads` entrypoint), `app/src/server/backend-reads.ts` |
 | Intake and processing | `src/intake/`, `src/process-reading.ts`, `src/attempt-ownership.ts` |
+| Markdown inbox | `src/inbox/`, `src/modules/stores/postgres/inbox-store.ts` |
 | Publication and purge | `src/modules/stores/postgres/reading-writer.ts`, `src/attempt-io.ts`, `src/reading-purge.ts` |
 | Tenant auth, quotas, leases, spend | `src/control-plane/`, `src/modules/paid-pricing/` |
 | Account deletion | `src/account-wipe.ts`, control-plane `wipe-progress.ts`, `account-teardown.ts` |
@@ -126,7 +127,10 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
   validated `TenantContext`; every query is scoped by `tenant_id`. Session state
   does not survive Hyperdrive, so use `SET LOCAL` inside `sql.transaction`.
   `reading_embeddings` deliberately has no HNSW index. Never edit an applied
-  file in `db/migrations/`.
+  file in `db/migrations/`. The one exception to content in R2 is the inbox:
+  `inbox_items` holds staged Markdown awaiting review in a text column, capped
+  at the 128,000-byte queue envelope. It is input, not captured content, and
+  has no reading, claim, attempt, job or embedding until it is promoted.
 - The control plane (users, sessions, challenges, tokens, settings, limits,
   digests, refresh checkpoints, wipe progress) is PostgreSQL behind
   `ControlPlaneDb` (`fromSql`). Epoch milliseconds cross to `timestamptz` only
@@ -172,8 +176,8 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
   ledger failed, wipe DLQ logs and acks, and export DLQ marks the export failed
   and deletes its parts.
 - No tenant, including founders and staging fixtures, is exempt from deletion.
-  Wipes delete the tenant's reading rows and embeddings before its R2 objects,
-  sweep rows again after, and fail closed on a database error. Teardown
+  Wipes delete the tenant's reading rows, embeddings and inbox items before its
+  R2 objects, sweep rows again after, and fail closed on a database error. Teardown
   requires current wipe completion and a confirmed-empty prefix immediately
   before its final transaction, which locks the `users` and `wipe_progress`
   rows and re-checks both before deleting. Read the

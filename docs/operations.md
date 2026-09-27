@@ -90,7 +90,9 @@ The phases run in order:
    `relationship_refresh_jobs` checkpoints, which name a reading but hold no
    foreign key to one and so cascade from nothing. A leftover checkpoint cannot
    spend — the refresh writes require an `active` users row — but removing the
-   account's data is the wipe's job rather than teardown's. The deletes and the advance to `objects` are one
+   account's data is the wipe's job rather than teardown's. It deletes the
+   tenant's `inbox_items` for the same reason: they name no reading, and
+   teardown refuses while any remain. The deletes and the advance to `objects` are one
    transaction, with the lease compare-and-set last, so no tenant is recorded
    past `rows` while its rows stand and a lost lease rolls the deletes back. A
    database error fails the delivery before any object is deleted, and the
@@ -99,7 +101,7 @@ The phases run in order:
    sweeping rows once more, for a publisher that passed its tenant check before
    the account was fenced and committed after the rows phase.
 3. `done` writes the completion record — but only after counting the tenant's
-   remaining `readings` and finding none. A non-zero count throws
+   remaining `readings` and `inbox_items` and finding none. A non-zero count throws
    `AccountWipeRowsRemainingError` and the delivery retries: a completion is
    what teardown hard-deletes the account on, so it has to mean the rows are
    gone rather than that a DELETE reported a count.
@@ -109,8 +111,9 @@ completion updates persist whenever a later delivery needs them.
 `ACCOUNT_WIPE_MAX_CONTINUATIONS` bounds self-sent continuation messages so a
 stalled wipe cannot reset its retry budget forever. Exceeding that bound throws
 and eventually reaches the wipe DLQ, which logs and acks without touching the
-tenant. A finished wipe whose prefix gains objects again is reopened from
-`rows` with a fresh continuation count.
+tenant. A finished wipe whose prefix gains objects again, or whose tenant has
+reading rows or inbox items again, is reopened from `rows` with a fresh
+continuation count.
 
 Embeddings are rows, so there is no vector ledger, ledger seed, `deleteByIds`,
 namespace probe or unbound-index gate on this path, and no operator command
@@ -144,9 +147,10 @@ residue flags to the audit record.
    for retry.
 4. In one transaction, lock this account's `auth_challenges` rows, then the
    `users` and `wipe_progress` rows, re-check that the account is still
-   `deleting` and the wipe still complete, and count the tenant's `readings`.
-   Any remaining row answers `rows_remain` and deletes nothing: `readings`
-   names no `users` row, so PostgreSQL would not refuse the delete, and once
+   `deleting` and the wipe still complete, and count the tenant's `readings`
+   and `inbox_items`. Any remaining row answers `rows_remain` and deletes
+   nothing: neither table names a `users` row, so PostgreSQL would not refuse
+   the delete, and once
    the users row is gone cron stops enumerating the tenant and those rows can
    never be found again. Only then delete child rows before parents: token
    scopes/tokens, sessions, challenges, digest deliveries, relationship refresh
@@ -157,9 +161,10 @@ residue flags to the audit record.
 An object arriving between the final prefix verdict and the commit can still be
 orphaned after cron loses the users row it enumerates. The recheck narrows this
 race; it does not close it. Keep that #261 limit in deletion reports. Reading
-rows are not exposed to it: the count in step 4 is taken after the `users` lock,
-and the only path that inserts one takes the same row FOR SHARE alongside its
-insert, so it either commits before the count or finds no active account.
+rows and inbox items are not exposed to it: the count in step 4 is taken after
+the `users` lock, and the only paths that insert them (claim and inbox stage)
+take the same row FOR SHARE alongside the insert, so each either commits before
+the count or finds no active account.
 
 The operator's `corpus_refresh_state` marker follows the same rule: its upsert
 holds an active user's row `FOR SHARE` until commit. Teardown removes the
@@ -229,7 +234,7 @@ npm run ops -- account residue-scan --all-deleted --bucket reading-lite-staging
 ```
 
 The scan prints JSON findings separately for tenant R2 and PostgreSQL rows.
-The `pg.*` sources cover readings, embeddings, corpus refresh state, relationship
+The `pg.*` sources cover readings, embeddings, inbox items, corpus refresh state, relationship
 refresh jobs, users, sessions, tokens/scopes, settings, limits, digests, wipe
 progress, archive exports, challenges and attributable invites. Reading children cascade from
 `readings`; embeddings also have their own observation. A failed source stays

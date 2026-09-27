@@ -484,3 +484,107 @@ export const ArchiveExportDocumentSchema = z
   })
   .strict();
 export type ArchiveExportDocument = z.infer<typeof ArchiveExportDocumentSchema>;
+
+// The Markdown inbox (reading-lite-gh423). An inbox item is Markdown staged
+// for a person to review before it becomes a reading; it is not in the
+// library, search, similarity or /lookup until it is promoted.
+//
+// The byte cap is the queue envelope's: promote carries the item to the
+// consumer in one Cloudflare Queues message, so an item that could not fit
+// could never be promoted and stage refuses it (413). db/migrations/0008
+// enforces the Markdown's outer bound; test/unit/import-markdown/app-limit.test.ts
+// pins both numbers to the app's and the operator tooling's copies.
+export const INBOX_MARKDOWN_MAX_BYTES = 128_000;
+// What an item may cost inside that message, measured the way the app's
+// Markdown import and the operator gate measure it: the JSON serialization of
+// the fields promote forwards (source_url, title, markdown) in UTF-8 bytes.
+// Escaping makes that more than the Markdown's length, and the reserve covers
+// the envelope's fixed fields (ids, keys, the tenant).
+export const INBOX_QUEUE_ENVELOPE_RESERVE = 1024;
+export const INBOX_STAGE_BUDGET_BYTES = INBOX_MARKDOWN_MAX_BYTES - INBOX_QUEUE_ENVELOPE_RESERVE;
+// Items per tenant. A new URL past it is refused (429 inbox_full); an
+// overwrite of a staged URL never is. There is no expiry.
+export const INBOX_ITEM_CAP = 200;
+// A title travels in the same envelope as the Markdown, so it is bounded too:
+// an unbounded one could leave an item that can never be promoted.
+export const INBOX_TITLE_MAX_CHARS = 1_000;
+// POST /api/inbox bodies above this are refused (413) while they are read,
+// before they are parsed. Generous: JSON can spell one Markdown byte in up to
+// six (`\u0001`), and the title and field names ride along.
+export const INBOX_BODY_MAX_BYTES = 6 * INBOX_MARKDOWN_MAX_BYTES + 64 * 1024;
+
+// Field rules mirror import-markdown, without `email`: whether a promote
+// notifies is the promote's decision, not the stage's.
+export const PostInboxBodySchema = z.object({
+  source_url: webUrl(),
+  title: z.string().trim().min(1).max(INBOX_TITLE_MAX_CHARS).optional(),
+  markdown: z.string().min(1),
+});
+export type PostInboxBody = z.infer<typeof PostInboxBodySchema>;
+
+export const InboxItemMetaSchema = z
+  .object({
+    id: z.string().regex(/^in_/),
+    url: z.string().min(1),
+    title: z.string().nullable(),
+    markdown_bytes: z.number().int().positive(),
+    created_at: z.string().datetime(),
+    updated_at: z.string().datetime(),
+  })
+  .strict();
+export type InboxItemMeta = z.infer<typeof InboxItemMetaSchema>;
+
+export const InboxItemSchema = InboxItemMetaSchema.extend({ markdown: z.string().min(1) }).strict();
+export type InboxItem = z.infer<typeof InboxItemSchema>;
+
+// The reading that already owns the staged URL, when that owner has failed:
+// promoting the item re-imports it in place.
+export const InboxCorpusReadingSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.literal("failed"),
+  })
+  .strict();
+
+// POST /api/inbox. 201 for a new item, 200 for an overwrite (`replaced`), and
+// 200 `{ existing, reading }` when a ready or pending reading already owns the
+// URL, in which case nothing is staged.
+export const PostInboxStagedResponseSchema = z
+  .object({
+    inbox_item_id: z.string().regex(/^in_/),
+    replaced: z.boolean(),
+    corpus_reading: InboxCorpusReadingSchema.optional(),
+  })
+  .strict();
+export type PostInboxStagedResponse = z.infer<typeof PostInboxStagedResponseSchema>;
+
+export const PostInboxExistingResponseSchema = z
+  .object({
+    existing: z.literal(true),
+    reading: ManifestSchema,
+  })
+  .strict();
+export type PostInboxExistingResponse = z.infer<typeof PostInboxExistingResponseSchema>;
+
+export const InboxMarkdownTooLargeResponseSchema = z
+  .object({
+    error: z.string().min(1),
+    code: z.literal("markdown_too_large"),
+    limit_bytes: z.literal(INBOX_STAGE_BUDGET_BYTES),
+  })
+  .strict();
+
+export const InboxFullResponseSchema = z
+  .object({
+    error: z.string().min(1),
+    code: z.literal("inbox_full"),
+    limit: z.literal(INBOX_ITEM_CAP),
+  })
+  .strict();
+
+export const ListInboxResponseSchema = z
+  .object({
+    items: z.array(InboxItemMetaSchema),
+  })
+  .strict();
+export type ListInboxResponse = z.infer<typeof ListInboxResponseSchema>;

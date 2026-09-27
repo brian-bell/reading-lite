@@ -377,17 +377,35 @@ async function seedReadingRow(raw: ControlPlaneDb, id: string): Promise<void> {
   );
 }
 
+async function seedInboxItem(raw: ControlPlaneDb, id: string): Promise<void> {
+  await raw.run(
+    `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
+     VALUES (?, ?, ?, ?, '# staged', ?, ?)`,
+    USER,
+    `in_${id}`,
+    `https://example.com/${id}`,
+    // Callers' ids end in distinct digits, so each item gets its own URL slot.
+    id.slice(-1).repeat(64),
+    toTimestamp(NOW_MS),
+    toTimestamp(NOW_MS),
+  );
+}
+
 describe("tearDownAccount — reading rows outlive no account", () => {
   // `readings` has no foreign key to `users` (ADR 0005): the data plane is
   // keyed by tenant id, not joined to the control plane. So a completion
   // record is not on its own proof the rows are gone, and dropping the users
   // row while they stand orphans them past any tenant-keyed recovery — cron
   // stops enumerating the tenant the moment it leaves `listDeletingUsers`.
-  it("refuses, and deletes nothing, while the tenant still owns reading rows", async () => {
+  // inbox_items has no foreign key to `users` either (db/migrations/0008).
+  it.each([
+    ["reading rows", seedReadingRow],
+    ["inbox items", seedInboxItem],
+  ] as const)("refuses, and deletes nothing, while the tenant still owns %s", async (_label, seed) => {
     const { raw, db } = await seeded();
     await wipeRecord(raw, { completedAtMs: NOW_MS });
-    await seedReadingRow(raw, "rd_0123456780");
-    await seedReadingRow(raw, "rd_0123456781");
+    await seed(raw, "rd_0123456780");
+    await seed(raw, "rd_0123456781");
     const { env } = guardEnv();
 
     await expect(

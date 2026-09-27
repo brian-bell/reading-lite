@@ -359,16 +359,3 @@ export async function deleteTenantReadings(tx: SqlQuery, tenantId: string): Prom
   );
   return row!.deleted;
 }
-
-/**
- * Reading rows the tenant still owns. The account wipe asks this after its
- * sweep and refuses to record a completion while it is non-zero: "complete"
- * has to mean the tenant's rows are gone, not that a DELETE reported a count.
- */
-export async function countTenantReadings(tx: SqlQuery, tenantId: string): Promise<number> {
-  const [row] = await tx.query<{ remaining: number }>(
-    "SELECT count(*)::int AS remaining FROM readings WHERE tenant_id = $1",
-    [tenantId],
-  );
-  return row!.remaining;
-}
