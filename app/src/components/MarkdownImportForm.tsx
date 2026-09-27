@@ -1,4 +1,4 @@
-import { useImperativeHandle, useRef, type ChangeEvent, type FormEvent, type Ref } from "react";
+import { useImperativeHandle, useRef, type ChangeEvent, type FormEvent, type ReactNode, type Ref } from "react";
 import type { MarkdownImportField, MarkdownImportProblems, MarkdownImportValues } from "../import-markdown";
 import { Icon } from "./Icon";
 import { TextField } from "./TextField";
@@ -26,6 +26,7 @@ export function MarkdownImportForm({
   onSubmit,
   pending,
   sourceUrlReadOnly = false,
+  children,
 }: {
   ref?: Ref<MarkdownImportFormHandle>;
   values: MarkdownImportValues;
@@ -40,6 +41,8 @@ export function MarkdownImportForm({
   pending: boolean;
   /** The reading's own URL, which a copy imported over it cannot change (#411). */
   sourceUrlReadOnly?: boolean;
+  /** Controls beside Import, before it: Import a copy's Cancel. */
+  children?: ReactNode;
 }) {
   const sourceUrlRef = useRef<HTMLInputElement>(null);
   const markdownRef = useRef<HTMLTextAreaElement>(null);
@@ -114,6 +117,7 @@ export function MarkdownImportForm({
       <div className="form-actions">
         {/* aria-disabled, not disabled, for the reason the URL form gives
             (SavePage.tsx): the reader keeps their place while it runs. */}
+        {children}
         <button type="submit" className="button button-primary button-leading-icon" aria-disabled={pending || undefined}>
           <Icon name="plus" size={16} strokeWidth={2} />
           Import

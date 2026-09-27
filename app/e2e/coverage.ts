@@ -16,6 +16,7 @@
 import { expect, type Page } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { externalBaseUrl } from "./harness";
+import { MARKDOWN_IMPORT_BUDGET_BYTES } from "../src/markdown-import-limit";
 import { EVIDENCE_SCOPE } from "./scope";
 import { hostSession, LIBRARY_STATE_SESSIONS, SESSION_COOKIE_VALUE } from "./sessions";
 import {
@@ -124,6 +125,18 @@ function importAndExpect(sentence: string, markdown = "# A slow reading week\n\n
     await expect(page.getByText(sentence).first()).toBeVisible();
     await page.locator("#main h1").focus();
   };
+}
+
+/**
+ * Opens Import a copy (#411) once hydration has attached its handler (see
+ * saveUrl), and waits for the dialog.
+ */
+async function openImportCopy(page: Page) {
+  await page.waitForLoadState("networkidle");
+  await page.getByRole("button", { name: "Import a copy" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import a copy" });
+  await expect(dialog).toBeVisible();
+  return dialog;
 }
 
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
@@ -977,6 +990,45 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await page.getByRole("button", { name: "Reprocess" }).click();
       await expect(page.getByRole("dialog", { name: "Reprocess this reading?" })).toBeVisible();
+    },
+  },
+  // Import a copy (#411): the Markdown form in a modal, from a failed
+  // reading's status card and from the unavailable source's Source view, and
+  // the field error a paste too large for the queue gets before it is sent.
+  // The dialog opened is a major state of a paid action, so it is in CI's
+  // scope; its keyboard walk stays inside the modal.
+  {
+    name: "reading-import-copy",
+    essential: true,
+    path: "/readings/rd_FXERR00002",
+    state: "signed-in",
+    heading: "https://consent-walls.example/teaser-article",
+    fixture: "fail-source-incomplete",
+    prepare: async (page) => {
+      await openImportCopy(page);
+    },
+  },
+  {
+    name: "reading-import-copy-source",
+    path: "/readings/rd_FXRAWSRC01?view=source",
+    state: "signed-in",
+    heading: "The web we can no longer revisit",
+    fixture: "unavailable-source",
+    prepare: async (page) => {
+      await openImportCopy(page);
+    },
+  },
+  {
+    name: "reading-import-copy-too-large",
+    path: "/readings/rd_FXERR00002",
+    state: "signed-in",
+    heading: "https://consent-walls.example/teaser-article",
+    fixture: "fail-source-incomplete",
+    prepare: async (page) => {
+      const dialog = await openImportCopy(page);
+      await dialog.getByRole("textbox", { name: "Markdown" }).fill("a".repeat(MARKDOWN_IMPORT_BUDGET_BYTES));
+      await dialog.getByRole("button", { name: "Import" }).click();
+      await expect(dialog.getByText(/limited to 128 KB/)).toBeVisible();
     },
   },
   {

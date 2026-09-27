@@ -1,32 +1,24 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { ReprocessMarkdownBody } from "../import-markdown";
 import { reprocessFromResponse, type ReprocessOutcome } from "../reprocess";
-import { apiFetch, forbiddenOrSwitched } from "./client";
-import { EXPECTED_TENANT_HEADER } from "./readings";
+import { postCapture } from "./capture";
 
-// Browser path for Retry and Reprocess (#410): same-origin
-// POST /api/readings/:id/reprocess with the session cookie, the CSRF token,
-// and the tenant pin, as a save is (api/save.ts). The body is always `{}`: no
-// `force`, no `email`, and no Markdown source, which is Import a copy's (#411).
+// Browser path for Retry, Reprocess (#410), and Import a copy (#411): POST
+// /api/readings/:id/reprocess through the shared capture request
+// (api/capture.ts). The body is `{}`, or Import a copy's Markdown source; it
+// never carries `force` or `email`.
 
-export async function reprocessReading(
+export function reprocessReading(
   queryClient: QueryClient,
   id: string,
   expectedTenant: string | undefined,
+  body: ReprocessMarkdownBody | Record<string, never> = {},
 ): Promise<ReprocessOutcome> {
-  const response = await apiFetch(queryClient, `/api/readings/${encodeURIComponent(id)}/reprocess`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(expectedTenant === undefined ? {} : { [EXPECTED_TENANT_HEADER]: expectedTenant }),
-    },
-    body: "{}",
-  });
-  let body: unknown = null;
-  try {
-    body = await response.json();
-  } catch {
-    // Non-JSON: reprocessFromResponse decides from the status.
-  }
-  const outcome = reprocessFromResponse(response.status, body);
-  return outcome.kind === "forbidden" ? forbiddenOrSwitched(queryClient) : outcome;
+  return postCapture(
+    queryClient,
+    `/api/readings/${encodeURIComponent(id)}/reprocess`,
+    body,
+    expectedTenant,
+    reprocessFromResponse,
+  );
 }

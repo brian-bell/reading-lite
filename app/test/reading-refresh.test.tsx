@@ -1,49 +1,23 @@
-import { QueryClientProvider, focusManager, onlineManager } from "@tanstack/react-query";
-import {
-  Outlet,
-  RouterProvider,
-  createMemoryHistory,
-  createRootRouteWithContext,
-  createRoute,
-  createRouter,
-} from "@tanstack/react-router";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { focusManager, onlineManager } from "@tanstack/react-query";
+import { act, fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
-import { AppFrame } from "../src/components/AppFrame";
-import { ReadingPage } from "../src/components/ReadingPage";
 import { stageLabel } from "../src/components/ReadingStatusCard";
-import { createQueryClient, hrefOnScreen } from "../src/auth/session";
-import { whoamiQueryKey, type Identity } from "../src/identity";
 import { ProcessingStageSchema, type Reading } from "../src/reading";
 import { diagnosticsQueryKey } from "../src/reading-diagnostics";
-import { readingQueryOptions } from "../src/reading-query";
 import { sourceQueryKey } from "../src/reading-source";
-import type { RouterContext } from "../src/router";
-import { plainSearch } from "../src/search";
+import { MINUTE, SECOND, advance, json, openReadingPage, politeRegion, settle, type Answer } from "./reading-page-harness";
 
 // The status refresh contract on the reading page (acceptance matrix, Status
 // refresh contract, acceptance checks 1–9, 11, 12), with fake timers and a
 // stubbed `fetch`. This drives the browser branch of the reading query — the
 // one that refreshes — by resolving the isomorphic loader to its client
-// function, which test/reading-detail.test.tsx cannot do without the Start
-// compiler.
+// function (start-client-mock.ts), which test/reading-detail.test.tsx cannot
+// do without the Start compiler.
 
-vi.mock("@tanstack/react-start", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  createIsomorphicFn: () => {
-    let client: (...args: unknown[]) => unknown = () => {
-      throw new Error("no client branch");
-    };
-    const fn = (...args: unknown[]) => client(...args);
-    fn.server = () => fn;
-    fn.client = (implementation: typeof client) => {
-      client = implementation;
-      return fn;
-    };
-    return fn;
-  },
-}));
+vi.mock("@tanstack/react-start", async (importOriginal) =>
+  (await import("./start-client-mock")).clientBranchOnly(importOriginal),
+);
 vi.mock("@tanstack/react-start/server", () => ({ getRequest: () => new Request("https://app.example/") }));
 
 const readings = pack.readings as Record<string, Reading>;
@@ -52,20 +26,6 @@ const PENDING = readings[PENDING_ID]!;
 const READY = readings.rd_FXATTENT01!;
 const FAILED = readings.rd_FXERR00001!;
 const REPROCESS_FAILED = readings.rd_FXREPROC01!;
-
-const reader: Identity = {
-  tenant_id: "usr_a",
-  user_id: "usr_a",
-  principal: "session",
-  tenant_data_plane: true,
-  email: "a@example.com",
-  csrf_token: "csrf-a",
-};
-
-const SECOND = 1_000;
-const MINUTE = 60 * SECOND;
-
-type Answer = () => Response | Promise<Response>;
 
 /** The stubbed backend: each request takes the next answer, the last one repeating. */
 let answers: Answer[];
@@ -78,70 +38,20 @@ function answerWith(...next: Answer[]) {
   answers = next;
 }
 
-const json = (body: unknown, status = 200): Answer => () => Response.json(body, { status });
 const pending = (reading: Reading = PENDING) => json(reading);
 const networkFailure: Answer = () => {
   throw new TypeError("Failed to fetch");
 };
 
-const rootRoute = createRootRouteWithContext<RouterContext>()({
-  component: () => (
-    <AppFrame theme="system" onThemeChange={() => undefined}>
-      <Outlet />
-    </AppFrame>
-  ),
-});
-const readingRoute = createRoute({
-  getParentRoute: () => rootRoute,
-  path: "/readings/$id",
-  loader: ({ context, params }) =>
-    context.queryClient.prefetchQuery(readingQueryOptions(context.queryClient, params.id, reader)),
-  component: function ReadingRoute() {
-    const { id } = readingRoute.useParams();
-    return <ReadingPage id={id} />;
-  },
-});
-const leftRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <p>Elsewhere</p> });
-const routeTree = rootRoute.addChildren([readingRoute, leftRoute]);
-
-/** Lets promises and zero-delay timers run without moving the clock. */
-async function settle() {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(0);
-  });
-}
-
-async function advance(ms: number) {
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(ms);
-  });
-}
-
 async function openReading(reading: Reading) {
-  const queryClient = createQueryClient(() => hrefOnScreen(router));
-  queryClient.setQueryData(whoamiQueryKey, reader);
-  const router = createRouter({
-    routeTree,
-    context: { queryClient },
-    ...plainSearch,
-    history: createMemoryHistory({ initialEntries: [`/readings/${reading.id}`] }),
-    Wrap: ({ children }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>,
-  });
-  const view = render(<RouterProvider router={router} />);
-  for (let i = 0; i < 5; i++) await settle();
-  expect(screen.getByRole("heading", { level: 1 })).toBeInTheDocument();
+  const opened = await openReadingPage(reading);
   // The page load's own request is not one of the watch's.
   mountedAt = Date.now();
   requestTimes = [];
-  return { ...view, queryClient, router };
+  return opened;
 }
 
-function announcement(): string {
-  return screen
-    .getAllByRole("status")
-    .map((region) => region.textContent ?? "")
-    .join("");
-}
+const announcement = politeRegion;
 
 function checkStatus() {
   fireEvent.click(screen.getByRole("button", { name: "Check status" }));

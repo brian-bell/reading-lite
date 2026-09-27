@@ -1,9 +1,10 @@
-// Reprocess in a real browser (#410). The component tests
-// (test/reading-reprocess.test.tsx) own Retry, the outcomes, and the guards,
-// and test/reprocess-api.test.ts owns the request body (never `force`); this
-// proves what only a browser's modal `<dialog>` does: Escape closes it without
-// a request, the page behind it is out of reach, and focus comes back to the
-// button that opened it however it closed.
+// Reprocess (#410) and Import a copy (#411) in a real browser. The component
+// tests (test/reading-reprocess.test.tsx, test/reading-import.test.tsx) own
+// Retry, the outcomes, and the guards, and test/reprocess-api.test.ts owns the
+// request body (never `force`); this proves what only a browser's modal
+// `<dialog>` does: Escape closes it without a request, the page behind it is
+// out of reach, and focus comes back to the button that opened it however it
+// closed.
 //
 // Requests and focus only, so one viewport and theme; the matrix screenshots
 // the dialog and runs axe and the keyboard pass in every project.
@@ -11,6 +12,7 @@
 import { expect, test as base, type Page, type Request } from "@playwright/test";
 import pack from "../fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "../harness";
+import { runningOver } from "../running-over";
 import { serveReadingsInBrowser, serveReprocessInBrowser, signIn } from "../test";
 
 const test = base.extend({
@@ -20,15 +22,7 @@ const test = base.extend({
 });
 
 const READY = pack.readings.rd_FXATTENT01;
-
-/** The reading with a reprocess running over it, as the backend writes it. */
-function runningOver<T extends { status: string }>(reading: T) {
-  return {
-    ...reading,
-    ...(reading.status === "failed" ? { status: "pending", error: null } : {}),
-    active_attempt: { id: "at_NEW01", trigger: "reprocess", status: "running", stage: "fetch_source", started_at: pack.generated_at },
-  };
-}
+const FAILED = pack.readings.rd_FXERR00002;
 
 /** Serves reads from the pack until a reprocess is accepted, then the running attempt. */
 async function openWithReprocess(page: Page, baseURL: string, reading: { id: string; status: string }): Promise<Request[]> {
@@ -98,4 +92,36 @@ test("confirming returns focus to Reprocess, which stays while the attempt runs"
 
   await expect(page.getByLabel("Processing status")).toBeVisible();
   await expect(reprocess).toBeFocused();
+});
+
+function importDialog(page: Page) {
+  return page.getByRole("dialog", { name: "Import a copy" });
+}
+
+test("Escape closes Import a copy without a request and returns focus to it", async ({ page, baseURL }) => {
+  const reprocesses = await openWithReprocess(page, baseURL!, FAILED);
+  const importCopy = page.getByRole("button", { name: "Import a copy" });
+
+  await importCopy.click();
+  await expect(importDialog(page).getByRole("textbox", { name: "Markdown" })).toBeFocused();
+  await importDialog(page).getByRole("textbox", { name: "Markdown" }).fill("# A copy");
+  await page.keyboard.press("Escape");
+
+  await expect(importDialog(page)).toHaveCount(0);
+  await expect(importCopy).toBeFocused();
+  expect(reprocesses).toEqual([]);
+});
+
+// Import a copy goes with the failure once the attempt starts; the card's
+// first control, Retry turned Check status, is where focus comes back to.
+test("an import that starts closes the dialog and gives focus to the status card", async ({ page, baseURL }) => {
+  const reprocesses = await openWithReprocess(page, baseURL!, FAILED);
+
+  await page.getByRole("button", { name: "Import a copy" }).click();
+  await importDialog(page).getByRole("textbox", { name: "Markdown" }).fill("# A copy\n\nThe whole article.");
+  await importDialog(page).getByRole("button", { name: "Import" }).click();
+
+  await expect(importDialog(page)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Check status" })).toBeFocused();
+  expect(reprocesses).toHaveLength(1);
 });

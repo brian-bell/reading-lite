@@ -124,7 +124,7 @@ export const EXPORT_LIMITS =
 /** The 409: another export is still queued or building. */
 export const EXPORT_ACTIVE = "An export is already in progress. Only one can run at a time.";
 
-/** The 429, in the words of capture's limitSentence (capture-refusal.ts). */
+/** The 429, in the words of captureRefusalSentence (capture-refusal.ts). */
 export function exportLimitSentence(resetAt: string | undefined): string {
   const reached = "You've reached the daily export limit.";
   const resets = dateTimeOn(resetAt);

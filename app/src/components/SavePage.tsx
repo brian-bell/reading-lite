@@ -14,9 +14,10 @@ import {
   type MarkdownImportValues,
 } from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
-import { limitSentence } from "../capture-refusal";
+import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
+import { CaptureRefusalNotice } from "./CaptureNotice";
 import { Icon } from "./Icon";
 import { MarkdownImportForm, type MarkdownImportFormHandle } from "./MarkdownImportForm";
 import { PageHeading, PageStateFocus } from "./PageHeading";
@@ -411,30 +412,26 @@ function noticeSentence(notice: SaveNotice | Refusal, action: SaveTab): string |
   switch (notice.kind) {
     case "limited":
     case "guard-unavailable":
-      return limitSentence(notice);
     case "unavailable":
-      // A 503 names what could not be done (capture-refusal.ts), in the
-      // words of the button the reader pressed.
-      return action === "url" ? "Saving is unavailable right now." : "Importing is unavailable right now.";
+      return captureRefusalSentence(notice, unavailableSentence(action));
     case "already-processing":
-      return "This reading is already processing.";
+      return ALREADY_PROCESSING_SENTENCE;
     default:
       return undefined;
   }
 }
 
+/** A 503 names what could not be done (capture-refusal.ts), in the words of the button the reader pressed. */
+function unavailableSentence(action: SaveTab): string {
+  return action === "url" ? "Saving is unavailable right now." : "Importing is unavailable right now.";
+}
+
 /**
  * The notice above the form, with a way on only when there is one to offer.
+ * The 503's operator-facing error string is not shown; the reading it names,
+ * when it names one, is worth opening.
  *
- * "Try again" is live from the moment the notice appears rather than counting
- * down to the reset: the limit is the backend's to enforce, and a reader who
- * asks again a moment early gets the same sentence back, which is a smaller
- * cost than a control they cannot use. The 503's operator-facing error string
- * is not shown; the reading it names, when it names one, is worth opening.
- *
- * A refusal's notice is not itself a live region (`live={false}`): the page's
- * own `form-status` was already there to be announced, and this one was not.
- * Offline keeps the shared default, as the library's does.
+ * Offline keeps the shared default live region, as the library's does.
  */
 function SaveNoticeBanner({
   notice,
@@ -446,21 +443,27 @@ function SaveNoticeBanner({
   action: SaveTab;
   onRetry: () => void;
 }) {
-  if (notice.kind === "none") return null;
-  if (notice.kind === "offline-paused") {
-    return <OfflineNotice message="You're offline. This save will be sent when your connection returns." />;
+  switch (notice.kind) {
+    case "none":
+      return null;
+    case "offline-paused":
+      return <OfflineNotice message="You're offline. This save will be sent when your connection returns." />;
+    case "offline-failed":
+      return <OfflineNotice onRetry={onRetry} />;
+    case "already-processing":
+      // An attempt already running is the backend's to finish, and asking
+      // again while it runs gets the same answer: the notice says so and
+      // offers nothing.
+      return <InlineNotice message={ALREADY_PROCESSING_SENTENCE} live={false} />;
+    default:
+      return (
+        <CaptureRefusalNotice refusal={notice} unavailable={unavailableSentence(action)} onTryAgain={onRetry}>
+          {notice.kind === "unavailable" && notice.id ? (
+            <Link className="notice-link" to="/readings/$id" params={{ id: notice.id }}>
+              Open the reading
+            </Link>
+          ) : null}
+        </CaptureRefusalNotice>
+      );
   }
-  if (notice.kind === "offline-failed") return <OfflineNotice onRetry={onRetry} />;
-  // An attempt already running is the backend's to finish, and asking again
-  // while it runs gets the same answer: the notice says so and offers nothing.
-  const retry = notice.kind === "already-processing" ? undefined : onRetry;
-  return (
-    <InlineNotice message={noticeSentence(notice, action)!} actionLabel="Try again" onAction={retry} live={false}>
-      {notice.kind === "unavailable" && notice.id ? (
-        <Link className="notice-link" to="/readings/$id" params={{ id: notice.id }}>
-          Open the reading
-        </Link>
-      ) : null}
-    </InlineNotice>
-  );
 }

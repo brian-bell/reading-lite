@@ -2,7 +2,9 @@ import { MARKDOWN_IMPORT_BUDGET_BYTES } from "./markdown-import-limit";
 import { webUrlProblem } from "./save";
 
 // Importing Markdown (#408, Phase 4 of #339): the rules the form applies
-// before it asks, and the body it sends to POST /api/readings/import-markdown.
+// before it asks, and the body it sends to POST /api/readings/import-markdown
+// — or, for Import a copy on the reading page (#411), to
+// POST /api/readings/:id/reprocess as a Markdown source.
 // Pure, so both are tested without a DOM; api/save.ts does the
 // request, save.ts's submitFromResponse reads the answer (the import shares
 // the URL save's outcomes), and MarkdownImportForm.tsx renders the fields.
@@ -52,6 +54,21 @@ export function markdownImportBody(values: MarkdownImportValues): MarkdownImport
     ...(title === "" ? {} : { title }),
     markdown: values.markdown,
   };
+}
+
+/**
+ * The same values as a reprocess's Markdown source (PostReadingReprocessBodySchema
+ * in src/schemas/api.ts). The source URL is the reading's own, which the
+ * backend already has, so it is not sent; it is still part of what the rules
+ * measure, because the queue message carries it.
+ */
+export interface ReprocessMarkdownBody {
+  source: { kind: "markdown"; markdown: string; title?: string };
+}
+
+export function reprocessMarkdownBody(values: MarkdownImportValues): ReprocessMarkdownBody {
+  const { title, markdown } = markdownImportBody(values);
+  return { source: { kind: "markdown", markdown, ...(title === undefined ? {} : { title }) } };
 }
 
 /**

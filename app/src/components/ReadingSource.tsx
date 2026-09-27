@@ -22,14 +22,22 @@ export interface LoadedImages {
   onLoad: (src: string) => void;
 }
 
+/** Import a copy (#411): offered where the source is unavailable, `busy` while a request or an attempt runs. */
+export interface ImportCopyAction {
+  onOpen: () => void;
+  busy: boolean;
+}
+
 export function ReadingSource({
   reading,
   onReadSummary,
   images,
+  importCopy,
 }: {
   reading: Reading;
   onReadSummary: () => void;
   images: LoadedImages;
+  importCopy: ImportCopyAction;
 }) {
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
@@ -40,7 +48,9 @@ export function ReadingSource({
     enabled: !known,
   });
 
-  if (known || data?.state === "unavailable") return <SourceUnavailable onReadSummary={onReadSummary} />;
+  if (known || data?.state === "unavailable") {
+    return <SourceUnavailable onReadSummary={onReadSummary} importCopy={importCopy} />;
+  }
   if (data?.state === "forbidden") return <SourceForbidden />;
   if (data?.state === "account-changed") return <SourceAccountChanged actingTenant={data.acting_tenant} />;
   if (error) return <SourceFailed message={error.message} onRetry={() => void refetch()} />;
@@ -74,10 +84,12 @@ function SourceAccountChanged({ actingTenant }: { actingTenant?: string }) {
 
 /**
  * Acceptance matrix, Source unavailable: the source wasn't captured (or is
- * gone), and the rest of the reading is still there to read. "Import a copy"
- * joins the button once `/save` exists (Phase 4, #339).
+ * gone), and the rest of the reading is still there to read — or the reader
+ * can supply it with Import a copy (#411). That button is kept while a
+ * request or an attempt runs, aria-disabled, so the focus its dialog gives
+ * back is not dropped when the status card appears.
  */
-function SourceUnavailable({ onReadSummary }: { onReadSummary: () => void }) {
+function SourceUnavailable({ onReadSummary, importCopy }: { onReadSummary: () => void; importCopy: ImportCopyAction }) {
   return (
     <div className="source-unavailable">
       <h2>Source text is unavailable</h2>
@@ -85,6 +97,14 @@ function SourceUnavailable({ onReadSummary }: { onReadSummary: () => void }) {
       <div className="form-actions">
         <button type="button" className="button" onClick={onReadSummary}>
           Read summary
+        </button>
+        <button
+          type="button"
+          className="button"
+          aria-disabled={importCopy.busy || undefined}
+          onClick={importCopy.onOpen}
+        >
+          Import a copy
         </button>
       </div>
     </div>
