@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { HTTPException } from "hono/http-exception";
 import type { Env } from "./index";
 import {
@@ -15,7 +16,7 @@ import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
 import {
   INBOX_BODY_MAX_BYTES,
   INBOX_ITEM_CAP,
-  INBOX_MARKDOWN_MAX_BYTES,
+  INBOX_STAGE_BUDGET_BYTES,
   ListReadingsQuerySchema,
   PostInboxBodySchema,
   PostReadingReprocessBodySchema,
@@ -24,6 +25,7 @@ import {
   PostReadingsSimilarBodySchema,
   type GetReadingResponse,
   type ListInboxResponse,
+  type PostInboxBody,
   type PostInboxExistingResponse,
   type PostInboxStagedResponse,
 } from "./schemas/api";
@@ -253,15 +255,17 @@ export function createApp(opts: AppOptions = {}) {
 
   // The Markdown inbox (reading-lite-gh423): staged text awaiting a person's
   // review. Staging writes only the inbox row; see src/inbox/stage.ts.
-  app.post("/api/inbox", requireScope("readings:import"), async (c) => {
-    // Refuse a body that cannot hold an acceptable item before parsing it.
-    if (Number(c.req.header("content-length") ?? 0) > INBOX_BODY_MAX_BYTES) return markdownTooLarge(c);
+  // A body that cannot hold an acceptable item is refused before it is
+  // parsed: bodyLimit trusts a declared Content-Length and otherwise counts
+  // the bytes as it reads them.
+  const inboxBodyLimit = bodyLimit({ maxSize: INBOX_BODY_MAX_BYTES, onError: markdownTooLarge });
+  app.post("/api/inbox", requireScope("readings:import"), inboxBodyLimit, async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostInboxBodySchema.safeParse(json);
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    if (new TextEncoder().encode(parsed.data.markdown).byteLength > INBOX_MARKDOWN_MAX_BYTES) return markdownTooLarge(c);
+    if (inboxStageBytes(parsed.data) > INBOX_STAGE_BUDGET_BYTES) return markdownTooLarge(c);
     const principal = c.get("principal");
     const sql = c.get("sql");
     const out = await stageInboxItem(
@@ -590,8 +594,15 @@ function quotaHttp(
   };
 }
 
+// What an item costs in the promote message (INBOX_STAGE_BUDGET_BYTES): the
+// parsed body's JSON serialization, in UTF-8 bytes. The whole body, so a field
+// added to it later is measured without being named here.
+function inboxStageBytes(body: PostInboxBody): number {
+  return new TextEncoder().encode(JSON.stringify(body)).byteLength;
+}
+
 function markdownTooLarge(c: Context<AppBindings>): Response {
-  return c.json({ error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_MARKDOWN_MAX_BYTES }, 413);
+  return c.json({ error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_STAGE_BUDGET_BYTES }, 413);
 }
 
 function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Response {

@@ -1284,8 +1284,8 @@ paths:
         A ready or pending reading that already owns the URL is returned
         (200 `existing`), nothing is staged, and any item staged for the URL
         earlier is discarded. A failed owner is named as
-        `corpus_reading`. Markdown is capped at 128,000 bytes (413) and a
-        tenant at 200 items (429 `inbox_full` for a new URL; an overwrite is
+        `corpus_reading`. An item must fit the 128,000-byte promote message
+        (413) and a tenant is capped at 200 items (429 `inbox_full` for a new URL; an overwrite is
         always allowed).
       security:
         - bearerAuth: []
@@ -1323,8 +1323,11 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "413":
           description: |
-            Markdown over 128,000 bytes (UTF-8), or a request body whose
-            Content-Length could not hold an acceptable item
+            The JSON serialization of `source_url`, `title` and `markdown`
+            is over 126,976 bytes (UTF-8): the 128,000-byte promote message
+            less 1,024 bytes for its envelope. Also returned, before parsing,
+            for a request body too large to hold an acceptable item, whether
+            or not it declares a Content-Length.
           content:
             application/json:
               schema:
@@ -2228,7 +2231,9 @@ components:
         markdown:
           type: string
           minLength: 1
-          description: At most 128,000 bytes as UTF-8 (413 above)
+          description: |
+            With `source_url` and `title`, at most 126,976 bytes as
+            serialized JSON in UTF-8 (413 above)
 
     InboxItemMeta:
       description: |
@@ -2328,7 +2333,7 @@ components:
           const: markdown_too_large
         limit_bytes:
           type: integer
-          const: 128000
+          const: 126976
 
     InboxFullResponse:
       type: object

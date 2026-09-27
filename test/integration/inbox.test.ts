@@ -5,6 +5,7 @@ import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import {
   INBOX_ITEM_CAP,
+  INBOX_STAGE_BUDGET_BYTES,
   InboxItemSchema,
   ListInboxResponseSchema,
   PostInboxExistingResponseSchema,
@@ -166,22 +167,60 @@ describe("POST /api/inbox", () => {
     });
   });
 
-  // Bytes, not characters: "é" is two bytes in UTF-8.
-  it("refuses Markdown over 128_000 bytes before admitting the request", async () => {
+  // Promote carries the item in one queue message, so stage measures what it
+  // will carry: the body's JSON serialization in UTF-8 bytes, within the
+  // 128,000-byte message less the envelope's reserve.
+  const BIG = "https://example.com/big";
+  function fillBudget(extraBytes: number, title?: string): string {
+    const frame = new TextEncoder().encode(
+      JSON.stringify({ source_url: BIG, ...(title === undefined ? {} : { title }), markdown: "" }),
+    ).byteLength;
+    return "a".repeat(INBOX_STAGE_BUDGET_BYTES - frame + extraBytes);
+  }
+
+  function streamed(token: string, body: string) {
+    const bytes = new TextEncoder().encode(body);
+    const request = new Request("http://localhost/api/inbox", {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    return createApp({ services: services() }).request(request, undefined, env);
+  }
+
+  it("refuses an item that cannot fit the promote message before admitting the request", async () => {
     const { tenantId, token } = await tenant({ submissions_per_hour: 1 });
 
-    const over = await stage(token, { source_url: "https://example.com/big", markdown: `${"é".repeat(64_000)}a` });
-    expect(over.status).toBe(413);
-    expect(await over.json()).toEqual({
-      error: "markdown too large",
-      code: "markdown_too_large",
-      limit_bytes: 128_000,
-    });
+    const overs = [
+      { source_url: BIG, markdown: fillBudget(1) },
+      // Bytes, not characters: "é" is two bytes in UTF-8.
+      { source_url: BIG, markdown: "é".repeat(63_500) },
+      // JSON escaping doubles a quote: 64,000 bytes serialize to 128,000.
+      { source_url: BIG, markdown: '"'.repeat(64_000) },
+      // The title rides in the same message.
+      { source_url: BIG, title: "T", markdown: fillBudget(0) },
+    ];
+    for (const body of overs) {
+      const over = await stage(token, body);
+      expect(over.status).toBe(413);
+      expect(await over.json()).toEqual({
+        error: "markdown too large",
+        code: "markdown_too_large",
+        limit_bytes: INBOX_STAGE_BUDGET_BYTES,
+      });
+    }
 
-    // A body too large to hold an acceptable item is refused from its
-    // Content-Length, before parsing.
-    const hugeBody = JSON.stringify({ source_url: "https://example.com/big", markdown: "a".repeat(900_000) });
-    const huge = await createApp({ services: services() }).request(
+    // A body too large to hold an acceptable item is refused while it is
+    // read, whether or not it declares a Content-Length, even when the bulk is
+    // a field the schema would strip.
+    const hugeBody = JSON.stringify({ source_url: BIG, markdown: "x", padding: "a".repeat(900_000) });
+    const declared = await createApp({ services: services() }).request(
       "/api/inbox",
       {
         method: "POST",
@@ -194,10 +233,12 @@ describe("POST /api/inbox", () => {
       },
       env,
     );
-    expect(huge.status).toBe(413);
+    expect(declared.status).toBe(413);
+    const undeclared = await streamed(token, hugeBody);
+    expect(undeclared.status).toBe(413);
 
-    // Neither refusal was charged: the one request this hour still stages.
-    const atCap = await stage(token, { source_url: "https://example.com/big", markdown: "é".repeat(64_000) });
+    // No refusal was charged: the one request this hour still stages, streamed.
+    const atCap = await streamed(token, JSON.stringify({ source_url: BIG, markdown: fillBudget(0) }));
     expect(atCap.status).toBe(201);
     expect(await tableCount("inbox_items", tenantId)).toBe(1);
   });
