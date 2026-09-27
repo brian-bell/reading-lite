@@ -1325,9 +1325,11 @@ paths:
           description: |
             The JSON serialization of `source_url`, `title` and `markdown`
             is over 126,976 bytes (UTF-8): the 128,000-byte promote message
-            less 1,024 bytes for its envelope. Also returned, before parsing,
-            for a request body too large to hold an acceptable item, whether
-            or not it declares a Content-Length.
+            less 1,024 bytes for its envelope. An untitled item for a failed
+            owner is measured with the owner's title, which promote keeps.
+            Also returned, before parsing, for a request body too large to
+            hold an acceptable item, whether or not it declares a
+            Content-Length.
           content:
             application/json:
               schema:

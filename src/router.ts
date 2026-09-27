@@ -25,7 +25,6 @@ import {
   PostReadingsSimilarBodySchema,
   type GetReadingResponse,
   type ListInboxResponse,
-  type PostInboxBody,
   type PostInboxExistingResponse,
   type PostInboxStagedResponse,
 } from "./schemas/api";
@@ -36,7 +35,7 @@ import { contentStoreFor, type ContentStore, type RawObject } from "./modules/st
 import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgInboxStoreFor } from "./modules/stores/postgres/inbox-store";
-import { stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
+import { inboxMessageBytes, stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
@@ -265,7 +264,7 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    if (inboxStageBytes(parsed.data) > INBOX_STAGE_BUDGET_BYTES) return markdownTooLarge(c);
+    if (inboxMessageBytes(parsed.data) > INBOX_STAGE_BUDGET_BYTES) return markdownTooLarge(c);
     const principal = c.get("principal");
     const sql = c.get("sql");
     const out = await stageInboxItem(
@@ -594,13 +593,6 @@ function quotaHttp(
   };
 }
 
-// What an item costs in the promote message (INBOX_STAGE_BUDGET_BYTES): the
-// parsed body's JSON serialization, in UTF-8 bytes. The whole body, so a field
-// added to it later is measured without being named here.
-function inboxStageBytes(body: PostInboxBody): number {
-  return new TextEncoder().encode(JSON.stringify(body)).byteLength;
-}
-
 function markdownTooLarge(c: Context<AppBindings>): Response {
   return c.json({ error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_STAGE_BUDGET_BYTES }, 413);
 }
@@ -623,6 +615,8 @@ function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Res
     // discarded, so there is no Retry-After.
     case "inbox_full":
       return c.json({ error: "inbox is full", code: "inbox_full", limit: INBOX_ITEM_CAP }, 429);
+    case "too_large":
+      return markdownTooLarge(c);
     // The same bodies and headers the reading verbs give these outcomes.
     case "rate_limited":
     case "quota_exhausted":

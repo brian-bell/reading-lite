@@ -15,13 +15,19 @@
 // The check is not in the stage transaction. A claim that commits between the
 // two leaves an item for an owned URL, which is harmless: its promote finds
 // the owner and returns it.
+//
+// Promote carries the item in one queue message, so an item must fit
+// INBOX_STAGE_BUDGET_BYTES. The router measures the body before admitting the
+// request; stage measures again once it knows the owner, because promoting an
+// untitled item over a failed owner keeps that owner's title
+// (src/modules/manifest-drafting.ts) and the title rides in the message.
 
 import type { TenantUsage } from "../control-plane/tenant-usage-guard";
 import { nowMs, usageDenial, type UsageDenial } from "../intake";
 import { applyStaleness } from "../modules/staleness";
 import type { PgInboxStore } from "../modules/stores/postgres/inbox-store";
 import type { PgReadingStore } from "../modules/stores/postgres/reading-store";
-import type { InboxItemMeta } from "../schemas/api";
+import { INBOX_STAGE_BUDGET_BYTES, type InboxItemMeta } from "../schemas/api";
 import type { Manifest } from "../schemas/manifest";
 import type { Services } from "../services";
 
@@ -29,6 +35,7 @@ export type InboxStageOutcome =
   | { kind: "staged"; item: InboxItemMeta; replaced: boolean; corpusReading?: { id: string; status: "failed" } }
   | { kind: "existing"; manifest: Manifest }
   | { kind: "inbox_full" }
+  | { kind: "too_large" }
   | UsageDenial
   | { kind: "tenant_inactive" };
 
@@ -38,6 +45,14 @@ export interface InboxStageDeps {
   usage: Pick<TenantUsage, "admitRequest">;
   services: Pick<Services, "now">;
   pendingTtlSeconds: number;
+}
+
+// What an item costs in the promote message: the forwarded fields' JSON
+// serialization, in UTF-8 bytes. The router passes the whole parsed body, so a
+// field added to it is measured there without being named; the owner-aware
+// check below spells the fields promote forwards and must name any new one.
+export function inboxMessageBytes(fields: { source_url: string; title?: string; markdown: string }): number {
+  return new TextEncoder().encode(JSON.stringify(fields)).byteLength;
 }
 
 export async function stageInboxItem(
@@ -59,6 +74,9 @@ export async function stageInboxItem(
       return { kind: "existing", manifest: effective };
     }
     corpusReading = { id: effective.id, status: "failed" };
+    const title = input.title ?? effective.title;
+    const promoted = { source_url: input.url, ...(title === undefined ? {} : { title }), markdown: input.markdown };
+    if (inboxMessageBytes(promoted) > INBOX_STAGE_BUDGET_BYTES) return { kind: "too_large" };
   }
 
   const staged = await deps.inbox.stage(input);

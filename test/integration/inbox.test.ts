@@ -171,10 +171,8 @@ describe("POST /api/inbox", () => {
   // will carry: the body's JSON serialization in UTF-8 bytes, within the
   // 128,000-byte message less the envelope's reserve.
   const BIG = "https://example.com/big";
-  function fillBudget(extraBytes: number, title?: string): string {
-    const frame = new TextEncoder().encode(
-      JSON.stringify({ source_url: BIG, ...(title === undefined ? {} : { title }), markdown: "" }),
-    ).byteLength;
+  function fillBudget(extraBytes: number, fields: { source_url: string; title?: string } = { source_url: BIG }): string {
+    const frame = new TextEncoder().encode(JSON.stringify({ ...fields, markdown: "" })).byteLength;
     return "a".repeat(INBOX_STAGE_BUDGET_BYTES - frame + extraBytes);
   }
 
@@ -241,6 +239,35 @@ describe("POST /api/inbox", () => {
     const atCap = await streamed(token, JSON.stringify({ source_url: BIG, markdown: fillBudget(0) }));
     expect(atCap.status).toBe(201);
     expect(await tableCount("inbox_items", tenantId)).toBe(1);
+  });
+
+  // Promoting an untitled item over a failed owner keeps the owner's title
+  // (src/modules/manifest-drafting.ts), so that title rides in the message too.
+  it("counts a failed owner's title toward an untitled item's budget", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/owned-failed-titled";
+    await readingsOf(tenantId).seed(
+      await readyManifest("rd_FAILED002", {
+        url,
+        title: "t".repeat(2_000),
+        status: "failed",
+        error: { code: "fetch_failed", message: "no" },
+      }),
+    );
+
+    const untitled = await stage(token, { source_url: url, markdown: fillBudget(0, { source_url: url }) });
+    expect(untitled.status).toBe(413);
+    expect(await untitled.json()).toEqual({
+      error: "markdown too large",
+      code: "markdown_too_large",
+      limit_bytes: INBOX_STAGE_BUDGET_BYTES,
+    });
+    expect(await tableCount("inbox_items", tenantId)).toBe(0);
+
+    // A supplied title replaces the owner's, so only it is counted.
+    const titled = { source_url: url, title: "T" };
+    const res = await stage(token, { ...titled, markdown: fillBudget(0, titled) });
+    expect(res.status).toBe(201);
   });
 
   it("refuses a new URL once the inbox is full, and still overwrites a staged one", async () => {
