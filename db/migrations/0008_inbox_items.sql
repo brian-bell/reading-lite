@@ -18,7 +18,8 @@ CREATE TABLE inbox_items (
   id text NOT NULL,
   url text NOT NULL,
   url_hash text NOT NULL CHECK (url_hash ~ '^[0-9a-f]{64}$'),
-  title text,
+  -- Rides in the promote envelope with the Markdown, so it is bounded too.
+  title text CHECK (char_length(title) <= 1000),
   markdown text NOT NULL CHECK (octet_length(markdown) BETWEEN 1 AND 128000),
   created_at timestamptz NOT NULL,
   -- Strictly increases on every overwrite: promote deletes the row only if it

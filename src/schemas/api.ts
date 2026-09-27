@@ -498,12 +498,19 @@ export const INBOX_MARKDOWN_MAX_BYTES = 128_000;
 // Items per tenant. A new URL past it is refused (429 inbox_full); an
 // overwrite of a staged URL never is. There is no expiry.
 export const INBOX_ITEM_CAP = 200;
+// A title travels in the same envelope as the Markdown, so it is bounded too:
+// an unbounded one could leave an item that can never be promoted.
+export const INBOX_TITLE_MAX_CHARS = 1_000;
+// POST /api/inbox bodies above this are refused (413) from Content-Length,
+// before they are parsed. Generous: JSON can spell one Markdown byte in up to
+// six (`\u0001`), and the title and field names ride along.
+export const INBOX_BODY_MAX_BYTES = 6 * INBOX_MARKDOWN_MAX_BYTES + 64 * 1024;
 
 // Field rules mirror import-markdown, without `email`: whether a promote
 // notifies is the promote's decision, not the stage's.
 export const PostInboxBodySchema = z.object({
   source_url: webUrl(),
-  title: z.string().trim().min(1).optional(),
+  title: z.string().trim().min(1).max(INBOX_TITLE_MAX_CHARS).optional(),
   markdown: z.string().min(1),
 });
 export type PostInboxBody = z.infer<typeof PostInboxBodySchema>;

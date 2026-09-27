@@ -397,7 +397,8 @@ describe("account wipe job", () => {
 
     const result = await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps());
 
-    expect(result).toMatchObject({ kind: "complete", rows_deleted: 3 });
+    // rows_deleted counts reading rows only.
+    expect(result).toMatchObject({ kind: "complete", rows_deleted: 1 });
     expect(await inboxItemIds(OTHER_TENANT_ID)).toEqual([]);
     expect(await inboxItemIds(FOUNDER_TENANT_ID)).toEqual(["in_A"]);
   });

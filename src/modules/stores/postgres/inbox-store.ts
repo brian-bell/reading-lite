@@ -15,6 +15,7 @@
 // counted under a per-tenant advisory lock taken after it; without that, two
 // stages at 199 items would both count 199 and both insert.
 
+import { fromSql, lockKey } from "../../../control-plane/db";
 import type { TenantContext } from "../../../control-plane/ids";
 import {
   INBOX_ITEM_CAP,
@@ -77,7 +78,7 @@ export class PgInboxStore {
       // inbox_items has no foreign key to it, so this check is what keeps an
       // item from outliving its account.
       if (user?.status !== "active") return { kind: "tenant_inactive" } as const;
-      await tx.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`inbox:${this.tenantId}`]);
+      await lockKey(fromSql(tx), `inbox:${this.tenantId}`);
 
       const [existing] = await tx.query<{ id: string }>(
         "SELECT id FROM inbox_items WHERE tenant_id = $1 AND url_hash = $2",
@@ -90,6 +91,10 @@ export class PgInboxStore {
         );
         if (counted!.items >= INBOX_ITEM_CAP) return { kind: "inbox_full" } as const;
       }
+      // `replaced` comes from the upsert, not the SELECT above: discard does not
+      // take the advisory lock, so the row it saw can be gone by now, and then
+      // this is a new item with a new id.
+      const newId = `in_${this.clock.newId()}`;
       const [row] = await tx.query(
         `INSERT INTO inbox_items (tenant_id, id, url, url_hash, title, markdown, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
@@ -99,9 +104,10 @@ export class PgInboxStore {
            markdown = EXCLUDED.markdown,
            updated_at = GREATEST(EXCLUDED.updated_at, inbox_items.updated_at + interval '1 millisecond')
          RETURNING ${META_COLUMNS}`,
-        [this.tenantId, `in_${this.clock.newId()}`, input.url, urlHash, input.title ?? null, input.markdown, now],
+        [this.tenantId, newId, input.url, urlHash, input.title ?? null, input.markdown, now],
       );
-      return { kind: "staged", item: parseMeta(row!), replaced: existing !== undefined } as const;
+      const item = parseMeta(row!);
+      return { kind: "staged", item, replaced: item.id !== newId } as const;
     });
   }
 
@@ -128,6 +134,20 @@ export class PgInboxStore {
   }
 
   /**
+   * Deletes the item staged for `url`, if any. Stage calls it when a ready or
+   * pending reading now owns the URL: the item could only ever promote into
+   * that reading, so it is not left in the inbox as stale text.
+   */
+  async discardUrl(url: string): Promise<boolean> {
+    return (
+      (await this.sql.execute("DELETE FROM inbox_items WHERE tenant_id = $1 AND url_hash = $2", [
+        this.tenantId,
+        await sha256Hex(url),
+      ])) > 0
+    );
+  }
+
+  /**
    * Deletes the item only if it is still the version loaded at `updatedAt`.
    * A re-stage in between moved `updated_at`, and the newer Markdown stays
    * (`changed`) for a person to review.
@@ -150,18 +170,4 @@ export class PgInboxStore {
  */
 export async function deleteTenantInboxItems(tx: SqlQuery, tenantId: string): Promise<number> {
   return tx.execute("DELETE FROM inbox_items WHERE tenant_id = $1", [tenantId]);
-}
-
-/**
- * Inbox items the tenant still owns. The wipe's completion guard and its
- * reopen check count these beside reading rows: teardown refuses while either
- * stands, so a wipe that reported completion over one would hand the tenant
- * to a teardown that refuses it on every tick.
- */
-export async function countTenantInboxItems(tx: SqlQuery, tenantId: string): Promise<number> {
-  const [row] = await tx.query<{ remaining: number }>(
-    "SELECT count(*)::int AS remaining FROM inbox_items WHERE tenant_id = $1",
-    [tenantId],
-  );
-  return row!.remaining;
 }

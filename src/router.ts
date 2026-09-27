@@ -13,6 +13,7 @@ import {
 } from "./middleware";
 import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
 import {
+  INBOX_BODY_MAX_BYTES,
   INBOX_ITEM_CAP,
   INBOX_MARKDOWN_MAX_BYTES,
   ListReadingsQuerySchema,
@@ -253,17 +254,14 @@ export function createApp(opts: AppOptions = {}) {
   // The Markdown inbox (reading-lite-gh423): staged text awaiting a person's
   // review. Staging writes only the inbox row; see src/inbox/stage.ts.
   app.post("/api/inbox", requireScope("readings:import"), async (c) => {
+    // Refuse a body that cannot hold an acceptable item before parsing it.
+    if (Number(c.req.header("content-length") ?? 0) > INBOX_BODY_MAX_BYTES) return markdownTooLarge(c);
     const json = await c.req.json().catch(() => null);
     const parsed = PostInboxBodySchema.safeParse(json);
     if (!parsed.success) {
       return c.json({ error: "invalid body", details: parsed.error.message }, 400);
     }
-    if (new TextEncoder().encode(parsed.data.markdown).byteLength > INBOX_MARKDOWN_MAX_BYTES) {
-      return c.json(
-        { error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_MARKDOWN_MAX_BYTES },
-        413,
-      );
-    }
+    if (new TextEncoder().encode(parsed.data.markdown).byteLength > INBOX_MARKDOWN_MAX_BYTES) return markdownTooLarge(c);
     const principal = c.get("principal");
     const sql = c.get("sql");
     const out = await stageInboxItem(
@@ -592,6 +590,10 @@ function quotaHttp(
   };
 }
 
+function markdownTooLarge(c: Context<AppBindings>): Response {
+  return c.json({ error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_MARKDOWN_MAX_BYTES }, 413);
+}
+
 function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Response {
   switch (out.kind) {
     case "staged": {
@@ -612,6 +614,7 @@ function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Res
       return c.json({ error: "inbox is full", code: "inbox_full", limit: INBOX_ITEM_CAP }, 429);
     // The same bodies and headers the reading verbs give these outcomes.
     case "rate_limited":
+    case "quota_exhausted":
     case "guard_unavailable":
     case "tenant_inactive":
       return respondIntake(c, out);

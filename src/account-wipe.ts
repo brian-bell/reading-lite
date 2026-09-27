@@ -100,6 +100,7 @@
  * figure, not an audited one.
  */
 import {
+  countTenantDataRows,
   tearDownAccount,
   type AccountTeardownEnv,
   type PrefixVerdict,
@@ -125,11 +126,8 @@ import {
 } from "./control-plane/wipe-envelope";
 import { tenantDataPlaneEnabled, tenantKeyRoot } from "./modules/stores/tenant-root";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
-import {
-  countTenantReadings,
-  deleteTenantReadings,
-} from "./modules/stores/postgres/manifest-rows";
-import { countTenantInboxItems, deleteTenantInboxItems } from "./modules/stores/postgres/inbox-store";
+import { deleteTenantReadings } from "./modules/stores/postgres/manifest-rows";
+import { deleteTenantInboxItems } from "./modules/stores/postgres/inbox-store";
 import { RateLimitedError } from "./modules/http-retry";
 
 export { AccountWipeProgressConflictError } from "./control-plane/wipe-progress";
@@ -418,8 +416,8 @@ async function fanOutWith(
       } else if (stored.completedAtMs !== null) {
         // Finished. Reopen if anything the wipe owns turned up after the fact —
         // objects under the prefix, or reading or inbox rows a writer committed
-        // past the fence. Rows have to count on their own: teardown refuses while any
-        // stand (`rows_remain`), and if only objects reopened the wipe, a
+        // past the fence. Rows have to count on their own: teardown refuses
+        // while any stand (`rows_remain`), and if only objects reopened the wipe, a
         // tenant with a clean prefix and one stray row would be handed to
         // teardown, refused, and handed back on every tick forever, with
         // nothing in the system able to delete that row.
@@ -593,7 +591,9 @@ async function runAccountWipeJob(
   const deleteRows = async (advance?: WipePhase) => {
     const next = advance === undefined ? null : { ...progress, phase: advance, updatedAtMs: now() };
     rowsDeleted += await sql.transaction(async (tx) => {
-      const deleted = (await deleteTenantReadings(tx, tenantId)) + (await deleteTenantInboxItems(tx, tenantId));
+      // `rows_deleted` reports reading rows only; inbox items are not counted.
+      const deleted = await deleteTenantReadings(tx, tenantId);
+      await deleteTenantInboxItems(tx, tenantId);
       await tx.execute("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
       if (next) await writer.write(next, fromSql(tx));
       return deleted;
@@ -686,9 +686,10 @@ async function runAccountWipeJob(
   // the only one of an `inbox_items` row, and each takes `users` FOR SHARE
   // and requires `active` in the same transaction as its insert:
   // `beginAccountDeletion`'s status UPDATE therefore waited on every insert
-  // already in flight, and every later one reads `deleting` and gives up. Do not read the shared transaction as doing that job — under READ
-  // COMMITTED the count takes no lock on `readings` and would not fence an
-  // inserter on its own.
+  // already in flight, and every later one reads `deleting` and gives up. Do
+  // not read the shared transaction as doing that job — under READ COMMITTED
+  // the count takes no lock on either table and would not fence an inserter
+  // on its own.
   //
   // What the shared transaction does buy is a sibling delivery: `complete` is
   // conditional on the lease this count was taken under, so a sibling that
@@ -696,7 +697,8 @@ async function runAccountWipeJob(
   // rather than stamping a completion over the owner's work.
   const completedAtMs = now();
   const done = await sql.transaction(async (tx) => {
-    const remaining = (await countTenantReadings(tx, tenantId)) + (await countTenantInboxItems(tx, tenantId));
+    const remaining = await countTenantDataRows(fromSql(tx), tenantId);
+    if (remaining === null) throw new Error(`account_wipe could not count reading rows for ${tenantId}`);
     if (remaining > 0) throw new AccountWipeRowsRemainingError(tenantId, remaining);
     return writer.complete(progress, completedAtMs, false, fromSql(tx));
   });
@@ -781,13 +783,8 @@ export async function handleAccountWipeDeadLetter(msg: {
  * the tenant to a teardown that will refuse it forever.
  */
 async function tenantHasWipeRows(db: ControlPlaneDb, tenantId: TenantId): Promise<boolean> {
-  const row = await db.first<{ remaining: number }>(
-    `SELECT (SELECT count(*) FROM readings WHERE tenant_id = ?)
-          + (SELECT count(*) FROM inbox_items WHERE tenant_id = ?) AS remaining`,
-    tenantId,
-    tenantId,
-  );
-  return !row || row.remaining > 0;
+  const remaining = await countTenantDataRows(db, tenantId);
+  return remaining === null || remaining > 0;
 }
 
 async function prefixHasObjects(bucket: R2Bucket, keyRoot: string): Promise<boolean> {

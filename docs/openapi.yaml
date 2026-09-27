@@ -1282,7 +1282,8 @@ paths:
         One item per URL: re-staging a URL overwrites its Markdown and title
         (an omitted title clears it) and keeps its id (200, `replaced: true`).
         A ready or pending reading that already owns the URL is returned
-        (200 `existing`) and nothing is staged. A failed owner is named as
+        (200 `existing`), nothing is staged, and any item staged for the URL
+        earlier is discarded. A failed owner is named as
         `corpus_reading`. Markdown is capped at 128,000 bytes (413) and a
         tenant at 200 items (429 `inbox_full` for a new URL; an overwrite is
         always allowed).
@@ -1321,7 +1322,9 @@ paths:
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "413":
-          description: Markdown over 128,000 bytes (UTF-8)
+          description: |
+            Markdown over 128,000 bytes (UTF-8), or a request body whose
+            Content-Length could not hold an acceptable item
           content:
             application/json:
               schema:
@@ -2221,14 +2224,22 @@ components:
         title:
           type: string
           minLength: 1
+          maxLength: 1000
         markdown:
           type: string
           minLength: 1
           description: At most 128,000 bytes as UTF-8 (413 above)
 
     InboxItemMeta:
+      description: |
+        An inbox item without its Markdown. The field set lives in
+        InboxItemFields so InboxItem can extend it; both stay closed.
+      allOf:
+        - $ref: "#/components/schemas/InboxItemFields"
+      unevaluatedProperties: false
+
+    InboxItemFields:
       type: object
-      additionalProperties: false
       required: [id, url, title, markdown_bytes, created_at, updated_at]
       properties:
         id:
@@ -2251,13 +2262,14 @@ components:
 
     InboxItem:
       allOf:
-        - $ref: "#/components/schemas/InboxItemMeta"
+        - $ref: "#/components/schemas/InboxItemFields"
         - type: object
           required: [markdown]
           properties:
             markdown:
               type: string
               minLength: 1
+      unevaluatedProperties: false
 
     ListInboxResponse:
       type: object

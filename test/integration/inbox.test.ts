@@ -136,6 +136,19 @@ describe("POST /api/inbox", () => {
     expect(await tableCount("inbox_items", tenantId)).toBe(0);
   });
 
+  it("discards an item staged before a ready owner took the URL", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/owned-later";
+    expect((await stage(token, { source_url: url, markdown: "# First" })).status).toBe(201);
+    await readingsOf(tenantId).seed(await readyManifest("rd_LATER0001", { url }));
+
+    const res = await stage(token, { source_url: url, markdown: "# Corrected" });
+
+    expect(res.status).toBe(200);
+    expect(PostInboxExistingResponseSchema.parse(await res.json()).reading.id).toBe("rd_LATER0001");
+    expect(await tableCount("inbox_items", tenantId)).toBe(0);
+  });
+
   it("stages for a failed owner and names it, so promote can re-import it in place", async () => {
     const { tenantId, token } = await tenant();
     const url = "https://example.com/owned-failed";
@@ -165,7 +178,25 @@ describe("POST /api/inbox", () => {
       limit_bytes: 128_000,
     });
 
-    // The refusal was not charged: the one request this hour still stages.
+    // A body too large to hold an acceptable item is refused from its
+    // Content-Length, before parsing.
+    const hugeBody = JSON.stringify({ source_url: "https://example.com/big", markdown: "a".repeat(900_000) });
+    const huge = await createApp({ services: services() }).request(
+      "/api/inbox",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+          "content-length": String(hugeBody.length),
+        },
+        body: hugeBody,
+      },
+      env,
+    );
+    expect(huge.status).toBe(413);
+
+    // Neither refusal was charged: the one request this hour still stages.
     const atCap = await stage(token, { source_url: "https://example.com/big", markdown: "é".repeat(64_000) });
     expect(atCap.status).toBe(201);
     expect(await tableCount("inbox_items", tenantId)).toBe(1);
@@ -211,10 +242,12 @@ describe("POST /api/inbox", () => {
     expect(await tableCount("inbox_items", tenantId)).toBe(0);
   });
 
-  it("rejects a body without a web source_url", async () => {
+  it.each([
+    ["a non-web source_url", { source_url: "ftp://example.com/a", markdown: "x" }],
+    ["a title over 1000 characters", { source_url: "https://example.com/a", markdown: "x", title: "t".repeat(1001) }],
+  ])("rejects a body with %s", async (_label, body) => {
     const { token } = await tenant();
-    const res = await stage(token, { source_url: "ftp://example.com/a", markdown: "x" });
-    expect(res.status).toBe(400);
+    expect((await stage(token, body)).status).toBe(400);
   });
 });
 

@@ -197,14 +197,7 @@ export class ReadingIntake {
   }
 
   private usageOutcome(decision: UsageDecision): IntakeOutcome | null {
-    if (decision.ok) return null;
-    if (decision.reason === "request_rate") {
-      return { kind: "rate_limited", limit: "request_rate", resetAtMs: decision.resetAtMs ?? nowMs(this.deps.services) };
-    }
-    if (decision.reason === "hourly" || decision.reason === "monthly") {
-      return { kind: "quota_exhausted", limit: decision.reason, resetAtMs: decision.resetAtMs ?? nowMs(this.deps.services) };
-    }
-    return { kind: "guard_unavailable" };
+    return usageDenial(decision, this.deps.services);
   }
 
   private async reserveForActivation(opId: string): Promise<IntakeOutcome | null> {
@@ -550,7 +543,22 @@ function startRefused(
   return RETRY;
 }
 
-function nowMs(services: { now: () => string }): number {
+export type UsageDenial = Extract<IntakeOutcome, { kind: "rate_limited" | "quota_exhausted" | "guard_unavailable" }>;
+
+// A usage guard's refusal as an outcome, or null when it admitted. Shared with
+// inbox stage, so every write verb maps a denial the same way.
+export function usageDenial(decision: UsageDecision, services: { now: () => string }): UsageDenial | null {
+  if (decision.ok) return null;
+  if (decision.reason === "request_rate") {
+    return { kind: "rate_limited", limit: "request_rate", resetAtMs: decision.resetAtMs ?? nowMs(services) };
+  }
+  if (decision.reason === "hourly" || decision.reason === "monthly") {
+    return { kind: "quota_exhausted", limit: decision.reason, resetAtMs: decision.resetAtMs ?? nowMs(services) };
+  }
+  return { kind: "guard_unavailable" };
+}
+
+export function nowMs(services: { now: () => string }): number {
   const parsed = Date.parse(services.now());
   return Number.isFinite(parsed) ? parsed : Date.now();
 }

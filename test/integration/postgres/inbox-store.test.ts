@@ -90,6 +90,26 @@ describe("PgInboxStore.stage", () => {
     expect(await inboxRows(tenant)).toBe(1);
   });
 
+  // Discard takes no advisory lock, so the row a re-stage saw can be gone by
+  // the time it upserts: that is a new item, and must say so.
+  it("reports a new item when the staged row is discarded before the upsert", async () => {
+    const tenant = await mintTenant();
+    const inbox = pgInboxStoreFor(sql, tenant, clock());
+    await inbox.stage({ url: "https://example.com/a", markdown: "first" });
+    const other = testSql();
+    const spy = interceptSql(/INSERT INTO inbox_items/, async () => {
+      await pgInboxStoreFor(other, tenant, clock()).discard("in_ID00000001");
+      return "pass" as const;
+    });
+    try {
+      const out = await inbox.stage({ url: "https://example.com/a", markdown: "second" });
+      expect(out).toMatchObject({ kind: "staged", replaced: false, item: { id: "in_ID00000002" } });
+    } finally {
+      spy.mockRestore();
+      await other.end();
+    }
+  });
+
   // Promote deletes only the version it loaded, so a re-stage must always
   // move updated_at, even within the clock's millisecond.
   it("moves updated_at forward on a re-stage within the same millisecond", async () => {

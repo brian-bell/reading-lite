@@ -42,9 +42,9 @@ searchable until then.
   R2: it is input awaiting review, not captured content.
 - **Stage** (`POST /api/inbox`, `src/inbox/stage.ts`) — writes or overwrites
   the URL's item (the id is kept) under the tenant's `users` row `FOR SHARE`,
-  like a claim. Before writing it resolves the URL's owner read-only: a ready
-  or pending owner is returned and nothing is staged; a failed owner is named
-  on the item. Charged against the request rate only.
+  like a claim. Before writing it resolves the URL's owner: a ready or
+  pending owner is returned, nothing is staged, and an item staged for the URL
+  earlier is discarded; a failed owner is named on the item. Charged against the request rate only.
 - **Promote** (a later slice) — turns an item into a reading through
   `ReadingIntake.importMarkdown`, then deletes the item only if it is still the
   version that was promoted (`deleteIfUnchanged`). The reading quota and paid
