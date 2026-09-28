@@ -66,6 +66,7 @@ const CONTROL_PLANE_TABLES = [
   "dev_mail_outbox",
   "digest_deliveries",
   "relationship_refresh_jobs",
+  "tension_refresh_jobs",
   "wipe_progress",
   "account_deletions",
   "archive_exports",

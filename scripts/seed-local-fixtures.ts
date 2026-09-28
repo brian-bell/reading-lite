@@ -82,9 +82,9 @@ export interface PostgresSeedResult {
 }
 
 // seed:local replaces the tenant's readings: deleting a reading cascades its
-// attempts, URL claim and embedding. Relationship refresh jobs reference only
-// the tenant, so they are cleared explicitly, as purge does, or a stale job
-// would outlive its reading. A reseed starts clean.
+// attempts, URL claim and embedding. Relationship and tension refresh jobs
+// reference only the tenant, so they are cleared explicitly, as purge does, or
+// a stale job would outlive its reading. A reseed starts clean.
 export async function replaceTenantReadings(
   tx: SqlQuery,
   tenantId: string,
@@ -92,6 +92,7 @@ export async function replaceTenantReadings(
   attempts: readonly ProcessingAttempt[] = [],
 ): Promise<void> {
   await tx.query("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
+  await tx.query("DELETE FROM tension_refresh_jobs WHERE tenant_id = $1", [tenantId]);
   await tx.query("DELETE FROM readings WHERE tenant_id = $1", [tenantId]);
   for (const reading of rows) await writeReadingRows(tx, reading);
   for (const attempt of attempts) await upsertAttempt(tx, tenantId, attempt);

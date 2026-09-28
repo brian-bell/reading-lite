@@ -154,6 +154,26 @@ async function refreshJobIds(tenantId: string): Promise<string[]> {
   return rows.map((row) => row.reading_id);
 }
 
+// A tension refresh checkpoint: keyed by a pair, with no foreign key to either reading.
+async function seedTensionJob(tenantId: string, a: string, b: string): Promise<void> {
+  await db().run(
+    `INSERT INTO tension_refresh_jobs (tenant_id, reading_a, reading_b, run_at, owner, a_version, b_version)
+       VALUES (?, ?, ?, ?, 'owner', 'va', 'vb')`,
+    tenantId,
+    a,
+    b,
+    toTimestamp(NOW_MS),
+  );
+}
+
+async function tensionJobPairs(tenantId: string): Promise<string[]> {
+  const rows = await db().all<{ reading_a: string; reading_b: string }>(
+    "SELECT reading_a, reading_b FROM tension_refresh_jobs WHERE tenant_id = ? ORDER BY reading_a, reading_b",
+    tenantId,
+  );
+  return rows.map((row) => `${row.reading_a}|${row.reading_b}`);
+}
+
 // An inbox item (db/migrations/0008): Markdown staged under no reading row.
 async function seedInboxItem(tenantId: string, id: string): Promise<void> {
   await db().run(
@@ -369,21 +389,25 @@ describe("account wipe job", () => {
     expect(await readingIds()).toEqual([]);
   });
 
-  // `relationship_refresh_jobs` hangs off no reading row, so nothing cascades
-  // it away with the readings. A checkpoint left behind cannot spend (the
-  // refresh writes require an `active` users row), but the wipe is what
-  // removes the account's data, so it clears them itself — per tenant, which
-  // is what this pins.
+  // `relationship_refresh_jobs` and `tension_refresh_jobs` hang off no reading
+  // row, so nothing cascades them away with the readings. A checkpoint left
+  // behind cannot spend (the refresh writes require an `active` users row),
+  // but the wipe is what removes the account's data, so it clears them itself
+  // — per tenant, which is what this pins.
   it("clears the tenant's refresh checkpoints with its rows, and leaves another tenant's alone", async () => {
     await seedReadings([ID_A]);
     await markDeleting(OTHER_TENANT_ID, PAST_GRACE);
     await seedRefreshJob(OTHER_TENANT_ID, ID_A);
     await seedRefreshJob(FOUNDER_TENANT_ID, ID_A);
+    await seedTensionJob(OTHER_TENANT_ID, ID_A, ID_B);
+    await seedTensionJob(FOUNDER_TENANT_ID, ID_A, ID_B);
 
     expect((await processAccountWipeJob(envelope(), wipeEnv(), wipeDeps())).kind).toBe("complete");
 
     expect(await refreshJobIds(OTHER_TENANT_ID)).toEqual([]);
     expect(await refreshJobIds(FOUNDER_TENANT_ID)).toEqual([ID_A]);
+    expect(await tensionJobPairs(OTHER_TENANT_ID)).toEqual([]);
+    expect(await tensionJobPairs(FOUNDER_TENANT_ID)).toEqual([`${ID_A}|${ID_B}`]);
   });
 
   // Inbox items hang off no reading row either, and teardown refuses while

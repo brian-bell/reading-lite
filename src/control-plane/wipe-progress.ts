@@ -8,7 +8,8 @@
  *
  * `rows` deletes the tenant's reading rows — embeddings, revisions, URLs,
  * relationships and attempts by cascade — and its `relationship_refresh_jobs`
- * checkpoints, and advances the phase, all in one transaction. `objects` pages
+ * and `tension_refresh_jobs` checkpoints, and advances the phase, all in one
+ * transaction. `objects` pages
  * the tenant's R2 prefix. `done` is terminal. Rows go first: a reading whose
  * objects outlive its row is invisible, where the reverse would be a listed
  * reading whose content 404s. D1's `vectors` phase, its Vectorize bookkeeping

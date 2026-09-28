@@ -61,6 +61,11 @@ describe("PostgreSQL residue", () => {
       [tenant.tenantId],
     );
     await sql.execute(
+      `INSERT INTO tension_refresh_jobs (tenant_id, reading_a, reading_b, run_at, owner, a_version, b_version)
+       VALUES ($1, 'rd_a', 'rd_b', now(), 'owner', 'va', 'vb')`,
+      [tenant.tenantId],
+    );
+    await sql.execute(
       `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
        VALUES ($1, 'in_residue', 'https://example.com/residue', $2, '# staged', now(), now())`,
       [tenant.tenantId, "d".repeat(64)],
@@ -71,6 +76,7 @@ describe("PostgreSQL residue", () => {
       "pg.reading_embeddings",
       "pg.inbox_items",
       "pg.corpus_refresh_state",
+      "pg.tension_refresh_jobs",
       "pg.archive_exports",
       "pg.users",
     ]) {

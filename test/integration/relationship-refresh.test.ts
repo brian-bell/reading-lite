@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import worker, { type Env } from "../../src/index";
 import { REFRESH_CRON, REFRESH_SCAN_SIZE, consumeRelationshipRefresh, scheduleRelationshipRefresh, type RefreshEnvelope } from "../../src/relationship-refresh";
-import { r2KeyLayout } from "../../src/modules/stores/layout";
+import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
 import { PgSimilarityStore } from "../../src/modules/stores/postgres/similarity-store";
 import type { SimilarityMatch } from "../../src/modules/stores/similarity";
 import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, founderTenant } from "../helpers/tenant-fixtures";
@@ -70,6 +70,26 @@ async function drainScans() {
   throw new Error("scan continuation loop");
 }
 const judges = () => queued.filter(x => x.kind === "judge");
+const tensions = () => queued.flatMap(x => x.kind === "tension" ? [`${x.a.id}|${x.b.id}`] : []);
+
+// Readings the tension pre-filter admits: summary text and shared keywords.
+async function seedTensionable(n: number, overrides: (i: number) => Partial<Manifest> = () => ({})): Promise<Manifest[]> {
+  const manifests = await seed(n);
+  const store = testReadingsFor(founderTenant());
+  return Promise.all(manifests.map(async (m, i) => {
+    const next = { ...m, title: `Reading ${i}`, tldr: `Summary ${i}`, summary_markdown: `Stored summary ${i}.`,
+      keywords: ["alpha", "beta", "gamma"], ...overrides(i) };
+    await store.seed(next);
+    return next;
+  }));
+}
+// Every reading is every other reading's floored neighbour.
+function allNeighbours(manifests: Manifest[]) {
+  query.mockImplementation(async (id) => [
+    { id, score: 1, url: "" },
+    ...manifests.filter(m => m.id !== id).map(m => ({ id: m.id, score: 0.9, url: "" })),
+  ]);
+}
 
 describe("relationship refresh scan", () => {
   it("finishes all scan shards before enqueueing capped judges, and resumes next night", async () => {
@@ -133,10 +153,10 @@ describe("relationship refresh scan", () => {
     expect(runtime.ACCOUNT_WIPE_JOBS.send).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid caps before writes", async () => {
+  it.each(["REFRESH_MAX_JUDGEMENTS", "REFRESH_MAX_TENSION_JUDGEMENTS"] as const)("rejects an invalid %s before writes", async (name) => {
     for (const cap of ["0", "-1", "1.5", "abc", "1001"]) {
-      runtime.REFRESH_MAX_JUDGEMENTS = cap;
-      await expect(scheduleRelationshipRefresh(runtime, NOW)).rejects.toThrow(/REFRESH_MAX_JUDGEMENTS/);
+      runtime[name] = cap;
+      await expect(scheduleRelationshipRefresh(runtime, NOW)).rejects.toThrow(name);
     }
     expect(await env.READINGS_BUCKET.get(KEY())).toBeNull();
     expect(queued).toEqual([]);
@@ -309,6 +329,99 @@ describe("relationship refresh scan", () => {
       readingId: "rd_0000000000", keyPrefix: "readings/test",
     } }] } as unknown as MessageBatch<unknown>, inert);
     expect(ack).toHaveBeenCalledOnce();
+  });
+
+  it("collects each eligible pair once and dispatches pairs after the connection judges, under their own cap", async () => {
+    const manifests = await seedTensionable(3);
+    allNeighbours(manifests);
+    runtime.REFRESH_MAX_TENSION_JUDGEMENTS = "2";
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    const [a, b, c] = manifests.map(m => m.id);
+    expect(judges()).toHaveLength(2);
+    expect(tensions()).toEqual([`${a}|${b}`, `${a}|${c}`]);
+    const kinds = queued.map(x => x.kind);
+    expect(kinds.indexOf("tension")).toBeGreaterThan(kinds.lastIndexOf("judge"));
+    expect(queued.find(x => x.kind === "tension")).toEqual({
+      version: 1, kind: "tension", tenantId: FOUNDER_TENANT_ID, runAt: new Date(NOW).toISOString(),
+      a: { id: a, key_prefix: expect.stringMatching(/^readings\//) }, b: { id: b, key_prefix: expect.stringMatching(/^readings\//) },
+    });
+    // The next night finishes the same scan's remainder of both kinds.
+    await scheduleRelationshipRefresh(runtime, NOW + 86_400_000);
+    await drainScans();
+    expect(judges()).toHaveLength(3);
+    expect(tensions()).toEqual([`${a}|${b}`, `${a}|${c}`, `${b}|${c}`]);
+    expect(query).toHaveBeenCalledTimes(3);
+  });
+
+  it("collects no pair that is already judged or below the overlap filter", async () => {
+    const [a, b] = ["rd_0000000000", "rd_0000000001"];
+    const judgedWith = (partner: string) => ({ tensions_judged: [{ id: partner, judged_at: "2026-09-02T00:00:00.000Z" }] });
+    const manifests = await seedTensionable(3, i =>
+      i === 0 ? judgedWith(b) : i === 1 ? judgedWith(a) : { keywords: ["unrelated"] });
+    allNeighbours(manifests);
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(tensions()).toEqual([]);
+  });
+
+  it("does not hold the next night's scan for leftover pairs; the fresh scan finds them again", async () => {
+    const manifests = await seedTensionable(3);
+    allNeighbours(manifests);
+    runtime.REFRESH_MAX_JUDGEMENTS = "100";
+    runtime.REFRESH_MAX_TENSION_JUDGEMENTS = "1";
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(tensions()).toHaveLength(1);
+    await scheduleRelationshipRefresh(runtime, NOW + 86_400_000);
+    await drainScans();
+    expect(query).toHaveBeenCalledTimes(6);
+    const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ run_at: string; tension_candidates: unknown[] }>();
+    expect(cursor.run_at).toBe(new Date(NOW + 86_400_000).toISOString());
+    expect(cursor.tension_candidates).toHaveLength(3);
+    expect(tensions()).toHaveLength(2);
+  });
+
+  it("starts the new night's fresh scan when a rolled-over tension batch confirms, not the old leftover pairs", async () => {
+    const manifests = await seedTensionable(3);
+    allNeighbours(manifests);
+    runtime.REFRESH_MAX_JUDGEMENTS = "100";
+    runtime.REFRESH_MAX_TENSION_JUDGEMENTS = "1";
+    await scheduleRelationshipRefresh(runtime, NOW);
+    // Drive the night until a tension batch is reserved, then lose its send.
+    for (let count = 0; count < 100; count++) {
+      const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ tension_pending: unknown[] }>();
+      if (cursor.tension_pending.length > 0) break;
+      await deliver(queued.splice(queued.findIndex(x => x.kind === "scan"), 1)[0]!);
+    }
+    queued = queued.filter(x => x.kind !== "scan");
+    const tomorrow = new Date(NOW + 86_400_000).toISOString();
+    await scheduleRelationshipRefresh(runtime, NOW + 86_400_000);
+    await drainScans();
+    const sent = queued.flatMap(x => x.kind === "tension" ? [x.runAt] : []);
+    expect(sent).toEqual([new Date(NOW).toISOString(), tomorrow]); // the reserved batch, then the fresh scan's
+    expect(query).toHaveBeenCalledTimes(6);
+    const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ run_at: string; tension_dispatched: number }>();
+    expect(cursor.run_at).toBe(tomorrow);
+    expect(cursor.tension_dispatched).toBe(1);
+  });
+
+  it("continues a cursor written before tension pairs existed, dispatching pairs only from the next night", async () => {
+    const manifests = await seedTensionable(2);
+    allNeighbours(manifests);
+    const runAt = new Date(NOW).toISOString();
+    await env.READINGS_BUCKET.put(KEY(), JSON.stringify({
+      version: 1, token: "legacy", run_at: runAt, budget_at: runAt, limit: 2, dispatched: 0,
+      targets: manifests.map(m => ({ id: m.id, key_prefix: buildKeyPrefix(m.id, m.created_at) })),
+      scan_offset: 0, candidates: [], judge_offset: 0, pending: [],
+    }));
+    await deliver({ version: 1, kind: "scan", tenantId: FOUNDER_TENANT_ID, token: "legacy" });
+    await drainScans();
+    expect(judges()).toHaveLength(2);
+    expect(tensions()).toEqual([]);
+    await scheduleRelationshipRefresh(runtime, NOW + 86_400_000);
+    await drainScans();
+    expect(tensions()).toEqual([manifests.map(m => m.id).join("|")]);
   });
 
   it.each([1, 2])("uses a new nightly cap of %i after recovering a prior pending batch", async (limit) => {

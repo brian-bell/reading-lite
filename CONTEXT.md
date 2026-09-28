@@ -190,6 +190,11 @@ searchable until then.
 - **Refresh scan** — a gated nightly, founder-tenant full scan of ready readings,
   in queue shards of 25. It reuses the offline neighbourhood-drift rules and
   only reads reading data. All shards finish before judge fan-out starts.
+- **Tension pair** — two readings, one in the other's floored ready
+  neighbourhood, stored canonically (`a < b`). The scan collects every pair that
+  clears the overlap pre-filter and is not already judged; pairs dispatch after
+  the connection judges, under their own nightly cap. Leftover pairs are not
+  carried: the next night's fresh scan finds them again.
 - **Refresh cursor** — tenant `index/refresh-cursor.json`, CAS-written with scan
   targets, flagged candidates and dispatch progress. A nightly judgement cap
   reserves pending batches before send and carries the remainder to later nights.
@@ -200,7 +205,9 @@ searchable until then.
   an uncertain dispatch is not repeated by another delivery. A saved relationship
   patch and resulting-reading hash let a replay publish it with one
   compare-and-replace on the reading's row, without another provider call.
-  Reading purge and account teardown remove checkpoints.
+  `tension_refresh_jobs` is the same per pair, replaying a saved judgement to
+  both readings in one transaction. Reading purge (either side of a pair), the
+  account wipe and account teardown remove checkpoints.
 
 ## Operator surface
 

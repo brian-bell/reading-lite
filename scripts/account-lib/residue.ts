@@ -75,6 +75,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
     ["inbox_items", "tenant_id = ?", [tenant]],
     ["corpus_refresh_state", "tenant_id = ?", [tenant]],
     ["relationship_refresh_jobs", "tenant_id = ?", [tenant]],
+    ["tension_refresh_jobs", "tenant_id = ?", [tenant]],
     ["users", "id = ?", [tenant]],
     ["sessions", "user_id = ?", [tenant]],
     ["api_tokens", "user_id = ?", [tenant]],

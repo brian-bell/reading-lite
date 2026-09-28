@@ -87,8 +87,8 @@ The phases run in order:
 1. `rows` deletes every reading row the tenant owns. Revisions, URLs,
    relationships, attempts and embeddings go with them by cascade, so a reading
    leaves search as it leaves the list. It also deletes the tenant's
-   `relationship_refresh_jobs` checkpoints, which name a reading but hold no
-   foreign key to one and so cascade from nothing. A leftover checkpoint cannot
+   `relationship_refresh_jobs` and `tension_refresh_jobs` checkpoints, which
+   name readings but hold no foreign key to one and so cascade from nothing. A leftover checkpoint cannot
    spend — the refresh writes require an `active` users row — but removing the
    account's data is the wipe's job rather than teardown's. It deletes the
    tenant's `inbox_items` for the same reason: they name no reading, and
@@ -2825,7 +2825,9 @@ Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
 `RELATIONSHIP_REFRESH=1` is configured in staging and production. Staging uses
-`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=100`. The
+`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=100`.
+`REFRESH_MAX_TENSION_JUDGEMENTS` caps tension pairs the same way: 2 in staging,
+100 in production. The
 owner-authorized single actual staging run passed on 2026-09-08 before
 production enablement. See [staging evidence](relationship-refresh-staging.md).
 Gate-off queue deliveries acknowledge and discard without storage/provider
@@ -2870,6 +2872,7 @@ for diagnosis rather than silently restarting a run.
 Issue #175 slice 3 consumes judge jobs with the configured OpenAI or Anthropic
 relationship adapter. It reads the stored summary and current floored neighbours;
 it does not extract, embed, re-summarize, change status, or refresh tensions.
+Tensions are the separate tension jobs described below.
 Each HTTP attempt presents the shared processing leases and passes tenant/global
 spend admission. Refresh does not consume a new-reading quota slot.
 
@@ -2898,6 +2901,49 @@ reprocessing, purged inputs, and tenant suppression stop publication; errors
 never create a failed reading. The checkpoint contains no article summary and
 is removed by reading purge, the tenant wipe, and the guarded account-teardown
 transaction.
+
+### Nightly tension pairs
+
+The same scan shards also collect tension pairs (reading-lite-mtdh): for each
+target, every reading in its floored ready neighbourhood whose pair clears the
+overlap pre-filter `ops corpus refresh-tensions` uses (a shared person or org,
+keyword Jaccard of at least 0.2, or a citation either way), is not already
+judged on both sides since either was last rewritten, and has summary text on
+both sides. Each pair is recorded once, canonically (`a < b`). A pair whose side
+is running inside `PENDING_TTL_SECONDS` is skipped at scan time. Unlike the
+operator pass, which judges pairs of the readings its report flagged, the
+nightly scan considers every pair, so the first nights work through a backlog
+and later nights see only new or reprocessed readings.
+
+Pairs dispatch as `tension` jobs `(runAt, a, b)` after the connection judges,
+reserved in batches of 25 against `REFRESH_MAX_TENSION_JUDGEMENTS` (default 100),
+which is separate from the connection cap. Only one batch of either kind is
+reserved at a time. Pairs left when the night's allowance runs out are not
+carried forward: once the connection candidates are done, the next night starts
+a fresh scan, which finds the still-unjudged pairs again. When that night's
+cron finds a batch of either kind still reserved, the fresh scan starts as soon
+as the batch's send is confirmed, so the new allowance is never spent on the old
+scan's pairs. A cursor written
+before these fields existed parses with no tension allowance, so that run
+dispatches no pairs and the next night's allowance starts them.
+
+A tension job revalidates both readings and the pair's eligibility, so a pair
+judged since the scan (by the operator, say) or whose admitting citation the
+connection judge removed makes no provider call. It takes the same leases, spend
+admission, deferrals, 429 handling and 24-hour deferral expiry as a judge job.
+`tension_refresh_jobs` holds one latest checkpoint per pair, with the same
+rules as `relationship_refresh_jobs`: claimed after admission and immediately
+before fetch, never repeated after an uncertain dispatch, and replayed from a
+saved result. The saved result is the judgement and the hash of each resulting
+reading, no summary text. Publication is one `replacePublishedSetIf`
+transaction that locks both readings in id order and writes each side's
+directional `tensions` entry and `tensions_judged` record; if either reading
+changed since dispatch, neither is written. A pair is removed from the table by
+purging either reading, by the tenant wipe, and by account teardown.
+
+The nightly job judges pairs only. The free one-sided repairs that
+`ops corpus refresh-tensions` performs (mirroring a half-written pair, dropping a
+tension whose partner was purged) remain an operator step (reading-lite-qxfh).
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
 keeps a two-judgement nightly cap; production uses one hundred.

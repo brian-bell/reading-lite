@@ -62,6 +62,7 @@ export interface Env {
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;
+  REFRESH_MAX_TENSION_JUDGEMENTS?: string;
   // Imported once as the founder legacy token. Not a runtime auth fallback.
   READER_API_TOKEN: string;
   AUTH_ROOT_SECRET: string;
