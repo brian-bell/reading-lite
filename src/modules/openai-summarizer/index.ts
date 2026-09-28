@@ -5,6 +5,7 @@ import {
   type ReadingSummary,
 } from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { redactProviderKeys } from "../provider-error-text";
 import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
@@ -212,7 +213,7 @@ export async function summarizeReading(
     const text = await response.text().catch(() => "");
     throw new OpenAIError(
       response.status,
-      openAIErrorMessage(text, response.status),
+      redactProviderKeys(openAIErrorMessage(text, response.status)),
     );
   }
 

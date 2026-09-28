@@ -18,6 +18,7 @@ import {
 } from "../../schemas/reading-summary";
 import type { SummarizationUsage } from "../../schemas/manifest";
 import { fetchWithRetry } from "../http-retry";
+import { redactProviderKeys } from "../provider-error-text";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
@@ -388,7 +389,7 @@ async function send(
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new TensionJudgementError(
-      `${response.status} tension provider error: ${providerErrorMessage(text)}`,
+      `${response.status} tension provider error: ${redactProviderKeys(providerErrorMessage(text))}`,
     );
   }
   return response;

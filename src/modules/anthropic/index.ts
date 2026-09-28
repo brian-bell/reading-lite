@@ -3,6 +3,7 @@ import {
   type ReadingSummary,
 } from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { redactProviderKeys } from "../provider-error-text";
 import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
@@ -307,7 +308,10 @@ export async function summarizeReading(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new AnthropicError(response.status, anthropicErrorMessage(text, response.status));
+      throw new AnthropicError(
+        response.status,
+        redactProviderKeys(anthropicErrorMessage(text, response.status)),
+      );
     }
 
     const json = (await response.json()) as AnthropicMessageResponse;

@@ -23,6 +23,7 @@ import { sendReadingEmail } from "./modules/email";
 import { relationshipTargetIds } from "./modules/relationship-targets";
 import { tenantIsActive } from "./control-plane/account-delete";
 import { redactEmailsInText } from "./control-plane/email";
+import { redactProviderKeys } from "./modules/provider-error-text";
 import {
   itemRequestsImmediateEmail,
   resolveImmediateNotification,
@@ -1058,9 +1059,11 @@ function errorFromUnknown(
   failedAt: string,
 ): ManifestError {
   const httpStatus = HttpStatusSchema.safeParse(e instanceof Error ? (e as { status?: unknown }).status : undefined);
+  // The adapters redact their own messages; this covers any other error whose
+  // text carries a key before it becomes a durable, returned reading error.
   return {
     code: e instanceof Error ? e.name : "unknown_error",
-    message: e instanceof Error ? e.message : String(e),
+    message: redactProviderKeys(e instanceof Error ? e.message : String(e)),
     ...(stage === undefined ? {} : { stage }),
     failed_at: failedAt,
     retryable: retryableError(e),

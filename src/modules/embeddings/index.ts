@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EMBEDDING_DIM } from "../../schemas/api";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { redactProviderKeys } from "../provider-error-text";
 
 export const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
@@ -61,7 +62,10 @@ export async function embed(input: string, deps: EmbeddingsDeps): Promise<Embedd
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new OpenAIError(response.status, openAiErrorMessage(text, response.status));
+    throw new OpenAIError(
+      response.status,
+      redactProviderKeys(openAiErrorMessage(text, response.status)),
+    );
   }
 
   const json: unknown = await response.json();
