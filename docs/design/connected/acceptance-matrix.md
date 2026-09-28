@@ -195,8 +195,9 @@ Contract: [ADR 0004](../../decisions/0004-tenant-provider-credentials.md)
   a day. It is a hosting limit and works without a provider key.
 - Read the status every 10 seconds only while queued or building
   (`refetchInterval`), and read it again after a request. This is a deliberate
-  exception to "the frontend does not poll pending manifests", which is about
-  readings. The status line is a live region.
+  exception to the rule that readings poll only on the bounded
+  [status refresh contract](#status-refresh-contract). The status line is a
+  live region.
 - Download through a plain same-origin `<a href="/api/exports/:id/download">`,
   never a blob fetch: the archive can be large. The backend's
   `Content-Disposition: attachment` makes it a download.
