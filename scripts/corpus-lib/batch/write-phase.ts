@@ -16,6 +16,7 @@ import {
 } from "../../../src/modules/manifest-drafting";
 import { parseEmitReadingResult } from "../../../src/modules/anthropic";
 import { parseSummarizeResponse } from "../../../src/modules/openai-summarizer";
+import { redactProviderKeys } from "../../../src/modules/provider-error-text";
 import type { BatchResult, EmbedResult } from "./clients";
 import type { OpenAISubmittedSidecar, Sidecar, SidecarTarget } from "./types";
 
@@ -457,7 +458,14 @@ function batchErrorMessage(error: unknown): string {
 
 function errorBlock(code: string, message: string, failedAt: string): ManifestError {
   // Bulk failures are all re-submittable: re-running the batch later is the fix.
-  return { code, message, stage: "summarize", failed_at: failedAt, retryable: true };
+  // The message is provider text headed for the reading row, so redact keys.
+  return {
+    code,
+    message: redactProviderKeys(message),
+    stage: "summarize",
+    failed_at: failedAt,
+    retryable: true,
+  };
 }
 
 // A failed published recovery or a superseded attempt no longer serves these

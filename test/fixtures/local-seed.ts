@@ -1099,7 +1099,7 @@ const FAILED_SPECS: FailedSpec[] = [
     error: {
       code: "OpenAIError",
       message:
-        "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+        "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
       stage: "summarize",
       retryable: false,
       http_status: 401,

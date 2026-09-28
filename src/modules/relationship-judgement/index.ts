@@ -6,6 +6,7 @@ import {
 } from "../../schemas/reading-summary";
 import type { SummarizationUsage } from "../../schemas/manifest";
 import { fetchWithRetry } from "../http-retry";
+import { providerErrorText } from "../provider-error-text";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
@@ -413,18 +414,8 @@ async function send(
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     throw new RelationshipJudgementError(
-      `${response.status} relationship provider error: ${providerErrorMessage(text)}`,
+      `${response.status} relationship provider error: ${providerErrorText(text, "", 500)}`,
     );
   }
   return response;
-}
-
-function providerErrorMessage(text: string): string {
-  try {
-    const json = JSON.parse(text) as { error?: { message?: string } };
-    if (json.error?.message) return json.error.message;
-  } catch {
-    // Fall through to the bounded raw response.
-  }
-  return text.slice(0, 500);
 }

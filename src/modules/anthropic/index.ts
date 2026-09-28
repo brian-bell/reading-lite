@@ -3,6 +3,7 @@ import {
   type ReadingSummary,
 } from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { providerErrorText } from "../provider-error-text";
 import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
@@ -307,7 +308,10 @@ export async function summarizeReading(
 
     if (!response.ok) {
       const text = await response.text().catch(() => "");
-      throw new AnthropicError(response.status, anthropicErrorMessage(text, response.status));
+      throw new AnthropicError(
+        response.status,
+        providerErrorText(text, `Anthropic returned ${response.status}`),
+      );
     }
 
     const json = (await response.json()) as AnthropicMessageResponse;
@@ -335,14 +339,4 @@ function addUsage(
     cache_read_input_tokens:
       (a.cache_read_input_tokens ?? 0) + (b.cache_read_input_tokens ?? 0),
   };
-}
-
-function anthropicErrorMessage(text: string, status: number): string {
-  try {
-    const json = JSON.parse(text) as { error?: { message?: string } };
-    if (json.error?.message) return json.error.message;
-  } catch {
-    /* ignore */
-  }
-  return text || `Anthropic returned ${status}`;
 }

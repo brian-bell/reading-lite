@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { EMBEDDING_DIM } from "../../schemas/api";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { providerErrorText } from "../provider-error-text";
 
 export const OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
@@ -61,7 +62,10 @@ export async function embed(input: string, deps: EmbeddingsDeps): Promise<Embedd
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new OpenAIError(response.status, openAiErrorMessage(text, response.status));
+    throw new OpenAIError(
+      response.status,
+      providerErrorText(text, `OpenAI returned ${response.status}`),
+    );
   }
 
   const json: unknown = await response.json();
@@ -75,14 +79,4 @@ export async function embed(input: string, deps: EmbeddingsDeps): Promise<Embedd
     embedding: parsed.data.data[0]!.embedding,
     usage: parsed.data.usage,
   };
-}
-
-function openAiErrorMessage(text: string, status: number): string {
-  try {
-    const json = JSON.parse(text) as { error?: { message?: string } };
-    if (json.error?.message) return json.error.message;
-  } catch {
-    /* ignore */
-  }
-  return text || `OpenAI returned ${status}`;
 }

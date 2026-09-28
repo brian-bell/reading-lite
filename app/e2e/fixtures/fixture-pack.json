@@ -297,7 +297,7 @@
       "status": "failed",
       "error": {
         "code": "OpenAIError",
-        "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+        "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
         "stage": "summarize",
         "failed_at": "2026-09-08T11:55:37.000Z",
         "retryable": false,
@@ -312,7 +312,7 @@
         "finished_at": "2026-09-08T11:55:37.000Z",
         "error": {
           "code": "OpenAIError",
-          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -1964,7 +1964,7 @@
         "status": "failed",
         "error": {
           "code": "OpenAIError",
-          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -1979,7 +1979,7 @@
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
             "code": "OpenAIError",
-            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2002,7 +2002,7 @@
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
           "code": "OpenAIError",
-          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -2017,7 +2017,7 @@
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
             "code": "OpenAIError",
-            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2054,7 +2054,7 @@
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
             "code": "OpenAIError",
-            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2121,7 +2121,7 @@
               "duration_ms": 20000,
               "error": {
                 "code": "OpenAIError",
-                "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+                "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
                 "stage": "summarize",
                 "failed_at": "2026-09-08T11:55:37.000Z",
                 "retryable": false,
@@ -5674,7 +5674,7 @@
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
           "code": "OpenAIError",
-          "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -5689,7 +5689,7 @@
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
             "code": "OpenAIError",
-            "message": "Incorrect API key provided: sk-proj-****wxyz. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,

@@ -837,8 +837,9 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
 
   // The provider's message is its own JSON error.message, with no status in
   // it, so the status has to travel as a field: 401 and 403 are what separate
-  // a key problem from any other provider error for the reader.
-  it("records the provider's HTTP status on a summarize failure", async () => {
+  // a key problem from any other provider error for the reader. The key
+  // fragment the provider echoes must not be stored or returned.
+  it("records the provider's HTTP status on a summarize failure, without the echoed key", async () => {
     const message = "Incorrect API key provided: sk-test****1234. You can find your API key at https://platform.openai.com/account/api-keys.";
     const fetchFn = makeStubFetch({
       openaiResponses: { status: 401, body: { error: { message, type: "invalid_request_error", code: "invalid_api_key" } } },
@@ -861,10 +862,18 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     await waitOnExecutionContext(ctx);
 
     const get = await app.request(`/api/readings/${id}`, { headers: { authorization: `Bearer ${TOKEN}` } }, env);
-    expect(await get.json()).toMatchObject({
+    const body = await get.json();
+    expect(body).toMatchObject({
       status: "failed",
-      error: { code: "OpenAIError", message, stage: "summarize", http_status: 401, retryable: false },
+      error: {
+        code: "OpenAIError",
+        message: "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+        stage: "summarize",
+        http_status: 401,
+        retryable: false,
+      },
     });
+    expect(JSON.stringify(body)).not.toContain("sk-test");
   });
 
   it("surfaces the recent-search window error on an old X reading", async () => {
