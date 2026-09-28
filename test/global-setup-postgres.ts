@@ -71,7 +71,8 @@ export default async function setup(): Promise<(() => Promise<void>) | void> {
     await client.query(
       `TRUNCATE users, user_settings, tenant_limits, api_tokens, api_token_scopes, system_policy, sessions,
          auth_challenges, signup_invites, dev_mail_outbox, digest_deliveries, relationship_refresh_jobs,
-         tension_refresh_jobs, wipe_progress, account_deletions, archive_exports RESTART IDENTITY`,
+         tension_refresh_jobs, wipe_progress, account_deletions, archive_exports,
+         tenant_provider_credentials RESTART IDENTITY`,
     );
   });
 

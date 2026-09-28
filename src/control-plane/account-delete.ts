@@ -3,6 +3,7 @@ import { revokeAllApiTokensForUser } from "./authenticate";
 import type { ControlPlaneDb } from "./db";
 import { parseUserId } from "./ids";
 import { toTimestamp } from "./pg-time";
+import { deleteProviderCredentials } from "./provider-credentials";
 import { revokeAllSessionsForUser } from "./sessions";
 
 // Account-deletion suppress (issue 195a / s1k.10.1). Marks the user `deleting`
@@ -98,6 +99,7 @@ async function suppress(
 ): Promise<void> {
   const userId = parseUserId(input.userId);
   if (!userId) return;
+  await deleteProviderCredentials(db, userId);
   await cancelActiveArchiveExports(db, { tenantId: userId, nowMs: input.nowMs });
   await revokeAllSessionsForUser(db, {
     userId,

@@ -17,6 +17,7 @@ const CONTROL_PLANE_TABLES = [
   "signup_invites",
   "system_policy",
   "tenant_limits",
+  "tenant_provider_credentials",
   "tension_refresh_jobs",
   "user_settings",
   "users",
@@ -69,6 +70,7 @@ describe("control-plane schema", () => {
       { from: "relationship_refresh_jobs", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "sessions", column: "user_id", to: "users", on_delete: "a" },
       { from: "tenant_limits", column: "tenant_id", to: "users", on_delete: "a" },
+      { from: "tenant_provider_credentials", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "tension_refresh_jobs", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "user_settings", column: "user_id", to: "users", on_delete: "a" },
       { from: "wipe_progress", column: "tenant_id", to: "users", on_delete: "a" },
@@ -100,6 +102,11 @@ describe("control-plane schema", () => {
       "wipe_progress.residue",
     ]);
     expect(typeOf("tenant_limits", "daily_spend_microdollars")).toBe("bigint");
+    expect(typeOf("user_settings", "daily_spend_cap_microdollars")).toBe("bigint");
+    expect(typeOf("user_settings", "summarization_effort")).toBe("text");
+    expect(typeOf("tenant_provider_credentials", "ciphertext")).toBe("bytea");
+    expect(typeOf("tenant_provider_credentials", "iv")).toBe("bytea");
+    expect(typeOf("tenant_provider_credentials", "credential_version")).toBe("integer");
     expect(typeOf("system_policy", "daily_spend_microdollars")).toBe("bigint");
     expect(typeOf("relationship_refresh_jobs", "result_json")).toBe("jsonb");
     expect(typeOf("tension_refresh_jobs", "result_json")).toBe("jsonb");
@@ -127,6 +134,32 @@ describe("control-plane schema", () => {
     ]);
   });
 
+  it("defaults summarization effort to high and leaves the reader spend cap unset", async () => {
+    await insertUser("usr_a");
+    await sql().query(
+      `INSERT INTO user_settings (
+         user_id, schema_version, notify_immediate, digest_cadence,
+         time_zone, digest_hour_local, digest_weekday, created_at, updated_at
+       ) VALUES ('usr_a', 1, true, 'off', 'UTC', 8, 1, now(), now())`,
+    );
+    const [row] = await sql().query(
+      `SELECT summarization_effort, daily_spend_cap_microdollars
+       FROM user_settings WHERE user_id = 'usr_a'`,
+    );
+    expect(row).toEqual({ summarization_effort: "high", daily_spend_cap_microdollars: null });
+
+    await sql().query(
+      `UPDATE user_settings
+       SET summarization_effort = 'low', daily_spend_cap_microdollars = 250000
+       WHERE user_id = 'usr_a'`,
+    );
+    const [updated] = await sql().query(
+      `SELECT summarization_effort, daily_spend_cap_microdollars
+       FROM user_settings WHERE user_id = 'usr_a'`,
+    );
+    expect(updated).toEqual({ summarization_effort: "low", daily_spend_cap_microdollars: 250000 });
+  });
+
   it("numbers dev mail by identity", async () => {
     const insert = () =>
       sql().query<{ id: number }>(
@@ -144,6 +177,10 @@ describe("control-plane schema", () => {
     ["an unknown archive export status", "INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at) VALUES ('exp_a', 'usr_a', 'draft', now(), now())", /archive_exports_status_check/],
     ["a zero spend ceiling", "UPDATE system_policy SET daily_spend_microdollars = 0", /system_policy_daily_spend_microdollars_check/],
     ["a settings row for no user", "INSERT INTO user_settings (user_id, schema_version, notify_immediate, digest_cadence, time_zone, digest_hour_local, digest_weekday, created_at, updated_at) VALUES ('usr_missing', 1, true, 'off', 'UTC', 8, 1, now(), now())", /user_settings_user_id_fkey/],
+    ["an unknown provider", "INSERT INTO tenant_provider_credentials (tenant_id, provider, ciphertext, iv, key_version, credential_version, last_four, status, created_at, updated_at) VALUES ('usr_a', 'anthropic', '\\x00', '\\x00', 1, 1, '1234', 'active', now(), now())", /tenant_provider_credentials_provider_check/],
+    ["an unknown credential status", "INSERT INTO tenant_provider_credentials (tenant_id, provider, ciphertext, iv, key_version, credential_version, last_four, status, created_at, updated_at) VALUES ('usr_a', 'openai', '\\x00', '\\x00', 1, 1, '1234', 'revoked', now(), now())", /tenant_provider_credentials_status_check/],
+    ["a summarization effort outside the catalog", "INSERT INTO user_settings (user_id, schema_version, notify_immediate, digest_cadence, time_zone, digest_hour_local, digest_weekday, created_at, updated_at, summarization_effort) VALUES ('usr_a', 1, true, 'off', 'UTC', 8, 1, now(), now(), 'max')", /user_settings_summarization_effort_check/],
+    ["a zero reader spend cap", "INSERT INTO user_settings (user_id, schema_version, notify_immediate, digest_cadence, time_zone, digest_hour_local, digest_weekday, created_at, updated_at, daily_spend_cap_microdollars) VALUES ('usr_a', 1, true, 'off', 'UTC', 8, 1, now(), now(), 0)", /user_settings_daily_spend_cap_microdollars_check/],
   ])("rejects %s", async (_name, statement, constraint) => {
     await insertUser("usr_a");
     await sql().query(

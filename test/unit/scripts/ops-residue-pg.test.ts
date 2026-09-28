@@ -66,6 +66,13 @@ describe("PostgreSQL residue", () => {
       [tenant.tenantId],
     );
     await sql.execute(
+      `INSERT INTO tenant_provider_credentials (
+         tenant_id, provider, ciphertext, iv, key_version, credential_version,
+         last_four, status, created_at, updated_at
+       ) VALUES ($1, 'openai', '\\x01', '\\x020123456789ab', 1, 1, '9876', 'active', now(), now())`,
+      [tenant.tenantId],
+    );
+    await sql.execute(
       `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
        VALUES ($1, 'in_residue', 'https://example.com/residue', $2, '# staged', now(), now())`,
       [tenant.tenantId, "d".repeat(64)],
@@ -78,6 +85,7 @@ describe("PostgreSQL residue", () => {
       "pg.corpus_refresh_state",
       "pg.tension_refresh_jobs",
       "pg.archive_exports",
+      "pg.tenant_provider_credentials",
       "pg.users",
     ]) {
       expect(result.findings.find((f) => f.source === source)).toMatchObject({

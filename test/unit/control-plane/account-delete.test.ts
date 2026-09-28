@@ -165,6 +165,38 @@ describe("beginAccountDeletion", () => {
     },
   );
 
+  it("removes the provider credential on start and again when already deleting", async () => {
+    const { raw, db } = await seeded();
+    const insert = () =>
+      raw.run(
+        `INSERT INTO tenant_provider_credentials (
+           tenant_id, provider, ciphertext, iv, key_version, credential_version,
+           last_four, status, created_at, updated_at
+         ) VALUES (?, 'openai', ?, ?, 1, 1, '9876', 'active', ?, ?)`,
+        USER,
+        Buffer.from("sealed"),
+        Buffer.from("0123456789ab"),
+        toTimestamp(NOW_MS),
+        toTimestamp(NOW_MS),
+      );
+    await insert();
+
+    await expect(beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS + 5 })).resolves.toEqual({
+      kind: "started",
+    });
+    expect(
+      await raw.first("SELECT tenant_id FROM tenant_provider_credentials WHERE tenant_id = ?", USER),
+    ).toBeNull();
+
+    await insert();
+    await expect(beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS + 9 })).resolves.toEqual({
+      kind: "already_deleting",
+    });
+    expect(
+      await raw.first("SELECT tenant_id FROM tenant_provider_credentials WHERE tenant_id = ?", USER),
+    ).toBeNull();
+  });
+
   it("refuses a suspended account without marking deleting", async () => {
     const { raw, db } = await seeded();
     await raw.run("UPDATE users SET status = 'suspended' WHERE id = ?", USER);

@@ -91,6 +91,11 @@ class_name = "GlobalUsageGuard"
 # `wrangler secret put READER_API_TOKEN --env production`):
 #   READER_API_TOKEN     — imported once into PostgreSQL as the founder's legacy bearer
 #   AUTH_ROOT_SECRET     — 256-bit hex HKDF root for credential HMACs
+#   PROVIDER_KEY_SECRET  — 256-bit hex HKDF root for tenant provider keys
+#                          (AES-256-GCM). Unset until a tenant key is stored.
+#                          PROVIDER_KEY_PREVIOUS_SECRET is the previous root
+#                          during a rotation window. PROVIDER_KEY_VERSION and
+#                          PROVIDER_KEY_PREVIOUS_VERSION default to 1.
 #   OPENAI_API_KEY       — always required: embeddings + default summarizer
 #   X_API_BEARER_TOKEN    — required only for X/Twitter status URL imports
 #   ANTHROPIC_API_KEY    — required only for SUMMARIZER_PROVIDER=anthropic
