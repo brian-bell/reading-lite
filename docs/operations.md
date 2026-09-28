@@ -2920,7 +2920,10 @@ reserved in batches of 25 against `REFRESH_MAX_TENSION_JUDGEMENTS` (default 100)
 which is separate from the connection cap. Only one batch of either kind is
 reserved at a time. Pairs left when the night's allowance runs out are not
 carried forward: once the connection candidates are done, the next night starts
-a fresh scan, which finds the still-unjudged pairs again. A cursor written
+a fresh scan, which finds the still-unjudged pairs again. When that night's
+cron finds a batch of either kind still reserved, the fresh scan starts as soon
+as the batch's send is confirmed, so the new allowance is never spent on the old
+scan's pairs. A cursor written
 before these fields existed parses with no tension allowance, so that run
 dispatches no pairs and the next night's allowance starts them.
 

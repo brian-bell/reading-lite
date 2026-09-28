@@ -127,6 +127,17 @@ function runnable(c: Cursor): boolean {
   return c.pending.length > 0 || c.tension_pending.length > 0 || c.scan_offset < c.targets.length ||
     judgesLeft(c) || tensionsLeft(c);
 }
+// A new night's full scan of every ready reading, sorted for stable shards.
+function freshCursor(library: { id: string; key_prefix: string; status: string }[], runAt: string, token: string,
+  limit: number, tensionLimit: number | undefined): Cursor {
+  return {
+    version: 1, token, run_at: runAt, budget_at: runAt, limit, dispatched: 0,
+    targets: library.filter(r => r.status === "ready")
+      .map(({ id, key_prefix }) => ({ id, key_prefix })).sort((a, b) => a.id.localeCompare(b.id)),
+    scan_offset: 0, candidates: [], judge_offset: 0, pending: [],
+    tension_limit: tensionLimit, tension_dispatched: 0, tension_candidates: [], tension_offset: 0, tension_pending: [],
+  };
+}
 async function enqueueScan(env: Env, tenant: TenantContext, c: Cursor): Promise<void> {
   if (runnable(c)) await env.RELATIONSHIP_REFRESH_JOBS!.send({ version: 1, kind: "scan", tenantId: tenant.tenantId, token: c.token });
 }
@@ -149,13 +160,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
     const nextNight = !c || runAt.slice(0, 10) > c.budget_at.slice(0, 10);
     if (!c || (nextNight && complete(c))) {
       const library = await pgReadingStoreFor(sql, tenant).allListItems();
-      c = {
-        version: 1, token: newId(), run_at: runAt, budget_at: runAt, limit, dispatched: 0,
-        targets: library.filter(r => r.status === "ready")
-          .map(({ id, key_prefix }) => ({ id, key_prefix })).sort((a, b) => a.id.localeCompare(b.id)),
-        scan_offset: 0, candidates: [], judge_offset: 0, pending: [],
-        tension_limit: tensionLimit, tension_dispatched: 0, tension_candidates: [], tension_offset: 0, tension_pending: [],
-      };
+      c = freshCursor(library, runAt, newId(), limit, tensionLimit);
       if (!await saveCursor(env, db, tenant, previous, c)) return;
     } else if (nextNight && c.pending.length === 0 && c.tension_pending.length === 0) {
       c = { ...c, token: newId(), budget_at: runAt, limit, dispatched: 0,
@@ -189,19 +194,31 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
   }
   const c = stored.cursor;
   // A confirmed send is where a new night's recorded allowance takes effect.
-  const rolledOver = c.rollover ? { ...c.rollover, dispatched: 0, tension_dispatched: 0, rollover: undefined } : {};
+  // When that leaves the connection work complete, the new night starts its
+  // fresh scan here, as the cron would have without a pending batch, rather
+  // than spending its tension allowance on the old scan's leftover pairs.
+  const confirmed = async (sent: Cursor): Promise<Cursor> => {
+    if (!sent.rollover) return sent;
+    const { budget_at, limit, tension_limit } = sent.rollover;
+    if (complete(sent)) {
+      const library = await pgReadingStoreFor(sql, tenant).allListItems();
+      return freshCursor(library, budget_at, sent.token, limit, tension_limit ?? sent.tension_limit);
+    }
+    return { ...sent, budget_at, limit, dispatched: 0,
+      tension_limit: tension_limit ?? sent.tension_limit, tension_dispatched: 0, rollover: undefined };
+  };
   let next: Cursor;
   if (c.pending.length > 0) {
     await env.RELATIONSHIP_REFRESH_JOBS.sendBatch(c.pending.map(target => ({ body: {
       version: 1, kind: "judge", tenantId: tenant.tenantId, runAt: c.run_at,
       readingId: target.id, keyPrefix: target.key_prefix,
     } })));
-    next = { ...c, pending: [], token: newId(), ...rolledOver };
+    next = await confirmed({ ...c, pending: [], token: newId() });
   } else if (c.tension_pending.length > 0) {
     await env.RELATIONSHIP_REFRESH_JOBS.sendBatch(c.tension_pending.map(pair => ({ body: {
       version: 1, kind: "tension", tenantId: tenant.tenantId, runAt: c.run_at, a: pair.a, b: pair.b,
     } })));
-    next = { ...c, tension_pending: [], token: newId(), ...rolledOver };
+    next = await confirmed({ ...c, tension_pending: [], token: newId() });
   } else if (c.scan_offset < c.targets.length) {
     const shard = c.targets.slice(c.scan_offset, c.scan_offset + REFRESH_SCAN_SIZE);
     const candidates = [...c.candidates];

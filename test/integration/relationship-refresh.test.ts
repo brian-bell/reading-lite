@@ -382,6 +382,30 @@ describe("relationship refresh scan", () => {
     expect(tensions()).toHaveLength(2);
   });
 
+  it("starts the new night's fresh scan when a rolled-over tension batch confirms, not the old leftover pairs", async () => {
+    const manifests = await seedTensionable(3);
+    allNeighbours(manifests);
+    runtime.REFRESH_MAX_JUDGEMENTS = "100";
+    runtime.REFRESH_MAX_TENSION_JUDGEMENTS = "1";
+    await scheduleRelationshipRefresh(runtime, NOW);
+    // Drive the night until a tension batch is reserved, then lose its send.
+    for (let count = 0; count < 100; count++) {
+      const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ tension_pending: unknown[] }>();
+      if (cursor.tension_pending.length > 0) break;
+      await deliver(queued.splice(queued.findIndex(x => x.kind === "scan"), 1)[0]!);
+    }
+    queued = queued.filter(x => x.kind !== "scan");
+    const tomorrow = new Date(NOW + 86_400_000).toISOString();
+    await scheduleRelationshipRefresh(runtime, NOW + 86_400_000);
+    await drainScans();
+    const sent = queued.flatMap(x => x.kind === "tension" ? [x.runAt] : []);
+    expect(sent).toEqual([new Date(NOW).toISOString(), tomorrow]); // the reserved batch, then the fresh scan's
+    expect(query).toHaveBeenCalledTimes(6);
+    const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ run_at: string; tension_dispatched: number }>();
+    expect(cursor.run_at).toBe(tomorrow);
+    expect(cursor.tension_dispatched).toBe(1);
+  });
+
   it("continues a cursor written before tension pairs existed, dispatching pairs only from the next night", async () => {
     const manifests = await seedTensionable(2);
     allNeighbours(manifests);
