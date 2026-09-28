@@ -35,17 +35,16 @@ describe("checkOpenAIProviderKey", () => {
         embeddingModel: EMBEDDING,
       }),
     ).toEqual({ ok: true });
-    expect(calls).toEqual([
-      {
-        url: "https://api.openai.com/v1/models",
-        init: {
-          method: "GET",
-          redirect: "manual",
-          cache: "no-store",
-          headers: { authorization: `Bearer ${KEY}` },
-        },
-      },
-    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe("https://api.openai.com/v1/models");
+    expect(calls[0]?.init).toMatchObject({
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      headers: { authorization: `Bearer ${KEY}` },
+    });
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+    expect(calls[0]?.init?.signal?.aborted).toBe(false);
   });
 
   it.each([
@@ -65,6 +64,51 @@ describe("checkOpenAIProviderKey", () => {
       }),
     ).toEqual({ ok: false, code });
     expect(calls).toHaveLength(1);
+  });
+
+  it("classifies a stalled model list as provider unavailable", async () => {
+    const fetchImpl: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (!signal) {
+          reject(new Error("missing abort signal"));
+          return;
+        }
+        const fail = () => reject(new DOMException("The operation was aborted", "AbortError"));
+        if (signal.aborted) fail();
+        else signal.addEventListener("abort", fail, { once: true });
+      });
+    expect(
+      await checkOpenAIProviderKey({
+        fetch: fetchImpl,
+        apiKey: KEY,
+        summarizationModel: SUMMARY,
+        embeddingModel: EMBEDDING,
+        timeoutMs: 20,
+      }),
+    ).toEqual({ ok: false, code: "provider_unavailable" });
+  });
+
+  it("classifies a stalled model-list body as provider unavailable", async () => {
+    const fetchImpl: typeof fetch = (_input, init) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("The operation was aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200, headers: { "content-type": "application/json" } }));
+    };
+    expect(
+      await checkOpenAIProviderKey({
+        fetch: fetchImpl,
+        apiKey: KEY,
+        summarizationModel: SUMMARY,
+        embeddingModel: EMBEDDING,
+        timeoutMs: 20,
+      }),
+    ).toEqual({ ok: false, code: "provider_unavailable" });
   });
 
   it("classifies a network failure as provider unavailable", async () => {

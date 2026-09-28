@@ -2,6 +2,7 @@ import { z } from "zod";
 
 // A redirect would carry the bearer token off this host.
 const MODELS_URL = "https://api.openai.com/v1/models";
+const MODEL_LIST_TIMEOUT_MS = 10_000;
 
 const ModelsPageSchema = z.object({
   data: z.array(z.object({ id: z.string() })),
@@ -19,7 +20,9 @@ export async function checkOpenAIProviderKey(input: {
   apiKey: string;
   summarizationModel: string;
   embeddingModel: string;
+  timeoutMs?: number;
 }): Promise<ProviderKeyCheck> {
+  const signal = AbortSignal.timeout(input.timeoutMs ?? MODEL_LIST_TIMEOUT_MS);
   let response: Response;
   try {
     response = await input.fetch(MODELS_URL, {
@@ -27,6 +30,7 @@ export async function checkOpenAIProviderKey(input: {
       redirect: "manual",
       cache: "no-store",
       headers: { authorization: `Bearer ${input.apiKey}` },
+      signal,
     });
   } catch {
     return { ok: false, code: "provider_unavailable" };
@@ -45,7 +49,7 @@ export async function checkOpenAIProviderKey(input: {
     return { ok: false, code: "provider_unavailable" };
   }
 
-  const json: unknown = await response.json().catch(() => null);
+  const json = await readJson(response, signal);
   const parsed = ModelsPageSchema.safeParse(json);
   if (!parsed.success) return { ok: false, code: "provider_unavailable" };
   const ids = new Set(parsed.data.data.map((model) => model.id));
@@ -53,6 +57,25 @@ export async function checkOpenAIProviderKey(input: {
     return { ok: false, code: "model_access" };
   }
   return { ok: true };
+}
+
+async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  if (signal.aborted) {
+    await discard(response);
+    return null;
+  }
+  return new Promise((resolve) => {
+    const finish = (value: unknown) => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(value);
+    };
+    const onAbort = () => {
+      void discard(response);
+      finish(null);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void response.json().then(finish, () => finish(null));
+  });
 }
 
 async function discard(response: Response): Promise<void> {

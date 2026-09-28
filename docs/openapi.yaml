@@ -2373,8 +2373,9 @@ components:
           type: string
           enum: [active, invalid]
         validated_at_ms:
-          type: integer
-          nullable: true
+          oneOf:
+            - type: integer
+            - type: "null"
 
     ProviderSettingsResponse:
       type: object
@@ -2393,10 +2394,11 @@ components:
         effort:
           $ref: "#/components/schemas/SummarizationEffort"
         daily_spend_cap_microdollars:
-          type: integer
-          minimum: 1
-          nullable: true
           description: The reader's own cap. Null when they have not lowered it.
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: "null"
         effective_daily_spend_microdollars:
           type: integer
           minimum: 1
@@ -2426,10 +2428,11 @@ components:
         effort:
           $ref: "#/components/schemas/SummarizationEffort"
         daily_spend_cap_microdollars:
-          type: integer
-          minimum: 1
-          nullable: true
           description: Null clears the reader's cap. A value above the operator default is refused.
+          oneOf:
+            - type: integer
+              minimum: 1
+            - type: "null"
 
     ProviderSettingsError:
       type: object
