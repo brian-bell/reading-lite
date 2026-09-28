@@ -63,6 +63,12 @@ import {
   handleRevokeApiToken,
 } from "./control-plane/token-handlers";
 import { handleGetSettings, handlePostSettings } from "./control-plane/settings-handlers";
+import {
+  handleConnectProviderKey,
+  handleDeleteProviderKey,
+  handleGetProviderSettings,
+  handleUpdateProviderPreferences,
+} from "./control-plane/provider-settings-handlers";
 import { handleDeleteAccount } from "./control-plane/account-handlers";
 import {
   handleDownloadArchiveExport,
@@ -154,6 +160,17 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/auth/settings", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.get("/api/auth/settings", (c) => handleGetSettings(c));
   app.post("/api/auth/settings", (c) => handlePostSettings(c, authNowMs()));
+  // Beside settings, not under /api/account: that mount requires recent
+  // sign-in on every method, and effort and cap changes do not. POST and
+  // DELETE are the cookie CSRF methods; PUT is exempt.
+  app.use("/api/auth/provider", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
+  app.use("/api/auth/provider/*", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
+  app.get("/api/auth/provider", (c) => handleGetProviderSettings(c));
+  app.post("/api/auth/provider", requireRecentAuth(authNowMs), (c) =>
+    handleConnectProviderKey(c, authNowMs(), services.fetch),
+  );
+  app.delete("/api/auth/provider", requireRecentAuth(authNowMs), (c) => handleDeleteProviderKey(c));
+  app.post("/api/auth/provider/preferences", (c) => handleUpdateProviderPreferences(c, authNowMs()));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 

@@ -804,6 +804,179 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
+  /api/auth/provider:
+    get:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: getProviderSettings
+      summary: Return masked provider settings
+      description: |
+        Session cookie only (bearer 403, including API and MCP tokens). CSRF
+        is not required (GET). Recent-auth is not required. Returns the
+        masked credential (or null), summarization effort, the reader's daily
+        spend cap, the effective cap, and the operator default from
+        `tenant_limits.daily_spend_microdollars`. Never returns the key.
+        Optional `X-Expected-Tenant` mismatch returns 412.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedTenant"
+      responses:
+        "200":
+          description: Masked provider settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+    post:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: connectProviderKey
+      summary: Connect or replace the OpenAI key
+      description: |
+        Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
+        Validates the key with OpenAI's free model-list endpoint and stores
+        it only when the fixed summarization model and `text-embedding-3-small`
+        are listed. A failed check stores nothing. The response is the masked
+        settings view. The key is never returned.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostProviderKeyBody"
+      responses:
+        "200":
+          description: Masked settings after the key is stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "400":
+          description: Invalid body, invalid key, or the key cannot see a required model
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorMessage"
+                  - $ref: "#/components/schemas/ProviderSettingsError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+        "503":
+          description: OpenAI's model list could not be checked. Nothing was stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsError"
+    delete:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: deleteProviderKey
+      summary: Remove the stored OpenAI key
+      description: |
+        Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
+        Deletes the credential row. Idempotent when no key is stored.
+        Returns the masked settings view with a null credential.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
+      responses:
+        "200":
+          description: Masked settings after removal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/provider/preferences:
+    post:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: updateProviderPreferences
+      summary: Change summarization effort or the daily spend cap
+      description: |
+        Session cookie plus `X-CSRF-Token`. Recent-auth is not required, the
+        same gate as `POST /api/auth/settings`. Bearer 403. Effort is
+        `low`, `medium`, or `high`. The daily cap may be lowered or cleared
+        (null) and may not be set above
+        `tenant_limits.daily_spend_microdollars`. A refused cap changes
+        nothing. Returns the masked settings view.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostProviderPreferencesBody"
+      responses:
+        "200":
+          description: Masked settings after the change
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "400":
+          description: Invalid body, or a cap above the operator default
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorMessage"
+                  - $ref: "#/components/schemas/ProviderSettingsError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
   /api/readings:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -2179,6 +2352,95 @@ components:
           minimum: 1
           maximum: 7
           description: ISO weekday, Monday=1 through Sunday=7.
+
+    SummarizationEffort:
+      type: string
+      enum: [low, medium, high]
+
+    ProviderCredentialView:
+      type: object
+      additionalProperties: false
+      required: [provider, last_four, status, validated_at_ms]
+      properties:
+        provider:
+          type: string
+          const: openai
+        last_four:
+          type: string
+          minLength: 4
+          maxLength: 4
+        status:
+          type: string
+          enum: [active, invalid]
+        validated_at_ms:
+          type: integer
+          nullable: true
+
+    ProviderSettingsResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - credential
+        - effort
+        - daily_spend_cap_microdollars
+        - effective_daily_spend_microdollars
+        - operator_daily_spend_microdollars
+      properties:
+        credential:
+          oneOf:
+            - $ref: "#/components/schemas/ProviderCredentialView"
+            - type: "null"
+        effort:
+          $ref: "#/components/schemas/SummarizationEffort"
+        daily_spend_cap_microdollars:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: The reader's own cap. Null when they have not lowered it.
+        effective_daily_spend_microdollars:
+          type: integer
+          minimum: 1
+          description: The cap enforcement uses. Never above the operator default.
+        operator_daily_spend_microdollars:
+          type: integer
+          minimum: 1
+          description: tenant_limits.daily_spend_microdollars.
+
+    PostProviderKeyBody:
+      type: object
+      additionalProperties: false
+      required: [api_key]
+      properties:
+        api_key:
+          type: string
+          minLength: 4
+          maxLength: 256
+          pattern: "^\\S+$"
+          description: OpenAI key. Stored encrypted. Never returned.
+
+    PostProviderPreferencesBody:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        effort:
+          $ref: "#/components/schemas/SummarizationEffort"
+        daily_spend_cap_microdollars:
+          type: integer
+          minimum: 1
+          nullable: true
+          description: Null clears the reader's cap. A value above the operator default is refused.
+
+    ProviderSettingsError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [invalid_key, model_access, provider_unavailable, cap_above_operator_default]
 
     HttpUrl:
       type: string

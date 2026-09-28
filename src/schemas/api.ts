@@ -219,6 +219,58 @@ export const PostAuthSettingsBodySchema = z.object({
 });
 export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
 
+export const SummarizationEffortSchema = z.enum(["low", "medium", "high"]);
+export type SummarizationEffort = z.infer<typeof SummarizationEffortSchema>;
+
+/** Masked credential. The plaintext key is never part of this shape. */
+export const ProviderCredentialViewSchema = z.object({
+  provider: z.literal("openai"),
+  last_four: z.string().length(4),
+  status: z.enum(["active", "invalid"]),
+  validated_at_ms: z.number().int().nullable(),
+});
+export type ProviderCredentialView = z.infer<typeof ProviderCredentialViewSchema>;
+
+/**
+ * GET /api/auth/provider and the write responses. `daily_spend_cap_microdollars`
+ * is the reader's own cap (null when they have not lowered it). Effective spend
+ * is that cap when it is set and still under the operator default, otherwise
+ * the operator default.
+ */
+export const ProviderSettingsResponseSchema = z.object({
+  credential: ProviderCredentialViewSchema.nullable(),
+  effort: SummarizationEffortSchema,
+  daily_spend_cap_microdollars: z.number().int().positive().nullable(),
+  effective_daily_spend_microdollars: z.number().int().positive(),
+  operator_daily_spend_microdollars: z.number().int().positive(),
+});
+export type ProviderSettingsResponse = z.infer<typeof ProviderSettingsResponseSchema>;
+
+/** POST /api/auth/provider. Connect or replace. Recent sign-in required. */
+export const PostProviderKeyBodySchema = z.object({
+  api_key: z.string().min(4).max(256).regex(/^\S+$/),
+});
+export type PostProviderKeyBody = z.infer<typeof PostProviderKeyBodySchema>;
+
+/**
+ * POST /api/auth/provider/preferences. At least one field. A null cap clears
+ * the reader's override. Same session gates as /api/auth/settings: no recent
+ * sign-in.
+ */
+export const PostProviderPreferencesBodySchema = z
+  .object({
+    effort: SummarizationEffortSchema.optional(),
+    daily_spend_cap_microdollars: z.number().int().positive().nullable().optional(),
+  })
+  .refine((body) => body.effort !== undefined || body.daily_spend_cap_microdollars !== undefined);
+export type PostProviderPreferencesBody = z.infer<typeof PostProviderPreferencesBodySchema>;
+
+export const ProviderSettingsErrorSchema = z.object({
+  error: z.string().min(1),
+  code: z.enum(["invalid_key", "model_access", "provider_unavailable", "cap_above_operator_default"]),
+});
+export type ProviderSettingsError = z.infer<typeof ProviderSettingsErrorSchema>;
+
 // Optional layout pin on /api/readings requests: `usr_{id}` or 'global'. A
 // whoami preflight is point-in-time — the gate could flip, or a rolling deploy
 // could route a later write to a different worker version. A client that sends

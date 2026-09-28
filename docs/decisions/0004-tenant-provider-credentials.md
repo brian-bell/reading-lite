@@ -1,7 +1,8 @@
 # ADR 0004: Tenant provider credentials (BYOK) and archive export
 
-- **Status:** Accepted; API and dispatch are not implemented yet
-  (`reading-lite-gh341` is open). Written before
+- **Status:** Accepted. The settings API is implemented
+  (`reading-lite-gh341.3`). Dispatch, snapshots, spend attribution, and the
+  rollout switch are not (`reading-lite-gh341` remains open). Written before
   [ADR 0005](0005-postgresql-storage.md). Credential storage is PostgreSQL.
   Processing checkpoints live on `reading_attempts.checkpoint`.
 - **Date:** 2026-09-10
@@ -100,8 +101,16 @@ operator-funded requests.
   routes with CSRF. Connect, replace, and remove also require recent sign-in (the
   existing 10-minute rule). Bearer tokens get 403, so ordinary API and MCP tokens
   cannot read or manage credentials.
+- The routes are `GET`, `POST`, and `DELETE /api/auth/provider`, beside
+  `/api/auth/settings`. `/api/account` requires recent sign-in on every method,
+  and effort and cap changes do not, so they do not live there. Connect and
+  replace are `POST` because cookie CSRF covers `POST` and `DELETE`; `PUT` is
+  exempt. `POST /api/auth/provider/preferences` changes effort and the daily cap
+  with the settings route's gates (session, CSRF, no recent sign-in).
 - Responses carry masked metadata only: provider, last four characters, status,
-  and validated time.
+  and validated time, plus effort and the daily cap (the reader's cap, the
+  effective cap, and the operator default on `tenant_limits`). The reader may
+  lower the cap and may not set it above that default.
 - **Validation** on connect and replace calls OpenAI's free model-list endpoint
   and confirms the summarization and embedding models are available. It proves
   the key is valid and has access, not that billing has credit. A failed check
