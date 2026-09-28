@@ -85,6 +85,7 @@ export async function scanResidue(remote: ScanRemote, tenant: string) {
       [tenant],
     ],
     ["user_settings", "user_id = ?", [tenant]],
+    ["tenant_provider_credentials", "tenant_id = ?", [tenant]],
     ["tenant_limits", "tenant_id = ?", [tenant]],
     ["digest_deliveries", "user_id = ?", [tenant]],
     ["wipe_progress", "tenant_id = ?", [tenant]],

@@ -46,6 +46,7 @@ const CHILD_TABLES: ReadonlyArray<{ table: string; column: string; value: string
   { table: "signup_invites", column: "email_canonical", value: EMAIL },
   { table: "wipe_progress", column: "tenant_id", value: USER },
   { table: "archive_exports", column: "tenant_id", value: USER },
+  { table: "tenant_provider_credentials", column: "tenant_id", value: USER },
 ];
 
 /**
@@ -161,6 +162,17 @@ async function seeded(options: { signupMode?: "open" | "invite_only" } = {}) {
     toTimestamp(NOW_MS),
   );
   await beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS });
+  await raw.run(
+    `INSERT INTO tenant_provider_credentials (
+       tenant_id, provider, ciphertext, iv, key_version, credential_version,
+       last_four, status, created_at, updated_at
+     ) VALUES (?, 'openai', ?, ?, 1, 1, '9876', 'active', ?, ?)`,
+    USER,
+    Buffer.from("sealed"),
+    Buffer.from("0123456789ab"),
+    toTimestamp(NOW_MS),
+    toTimestamp(NOW_MS),
+  );
   return { raw, db };
 }
 

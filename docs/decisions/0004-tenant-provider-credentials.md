@@ -1,8 +1,9 @@
 # ADR 0004: Tenant provider credentials (BYOK) and archive export
 
-- **Status:** Accepted; not yet implemented (`reading-lite-gh341` is open).
-  Written before [ADR 0005](0005-postgresql-storage.md): its "D1 storage" and
-  manifest references mean the PostgreSQL control plane and reading rows.
+- **Status:** Accepted; API and dispatch are not implemented yet
+  (`reading-lite-gh341` is open). Written before
+  [ADR 0005](0005-postgresql-storage.md). Credential storage is PostgreSQL.
+  Processing checkpoints live on `reading_attempts.checkpoint`.
 - **Date:** 2026-09-10
 - **Decision owners:** Brian Bell
 - **Task:** [#341](https://github.com/brian-bell/reading-lite/issues/341), under
@@ -33,8 +34,8 @@ reservation in `GlobalUsageGuard`, a processing lease presented inside the HTTP
 retry loop, and a fresh operation id per attempt. Spend denial defers the same
 attempt for up to `PROCESSING_DEFER_MAX_AGE_MS` (24 hours). Provider 429s raise
 `RateLimitedError`, which the queue retries with a delay. Source-embedding and
-summary results are checkpointed per attempt at
-`<keyPrefix>/processing/<attemptId>.json`, so redelivery skips completed calls.
+summary results are checkpointed per attempt on `reading_attempts.checkpoint`,
+so redelivery skips completed calls.
 See [paid spend](../paid-provider-spend.md).
 
 There is no per-tenant credential storage, provider setting, or export route.
@@ -75,7 +76,7 @@ operator-funded requests.
 
 ### Storage and encryption
 
-- New D1 storage holds, per tenant: provider (`openai`), ciphertext, IV, key
+- New PostgreSQL storage holds, per tenant: provider (`openai`), ciphertext, IV, key
   version, a credential version that increments on every replace, the last four
   characters, status (`active` or `invalid`), and validated, created, and updated
   times. Effort is a separate tenant setting.
@@ -112,7 +113,7 @@ operator-funded requests.
   summarization model, effort, embedding model, and catalog version. Checkpoints
   are reused only when the snapshot matches; otherwise the stage runs again.
   Settings changes apply to new attempts.
-- The key is resolved from D1 at every dispatch authorization, not once per
+- The key is resolved from PostgreSQL at every dispatch authorization, not once per
   attempt. A replacement takes effect at the next call. Checkpoints survive a key
   replacement, because outputs do not depend on which key paid.
 - The credential read must be strongly consistent with the removal write (no
@@ -151,10 +152,12 @@ and hosting limits. Retries remain user-initiated reprocesses.
 
 ### Account deletion
 
-The deletion start transaction deletes the tenant's stored credential
-alongside marking the account `deleting` and revoking sessions and tokens.
-There is no cancel path during the grace period, so nothing recoverable is lost.
-Teardown still verifies no credential rows remain.
+Deletion start writes the `users.status = deleting` fence in its own statement.
+It then deletes the stored credential and revokes sessions and tokens. That
+second step runs again when the account is already deleting, so a crash after
+the fence still removes the credential. A later failure does not roll the fence
+back. There is no cancel path during the grace period, so nothing recoverable
+is lost. Teardown still checks that no credential rows remain.
 
 ### Archive export
 

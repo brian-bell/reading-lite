@@ -69,6 +69,12 @@ export interface Env {
   AUTH_ROOT_KEY_VERSION?: string;
   AUTH_PREVIOUS_ROOT_SECRET?: string;
   AUTH_PREVIOUS_ROOT_KEY_VERSION?: string;
+  // AES-256-GCM root for tenant provider keys (ADR 0004). Unset until a key
+  // is stored. The store fails closed when the secret is missing.
+  PROVIDER_KEY_SECRET?: string;
+  PROVIDER_KEY_VERSION?: string;
+  PROVIDER_KEY_PREVIOUS_SECRET?: string;
+  PROVIDER_KEY_PREVIOUS_VERSION?: string;
   FOUNDER_EMAIL?: string;
   APP_ENV?: string;
   AUTH_MAIL_ALLOWLIST?: string;

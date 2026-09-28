@@ -70,6 +70,7 @@ const CONTROL_PLANE_TABLES = [
   "wipe_progress",
   "account_deletions",
   "archive_exports",
+  "tenant_provider_credentials",
 ].join(", ");
 
 // PostgreSQL is outside the pool's per-test rollback, which D1 used to give

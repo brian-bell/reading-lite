@@ -11,16 +11,26 @@ export const DEFAULT_AUTH_ROOT_KEY_VERSION = 1;
 const HEX_256 = /^[0-9a-f]{64}$/i;
 const HKDF_SALT = new TextEncoder().encode("reading-lite-auth-v1");
 
-export function parseAuthRootSecret(raw: string): Uint8Array {
+function decodeHex256(raw: string): Uint8Array | null {
   const value = raw.trim();
-  if (HEX_256.test(value)) {
-    const bytes = new Uint8Array(32);
-    for (let i = 0; i < 32; i++) {
-      bytes[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16);
-    }
-    return bytes;
+  if (!HEX_256.test(value)) return null;
+  const bytes = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    bytes[i] = Number.parseInt(value.slice(i * 2, i * 2 + 2), 16);
   }
-  throw new Error("AUTH_ROOT_SECRET must be a 256-bit hex value");
+  return bytes;
+}
+
+export function parseAuthRootSecret(raw: string): Uint8Array {
+  const bytes = decodeHex256(raw);
+  if (!bytes) throw new Error("AUTH_ROOT_SECRET must be a 256-bit hex value");
+  return bytes;
+}
+
+export function parseProviderKeySecret(raw: string): Uint8Array {
+  const bytes = decodeHex256(raw);
+  if (!bytes) throw new Error("PROVIDER_KEY_SECRET must be a 256-bit hex value");
+  return bytes;
 }
 
 export function parseAuthRootKeyVersion(

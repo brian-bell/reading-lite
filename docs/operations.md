@@ -395,6 +395,8 @@ Runtime Worker secrets (`wrangler secret put --env staging|production`):
 |---|---|
 | `AUTH_ROOT_SECRET` | always, 256-bit hex HKDF root for credential HMACs |
 | `AUTH_PREVIOUS_ROOT_SECRET` | optional, previous root during a bounded rotation window |
+| `PROVIDER_KEY_SECRET` | 256-bit hex HKDF root for tenant provider keys (AES-256-GCM). Unset until a tenant key is stored. Separate from `AUTH_ROOT_SECRET` |
+| `PROVIDER_KEY_PREVIOUS_SECRET` | optional, previous provider-key root during a bounded rotation window |
 | `OPENAI_API_KEY` | always, embeddings, and the default OpenAI summarizer |
 | `ANTHROPIC_API_KEY` | only when `SUMMARIZER_PROVIDER=anthropic` |
 | `X_API_BEARER_TOKEN` | only for `x.com` / `twitter.com` status URL imports |
@@ -423,6 +425,9 @@ Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`
 default to `1`. HKDF includes the version, so a secret-only rotation must keep
 the previous root on the same version the tokens were minted with (the default).
 Bump both version vars explicitly when advancing the key generation.
+`PROVIDER_KEY_VERSION` and `PROVIDER_KEY_PREVIOUS_VERSION` default to `1`.
+HKDF info for tenant provider keys includes that version, so a secret-only
+rotation keeps the previous secret on the version that sealed the stored keys.
 
 `founder-bootstrap` cannot read Wrangler secrets. Put the **same**
 `AUTH_ROOT_SECRET` plus `READER_API_TOKEN` (and `FOUNDER_EMAIL` unless you pass
