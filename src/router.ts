@@ -160,9 +160,6 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/auth/settings", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.get("/api/auth/settings", (c) => handleGetSettings(c));
   app.post("/api/auth/settings", (c) => handlePostSettings(c, authNowMs()));
-  // Beside settings, not under /api/account: that mount requires recent
-  // sign-in on every method, and effort and cap changes do not. POST and
-  // DELETE are the cookie CSRF methods; PUT is exempt.
   app.use("/api/auth/provider", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.use("/api/auth/provider/*", requirePrincipal(authNowMs), requireSession(), requireExpectedTenant());
   app.get("/api/auth/provider", (c) => handleGetProviderSettings(c));

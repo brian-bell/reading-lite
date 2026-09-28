@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// OpenAI's free model list. A redirect would carry the bearer token off this host.
+// A redirect would carry the bearer token off this host.
 const MODELS_URL = "https://api.openai.com/v1/models";
 
 const ModelsPageSchema = z.object({
@@ -13,11 +13,7 @@ export type ProviderKeyCheck =
   | { ok: true }
   | { ok: false; code: ProviderKeyRejection };
 
-/**
- * Confirms the key is accepted and can see the fixed summarization model and
- * the embedding model. Does not prove the account has credit. A non-200 body
- * is discarded unread: OpenAI's 401 text echoes key material.
- */
+/** A non-200 body is discarded unread. OpenAI's 401 text echoes key material. */
 export async function checkOpenAIProviderKey(input: {
   fetch: typeof fetch;
   apiKey: string;

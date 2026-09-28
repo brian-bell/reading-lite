@@ -222,7 +222,6 @@ export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
 export const SummarizationEffortSchema = z.enum(["low", "medium", "high"]);
 export type SummarizationEffort = z.infer<typeof SummarizationEffortSchema>;
 
-/** Masked credential. The plaintext key is never part of this shape. */
 export const ProviderCredentialViewSchema = z.object({
   provider: z.literal("openai"),
   last_four: z.string().length(4),
@@ -246,17 +245,12 @@ export const ProviderSettingsResponseSchema = z.object({
 });
 export type ProviderSettingsResponse = z.infer<typeof ProviderSettingsResponseSchema>;
 
-/** POST /api/auth/provider. Connect or replace. Recent sign-in required. */
 export const PostProviderKeyBodySchema = z.object({
   api_key: z.string().min(4).max(256).regex(/^\S+$/),
 });
 export type PostProviderKeyBody = z.infer<typeof PostProviderKeyBodySchema>;
 
-/**
- * POST /api/auth/provider/preferences. At least one field. A null cap clears
- * the reader's override. Same session gates as /api/auth/settings: no recent
- * sign-in.
- */
+/** A null cap clears the reader's override. */
 export const PostProviderPreferencesBodySchema = z
   .object({
     effort: SummarizationEffortSchema.optional(),

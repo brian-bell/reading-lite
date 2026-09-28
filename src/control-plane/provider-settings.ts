@@ -28,10 +28,6 @@ export type ProviderSettingsLoad = ProviderSettingsResponse | "not_found" | "lim
 
 export type ProviderPreferenceResult = "ok" | "not_found" | "limits_missing" | "cap_above_operator_default";
 
-/**
- * The reader's cap may sit above the operator default after the operator
- * lowers `tenant_limits`. Effective spend follows the operator ceiling.
- */
 function effectiveDailySpend(userCap: number | null, operator: number): number {
   return userCap === null ? operator : Math.min(userCap, operator);
 }
