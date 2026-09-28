@@ -15,24 +15,20 @@ sessions are separate on each host.
 Sign in with an emailed magic link, then submit a URL. Processing runs in the
 background. The detail page shows the TL;DR, summary, tags, entities, connections,
 and captured content. Search matches titles, TL;DRs, URLs, and keywords; tag
-chips filter the list. The app refreshes queries after submit and reprocess but
-does not poll pending readings. Refresh to see a later result.
+chips filter the list. While a reading is processing, its page and any library
+page showing it check status on a bounded schedule (every 3 to 15 seconds,
+stopping after 16 minutes or three failed checks); "Check status" tries once
+more. A failed reading can be retried or recovered by importing a Markdown copy.
 
-The account page manages sessions, API tokens, account deletion, immediate
-notification mail, and daily or weekly digests. Digest cadence `off` disables
-digests independently of immediate notifications.
+The account page manages sessions, API tokens, archive exports, account
+deletion, immediate notification mail, and daily or weekly digests. Digest
+cadence `off` disables digests independently of immediate notifications.
 
 Staging and production summarize with Anthropic (Claude Sonnet 5, medium
 effort); local development defaults to OpenAI. Both use OpenAI embeddings. The selected provider must be configured correctly; there is no
 automatic fallback. See [configuration](docs/configuration.md).
 
 ## Local development
-
-| Path | Supported Node | How Wrangler is launched |
-| --- | --- | --- |
-| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
-| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, app, and ops: Node **22** | Worker tests stay on workerd |
 
 Use Node 22.12 or newer for local development
 ([operator Node](docs/operations.md#operator-node)) and Docker for the local
@@ -86,15 +82,14 @@ The frontend has its own checks in [app/README.md](app/README.md).
 
 Worker runtime types are checked in as `worker-configuration.d.ts`. Run
 `npm run types:generate` after changing Wrangler or the compatibility date/flags
-in `wrangler.toml`, and commit the generated file. CI checks freshness with
-`npm run types:check`. Generation excludes bindings; `src/index.ts` retains the
-application's `Env` definition.
+in `wrangler.toml`, and commit the result; CI checks freshness with
+`npm run types:check`.
 
 ## API and MCP
 
 Use scoped bearer tokens for scripts and MCP clients. The
 [API guide](docs/api.md) covers authentication, submit/poll behavior, Markdown
-imports, and reprocessing. [OpenAPI](docs/openapi.yaml) defines request and
+imports, the Markdown inbox, and reprocessing. [OpenAPI](docs/openapi.yaml) defines request and
 response schemas.
 
 For a remote MCP client:
@@ -131,6 +126,7 @@ extraction adds description and transcript when available. See
 - [AGENTS.md](AGENTS.md), commands and constraints for coding agents.
 - [app/README.md](app/README.md), the new frontend's commands and rules.
 - [CONTEXT.md](CONTEXT.md), domain terminology.
+- [Archive export format](docs/archive-export.md), the zip a reader downloads.
 - [Hosted provider spend](docs/paid-provider-spend.md), budgets and accounting.
 - [Staging context preparation](docs/staging-context-copy.md), local fixture packets.
 - [Product brief](docs/product/reading-lite-portfolio-brief.md) and

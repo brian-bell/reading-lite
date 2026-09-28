@@ -11,7 +11,7 @@ Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
 module map and write-order details; [operations](docs/operations.md) contains
 deployment, deletion, and corpus procedures. Work is tracked in beads (see
-[Work tracking](#work-tracking)). `CLAUDE.md` must remain a symlink to this file.
+[Work tracking](#work-tracking)).
 
 ## Work tracking
 
@@ -80,14 +80,9 @@ Regenerate `worker-configuration.d.ts` with `npm run types:generate` after
 changing Wrangler or runtime compatibility date/flags. Commit the generated
 file. Generation excludes bindings; keep the application `Env` in `src/index.ts`.
 
-| Path | Supported Node | How Wrangler is launched |
-| --- | --- | --- |
-| `npm run ops` | Node **22** | `scripts/lib/wrangler-cli.ts` → `wrangler-dist/cli.js` |
-| `npm run dev` (and types:generate / types:check) | Node **22.12+** | npm bin wrapper `bin/wrangler.js` |
-| CI | Worker, app, and ops: Node **22** | Worker tests stay on workerd |
-
-`app/` also needs Node 22.12+. `engines.node` (`>=22.0.0`) is only the install
-and ops floor. See [operator Node](docs/operations.md#operator-node).
+`npm run ops` and CI use Node 22; `npm run dev`, `types:generate`, and `app/`
+need 22.12+. `engines.node` (`>=22.0.0`) is only the install and ops floor. See
+[operator Node](docs/operations.md#operator-node).
 
 Run the Worker suite on Node 22 (`mise.toml` pins it; `mise exec node@22 --`
 works from a worktree that does not inherit it). Node 24 and 25 fail it in ways
@@ -183,8 +178,9 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
   rows and re-checks both before deleting. Read the
   [deletion rules](docs/operations.md#account-deletion) before touching this path.
 - Do not remove `nodejs_compat`. Keep bearer material out of browser storage.
-  The frontend invalidates queries after writes but does not poll pending
-  manifests.
+  The frontend invalidates queries after writes; its only timed reads are the
+  bounded status refresh in `app/src/status-refresh.ts` (reading page, library
+  rows) and the export status, so add no other polling.
 
 ## Tests and local limits
 
@@ -279,12 +275,5 @@ PostgreSQL over the same `PRODUCTION_DATABASE_URL` secret; a direct
 `ops deploy worker` invocation does not run that separate wipe check.
 See [deploying](docs/operations.md#deploying) for secrets, guards, and exceptions.
 
-`.cursor/environment.json` installs the root npm project and runs
-`scripts/cloud-agent-install.ts`. Cursor environment secrets are
-`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
-`READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL` (a direct
-connection string to the Neon rehearsal branch; founder bootstrap resolves it
-through the operator-db pairing); the installer writes `.stg.vars`.
-Staging founder state persists in PostgreSQL. Bootstrap again after credential
-rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for idempotent bootstrap on
-each install.
+Cursor cloud agents install through `.cursor/environment.json`; its secrets and
+staging bootstrap are in [operations](docs/operations.md#staging-lifecycle).
