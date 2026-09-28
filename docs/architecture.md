@@ -252,7 +252,7 @@ scan at 03:07 UTC. The job families have separate queues and DLQs:
 | `DIGEST_JOBS` | `digest-pipeline.ts`; digest DLQ only marks `digest_deliveries` failed |
 | `ACCOUNT_WIPE_JOBS` | `account-wipe.ts`; wipe DLQ logs and acks |
 | `ARCHIVE_EXPORT_JOBS` | `archive-export.ts`; one zip segment per delivery, then a self-send; cancelled by account deletion; export DLQ marks the export failed and deletes its parts |
-| `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards and capped judge fan-out; `relationship-judge.ts` publishes relationship-only patches, DLQ logs and acks |
+| `RELATIONSHIP_REFRESH_JOBS` | `relationship-refresh.ts`; full scan shards, then capped connection judges and capped tension pairs; `relationship-judge.ts` publishes relationship-only patches, `tension-judge.ts` writes a pair's tensions to both readings in one transaction; DLQ logs and acks |
 
 Digest send re-reads cadence and the current verified account address. Empty
 windows close without mail. Resend 429 retains pending state for retry;

@@ -22,7 +22,7 @@
  * reading the tenant owns; revisions, URLs, relationships, attempts and
  * embeddings go by cascade, so a reading leaves search in the same transaction
  * it leaves the list. It also deletes the tenant's
- * `relationship_refresh_jobs` checkpoints, which hang off no reading row and
+ * `relationship_refresh_jobs` and `tension_refresh_jobs` checkpoints, which hang off no reading row and
  * so cascade from nothing — deleting a reading does not take its checkpoint
  * with it, and nothing else but teardown would ever remove one. They cannot
  * spend in the meantime (both refresh writes require an `active` users row),
@@ -573,11 +573,11 @@ async function runAccountWipeJob(
    *
    * Every reading the tenant owns — revisions, URLs, relationships, attempts
    * and embeddings by cascade — its inbox items, and its
-   * `relationship_refresh_jobs` checkpoints; the last two hang off no reading
-   * row and so cascade from nothing.
-   * A leftover checkpoint cannot spend: `markRefreshDispatched` and
-   * `saveRefreshResult` both write only against an `active` users row, and
-   * the judge noops once the reading is gone. It is deleted here because
+   * `relationship_refresh_jobs` and `tension_refresh_jobs` checkpoints; the
+   * last three hang off no reading row and so cascade from nothing.
+   * A leftover checkpoint cannot spend: the dispatch and save writes of both
+   * checkpoint kinds apply only against an `active` users row, and the judges
+   * noop once a reading is gone. It is deleted here because
    * removing the account's data is the wipe's job — teardown deletes these
    * too, but a completion record that left them standing would be claiming
    * more than the wipe had actually done.
@@ -595,6 +595,7 @@ async function runAccountWipeJob(
       const deleted = await deleteTenantReadings(tx, tenantId);
       await deleteTenantInboxItems(tx, tenantId);
       await tx.execute("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1", [tenantId]);
+      await tx.execute("DELETE FROM tension_refresh_jobs WHERE tenant_id = $1", [tenantId]);
       if (next) await writer.write(next, fromSql(tx));
       return deleted;
     });

@@ -14,6 +14,7 @@ import {
   passesOverlapFilter,
   purgeTensionPartner,
   tensionCandidates,
+  tensionPairEligible,
   type RawManifest,
 } from "../../../scripts/corpus-lib/refresh-tensions";
 
@@ -188,6 +189,19 @@ describe("isPairJudged", () => {
         manifest("rd_b", judged("rd_a", T1)),
       ),
     ).toBe(false);
+  });
+});
+
+describe("tensionPairEligible", () => {
+  const judged = (partner: string) => ({ tensions_judged: [{ id: partner, judged_at: T1 }] });
+  it.each<[string, RawManifest, RawManifest, boolean]>([
+    ["an overlapping unjudged pair", manifest("rd_a"), manifest("rd_b"), true],
+    ["a pair below the overlap filter", manifest("rd_a"), manifest("rd_b", { keywords: ["other"] }), false],
+    ["a pair judged on both sides", manifest("rd_a", judged("rd_b")), manifest("rd_b", judged("rd_a")), false],
+    ["a side with no summary text", manifest("rd_a"), manifest("rd_b", { summary_markdown: " ", tldr: "" }), false],
+    ["a reading paired with itself", manifest("rd_a"), manifest("rd_a"), false],
+  ])("%s -> %s", (_label, a, b, eligible) => {
+    expect(tensionPairEligible(a, b)).toBe(eligible);
   });
 });
 

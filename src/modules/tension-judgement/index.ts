@@ -1,13 +1,14 @@
 // Pairwise tension judgement: the relationship-only sibling that answers "does
 // reading A contradict, supersede, or qualify reading B?" from the two stored
 // summaries alone. It never sees extracted content, never re-summarizes, and
-// is only ever called by `ops corpus refresh-tensions` — ingest cannot produce
-// tensions because the conflicting reading is exactly what ingest cannot see.
+// is only ever called by `ops corpus refresh-tensions` and the hosted nightly
+// refresh (src/tension-judge.ts) — ingest cannot produce tensions because the
+// conflicting reading is exactly what ingest cannot see.
 //
 // Shape mirrors ../relationship-judgement: one strict provider contract per
-// vendor, one verdict per pair, and a neutral pair-level reason the writer
-// stores on both manifests. The writer (scripts/corpus-lib/refresh-tensions.ts)
-// derives each side's directional kind; this module only judges.
+// vendor, one verdict per pair, and a neutral pair-level reason the writers
+// store on both manifests. ./refresh.ts derives each side's directional kind;
+// this module only judges.
 
 import { z } from "zod";
 import {

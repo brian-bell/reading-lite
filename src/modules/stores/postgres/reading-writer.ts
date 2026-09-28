@@ -490,11 +490,11 @@ export class PgReadingWriter {
   // jobs, and is the fence that stops a late consumer from republishing. The
   // caller deletes the R2 prefix afterwards.
   //
-  // The hosted refresh checkpoint has no foreign key to the reading (it is a
-  // control-plane row keyed by tenant and reading), so it is deleted here, in
-  // the same transaction: the reading and the work queued about it disappear
-  // together, and no later refresh delivery finds a checkpoint for a reading
-  // that is gone.
+  // The hosted refresh checkpoints have no foreign key to the reading (they
+  // are control-plane rows keyed by tenant and reading, or by tenant and
+  // pair), so they are deleted here, in the same transaction: the reading and
+  // the work queued about it disappear together, and no later refresh delivery
+  // finds a checkpoint for a reading that is gone.
   async purge(id: string, isRunning: (row: PurgeGuardRow) => boolean): Promise<PurgeOutcome> {
     return this.sql.transaction(async (tx) => {
       const row = await this.lock(tx, id);
@@ -507,6 +507,10 @@ export class PgReadingWriter {
       const embeddingRemoved = await this.deleteEmbedding(tx, id);
       await tx.query(
         "DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1 AND reading_id = $2",
+        [this.tenantId, id],
+      );
+      await tx.query(
+        "DELETE FROM tension_refresh_jobs WHERE tenant_id = $1 AND (reading_a = $2 OR reading_b = $2)",
         [this.tenantId, id],
       );
       await tx.query("DELETE FROM readings WHERE tenant_id = $1 AND id = $2", [this.tenantId, id]);

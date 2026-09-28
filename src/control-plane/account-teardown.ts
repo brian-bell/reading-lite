@@ -497,6 +497,7 @@ function teardownStatements(
     },
     { sql: "DELETE FROM digest_deliveries WHERE user_id = ?", params: [tenantId] },
     { sql: "DELETE FROM relationship_refresh_jobs WHERE tenant_id = ?", params: [tenantId] },
+    { sql: "DELETE FROM tension_refresh_jobs WHERE tenant_id = ?", params: [tenantId] },
     { sql: "DELETE FROM user_settings WHERE user_id = ?", params: [tenantId] },
     { sql: "DELETE FROM tenant_limits WHERE tenant_id = ?", params: [tenantId] },
     // The operator refresh pass's run marker (db/migrations/0006). It names

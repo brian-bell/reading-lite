@@ -25,7 +25,7 @@ variables. Four paid call sites read them:
 | Source embedding | `embed_source` in `src/process-reading.ts` | OpenAI `text-embedding-3-small`, 1536 dimensions |
 | Summarization | `summarize` in `src/process-reading.ts` | `SUMMARIZER_PROVIDER` (production: OpenAI `gpt-5.6-terra`, effort `high`) |
 | Summary embedding | `embed_summary` in `src/process-reading.ts` | OpenAI embeddings |
-| Nightly relationship refresh (connections and tensions) | `src/relationship-judge.ts`, founder-only (`src/relationship-refresh.ts`) | `SUMMARIZER_PROVIDER` |
+| Nightly relationship refresh (connections and tensions) | `src/relationship-judge.ts` and `src/tension-judge.ts`, founder-only (`src/relationship-refresh.ts`) | `SUMMARIZER_PROVIDER` |
 
 Every hosted provider fetch goes through `createPaidFetch`
 (`src/control-plane/paid-dispatch.ts`): a tenant-plus-global daily spend

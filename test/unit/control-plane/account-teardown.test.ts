@@ -41,6 +41,7 @@ const CHILD_TABLES: ReadonlyArray<{ table: string; column: string; value: string
   { table: "auth_challenges", column: "email_canonical", value: EMAIL },
   { table: "digest_deliveries", column: "user_id", value: USER },
   { table: "relationship_refresh_jobs", column: "tenant_id", value: USER },
+  { table: "tension_refresh_jobs", column: "tenant_id", value: USER },
   { table: "corpus_refresh_state", column: "tenant_id", value: USER },
   { table: "signup_invites", column: "email_canonical", value: EMAIL },
   { table: "wipe_progress", column: "tenant_id", value: USER },
@@ -139,6 +140,11 @@ async function seeded(options: { signupMode?: "open" | "invite_only" } = {}) {
   await raw.run(
     `INSERT INTO relationship_refresh_jobs (tenant_id, reading_id, run_at, owner, source_etag, result_json)
     VALUES (?, 'rd_refresh', '2026-09-03T00:00:00.000Z', 'owner', 'etag', '{}')`,
+    USER,
+  );
+  await raw.run(
+    `INSERT INTO tension_refresh_jobs (tenant_id, reading_a, reading_b, run_at, owner, a_version, b_version)
+    VALUES (?, 'rd_a', 'rd_b', '2026-09-03T00:00:00.000Z', 'owner', 'va', 'vb')`,
     USER,
   );
   await raw.run(

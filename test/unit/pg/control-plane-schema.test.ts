@@ -17,6 +17,7 @@ const CONTROL_PLANE_TABLES = [
   "signup_invites",
   "system_policy",
   "tenant_limits",
+  "tension_refresh_jobs",
   "user_settings",
   "users",
   "wipe_progress",
@@ -68,6 +69,7 @@ describe("control-plane schema", () => {
       { from: "relationship_refresh_jobs", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "sessions", column: "user_id", to: "users", on_delete: "a" },
       { from: "tenant_limits", column: "tenant_id", to: "users", on_delete: "a" },
+      { from: "tension_refresh_jobs", column: "tenant_id", to: "users", on_delete: "a" },
       { from: "user_settings", column: "user_id", to: "users", on_delete: "a" },
       { from: "wipe_progress", column: "tenant_id", to: "users", on_delete: "a" },
     ]);
@@ -100,6 +102,7 @@ describe("control-plane schema", () => {
     expect(typeOf("tenant_limits", "daily_spend_microdollars")).toBe("bigint");
     expect(typeOf("system_policy", "daily_spend_microdollars")).toBe("bigint");
     expect(typeOf("relationship_refresh_jobs", "result_json")).toBe("jsonb");
+    expect(typeOf("tension_refresh_jobs", "result_json")).toBe("jsonb");
     expect(typeOf("dev_mail_outbox", "id")).toBe("bigint");
   });
 
