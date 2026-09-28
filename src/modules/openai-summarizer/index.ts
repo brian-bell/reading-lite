@@ -5,7 +5,7 @@ import {
   type ReadingSummary,
 } from "../../schemas/reading-summary";
 import { fetchWithRetry, type RetryDeps } from "../http-retry";
-import { redactProviderKeys } from "../provider-error-text";
+import { providerErrorText } from "../provider-error-text";
 import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
@@ -213,7 +213,7 @@ export async function summarizeReading(
     const text = await response.text().catch(() => "");
     throw new OpenAIError(
       response.status,
-      redactProviderKeys(openAIErrorMessage(text, response.status)),
+      providerErrorText(text, `OpenAI returned ${response.status}`),
     );
   }
 
@@ -313,14 +313,4 @@ function rejectSourceReason(reason: unknown): string {
   return typeof reason === "string" && reason.trim().length > 0
     ? reason.trim()
     : "extracted source is not a full article or transcript";
-}
-
-function openAIErrorMessage(text: string, status: number): string {
-  try {
-    const json = JSON.parse(text) as { error?: { message?: string } };
-    if (json.error?.message) return json.error.message;
-  } catch {
-    // Ignore invalid error bodies and fall back to their raw text.
-  }
-  return text || `OpenAI returned ${status}`;
 }
