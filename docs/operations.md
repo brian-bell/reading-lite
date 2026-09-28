@@ -2963,8 +2963,9 @@ whose repair only drops a stale side is still judged afterwards.
 A repair job takes no lease, spend admission or checkpoint. It recomputes the
 pair's repairs from the live readings, so a redelivery of a finished repair
 does nothing, and writes every side they touch in one `replacePublishedSetIf`
-on the versions it read. If either side changed, nothing is written and the
-next scan plans again. An in-TTL running side defers the job like a judge.
+on the versions it read. The side a mirror copies from is passed as a guard:
+locked and version-checked in the same transaction but not rewritten. If either
+side changed, nothing is written and the next scan plans again. An in-TTL running side defers the job like a judge.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
 keeps a two-judgement nightly cap; production uses one hundred.

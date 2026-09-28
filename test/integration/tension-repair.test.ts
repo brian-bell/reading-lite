@@ -58,8 +58,12 @@ describe("hosted tension repair", () => {
     expect(a!.tensions_judged).toEqual([]);
   });
 
-  it("writes nothing when a side changes after it was read", async () => {
-    const winner = { ...readingB, title: "Concurrent update" };
+  it.each([
+    { side: "destination", id: B },
+    { side: "source it mirrors from", id: A },
+  ])("writes nothing when the $side changes after it was read", async ({ id }) => {
+    const before = (await readings().manifest(id))!;
+    const winner = { ...before, title: "Concurrent update" };
     const replace = PgReadingWriter.prototype.replacePublishedSetIf;
     vi.spyOn(PgReadingWriter.prototype, "replacePublishedSetIf").mockImplementationOnce(async function (this: PgReadingWriter, ...args) {
       await readings().seed(winner);
@@ -67,7 +71,9 @@ describe("hosted tension repair", () => {
     });
     vi.spyOn(console, "warn").mockImplementation(() => {});
     await processTensionRepair(job, runtime, services);
-    expect(await readings().manifest(B)).toEqual(winner);
+    expect(await readings().manifest(id)).toEqual(winner);
+    // Either way the mirror was not written onto B.
+    expect((await readings().manifest(B))!.tensions).toBeUndefined();
   });
 
   it("defers while a side is running inside the pending TTL", async () => {

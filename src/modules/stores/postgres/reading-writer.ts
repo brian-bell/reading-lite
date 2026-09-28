@@ -110,6 +110,10 @@ export interface PublishedReplacement {
   next: Manifest;
 }
 
+// A reading a replace depends on but does not write: locked with the others
+// and checked by the same kind of guard, never rewritten.
+export type PublishedGuard = Omit<PublishedReplacement, "next">;
+
 // A relationship the replace dropped because its target reading no longer
 // exists. The pass reports these; nothing is written for them.
 export interface SkippedTarget {
@@ -396,11 +400,20 @@ export class PgReadingWriter {
   // `matches` still decides per entry, and a single `false` abandons the whole
   // set: half a judged pair is not a partial success, it is a corpus that
   // disagrees with itself.
-  async replacePublishedSetIf(entries: readonly PublishedReplacement[]): Promise<ReplaceSetOutcome> {
+  //
+  // `guards` name readings the write was derived from but does not change
+  // (a repair copies one side onto the other): they are locked and checked
+  // like entries, so a source that changed abandons the set, and are never
+  // rewritten, since rewriting a row also drops its relationships to readings
+  // that no longer exist.
+  async replacePublishedSetIf(
+    entries: readonly PublishedReplacement[],
+    guards: readonly PublishedGuard[] = [],
+  ): Promise<ReplaceSetOutcome> {
     for (const entry of entries) {
       if (entry.next.status !== "ready") throw new Error("replacePublishedSetIf: manifest is not ready");
     }
-    const ids = entries.map((entry) => entry.id);
+    const ids = [...entries, ...guards].map((entry) => entry.id);
     if (new Set(ids).size !== ids.length) {
       // Two entries for one reading would have the second silently discard the
       // first's relationship rows, which is never what a caller means.
@@ -421,14 +434,14 @@ export class PgReadingWriter {
 
       const store = new PgReadingStore(tx, this.tenantId);
       const current = new Map<string, Manifest>();
-      for (const entry of entries) {
-        const reading = await store.loadReadingById(entry.id);
+      for (const id of ids) {
+        const reading = await store.loadReadingById(id);
         if (!reading) return abandoned;
-        current.set(entry.id, reading.manifest);
+        current.set(id, reading.manifest);
       }
       // Every guard runs before any write: a set is abandoned whole, and a
       // guard never sees a sibling's half-written state.
-      for (const entry of entries) {
+      for (const entry of [...entries, ...guards]) {
         if (!(await entry.matches(current.get(entry.id)!))) return abandoned;
       }
 

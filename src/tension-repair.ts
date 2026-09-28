@@ -7,8 +7,9 @@
  * side, and purge a tension naming a partner that is no longer ready — the
  * dangling entry tier 1 would otherwise flag `stale_connection` every night.
  * Every side the pair's repairs write goes in one compare-and-replace on the
- * versions read here; if either changed, nothing is written and the next scan
- * plans again. Only `tensions` and `tensions_judged` change.
+ * versions read here, with the side a mirror copies from locked and checked
+ * alongside; if either changed, nothing is written and the next scan plans
+ * again. Only `tensions` and `tensions_judged` change.
  * Running predicates overlay applyStaleness: an in-TTL running side defers
  * with DeferPaidWorkError so consumeRelationshipRefresh re-enqueues the same
  * identity; a zombie (TTL-expired) attempt is not running.
@@ -81,8 +82,12 @@ async function repairWith(sql: Sql, tenant: TenantContext, job: RepairJob, env: 
     next.set(id, ManifestSchema.parse(merged.manifest));
   }
   if (env.RELATIONSHIP_REFRESH !== "1" || (await activeRefreshFounder(env, fromSql(sql)))?.tenantId !== tenant.tenantId) return;
-  const outcome = await pgReadingWriterFor(sql, tenant).replacePublishedSetIf([...next].map(([id, manifest]) => ({
-    id, matches: async (current: Manifest) => await versionOf(current) === versions.get(id), next: manifest,
-  })));
+  const unchanged = (id: string) => async (current: Manifest) => await versionOf(current) === versions.get(id);
+  // A mirror writes one side from the other: the side it read from is locked
+  // and checked too, so a source reprocessed or purged since cannot be copied.
+  const outcome = await pgReadingWriterFor(sql, tenant).replacePublishedSetIf(
+    [...next].map(([id, manifest]) => ({ id, matches: unchanged(id), next: manifest })),
+    [...manifests.keys()].filter(id => !next.has(id)).map(id => ({ id, matches: unchanged(id) })),
+  );
   if (!outcome.replaced) logNoop("changed");
 }
