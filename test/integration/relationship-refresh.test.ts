@@ -71,6 +71,7 @@ async function drainScans() {
 }
 const judges = () => queued.filter(x => x.kind === "judge");
 const tensions = () => queued.flatMap(x => x.kind === "tension" ? [`${x.a.id}|${x.b.id}`] : []);
+const repairs = () => queued.flatMap(x => x.kind === "repair" ? [`${x.a}|${x.b}`] : []);
 
 // Readings the tension pre-filter admits: summary text and shared keywords.
 async function seedTensionable(n: number, overrides: (i: number) => Partial<Manifest> = () => ({})): Promise<Manifest[]> {
@@ -404,6 +405,33 @@ describe("relationship refresh scan", () => {
     const cursor = await (await env.READINGS_BUCKET.get(KEY()))!.json<{ run_at: string; tension_dispatched: number }>();
     expect(cursor.run_at).toBe(tomorrow);
     expect(cursor.tension_dispatched).toBe(1);
+  });
+
+  it("dispatches a free repair for a purged partner's dangling tension before any connection judge", async () => {
+    const [a, b, gone] = await seedTensionable(3);
+    const entry = { id: gone!.id, kind: "contradicts" as const, reason: "Disagree", computed_at: "2026-09-02T00:00:00.000Z" };
+    await testReadingsFor(founderTenant()).seed({ ...a!, tensions: [entry], tensions_judged: [{ id: gone!.id, judged_at: entry.computed_at }] });
+    await testReadingsFor(founderTenant()).purge(gone!.id);
+    allNeighbours([a!, b!]);
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(repairs()).toEqual([`${a!.id}|${gone!.id}`]);
+    const kinds = queued.map(x => x.kind);
+    expect(judges().length).toBeGreaterThan(0);
+    expect(kinds.lastIndexOf("repair")).toBeLessThan(kinds.indexOf("judge"));
+  });
+
+  it("repairs a one-sided judgement a mirror settles instead of paying to judge the pair", async () => {
+    const judgedAt = "2026-09-02T00:00:00.000Z";
+    const manifests = await seedTensionable(2, i => i === 0 ? {
+      tensions: [{ id: "rd_0000000001", kind: "qualifies", reason: "Narrows it", computed_at: judgedAt }],
+      tensions_judged: [{ id: "rd_0000000001", judged_at: judgedAt }],
+    } : {});
+    allNeighbours(manifests);
+    await scheduleRelationshipRefresh(runtime, NOW);
+    await drainScans();
+    expect(repairs()).toEqual([manifests.map(m => m.id).join("|")]);
+    expect(tensions()).toEqual([]);
   });
 
   it("continues a cursor written before tension pairs existed, dispatching pairs only from the next night", async () => {

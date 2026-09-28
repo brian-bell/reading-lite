@@ -10,9 +10,11 @@ import {
   isPairJudged,
   mergeTensionSide,
   overlapEvidence,
+  pairTensionRepairs,
   pairKey,
   passesOverlapFilter,
   purgeTensionPartner,
+  repairTensionSide,
   tensionCandidates,
   tensionPairEligible,
   type RawManifest,
@@ -429,6 +431,39 @@ describe("findOneSided", () => {
     const a = manifest("rd_a", { tensions_judged: [judgedA] });
     const b = manifest("rd_b", { updated_at: T2 });
     expect(findOneSided(byId(a, b), ready("rd_a", "rd_b"))).toEqual([]);
+  });
+});
+
+describe("pairTensionRepairs", () => {
+  const forward = { id: "rd_b", kind: "supersedes" as const, reason: "newer", computed_at: T1 };
+  it("plans only the named pair's repairs, including a dangling one", () => {
+    const gone = { id: "rd_gone", kind: "contradicts" as const, reason: "old", computed_at: T1 };
+    const a = manifest("rd_a", { tensions: [forward, gone], tensions_judged: [{ id: "rd_b", judged_at: T1 }] });
+    const b = manifest("rd_b");
+    expect(pairTensionRepairs("rd_a", "rd_b", byId(a, b), ready("rd_a", "rd_b"))).toEqual([
+      { kind: "mirror", from: "rd_a", to: "rd_b", entry: { ...forward, id: "rd_a", kind: "superseded_by" } },
+    ]);
+    expect(pairTensionRepairs("rd_a", "rd_gone", byId(a), ready("rd_a"))).toEqual([
+      { kind: "drop", on: "rd_a", partner: "rd_gone", dangling: true },
+    ]);
+  });
+});
+
+describe("repairTensionSide", () => {
+  const entry = { id: "rd_b", kind: "contradicts" as const, reason: "disagree", computed_at: T1 };
+  it.each([
+    ["mirror", { kind: "mirror" as const, from: "rd_b", to: "rd_a", entry }, manifest("rd_a"),
+      { tensions: [entry], tensions_judged: [{ id: "rd_b", judged_at: T1 }] }],
+    ["mirror-judged", { kind: "mirror-judged" as const, from: "rd_b", to: "rd_a", judged_at: T1 }, manifest("rd_a"),
+      { tensions_judged: [{ id: "rd_b", judged_at: T1 }] }],
+    ["drop", { kind: "drop" as const, on: "rd_a", partner: "rd_b", judged_at: T2 },
+      manifest("rd_a", { tensions: [entry], tensions_judged: [{ id: "rd_b", judged_at: T1 }] }),
+      { tensions: [], tensions_judged: [{ id: "rd_b", judged_at: T2 }] }],
+    ["dangling drop", { kind: "drop" as const, on: "rd_a", partner: "rd_b", dangling: true },
+      manifest("rd_a", { tensions: [entry], tensions_judged: [{ id: "rd_b", judged_at: T1 }] }),
+      { tensions: [], tensions_judged: [] }],
+  ])("applies a %s to the side it writes", (_label, repair, before, fields) => {
+    expect(repairTensionSide(before, repair)).toEqual({ ok: true, manifest: { ...before, ...fields } });
   });
 });
 

@@ -2,6 +2,7 @@ import { RateLimitedError } from "./modules/http-retry";
 import { DeferPaidWorkError } from "./control-plane/processing-leases";
 import { processRelationshipJudge } from "./relationship-judge";
 import { processTensionJudge } from "./tension-judge";
+import { processTensionRepair } from "./tension-repair";
 import { defaultServices, type Services } from "./services";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 /**
@@ -9,9 +10,13 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  * bounded queue shards, then flagged ids are dispatched under a nightly cap.
  * The same scan collects every floored ready-neighbour pair that clears the
  * tension pre-filter and is not already judged; those pairs dispatch after the
- * connection judges, under their own nightly cap (reading-lite-mtdh).
- * Scan shards write only the tenant cursor; judge jobs use relationship-judge.ts
- * and tension jobs tension-judge.ts.
+ * connection judges, under their own nightly cap (reading-lite-mtdh). It also
+ * collects every pair one of its readings names that the free one-sided
+ * repairs would change; those dispatch first, uncapped, so a dangling tension
+ * is gone before its holder's connection judge re-measures it, and a pair one
+ * mirror would settle is never judged (reading-lite-qxfh).
+ * Scan shards write only the tenant cursor; judge jobs use relationship-judge.ts,
+ * tension jobs tension-judge.ts and repair jobs tension-repair.ts.
  * A persisted pending batch reserves allowance before queue send. Uncertain
  * sends may redeliver the same judge identity (runAt + readingId, or runAt +
  * pair); the judge deduplicates that identity before paid work. The next cron
@@ -35,7 +40,7 @@ import { r2KeyLayout } from "./modules/stores/layout";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { diffNeighbourhood, flooredNeighbours, resolveJudgedAt, REFRESH_CANDIDATE_TOP_K } from "./modules/refresh-neighbours";
-import { orderPair, tensionPairEligible } from "./modules/tension-judgement/refresh";
+import { orderPair, pairTensionRepairs, tensionPairEligible, tensionPartnerIds, type RawManifest } from "./modules/tension-judgement/refresh";
 import type { Manifest } from "./schemas/manifest";
 import { effectivelyRunning, pendingTtlSeconds } from "./modules/staleness";
 
@@ -45,12 +50,15 @@ const DEFAULT_MAX_JUDGEMENTS = 100;
 const TargetSchema = z.object({ id: z.string().min(1), key_prefix: z.string().startsWith("readings/") });
 // A tension pair, canonical: a.id < b.id.
 const PairSchema = z.object({ a: TargetSchema, b: TargetSchema }).refine(p => p.a.id < p.b.id);
+// A pair a repair job reconciles, by id alone: one side may be purged.
+const IdPairSchema = z.object({ a: z.string().min(1), b: z.string().min(1) }).refine(p => p.a < p.b);
 const Cap = z.number().int().min(1).max(1000);
 const BaseEnvelope = z.object({ version: z.literal(1), tenantId: z.string().refine(v => parseTenantId(v) === v) });
 export const RefreshEnvelopeSchema = z.discriminatedUnion("kind", [
   BaseEnvelope.extend({ kind: z.literal("scan"), token: z.string().min(1) }),
   BaseEnvelope.extend({ kind: z.literal("judge"), deferredAt: z.string().datetime().optional(), runAt: z.string().datetime(), readingId: z.string().min(1), keyPrefix: z.string().startsWith("readings/") }),
   BaseEnvelope.extend({ kind: z.literal("tension"), deferredAt: z.string().datetime().optional(), runAt: z.string().datetime(), a: TargetSchema, b: TargetSchema }),
+  BaseEnvelope.extend({ kind: z.literal("repair"), deferredAt: z.string().datetime().optional(), runAt: z.string().datetime(), a: z.string().min(1), b: z.string().min(1) }),
 ]);
 export type RefreshEnvelope = z.infer<typeof RefreshEnvelopeSchema>;
 const CursorSchema = z.object({
@@ -68,12 +76,17 @@ const CursorSchema = z.object({
   tension_candidates: z.array(PairSchema).default([]),
   tension_offset: z.number().int().nonnegative().default(0),
   tension_pending: z.array(PairSchema).max(REFRESH_SCAN_SIZE).default([]),
+  // Free repairs are uncapped: every one a scan collects dispatches that night.
+  repair_candidates: z.array(IdPairSchema).default([]),
+  repair_offset: z.number().int().nonnegative().default(0),
+  repair_pending: z.array(IdPairSchema).max(REFRESH_SCAN_SIZE).default([]),
   // A new night can arrive while an old reservation is awaiting confirmation.
   rollover: z.object({ budget_at: z.string().datetime(), limit: Cap, tension_limit: Cap.optional() }).optional(),
 }).refine(c => c.scan_offset <= c.targets.length && c.judge_offset <= c.candidates.length && c.dispatched <= c.limit &&
   c.tension_offset <= c.tension_candidates.length && c.tension_dispatched <= (c.tension_limit ?? 0) &&
-  // One reservation at a time: a batch of either kind confirms before the next is reserved.
-  (c.pending.length === 0 || c.tension_pending.length === 0));
+  c.repair_offset <= c.repair_candidates.length &&
+  // One reservation at a time: a batch of any kind confirms before the next is reserved.
+  [c.pending, c.tension_pending, c.repair_pending].filter(p => p.length > 0).length <= 1);
 type Cursor = z.infer<typeof CursorSchema>;
 type StoredCursor = { cursor: Cursor; etag: string };
 
@@ -112,10 +125,14 @@ async function saveCursor(env: Env, db: ControlPlaneDb, tenant: TenantContext, p
   })) !== null;
 }
 // Complete for a fresh scan: leftover tension pairs are not waited for (see
-// the header), but a reserved batch of either kind is.
+// the header), but uncapped repairs and a reserved batch of any kind are.
 function complete(c: Cursor): boolean {
   return c.scan_offset === c.targets.length && c.judge_offset === c.candidates.length &&
-    c.pending.length === 0 && c.tension_pending.length === 0;
+    c.repair_offset === c.repair_candidates.length &&
+    c.pending.length === 0 && c.tension_pending.length === 0 && c.repair_pending.length === 0;
+}
+function repairsLeft(c: Cursor): boolean {
+  return c.repair_offset < c.repair_candidates.length;
 }
 function judgesLeft(c: Cursor): boolean {
   return c.judge_offset < c.candidates.length && c.dispatched < c.limit;
@@ -124,8 +141,8 @@ function tensionsLeft(c: Cursor): boolean {
   return c.tension_offset < c.tension_candidates.length && c.tension_dispatched < (c.tension_limit ?? 0);
 }
 function runnable(c: Cursor): boolean {
-  return c.pending.length > 0 || c.tension_pending.length > 0 || c.scan_offset < c.targets.length ||
-    judgesLeft(c) || tensionsLeft(c);
+  return c.pending.length > 0 || c.tension_pending.length > 0 || c.repair_pending.length > 0 ||
+    c.scan_offset < c.targets.length || repairsLeft(c) || judgesLeft(c) || tensionsLeft(c);
 }
 // A new night's full scan of every ready reading, sorted for stable shards.
 function freshCursor(library: { id: string; key_prefix: string; status: string }[], runAt: string, token: string,
@@ -136,6 +153,7 @@ function freshCursor(library: { id: string; key_prefix: string; status: string }
       .map(({ id, key_prefix }) => ({ id, key_prefix })).sort((a, b) => a.id.localeCompare(b.id)),
     scan_offset: 0, candidates: [], judge_offset: 0, pending: [],
     tension_limit: tensionLimit, tension_dispatched: 0, tension_candidates: [], tension_offset: 0, tension_pending: [],
+    repair_candidates: [], repair_offset: 0, repair_pending: [],
   };
 }
 async function enqueueScan(env: Env, tenant: TenantContext, c: Cursor): Promise<void> {
@@ -162,7 +180,7 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
       const library = await pgReadingStoreFor(sql, tenant).allListItems();
       c = freshCursor(library, runAt, newId(), limit, tensionLimit);
       if (!await saveCursor(env, db, tenant, previous, c)) return;
-    } else if (nextNight && c.pending.length === 0 && c.tension_pending.length === 0) {
+    } else if (nextNight && c.pending.length === 0 && c.tension_pending.length === 0 && c.repair_pending.length === 0) {
       c = { ...c, token: newId(), budget_at: runAt, limit, dispatched: 0,
         tension_limit: tensionLimit, tension_dispatched: 0, rollover: undefined };
       if (!await saveCursor(env, db, tenant, previous, c)) return;
@@ -219,15 +237,23 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
       version: 1, kind: "tension", tenantId: tenant.tenantId, runAt: c.run_at, a: pair.a, b: pair.b,
     } })));
     next = await confirmed({ ...c, tension_pending: [], token: newId() });
+  } else if (c.repair_pending.length > 0) {
+    await env.RELATIONSHIP_REFRESH_JOBS.sendBatch(c.repair_pending.map(pair => ({ body: {
+      version: 1, kind: "repair", tenantId: tenant.tenantId, runAt: c.run_at, a: pair.a, b: pair.b,
+    } })));
+    next = await confirmed({ ...c, repair_pending: [], token: newId() });
   } else if (c.scan_offset < c.targets.length) {
     const shard = c.targets.slice(c.scan_offset, c.scan_offset + REFRESH_SCAN_SIZE);
     const candidates = [...c.candidates];
     const tensionCandidates = [...c.tension_candidates];
     const seenPairs = new Set(tensionCandidates.map(p => orderPair(p.a.id, p.b.id).key));
+    const repairCandidates = [...c.repair_candidates];
+    const seenRepairs = new Set(repairCandidates.map(p => orderPair(p.a, p.b).key));
     const store = pgReadingStoreFor(sql, tenant);
     const similarity = pgSimilarityStoreFor(sql, tenant);
     const list = await store.allListItems();
     const live = new Map(list.map(r => [r.id, r]));
+    const readyIds = new Set(list.flatMap(r => r.status === "ready" ? [r.id] : []));
     const ttl = pendingTtlSeconds(env.PENDING_TTL_SECONDS);
     // A reading can be a target and several targets' neighbour in one shard.
     const loaded = new Map<string, Manifest | null>();
@@ -235,6 +261,10 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
       if (!loaded.has(id)) loaded.set(id, (await store.loadReadingById(id))?.manifest ?? null);
       return loaded.get(id)!;
     };
+    // The partner is null when it is not ready: gone, failed, or pending.
+    const repairsFor = (target: Manifest, partnerId: string, partner: Manifest | null) =>
+      pairTensionRepairs(target.id, partnerId, new Map<string, RawManifest>(
+        [[target.id, target], ...(partner ? [[partnerId, partner] as const] : [])]), readyIds);
     for (const target of shard) {
       const row = live.get(target.id);
       if (!row || row.status !== "ready" || row.key_prefix !== target.key_prefix) continue;
@@ -247,6 +277,19 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
       if (matches === null) continue;
       const judged = resolveJudgedAt({ ...manifest, key_prefix: target.key_prefix });
       if (diffNeighbourhood({ ...manifest, key_prefix: target.key_prefix }, matches, list, judged.judged_at).length > 0) candidates.push(target);
+      // Free repairs for every pair the target names, including a partner
+      // that is gone: its dangling entry is what tier 1 keeps flagging.
+      for (const partnerId of new Set(tensionPartnerIds(manifest))) {
+        if (partnerId === target.id) continue;
+        const pair = orderPair(target.id, partnerId);
+        if (seenRepairs.has(pair.key)) continue;
+        const loadedPartner = readyIds.has(partnerId) ? await manifestOf(partnerId) : null;
+        const partner = loadedPartner?.id === partnerId && loadedPartner.status === "ready" ? loadedPartner : null;
+        if (readyIds.has(partnerId) && (!partner || effectivelyRunning(partner, ttl, nowIso))) continue;
+        if (repairsFor(manifest, partnerId, partner).length === 0) continue;
+        seenRepairs.add(pair.key);
+        repairCandidates.push({ a: pair.a, b: pair.b });
+      }
       // Tension pairs: the same floored ready neighbourhood the diff judged.
       const ready = matches.filter(m => live.get(m.id)?.status === "ready");
       for (const neighbour of flooredNeighbours(target.id, ready)) {
@@ -255,12 +298,20 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
         const partner = await manifestOf(neighbour.id);
         if (!partner || partner.id !== neighbour.id || partner.status !== "ready") continue;
         if (effectivelyRunning(partner, ttl, nowIso) || !tensionPairEligible(manifest, partner)) continue;
+        // A one-sided judgement a mirror settles for free is not paid for again.
+        if (repairsFor(manifest, neighbour.id, partner).some(r => r.kind !== "drop")) continue;
         seenPairs.add(pair.key);
         const side = (id: string) => id === target.id ? target : { id, key_prefix: live.get(id)!.key_prefix };
         tensionCandidates.push({ a: side(pair.a), b: side(pair.b) });
       }
     }
-    next = { ...c, candidates, tension_candidates: tensionCandidates, scan_offset: c.scan_offset + shard.length, token: newId() };
+    next = { ...c, candidates, tension_candidates: tensionCandidates, repair_candidates: repairCandidates,
+      scan_offset: c.scan_offset + shard.length, token: newId() };
+  } else if (repairsLeft(c)) {
+    // Repairs go first and are uncapped: they call no provider, and a holder
+    // repaired before its connection judge runs no longer shows the drift.
+    const repair_pending = c.repair_candidates.slice(c.repair_offset, c.repair_offset + REFRESH_SCAN_SIZE);
+    next = { ...c, repair_pending, repair_offset: c.repair_offset + repair_pending.length, token: newId() };
   } else if (judgesLeft(c)) {
     // Reserve before send; retries keep identical judge identities and cannot
     // reserve another batch beyond this night's cap.
@@ -293,6 +344,7 @@ export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env
   try {
     if (parsed.data.kind === "judge") await processRelationshipJudge(parsed.data, env, services);
     else if (parsed.data.kind === "tension") await processTensionJudge(parsed.data, env, services);
+    else if (parsed.data.kind === "repair") await processTensionRepair(parsed.data, env, services);
     else await processScan(env, parsed.data, newId, services.now());
     msg.ack();
   } catch (error) {

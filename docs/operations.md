@@ -2941,9 +2941,31 @@ directional `tensions` entry and `tensions_judged` record; if either reading
 changed since dispatch, neither is written. A pair is removed from the table by
 purging either reading, by the tenant wipe, and by account teardown.
 
-The nightly job judges pairs only. The free one-sided repairs that
-`ops corpus refresh-tensions` performs (mirroring a half-written pair, dropping a
-tension whose partner was purged) remain an operator step (reading-lite-qxfh).
+### Nightly tension repairs
+
+The scan also plans the free one-sided repairs `ops corpus refresh-tensions`
+performs (`findOneSided`, reading-lite-qxfh), for every pair a scanned reading
+names in `tensions` or `tensions_judged`: mirror a judgement or judged record the
+other side lost, drop a side a reprocess made stale, and purge a tension naming
+a partner that is no longer ready. A purge removes the purged reading's own
+rows but not its partners' entries naming it (`reading_relationships` cascades
+from the source only), and that dangling entry makes tier 1 flag the holder
+`stale_connection` every night; the connection judge rewrites connections, not
+tensions, so without the repair it would be paid for again each night.
+
+Repairs dispatch as `repair` jobs `(runAt, a, b)` before the connection judges,
+in batches of 25 and uncapped, since they call no provider. The consumer runs
+one job at a time, so a holder's dangling entry is gone before its connection
+judge re-measures the neighbourhood, and that judge then finds nothing to do.
+A pair a mirror settles is not collected for a paid tension judgement; a pair
+whose repair only drops a stale side is still judged afterwards.
+
+A repair job takes no lease, spend admission or checkpoint. It recomputes the
+pair's repairs from the live readings, so a redelivery of a finished repair
+does nothing, and writes every side they touch in one `replacePublishedSetIf`
+on the versions it read. The side a mirror copies from is passed as a guard:
+locked and version-checked in the same transaction but not rewritten. If either
+side changed, nothing is written and the next scan plans again. An in-TTL running side defers the job like a judge.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
 keeps a two-judgement nightly cap; production uses one hundred.

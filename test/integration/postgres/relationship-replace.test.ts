@@ -277,6 +277,28 @@ describe("replacePublishedSetIf", () => {
       expect(await relationshipRows(db, tenant, "rd_b")).toEqual([]);
     });
 
+    // A repair writes one side from the other. The side it read from is a
+    // guard: checked under the same locks, never rewritten, so its row keeps a
+    // relationship to a reading that is gone, which a rewrite would drop.
+    it.each([
+      { guardAgrees: true, written: [{ kind: "tension", target_id: "rd_a" }] },
+      { guardAgrees: false, written: [] },
+    ])("writes the entry only while its guard agrees ($guardAgrees), never rewriting the guard", async ({ guardAgrees, written }) => {
+      const db = sql();
+      const tenant = await mintTenant();
+      const [a, b] = await pair(db, tenant);
+      await seedManifest(db, tenant, { ...a, tensions: tension("rd_gone", "supersedes") });
+
+      const outcome = await pgReadingWriterFor(db, tenant).replacePublishedSetIf(
+        [entry(judged(b, { tensions: tension("rd_a", "superseded_by") }))],
+        [{ id: "rd_a", matches: () => guardAgrees }],
+      );
+
+      expect(outcome.replaced).toBe(guardAgrees);
+      expect(await relationshipRows(db, tenant, "rd_b")).toEqual(written);
+      expect(await relationshipRows(db, tenant, "rd_a")).toEqual([{ kind: "tension", target_id: "rd_gone" }]);
+    });
+
     it("refuses a set that names one reading twice", async () => {
       const db = sql();
       const tenant = await mintTenant();
