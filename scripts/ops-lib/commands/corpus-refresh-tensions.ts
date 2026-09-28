@@ -52,7 +52,8 @@ import {
   orderPair,
   overlapEvidence,
   pairKey,
-  purgeTensionPartner,
+  repairTarget,
+  repairTensionSide,
   tensionCandidates,
   type RawManifest,
   type RepairAction,
@@ -225,8 +226,7 @@ function describeAction(action: Action): string {
  */
 function actionKeys(action: Action): string[] {
   if (action.kind === "judge") return [action.candidate.a, action.candidate.b];
-  const repair = action.repair;
-  return [repair.kind === "drop" ? repair.on : repair.to];
+  return [repairTarget(action.repair)];
 }
 
 function parseRefreshTensionsArgs(argv: string[]): Args {
@@ -672,15 +672,6 @@ async function judgeTensions(
       }
       outcome.written += entries.length;
     };
-    const writeSide = async (
-      id: string,
-      partnerId: string,
-      entry: Parameters<typeof mergeTensionSide>[2],
-      judgedAt: string | undefined,
-      current: StoredManifest,
-    ): Promise<void> => {
-      await writeSet([replacement(id, merge(partnerId, entry, judgedAt, current), current)]);
-    };
     const ceilingSkip = (): ExecuteOutcome => {
       outcome.ceilingSkipped = true;
       outcome.stderr.push(
@@ -760,30 +751,18 @@ async function judgeTensions(
     // conditional write instead.
     const repair = action.repair;
     try {
-      if (repair.kind === "mirror") {
-        const target = await readLive(repair.to);
-        if (timestamp(target.manifest.updated_at) > timestamp(repair.entry.computed_at)) {
-          throw new Error("partner changed since the judgement; rerun to re-plan");
-        }
-        await writeSide(repair.to, repair.from, repair.entry, repair.entry.computed_at, target);
-      } else if (repair.kind === "mirror-judged") {
-        const target = await readLive(repair.to);
-        if (timestamp(target.manifest.updated_at) > timestamp(repair.judged_at)) {
-          throw new Error("partner changed since the judgement; rerun to re-plan");
-        }
-        await writeSide(repair.to, repair.from, null, repair.judged_at, target);
-      } else if (repair.dangling) {
-        // The plan-time list snapshot is authoritative under --sole-writer;
-        // a partner that later comes back ready is rebuilt without tensions
-        // and must be re-judged anyway.
-        const target = await readLive(repair.on);
-        const merged = purgeTensionPartner(target.manifest, repair.partner);
-        if (!merged.ok) throw new Error(merged.error);
-        await writeSet([replacement(repair.on, merged.manifest, target)]);
-      } else {
-        const target = await readLive(repair.on);
-        await writeSide(repair.on, repair.partner, null, repair.judged_at, target);
+      // A dangling drop trusts the plan-time list snapshot, authoritative
+      // under --sole-writer: a partner that later comes back ready is rebuilt
+      // without tensions and must be re-judged anyway.
+      const target = await readLive(repairTarget(repair));
+      const judgedAt = repair.kind === "mirror" ? repair.entry.computed_at
+        : repair.kind === "mirror-judged" ? repair.judged_at : undefined;
+      if (judgedAt !== undefined && timestamp(target.manifest.updated_at) > timestamp(judgedAt)) {
+        throw new Error("partner changed since the judgement; rerun to re-plan");
       }
+      const merged = repairTensionSide(target.manifest, repair);
+      if (!merged.ok) throw new Error(merged.error);
+      await writeSet([replacement(repairTarget(repair), merged.manifest, target)]);
       outcome.repaired = true;
       return outcome;
     } catch (error) {

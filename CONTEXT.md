@@ -195,6 +195,11 @@ searchable until then.
   clears the overlap pre-filter and is not already judged; pairs dispatch after
   the connection judges, under their own nightly cap. Leftover pairs are not
   carried: the next night's fresh scan finds them again.
+- **Tension repair** — the free, provider-less fix for a one-sided pair
+  (`findOneSided`): mirror what one side lost, drop a stale side, or purge an
+  entry naming a partner that is no longer ready. The scan plans repairs for
+  every pair its readings name and dispatches them, uncapped, before the
+  connection judges.
 - **Refresh cursor** — tenant `index/refresh-cursor.json`, CAS-written with scan
   targets, flagged candidates and dispatch progress. A nightly judgement cap
   reserves pending batches before send and carries the remainder to later nights.
