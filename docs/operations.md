@@ -1154,15 +1154,17 @@ setup creates. The bucket-empty step needs the `CORPUS_R2_*` credentials
 above. It retains the staging PostgreSQL database.
 
 Cursor cloud agents: `.cursor/environment.json` installs the root npm project
-and runs `scripts/cloud-agent-install.ts`, which writes `.stg.vars` from the
-environment secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
-`AUTH_ROOT_SECRET`, `READER_API_TOKEN`, `FOUNDER_EMAIL`, and
-`STAGING_DATABASE_URL`. Staging founder state persists in PostgreSQL:
-bootstrap again after credential rotation, or set
-`CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for an idempotent bootstrap on each install.
+and runs `scripts/cloud-agent-install.ts`. The Cursor environment secrets are
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AUTH_ROOT_SECRET`,
+`READER_API_TOKEN`, `FOUNDER_EMAIL`, and `STAGING_DATABASE_URL`. The installer
+writes only `AUTH_ROOT_SECRET`, `FOUNDER_EMAIL`, and `READER_API_TOKEN` to
+`.stg.vars`; the Cloudflare credentials and `STAGING_DATABASE_URL` stay process
+environment variables. Staging founder state persists in PostgreSQL: bootstrap
+again after credential rotation, or set `CLOUD_AGENT_FOUNDER_BOOTSTRAP=1` for an
+idempotent bootstrap on each install.
 
 `STAGING_DATABASE_URL` is a direct connection string to the Neon rehearsal
-branch and is never written to `.stg.vars`. `ops founder bootstrap`
+branch. `ops founder bootstrap`
 resolves staging's and production's databases through the same pairing as the
 other operator commands, so `--database-url-env` naming another environment's
 database (or a bare `DATABASE_URL`) is refused.
