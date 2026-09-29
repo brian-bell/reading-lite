@@ -410,6 +410,11 @@ describe("POST /mcp", () => {
     expect(importDescription).toMatch(/STAGES/);
     expect(importDescription).toMatch(/not in the library until a person promotes it/);
     expect(JSON.stringify(tools.get("import_markdown")?.inputSchema)).not.toContain("poll_until_ready");
+    // A re-stage overwrites the item, so clients must not treat import as a safe retry.
+    expect((tools.get("import_markdown") as { annotations?: unknown } | undefined)?.annotations).toMatchObject({
+      destructiveHint: true,
+      idempotentHint: false,
+    });
   });
 
   it("list_readings pages and has_more, and q filters to a smaller relevant set", async () => {

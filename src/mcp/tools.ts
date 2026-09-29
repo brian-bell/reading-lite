@@ -231,7 +231,9 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
         markdown: z.string().min(1).describe("Extracted article markdown"),
         title: z.string().min(1).optional().describe("Optional title override"),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      // Destructive and not idempotent: a re-stage replaces the item's text
+      // and title, and a ready or pending owner discards the staged item.
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     async (args) => {
       const out = await dispatchApi(
