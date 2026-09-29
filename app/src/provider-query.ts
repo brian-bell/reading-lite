@@ -11,8 +11,9 @@ import { expectedLayoutOf } from "./reading";
 
 // Browser-only, like the settings query (settings-query.ts): never part of the
 // server render (ADR 0003, account pages). The keys are account-scoped, so
-// sign-in and sign-out drop them (src/auth/session.ts). Usage is read once
-// per visit and again after a write; there is no timed refresh.
+// sign-in and sign-out drop them (src/auth/session.ts). Usage is read on
+// every visit and again after a write, since a cached total can be a previous
+// day's; there is no timed refresh.
 
 export function providerQueryOptions(queryClient: QueryClient, identity: Identity | null | undefined) {
   const expectedTenant = expectedLayoutOf(identity);
@@ -32,6 +33,7 @@ export function providerUsageQueryOptions(queryClient: QueryClient, identity: Id
     queryFn: (): Promise<ProviderUsageResult> => fetchProviderUsage(queryClient, expectedTenant),
     enabled: identity != null,
     staleTime: Infinity,
+    refetchOnMount: "always",
     retry: false,
   });
 }

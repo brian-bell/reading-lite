@@ -259,10 +259,17 @@ function KeySection({
   const [confirmRemove, setConfirmRemove] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const removeRef = useRef<HTMLButtonElement>(null);
+  // The key on its way to the backend. Handed over here rather than as the
+  // mutation's variables, which the mutation cache keeps after the request.
+  const sending = useRef<string | null>(null);
   const state = keyStateOf(settings, removedHere);
 
   const connect = useMutation({
-    mutationFn: (key: string) => connectProviderKey(queryClient, key, expectedTenant),
+    mutationFn: () => {
+      const key = sending.current ?? "";
+      sending.current = null;
+      return connectProviderKey(queryClient, key, expectedTenant);
+    },
     networkMode: "always",
     retry: 0,
     onSuccess: (outcome) => {
@@ -307,7 +314,8 @@ function KeySection({
     remove.reset();
     connect.reset();
     if (problem !== null) return;
-    connect.mutate(apiKey.trim());
+    sending.current = apiKey.trim();
+    connect.mutate();
   }
 
   function openRemove() {
@@ -634,6 +642,11 @@ function SpendingSection({
     save.mutate({ daily_spend_cap_microdollars: cap.microdollars });
   }
 
+  // Retry sends the change that failed: a new cap, or putting the default back.
+  function retrySave() {
+    if (save.variables !== undefined) save.mutate(save.variables);
+  }
+
   function useDefault() {
     if (save.isPending) return;
     setCheckError(null);
@@ -653,7 +666,7 @@ function SpendingSection({
         requests still running at their most, so they can read higher than your OpenAI bill.
       </p>
       {failure ? (
-        <InlineNotice message={saveFailureMessage(failure, "Your limit")} onAction={submit}>
+        <InlineNotice message={saveFailureMessage(failure, "Your limit")} onAction={retrySave}>
           {failure.kind === "server-error" ? <p className="form-hint">{failure.message}</p> : null}
         </InlineNotice>
       ) : null}

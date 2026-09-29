@@ -215,7 +215,7 @@ describe("the provider page", () => {
 
   it("connects a key, then shows only its last four and forgets the field", async () => {
     const fetchMock = mockApi();
-    await openProvider();
+    const { queryClient } = await openProvider();
     await connectWith(`  ${KEY}  `);
 
     expect(await within(keySection()).findByText("Connected")).toBeInTheDocument();
@@ -225,6 +225,8 @@ describe("the provider page", () => {
     await expect(post!.json()).resolves.toEqual({ api_key: KEY });
     const stored = [...Object.values({ ...localStorage }), ...Object.values({ ...sessionStorage })].join("\n");
     expect(stored).not.toContain(KEY);
+    const mutations = queryClient.getMutationCache().getAll().map((mutation) => mutation.state);
+    expect(JSON.stringify(mutations)).not.toContain(KEY);
     // Connecting may move the limit, so today's charges are read again.
     await waitFor(() => expect(requestsOf(fetchMock, "GET", "/api/auth/provider/usage")).toHaveLength(2));
   });
@@ -397,6 +399,40 @@ describe("the provider page", () => {
     await user.click(within(spendingSection()).getByRole("button", { name: "Save limit" }));
 
     expect(await within(spendingSection()).findByText(/can't be higher than Reading Lite's daily limit/)).toBeInTheDocument();
+  });
+
+  it("retries putting Reading Lite's limit back, not the lowered one", async () => {
+    let fail = true;
+    const fetchMock = mockApi({
+      settings: { ...MISSING, daily_spend_cap_microdollars: 500_000, effective_daily_spend_microdollars: 500_000 },
+      onPreferences: (body) => {
+        if (fail) {
+          fail = false;
+          return Response.json({ error: "internal" }, { status: 500 });
+        }
+        return Response.json({ ...MISSING, ...body });
+      },
+    });
+    await openProvider();
+    const user = userEvent.setup();
+    await user.click(await within(spendingSection()).findByRole("button", { name: "Use Reading Lite's limit" }));
+    await user.click(await within(spendingSection()).findByRole("button", { name: "Retry" }));
+
+    await waitFor(() => expect(requestsOf(fetchMock, "POST", "/api/auth/provider/preferences")).toHaveLength(2));
+    const bodies = await Promise.all(
+      requestsOf(fetchMock, "POST", "/api/auth/provider/preferences").map((request) => request.json()),
+    );
+    expect(bodies).toEqual([{ daily_spend_cap_microdollars: null }, { daily_spend_cap_microdollars: null }]);
+  });
+
+  it("reads today's charges again when the page is visited again", async () => {
+    const fetchMock = mockApi();
+    const { router } = await openProvider();
+    await within(spendingSection()).findByText(/Today:/);
+    await router.navigate({ to: "/" });
+    await router.navigate({ to: "/account/provider" });
+
+    await waitFor(() => expect(requestsOf(fetchMock, "GET", "/api/auth/provider/usage")).toHaveLength(2));
   });
 
   it.each([
