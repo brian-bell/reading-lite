@@ -367,6 +367,21 @@ describe("validateProcessingCredentials", () => {
       }),
     ).not.toThrow();
   });
+  it("does not require deployment keys when tenant keys are on, and still rejects a bad OpenAI effort", () => {
+    expect(() =>
+      validateProcessingCredentials({
+        tenantProviderKeys: true,
+        provider: "anthropic",
+        openaiReasoningEffort: "high",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateProcessingCredentials({
+        tenantProviderKeys: true,
+        openaiReasoningEffort: "extreme",
+      }),
+    ).toThrow(/invalid OPENAI_SUMMARIZATION_REASONING_EFFORT: extreme/);
+  });
   it("ignores Anthropic-only effort when OpenAI is selected", () => {
     expect(() =>
       validateProcessingCredentials({

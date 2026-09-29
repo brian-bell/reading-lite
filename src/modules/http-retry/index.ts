@@ -54,10 +54,8 @@ export async function fetchWithRetry(
       await sleepWithAbort(wait, deps.sleep, init.signal);
     } catch (e) {
       if (e instanceof RateLimitedError) throw e;
-      // Admission/lease failures are not provider transport failures. The queue
-      // defers (or fails) the existing attempt; retrying here would reserve repeatedly.
       if (
-        ["SpendAdmissionError", "DeferPaidWorkError", "StaleProcessingLeaseError", "ReadingReservationExpiredError"].includes(
+        ["SpendAdmissionError", "DeferPaidWorkError", "StaleProcessingLeaseError", "ReadingReservationExpiredError", "provider_key_required", "provider_key_undecryptable"].includes(
           errorName(e) ?? "",
         )
       ) throw e;

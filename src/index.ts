@@ -114,6 +114,7 @@ export interface Env {
   // "1" enables tenant-prefixed R2 keys (u/{tenantId}/…). Staging and
   // production pin it on; local dev leaves it unset and stores unprefixed keys.
   TENANT_DATA_PLANE?: string;
+  TENANT_PROVIDER_KEYS?: string;
   LOCAL_MAIL_SINK?: string;
   // Public Turnstile widget site key. GET /api/auth/login-options returns it
   // only when signup_mode is open. The matching secret is TURNSTILE_SECRET_KEY

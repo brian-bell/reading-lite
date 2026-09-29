@@ -22,7 +22,7 @@ export class BadEmbeddingResponseError extends Error {
 
 export interface EmbeddingsDeps {
   fetch: typeof fetch;
-  apiKey: string;
+  apiKey?: string;
   retry?: RetryDeps;
 }
 
@@ -51,7 +51,7 @@ export async function embed(input: string, deps: EmbeddingsDeps): Promise<Embedd
   const init: RequestInit = {
     method: "POST",
     headers: {
-      "authorization": `Bearer ${deps.apiKey}`,
+      ...(deps.apiKey ? { authorization: `Bearer ${deps.apiKey}` } : {}),
       "content-type": "application/json",
     },
     body: JSON.stringify({ model: OPENAI_EMBEDDING_MODEL, input }),

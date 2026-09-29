@@ -2,7 +2,9 @@ import { retryDepsFromEnv } from "./modules/http-retry";
 import { buildKeyPrefix, rawExtFromContentType } from "./modules/stores/layout";
 import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimilarity } from "./modules/stores/similarity";
 import { attemptIoFor, type AttemptIo } from "./attempt-io";
-import { sqlSessionFor } from "./modules/db/sql";
+import { sqlSessionFor, type Sql } from "./modules/db/sql";
+import { fromSql } from "./control-plane/db";
+import { hostedProviderSelection, paidAuthorizationFor, tenantProviderKeysEnabled } from "./control-plane/tenant-provider-keys";
 import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import {
   extractFromUrl,
@@ -77,7 +79,7 @@ export async function processReading(
   // trusted: see sqlSession.
   const sql = sqlSessionFor(env);
   try {
-    await runAttempt(args, env, services, tenant, attemptIoFor(sql, env, tenant, args));
+    await runAttempt(args, env, services, tenant, attemptIoFor(sql, env, tenant, args), sql);
   } finally {
     await sql.end();
   }
@@ -89,6 +91,7 @@ async function runAttempt(
   services: Services,
   tenant: TenantContext,
   io: AttemptIo,
+  sql: Sql,
 ): Promise<void> {
   const attempt = newProcessingAttempt(args, services);
   const retry = retryDepsFromEnv(env);
@@ -136,7 +139,9 @@ async function runAttempt(
     // a different epoch. A lost refresh leaves the short TTL, and a slot
     // that lapses fails at commit rather than summarizing uncharged.
     await refreshReadingSlot(env, tenantId, opId, clock());
+    const tenantKeys = tenantProviderKeysEnabled(env);
     validateProcessingCredentials({
+      tenantProviderKeys: tenantKeys,
       provider: env.SUMMARIZER_PROVIDER,
       openaiApiKey: env.OPENAI_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
@@ -188,10 +193,13 @@ async function runAttempt(
     stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
     await presentLeaseBeforePaidDispatch(env, acquired, clock);
 
+    const authorization = paidAuthorizationFor(env, fromSql(sql), tenantId);
+    const providerSelection = hostedProviderSelection(env);
     const paidFetch = (stage: "embed_source" | "summarize" | "embed_summary") => createPaidFetch({
       tenantId, attemptId: opId, stage, fetch: services.fetch,
       // Spend admission uses wall time even when artifact timestamps are injected.
       rpc: spendRpcFor(env), now: Date.now,
+      authorization,
       beforeDispatch: () => presentLeaseBeforePaidDispatch(env, acquired, clock),
       onAuthorizedDispatch: async () => {
         if (stage !== "summarize") return;
@@ -211,7 +219,7 @@ async function runAttempt(
       if (checkpoint.embed_source) return checkpoint.embed_source;
       const result = await embed(truncateForEmbed(promptText), {
         fetch: paidFetch("embed_source"),
-        apiKey: env.OPENAI_API_KEY,
+        ...(tenantKeys ? {} : { apiKey: env.OPENAI_API_KEY }),
         retry,
       });
       checkpoint = { ...checkpoint, embed_source: result };
@@ -274,12 +282,10 @@ async function runAttempt(
           },
           {
             fetch: paidFetch("summarize"),
-            provider: env.SUMMARIZER_PROVIDER,
-            openaiApiKey: env.OPENAI_API_KEY,
+            ...providerSelection,
             openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
             openaiReasoningEffort:
               env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
-            anthropicApiKey: env.ANTHROPIC_API_KEY,
             anthropicModel: env.ANTHROPIC_MODEL,
             anthropicReasoningEffort:
               env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
@@ -300,7 +306,7 @@ async function runAttempt(
     const tldrEmbed = await runStage(attempt, io, services, "embed_summary", () =>
       embed(llm.reading.tldr, {
         fetch: paidFetch("embed_summary"),
-        apiKey: env.OPENAI_API_KEY,
+        ...(tenantKeys ? {} : { apiKey: env.OPENAI_API_KEY }),
         retry,
       }),
     );

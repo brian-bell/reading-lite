@@ -380,7 +380,7 @@ export async function judgeRelationships(
     return parseAnthropicRelationshipResponse(await response.json(), model);
   }
 
-  if (!deps.openaiApiKey) {
+  if (deps.openaiApiKey !== undefined && !deps.openaiApiKey) {
     throw new RelationshipJudgementError(
       "missing OPENAI_API_KEY for SUMMARIZER_PROVIDER=openai",
     );
@@ -391,7 +391,7 @@ export async function judgeRelationships(
   const response = await send(
     deps,
     OPENAI_RESPONSES_URL,
-    { authorization: `Bearer ${deps.openaiApiKey}` },
+    deps.openaiApiKey ? { authorization: `Bearer ${deps.openaiApiKey}` } : {},
     body,
   );
   return parseOpenAIRelationshipResponse(await response.json(), model);
