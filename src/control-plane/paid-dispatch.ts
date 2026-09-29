@@ -124,7 +124,8 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       report("blocked", {reason: permission.reason ?? "dispatch_uncertain"});
       throw new SpendAdmissionError(permission.reason ?? "dispatch_uncertain");
     }
-    if (deps.authorization?.mode === "tenant") {
+    const attachTenantKey = async () => {
+      if (deps.authorization?.mode !== "tenant") return;
       try {
         init = withBearer(init, await deps.authorization.resolve());
       } catch (error) {
@@ -132,7 +133,8 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
         report(canceled.ok ? "settled" : "unresolved", {actual_microdollars: 0, reason: "credential_unavailable"});
         throw error;
       }
-    }
+    };
+    await attachTenantKey();
     try {
       await deps.onAuthorizedDispatch?.();
     } catch (error) {
@@ -142,6 +144,7 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       report(canceled.ok ? "settled" : "unresolved", {actual_microdollars: 0, reason: "quota_commit_failed"});
       throw error;
     }
+    await attachTenantKey();
     let response: Response;
     try {
       // workerd rejects `redirect: "error"`; manual + refuse-3xx is the fail-closed equivalent.

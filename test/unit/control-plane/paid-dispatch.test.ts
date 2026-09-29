@@ -137,7 +137,7 @@ describe("paid dispatch", () => {
     expect(f.calls.some(c => c.body.kind === "settle_spend" || c.body.kind === "release_spend")).toBe(false);
   });
 
-  it("sets the tenant key after admission and before quota commit, overwriting any adapter header", async () => {
+  it("sets the tenant key after admission and again after quota commit, overwriting any adapter header", async () => {
     const order: string[] = [];
     const sent: string[] = [];
     const f = fixture({
@@ -151,9 +151,58 @@ describe("paid dispatch", () => {
     });
     await f.wrapped(url, { ...init, headers: { ...init.headers, authorization: "Bearer sk-deployment-key" } });
     expect(f.calls.map(c => c.body.kind)).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
-    expect(order).toEqual(["resolve", "commit", "fetch"]);
+    expect(order).toEqual(["resolve", "commit", "resolve", "fetch"]);
     expect(sent).toEqual(["Bearer sk-tenant-live"]);
     expect(JSON.stringify(f.calls)).not.toContain("sk-tenant-live");
+  });
+
+  it("sends the key resolved after quota commit when the credential changes during that wait", async () => {
+    const keys = ["sk-before-commit", "sk-after-commit"];
+    let n = 0;
+    const sent: string[] = [];
+    const f = fixture({
+      authorization: {
+        mode: "tenant",
+        resolve: async () => {
+          const key = keys[n];
+          if (key === undefined) throw new TenantProviderKeyError("provider_key_required");
+          n += 1;
+          return key;
+        },
+      },
+      onAuthorizedDispatch: async () => { keys[1] = "sk-replaced-during-commit"; },
+      fetch: async (_url, request) => {
+        sent.push(new Headers(request?.headers).get("authorization") ?? "");
+        return response();
+      },
+    });
+    await f.wrapped(url, { ...init, headers: { ...init.headers, authorization: "Bearer sk-deployment-key" } });
+    expect(sent).toEqual(["Bearer sk-replaced-during-commit"]);
+    expect(JSON.stringify(f.calls)).not.toContain("sk-before-commit");
+    expect(JSON.stringify(f.calls)).not.toContain("sk-replaced-during-commit");
+  });
+
+  it("does not send a key removed while quota commit is in flight", async () => {
+    let n = 0;
+    const f = fixture({
+      authorization: {
+        mode: "tenant",
+        resolve: async () => {
+          n += 1;
+          if (n > 1) throw new TenantProviderKeyError("provider_key_required");
+          return "sk-removed-during-commit";
+        },
+      },
+      onAuthorizedDispatch: async () => {},
+    });
+    await expect(f.wrapped(url, init)).rejects.toMatchObject({
+      name: "provider_key_required",
+      message: "connect a key, then retry",
+    });
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(f.calls.map(c => c.body.kind)).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(f.calls.at(-1)!.body.actualMicrodollars).toBe(0);
+    expect(JSON.stringify(f.calls)).not.toContain("sk-removed-during-commit");
   });
 
   it("settles zero and does not call the provider when the tenant key is missing", async () => {
@@ -195,7 +244,7 @@ describe("paid dispatch", () => {
       }) as typeof fetch,
     });
     await fetchWithRetry(f.wrapped, url, init, { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} });
-    expect(sent).toEqual(["Bearer sk-retry-1", "Bearer sk-retry-2"]);
+    expect(sent).toEqual(["Bearer sk-retry-2", "Bearer sk-retry-4"]);
     const deployment = fixture({
       fetch: async (_url, request) => {
         sent.push(new Headers(request?.headers).get("authorization") ?? "");
