@@ -18,6 +18,9 @@
     "types:check": "npm run types:generate -- --check",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:ci": "npm run test:workers:ci && npm run test:node:ci",
+    "test:workers:ci": "CI_SCOPE=essential vitest run --project workers --project workers-do-storage",
+    "test:node:ci": "CI_SCOPE=essential vitest run --project node",
     "test:quiet": "node scripts/test-quiet.mjs",
     "test:watch": "vitest",
     "fixtures:app": "tsx scripts/emit-app-fixture-pack.ts"

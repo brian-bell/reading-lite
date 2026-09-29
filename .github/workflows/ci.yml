@@ -132,7 +132,7 @@ jobs:
       - run: npx wrangler --version
       - run: npm run types:check
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:ci
 
   ops:
     name: Ops CLI

@@ -75,7 +75,7 @@ npm run typecheck
 ```
 
 `test:quiet` runs the same Worker and Node Vitest projects as `npm test`, with
-Workers-pool log noise filtered. CI uses `npm test`. The suite needs the local
+Workers-pool log noise filtered. CI runs `npm run test:ci`. The suite needs the local
 PostgreSQL container running (`docker compose up -d --wait postgres`); it
 creates its own test databases there. Run it on Node 22. There is no lint script.
 The frontend has its own checks in [app/README.md](app/README.md).

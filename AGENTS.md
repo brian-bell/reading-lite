@@ -48,6 +48,7 @@ npm run seed:local              # seed the accepted-state fixture pack into loca
 npm run ops -- db migrate       # plan PostgreSQL migrations (db/migrations/); --execute applies
 npm run fixtures:app            # regenerate app/'s browser-evidence fixture snapshot
 npm run test:quiet              # preferred; same suite as npm test
+npm run test:ci                 # essential Worker and Node lists; what CI runs
 npm run types:check             # verify checked-in Wrangler runtime types
 npm run typecheck
 
@@ -63,10 +64,13 @@ npm run test:browser:ci         # the essential subset CI runs
 There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; frontend verification is
 `typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
-runs Worker and Node tests, the `app/` checks and its browser-evidence job, and
-the Ops CLI job, all on Node 22. The browser-evidence job runs
-`test:browser:ci`, the essential subset; run the full `test:browser` locally
-before shipping a frontend change. On pull requests each job runs only
+runs the Worker job as `npm run test:ci`, the `app/` checks and its
+browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
+locally before shipping a Worker, migration, or operator-command change.
+The local-only groups are the corpus batch catalogs, extract-agent, refresh
+simulations, relationship judge scenarios, and `test/integration/readings.test.ts`.
+The browser-evidence job runs `test:browser:ci`, the essential subset; run the
+full `test:browser` locally before shipping a frontend change. On pull requests each job runs only
 for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
 update that map when a suite starts reading a new path. Unmapped paths run
 everything. Pushes to main run every job, and documentation-only pushes skip
