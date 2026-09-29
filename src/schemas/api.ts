@@ -634,3 +634,33 @@ export const ListInboxResponseSchema = z
   })
   .strict();
 export type ListInboxResponse = z.infer<typeof ListInboxResponseSchema>;
+
+// POST /api/inbox/:id/promote. Whether the reading's completion notifies is
+// the promote's decision; like import-markdown it defaults to silent.
+export const PostInboxPromoteBodySchema = z.object({
+  email: z.boolean().optional(),
+});
+export type PostInboxPromoteBody = z.infer<typeof PostInboxPromoteBodySchema>;
+
+// Every promote response is the body import-markdown gives the same outcome,
+// plus the item it promoted. `inbox_item_retained` appears only when the
+// import succeeded but the item was re-staged meanwhile, so the newer
+// Markdown stays in the inbox for review.
+const InboxPromoteFields = {
+  inbox_item_id: z.string().regex(/^in_/),
+  inbox_item_retained: z.literal(true).optional(),
+};
+
+export const PostInboxPromoteActivatedResponseSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.literal("pending"),
+    poll: z.string().min(1),
+    attempt_id: z.string().min(1),
+    ...InboxPromoteFields,
+  })
+  .strict();
+export type PostInboxPromoteActivatedResponse = z.infer<typeof PostInboxPromoteActivatedResponseSchema>;
+
+export const PostInboxPromoteExistingResponseSchema = ManifestSchema.extend(InboxPromoteFields);
+export type PostInboxPromoteExistingResponse = z.infer<typeof PostInboxPromoteExistingResponseSchema>;

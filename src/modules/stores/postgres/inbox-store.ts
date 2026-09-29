@@ -1,8 +1,9 @@
 // PostgreSQL store for the tenant's Markdown inbox (reading-lite-gh423,
 // db/migrations/0008). An inbox item is Markdown staged for review; it has no
 // reading, URL claim, attempt, job or embedding, and nothing here touches the
-// reading tables. Promote (a later slice) turns an item into a reading through
-// ReadingIntake.importMarkdown and then deletes it with deleteIfUnchanged.
+// reading tables. Promote (src/inbox/promote.ts) turns an item into a reading
+// through ReadingIntake.importMarkdown and then deletes it with
+// deleteIfUnchanged.
 //
 // Every query is `WHERE tenant_id = $1`, and rows are parsed with zod at the
 // seam, as in the reading store.

@@ -19,6 +19,7 @@ import {
   INBOX_STAGE_BUDGET_BYTES,
   ListReadingsQuerySchema,
   PostInboxBodySchema,
+  PostInboxPromoteBodySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
@@ -36,6 +37,7 @@ import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modu
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgInboxStoreFor } from "./modules/stores/postgres/inbox-store";
 import { inboxMessageBytes, stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
+import { promoteInboxItem, type InboxPromoteOutcome } from "./inbox/promote";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
@@ -304,6 +306,25 @@ export function createApp(opts: AppOptions = {}) {
     return item ? c.json(item) : c.json({ error: "not found" }, 404);
   });
 
+  // Promote turns the item into a reading through importMarkdown and deletes
+  // it once the corpus has the URL; see src/inbox/promote.ts. The body is
+  // optional.
+  app.post("/api/inbox/:id/promote", requireScope("readings:import"), async (c) => {
+    const text = await c.req.text();
+    const parsed = PostInboxPromoteBodySchema.safeParse(text.trim() === "" ? {} : parseJson(text));
+    if (!parsed.success) {
+      return c.json({ error: "invalid body", details: parsed.error.message }, 400);
+    }
+    const principal = c.get("principal");
+    const sql = c.get("sql");
+    const out = await promoteInboxItem(
+      { inbox: inboxFor(principal, services, sql), intake: intakeFor(c.env, principal, services, sql) },
+      c.req.param("id"),
+      { email: parsed.data.email ?? false },
+    );
+    return respondInboxPromote(c, out);
+  });
+
   app.delete("/api/inbox/:id", requireScope("readings:import"), async (c) => {
     const discarded = await inboxFor(c.get("principal"), services, c.get("sql")).discard(c.req.param("id"));
     return discarded ? c.body(null, 204) : c.json({ error: "not found" }, 404);
@@ -526,7 +547,7 @@ const QUOTA_MESSAGES: Record<"request_rate" | "hourly" | "monthly", string> = {
 // status-code- or body-shaped about submit/import/reprocess lives here.
 function toHttp(out: IntakeOutcome): {
   body: unknown;
-  status: 200 | 202 | 400 | 403 | 404 | 409 | 429 | 503;
+  status: 200 | 202 | 400 | 403 | 404 | 409 | 413 | 429 | 503;
   headers?: Record<string, string>;
 } {
   switch (out.kind) {
@@ -582,6 +603,10 @@ function toHttp(out: IntakeOutcome): {
     // 403 body the authenticated seam gives a tenant that is not active.
     case "tenant_inactive":
       return { body: { error: "forbidden" }, status: 403 };
+    // Only inbox promote measures its message (src/inbox/promote.ts), so the
+    // budget is the inbox's.
+    case "too_large":
+      return { body: MARKDOWN_TOO_LARGE, status: 413 };
   }
 }
 
@@ -607,8 +632,22 @@ function quotaHttp(
   };
 }
 
+const MARKDOWN_TOO_LARGE = {
+  error: "markdown too large",
+  code: "markdown_too_large",
+  limit_bytes: INBOX_STAGE_BUDGET_BYTES,
+} as const;
+
 function markdownTooLarge(c: Context<AppBindings>): Response {
-  return c.json({ error: "markdown too large", code: "markdown_too_large", limit_bytes: INBOX_STAGE_BUDGET_BYTES }, 413);
+  return c.json(MARKDOWN_TOO_LARGE, 413);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
 }
 
 function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Response {
@@ -638,6 +677,19 @@ function respondInboxStage(c: Context<AppBindings>, out: InboxStageOutcome): Res
     case "tenant_inactive":
       return respondIntake(c, out);
   }
+}
+
+// The body import-markdown gives the same outcome, plus the item promoted.
+function respondInboxPromote(c: Context<AppBindings>, out: InboxPromoteOutcome): Response {
+  if (out.kind === "not_found") return c.json({ error: "not found" }, 404);
+  const mapped = toHttp(out.intake);
+  const body = {
+    ...(mapped.body as Record<string, unknown>),
+    inbox_item_id: out.itemId,
+    ...(out.retained ? { inbox_item_retained: true } : {}),
+  };
+  if (mapped.headers) return c.json(body, mapped.status, mapped.headers);
+  return c.json(body, mapped.status);
 }
 
 function respondIntake(c: Context<AppBindings>, out: IntakeOutcome): Response {

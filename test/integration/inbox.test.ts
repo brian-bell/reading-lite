@@ -2,6 +2,8 @@ import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseTenantId } from "../../src/control-plane/ids";
 import type { Env } from "../../src/index";
+import type { ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
+import { pgInboxStoreFor } from "../../src/modules/stores/postgres/inbox-store";
 import { createApp } from "../../src/router";
 import {
   INBOX_ITEM_CAP,
@@ -9,11 +11,14 @@ import {
   InboxItemSchema,
   ListInboxResponseSchema,
   PostInboxExistingResponseSchema,
+  PostInboxPromoteActivatedResponseSchema,
+  PostInboxPromoteExistingResponseSchema,
   PostInboxStagedResponseSchema,
 } from "../../src/schemas/api";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { readyManifest } from "../helpers/pg-fixtures";
+import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
 import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
 
@@ -48,6 +53,20 @@ function call(token: string, path: string, init: { method?: string; body?: unkno
 
 function stage(token: string, body: { source_url: string; markdown: string; title?: string }) {
   return call(token, "/api/inbox", { method: "POST", body });
+}
+
+async function staged(token: string, body: { source_url: string; markdown: string; title?: string }): Promise<string> {
+  const res = await stage(token, body);
+  expect(res.status).toBe(201);
+  return PostInboxStagedResponseSchema.parse(await res.json()).inbox_item_id;
+}
+
+function promote(token: string, id: string, body?: unknown) {
+  return call(token, `/api/inbox/${id}/promote`, { method: "POST", body });
+}
+
+function sentJobs() {
+  return send.mock.calls.map(([envelope]) => (envelope as ProcessReadingEnvelopeV1).job);
 }
 
 async function tenant(limits: { submissions_per_hour?: number; monthly_readings?: number } = {}) {
@@ -354,7 +373,250 @@ describe("GET and DELETE /api/inbox", () => {
 
     expect((await stage(token, { source_url: "https://example.com/scoped-2", markdown: "x" })).status).toBe(403);
     expect((await call(token, `/api/inbox/${id}`, { method: "DELETE" })).status).toBe(403);
+    expect((await promote(token, id)).status).toBe(403);
     expect((await call(token, "/api/inbox")).status).toBe(200);
     expect((await call(token, `/api/inbox/${id}`)).status).toBe(200);
+  });
+});
+
+describe("POST /api/inbox/:id/promote", () => {
+  it("imports a new URL, commits its reading, attempt and job, and deletes the item", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/promoted";
+    const id = await staged(token, { source_url: url, markdown: "# Promoted", title: "Promoted" });
+
+    const res = await promote(token, id);
+
+    expect(res.status).toBe(202);
+    const body = PostInboxPromoteActivatedResponseSchema.parse(await res.json());
+    expect(body).toEqual({
+      id: expect.stringMatching(/^rd_/),
+      status: "pending",
+      poll: `/api/readings/${body.id}`,
+      attempt_id: expect.any(String),
+      inbox_item_id: id,
+    });
+    for (const table of ["readings", "reading_urls", "reading_attempts", "reading_jobs"]) {
+      expect(await tableCount(table, tenantId), table).toBe(1);
+    }
+    expect(await readingsOf(tenantId).urlOwnerId(url)).toBe(body.id);
+    // Promote is silent unless it asks otherwise.
+    expect(sentJobs()).toEqual([
+      expect.objectContaining({
+        id: body.id,
+        trigger: "import",
+        email: false,
+        source: { kind: "markdown", markdown: "# Promoted", title: "Promoted" },
+      }),
+    ]);
+    expect((await call(token, `/api/inbox/${id}`)).status).toBe(404);
+  });
+
+  it.each(["ready", "pending"] as const)("returns a %s owner and deletes the item", async (status) => {
+    const { tenantId, token } = await tenant();
+    const url = `https://example.com/promote-owned-${status}`;
+    const id = await staged(token, { source_url: url, markdown: "# Late" });
+    await readingsOf(tenantId).seed(
+      await readyManifest("rd_PROMOTED1", { url, status, updated_at: new Date().toISOString() }),
+    );
+
+    const res = await promote(token, id);
+
+    expect(res.status).toBe(200);
+    const body = PostInboxPromoteExistingResponseSchema.parse(await res.json());
+    expect(body).toMatchObject({ id: "rd_PROMOTED1", status, inbox_item_id: id });
+    expect(body).not.toHaveProperty("inbox_item_retained");
+    expect(send).not.toHaveBeenCalled();
+    expect(await tableCount("inbox_items", tenantId)).toBe(0);
+  });
+
+  it("re-imports a failed owner in place, keeping its title for an untitled item", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/promote-failed";
+    const owner = await readyManifest("rd_PROMOFAIL", {
+      url,
+      title: "Owner title",
+      status: "failed",
+      error: { code: "fetch_failed", message: "no" },
+    });
+    await readingsOf(tenantId).seed(owner);
+    const id = await staged(token, { source_url: url, markdown: "# Recovered" });
+
+    const res = await promote(token, id, { email: true });
+
+    expect(res.status).toBe(202);
+    expect(PostInboxPromoteActivatedResponseSchema.parse(await res.json())).toMatchObject({
+      id: "rd_PROMOFAIL",
+      status: "pending",
+      inbox_item_id: id,
+    });
+    expect(await tableCount("readings", tenantId)).toBe(1);
+    expect(sentJobs()).toEqual([
+      expect.objectContaining({
+        id: "rd_PROMOFAIL",
+        email: true,
+        source: { kind: "markdown", markdown: "# Recovered", title: "Owner title" },
+      }),
+    ]);
+    expect(await tableCount("inbox_items", tenantId)).toBe(0);
+  });
+
+  // Every outcome but activated and existing keeps the item for another try.
+  it.each([
+    {
+      label: "409 for an attempt that became active",
+      status: 409,
+      async arrange(ctx: { tenantId: string; url: string }) {
+        const readings = readingsOf(ctx.tenantId);
+        const owner = await readyManifest("rd_RACED0001", {
+          url: ctx.url,
+          status: "failed",
+          error: { code: "fetch_failed", message: "no" },
+        });
+        await readings.seed(owner);
+        // Another attempt starts between promote's load and its start.
+        return interceptSql(/FROM readings WHERE tenant_id = \$1 AND id = \$2 FOR UPDATE/, async (n) => {
+          if (n === 1) {
+            await readings.restate({
+              ...owner,
+              status: "pending",
+              active_attempt: { id: "at_OTHER", trigger: "submit", status: "running", started_at: owner.updated_at },
+            });
+          }
+          return "pass" as const;
+        });
+      },
+    },
+    {
+      label: "429 when the request rate is spent",
+      status: 429,
+      limits: { submissions_per_hour: 1 },
+      async arrange() {},
+    },
+    {
+      label: "503 when the queue send fails",
+      status: 503,
+      async arrange() {
+        send.mockRejectedValueOnce(new Error("queue down"));
+      },
+    },
+    {
+      label: "503 when the queue is unbound",
+      status: 503,
+      async arrange() {
+        (env as unknown as { READING_JOBS: unknown }).READING_JOBS = undefined;
+      },
+    },
+    {
+      label: "403 for an inactive account",
+      status: 403,
+      async arrange() {
+        return interceptSql(TENANT_STATUS_LOCK, () => [{ status: "deleting" }]);
+      },
+    },
+  ])("keeps the item on $label", async ({ status, limits, arrange }) => {
+    const { tenantId, token } = await tenant(limits);
+    const url = `https://example.com/kept-${status}`;
+    const id = await staged(token, { source_url: url, markdown: "# Kept" });
+    const spy = await arrange({ tenantId, url });
+
+    const res = await promote(token, id);
+    spy?.mockRestore();
+
+    expect(res.status).toBe(status);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ error: expect.any(String), inbox_item_id: id });
+    expect(body).not.toHaveProperty("inbox_item_retained");
+    expect(await tableCount("inbox_items", tenantId)).toBe(1);
+  });
+
+  it("keeps an item re-staged while it was being promoted, and says so", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/restaged";
+    const id = await staged(token, { source_url: url, markdown: "# First" });
+    // The re-stage lands after promote loaded the item and before it deletes it.
+    send.mockImplementationOnce(async () => {
+      const inbox = pgInboxStoreFor(readingsOf(tenantId).sql, { tenantId: parseTenantId(tenantId)! }, services());
+      await inbox.stage({ url, markdown: "# Second" });
+    });
+
+    const res = await promote(token, id);
+
+    expect(res.status).toBe(202);
+    expect(PostInboxPromoteActivatedResponseSchema.parse(await res.json())).toMatchObject({
+      inbox_item_id: id,
+      inbox_item_retained: true,
+    });
+    const item = InboxItemSchema.parse(await (await call(token, `/api/inbox/${id}`)).json());
+    expect(item.markdown).toBe("# Second");
+  });
+
+  it("finishes a promote that crashed after activating: the retry returns the reading and removes the item", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/crashed";
+    const id = await staged(token, { source_url: url, markdown: "# Crashed" });
+    const crash = interceptSql(/DELETE FROM inbox_items WHERE tenant_id = \$1 AND id = \$2 AND updated_at = \$3/, () =>
+      new Error("connection lost"),
+    );
+    const first = await promote(token, id);
+    crash.mockRestore();
+    expect(first.status).toBe(500);
+    expect(await tableCount("inbox_items", tenantId)).toBe(1);
+
+    const retry = await promote(token, id);
+
+    expect(retry.status).toBe(200);
+    const body = PostInboxPromoteExistingResponseSchema.parse(await retry.json());
+    expect(body).toMatchObject({ url, status: "pending", inbox_item_id: id });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await tableCount("inbox_items", tenantId)).toBe(0);
+  });
+
+  // Stage measured this item with no owner. A failed owner that appeared since
+  // lends an untitled item its title, which rides in the promote message too.
+  it("refuses an item that no longer fits the promote message, before writing anything", async () => {
+    const { tenantId, token } = await tenant();
+    const url = "https://example.com/promote-too-large";
+    const frame = new TextEncoder().encode(JSON.stringify({ source_url: url, markdown: "" })).byteLength;
+    const id = await staged(token, { source_url: url, markdown: "a".repeat(INBOX_STAGE_BUDGET_BYTES - frame) });
+    const owner = await readyManifest("rd_TOOLARGE1", {
+      url,
+      title: "t".repeat(2_000),
+      status: "failed",
+      error: { code: "fetch_failed", message: "no" },
+    });
+    await readingsOf(tenantId).seed(owner);
+    const attempts = await tableCount("reading_attempts", tenantId);
+
+    const res = await promote(token, id);
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({
+      error: "markdown too large",
+      code: "markdown_too_large",
+      limit_bytes: INBOX_STAGE_BUDGET_BYTES,
+      inbox_item_id: id,
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(await tableCount("reading_attempts", tenantId)).toBe(attempts);
+    expect((await readingsOf(tenantId).manifest("rd_TOOLARGE1"))?.status).toBe("failed");
+    expect(await tableCount("inbox_items", tenantId)).toBe(1);
+  });
+
+  it("answers 404 for an unknown id and for another tenant's item", async () => {
+    const { token } = await tenant();
+    const other = await tenant();
+    const id = await staged(token, { source_url: "https://example.com/not-yours", markdown: "x" });
+
+    expect((await promote(token, "in_MISSING")).status).toBe(404);
+    const res = await promote(other.token, id);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: "not found" });
+  });
+
+  it("rejects a body that is not { email?: boolean }", async () => {
+    const { token } = await tenant();
+    const id = await staged(token, { source_url: "https://example.com/bad-body", markdown: "x" });
+    expect((await promote(token, id, { email: "yes" })).status).toBe(400);
   });
 });
