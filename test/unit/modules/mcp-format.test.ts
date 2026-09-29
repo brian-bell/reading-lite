@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   CONTENT_CHUNK_BYTES,
-  maxPolls,
   publicMarkdownLink,
   publicReadingUrl,
   sliceUtf8,
@@ -67,10 +66,6 @@ describe("mcp format helpers", () => {
       "extracted markdown not available",
     );
     expect(mapHttpError(403, "error code: 1010")).toBe("rate limited; back off and retry");
-  });
-
-  it("bounds poll attempts so an instant sleep cannot spin forever", () => {
-    expect(maxPolls(25_000, 2_000)).toBe(14);
   });
 });
 

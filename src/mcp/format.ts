@@ -1,8 +1,6 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 export const CONTENT_CHUNK_BYTES = 200 * 1024;
-export const POLL_INTERVAL_MS = 2_000;
-export const POLL_MAX_WAIT_MS = 25_000;
 
 export function publicReadingUrl(webBaseUrl: string | undefined, id: string): string | undefined {
   const raw = webBaseUrl?.trim();
@@ -100,8 +98,4 @@ export function mapHttpError(status: number, bodyError: string | undefined): str
     return "rate limited; back off and retry";
   }
   return bodyError && bodyError.length > 0 ? bodyError : "request failed";
-}
-
-export function maxPolls(maxWaitMs: number, intervalMs: number): number {
-  return Math.max(1, Math.ceil(maxWaitMs / intervalMs) + 1);
 }

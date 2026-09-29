@@ -364,7 +364,7 @@ describe("POST /mcp", () => {
     assertNoTokenLeak(await res.json());
   });
 
-  it("initialize then tools/list returns exactly the eight required tools", async () => {
+  it("initialize then tools/list returns exactly the registered tools, with no promote tool", async () => {
     const app = createApp({ services: makeServices(makeStubFetch()) });
     const init = await mcpRpc(app, {
       jsonrpc: "2.0",
@@ -384,10 +384,13 @@ describe("POST /mcp", () => {
     const names = (listed.rpc.result?.tools ?? []).map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        "discard_inbox_item",
         "get_diagnostics",
+        "get_inbox_item",
         "get_reading",
         "get_reading_content",
         "import_markdown",
+        "list_inbox",
         "list_readings",
         "reprocess_reading",
         "search_readings",
@@ -398,12 +401,15 @@ describe("POST /mcp", () => {
       expect(tool.inputSchema).toBeDefined();
       expect(typeof tool.description).toBe("string");
     }
-    const writes = (listed.rpc.result?.tools ?? []).filter((t) =>
-      ["submit_url", "import_markdown", "reprocess_reading"].includes(t.name),
-    );
-    for (const tool of writes) {
-      expect(tool.description?.toLowerCase()).toContain("mutate");
+    const tools = new Map((listed.rpc.result?.tools ?? []).map((t) => [t.name, t]));
+    for (const name of ["submit_url", "reprocess_reading"]) {
+      expect(tools.get(name)?.description?.toLowerCase()).toContain("mutates the corpus");
     }
+    // Import stages for review; a person promotes it outside MCP.
+    const importDescription = tools.get("import_markdown")?.description ?? "";
+    expect(importDescription).toMatch(/STAGES/);
+    expect(importDescription).toMatch(/not in the library until a person promotes it/);
+    expect(JSON.stringify(tools.get("import_markdown")?.inputSchema)).not.toContain("poll_until_ready");
   });
 
   it("list_readings pages and has_more, and q filters to a smaller relevant set", async () => {
@@ -550,45 +556,114 @@ describe("POST /mcp", () => {
     expect(String(again.payload.note)).toMatch(/existing reading returned/i);
   });
 
-  it("import_markdown creates a stub, optionally polls until ready, and reprocess mutates the same id", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({
-      services,
-      sleep: async () => {
-        await drainQueue(services);
-      },
+  it("import_markdown stages in the inbox and creates no reading; the inbox tools read and discard it", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const url = "https://example.com/staged";
+
+    const staged = await callTool(app, "import_markdown", {
+      source_url: url,
+      markdown: "# Staged\n\nhello",
+      title: "Staged title",
     });
 
-    const imported = await callTool(app, "import_markdown", {
-      source_url: "https://example.com/imported",
-      markdown: "# Imported\n\nhello",
-      title: "Imported title",
+    expect(staged.rpc.result?.isError).not.toBe(true);
+    expect(staged.payload).toEqual({
+      inbox_item_id: expect.stringMatching(/^in_/),
+      replaced: false,
+      note: expect.stringMatching(/not in the library until a person promotes it/),
     });
-    expect(imported.rpc.result?.isError).not.toBe(true);
-    expect(imported.payload.existing).toBe(false);
-    expect(imported.payload.status).toBe("pending");
-    const id = imported.payload.id as string;
-    expect(imported.payload.public_markdown_link).toBe(`[Imported title](${WEB_BASE}/readings/${id})`);
+    expect(queuedEnvelopes).toEqual([]);
+    expect((await callTool(app, "list_readings")).payload.readings).toEqual([]);
+    const itemId = staged.payload.inbox_item_id as string;
 
-    const polled = await callTool(app, "import_markdown", {
-      source_url: "https://example.com/imported-poll",
-      markdown: "# Poll me\n\nhello",
-      title: "Poll title",
-      poll_until_ready: true,
+    const listed = await callTool(app, "list_inbox");
+    expect(listed.payload.items).toEqual([
+      expect.objectContaining({ id: itemId, url, title: "Staged title", markdown_bytes: 15 }),
+    ]);
+
+    const item = await callTool(app, "get_inbox_item", { id: itemId });
+    expect(item.payload).toMatchObject({
+      id: itemId,
+      url,
+      title: "Staged title",
+      bytes_total: 15,
+      offset: 0,
+      truncated: false,
+      next_offset: null,
+      markdown: "# Staged\n\nhello",
     });
-    expect(polled.rpc.result?.isError).not.toBe(true);
-    expect(polled.payload.status).toBe("ready");
-    expect(polled.payload.polled).toBe(true);
-    expect(String(polled.payload.public_markdown_link)).toContain("/readings/");
+    const rest = await callTool(app, "get_inbox_item", { id: itemId, offset: 10 });
+    expect(rest.payload).toMatchObject({ offset: 10, bytes_returned: 5, markdown: "hello" });
 
-    const reprocessed = await callTool(app, "reprocess_reading", { id });
+    const again = await callTool(app, "import_markdown", { source_url: url, markdown: "# Corrected" });
+    expect(again.payload).toMatchObject({ inbox_item_id: itemId, replaced: true });
+
+    const discarded = await callTool(app, "discard_inbox_item", { id: itemId });
+    expect(discarded.rpc.result?.isError).not.toBe(true);
+    expect(discarded.payload).toEqual({ id: itemId, discarded: true });
+    const gone = await callTool(app, "get_inbox_item", { id: itemId });
+    expect(gone.rpc.result?.isError).toBe(true);
+    expect(gone.payload).toEqual({ http_status: 404, error: "unknown id" });
+  });
+
+  it("import_markdown returns a ready owner with its public_url and stages nothing", async () => {
+    await seedReady({
+      id: "rd_OWNED0001",
+      url: "https://example.com/owned",
+      title: "Owned",
+      tldr: "t",
+      markdown: "# Owned",
+    });
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const owned = await callTool(app, "import_markdown", {
+      source_url: "https://example.com/owned",
+      markdown: "# Agent copy",
+    });
+
+    expect(owned.rpc.result?.isError).not.toBe(true);
+    expect(owned.payload).toMatchObject({
+      existing: true,
+      reading: expect.objectContaining({ id: "rd_OWNED0001", status: "ready" }),
+      public_url: `${WEB_BASE}/readings/rd_OWNED0001`,
+      public_markdown_link: `[Owned](${WEB_BASE}/readings/rd_OWNED0001)`,
+    });
+    expect((await callTool(app, "list_inbox")).payload.items).toEqual([]);
+  });
+
+  it("reprocess_reading re-runs a reading from its URL and refuses a markdown source without dispatching", async () => {
+    await seedReady({
+      id: "rd_REPROC001",
+      url: "https://example.com/reprocess",
+      title: "Reprocess me",
+      tldr: "t",
+      markdown: "# Original",
+    });
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+    const dispatched = vi.spyOn(app, "request");
+
+    const refused = await callTool(app, "reprocess_reading", {
+      id: "rd_REPROC001",
+      body: { force: true, source: { kind: "markdown", markdown: "# Agent replacement" } },
+    });
+    expect(refused.rpc.result?.isError).toBe(true);
+    expect(refused.payload).toEqual({
+      http_status: 400,
+      error: expect.stringMatching(/import_markdown/),
+    });
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(queuedEnvelopes).toEqual([]);
+
+    const reprocessed = await callTool(app, "reprocess_reading", { id: "rd_REPROC001", body: { force: true } });
     expect(reprocessed.rpc.result?.isError).not.toBe(true);
-    expect(reprocessed.payload.id).toBe(id);
+    expect(reprocessed.payload.id).toBe("rd_REPROC001");
+    expect(queuedJobs).toEqual([
+      expect.objectContaining({ id: "rd_REPROC001", trigger: "reprocess", source: undefined }),
+    ]);
 
-    const diag = await callTool(app, "get_diagnostics", { id });
+    const diag = await callTool(app, "get_diagnostics", { id: "rd_REPROC001" });
     expect(diag.rpc.result?.isError).not.toBe(true);
-    expect(diag.payload.id).toBe(id);
-    expect(diag.payload.manifest).toBeDefined();
+    expect(diag.payload.id).toBe("rd_REPROC001");
   });
 
   it("a read-only token can connect and list every tool", async () => {
@@ -600,7 +675,7 @@ describe("POST /mcp", () => {
       { token: secret },
     );
     expect(listed.res.status).toBe(200);
-    expect((listed.rpc.result?.tools ?? []).length).toBe(8);
+    expect((listed.rpc.result?.tools ?? []).length).toBe(11);
   });
 
 });
@@ -616,7 +691,7 @@ describe("MCP adversarial tenant matrix", () => {
     await insertSecondTenant(env as unknown as Env);
     await seedReady({ id, url, title: "Private founder", tldr: "private needle", markdown: "# Founder secret" });
     const services = makeServices(makeStubFetch());
-    const app = createApp({ services, sleep: async () => { await drainQueue(services); } });
+    const app = createApp({ services });
     return { app, services };
   }
 
@@ -633,9 +708,7 @@ describe("MCP adversarial tenant matrix", () => {
       const owner = await callTool(app, name === "reprocess_reading" ? "get_reading" : name, { id });
       expect(owner.rpc.result?.isError).not.toBe(true);
       expect(owner.payload.id).toBe(id);
-      const args = name === "reprocess_reading"
-        ? { body: { force: true, source: { kind: "markdown", markdown: "# Attacker replacement" } } }
-        : {};
+      const args = name === "reprocess_reading" ? { body: { force: true } } : {};
       const foreign = await callTool(app, name, { id, ...args }, { token: OTHER_TOKEN_SECRET });
       const unknown = await callTool(app, name, { id: unknownId, ...args }, { token: OTHER_TOKEN_SECRET });
       expect(unknown.payload.http_status).toBe(404);
@@ -671,28 +744,58 @@ describe("MCP adversarial tenant matrix", () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it.each(["submit_url", "import_markdown"])("%s claims the same URL independently and keeps polling tenant-local", async (name) => {
+  it("submit_url claims the same URL independently per tenant", async () => {
     const { app, services } = await fixture();
     const before = await callTool(app, "get_diagnostics", { id });
-    const args = name === "submit_url" ? { url } : { source_url: url, markdown: "# Other tenant text", poll_until_ready: true };
-    const own = await callTool(app, name, args);
+    const own = await callTool(app, "submit_url", { url });
     expect(own.payload.id).toBe(id);
     expect(own.payload.existing).toBe(true);
-    const other = await callTool(app, name, args, { token: OTHER_TOKEN_SECRET });
+    const other = await callTool(app, "submit_url", { url }, { token: OTHER_TOKEN_SECRET });
     expect(other.rpc.result?.isError).not.toBe(true);
     expect(other.payload.existing).toBe(false);
     expect(other.payload.id).not.toBe(id);
     await drainQueue(services);
     const otherReady = await callTool(app, "get_reading", { id: other.payload.id }, { token: OTHER_TOKEN_SECRET });
     expect(otherReady.payload.status).toBe("ready");
-    if (name === "import_markdown") {
-      expect(other.payload.polled).toBe(true);
-      expect(other.payload.status).toBe("ready");
-      expect((other.payload.reading as { id: string }).id).toBe(other.payload.id);
-    }
     expect((await callTool(app, "get_diagnostics", { id })).payload).toEqual(before.payload);
     const cross = await callTool(app, "get_reading", { id: other.payload.id });
     expect(cross.payload.http_status).toBe(404);
+  });
+
+  // The owner's ready reading answers the owner; the other tenant has no
+  // owner, so its import stages in its own inbox and nothing else.
+  it("import_markdown resolves the owner and stages per tenant", async () => {
+    const { app } = await fixture();
+    const before = await snapshot();
+    const args = { source_url: url, markdown: "# Other tenant text" };
+
+    const own = await callTool(app, "import_markdown", args);
+    expect(own.payload).toMatchObject({ existing: true, reading: expect.objectContaining({ id }) });
+    const other = await callTool(app, "import_markdown", args, { token: OTHER_TOKEN_SECRET });
+    expect(other.rpc.result?.isError).not.toBe(true);
+    expect(other.payload).toMatchObject({ inbox_item_id: expect.stringMatching(/^in_/), replaced: false });
+    expect(other.payload).not.toHaveProperty("public_url");
+
+    expect((await callTool(app, "list_inbox")).payload.items).toEqual([]);
+    expect((await callTool(app, "list_inbox", {}, { token: OTHER_TOKEN_SECRET })).payload.items).toEqual([
+      expect.objectContaining({ id: other.payload.inbox_item_id }),
+    ]);
+    expect((await callTool(app, "list_readings", {}, { token: OTHER_TOKEN_SECRET })).payload.readings).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+    expect(queuedEnvelopes).toEqual([]);
+  });
+
+  it.each(["get_inbox_item", "discard_inbox_item"])("%s hides another tenant's item", async (name) => {
+    const { app } = await fixture();
+    const staged = await callTool(app, "import_markdown", { source_url: "https://example.com/inbox-private", markdown: "# Mine" });
+    const itemId = staged.payload.inbox_item_id as string;
+
+    const foreign = await callTool(app, name, { id: itemId }, { token: OTHER_TOKEN_SECRET });
+    const unknown = await callTool(app, name, { id: "in_UNKNOWN" }, { token: OTHER_TOKEN_SECRET });
+
+    expect(unknown.payload).toEqual({ http_status: 404, error: "unknown id" });
+    expect(foreign.rpc.result).toEqual(unknown.rpc.result);
+    expect((await callTool(app, "get_inbox_item", { id: itemId })).payload.markdown).toBe("# Mine");
   });
 
   it.each([

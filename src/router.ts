@@ -85,7 +85,6 @@ import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
   services?: Services;
-  sleep?: (ms: number) => Promise<void>;
   auth?: AuthRuntime;
 }
 
@@ -199,13 +198,13 @@ export function createApp(opts: AppOptions = {}) {
 
   app.use("/mcp", mcpOriginGuard());
   app.use("/mcp", requirePrincipal(authNowMs));
-  app.all("/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
+  app.all("/mcp", createMcpHandler(bindInternalDispatch(app)));
   // Alias under /api/* so production works before the dedicated /mcp* zone
   // route is attached (that update needs Cloudflare zone Workers Routes
   // permission the deploy token may not have).
   app.use("/api/mcp", mcpOriginGuard());
   app.use("/api/mcp", requirePrincipal(authNowMs));
-  app.all("/api/mcp", createMcpHandler(bindInternalDispatch(app), { sleep: opts.sleep }));
+  app.all("/api/mcp", createMcpHandler(bindInternalDispatch(app)));
 
   // Authenticated routes: bearer token or host-only session cookie.
   app.use("/api/whoami", requirePrincipal(authNowMs));

@@ -34,7 +34,8 @@ live on `PgReadingStore` (reads) and `PgReadingWriter` (writes) in
 
 Markdown an agent supplies waits here for a person's review before it becomes
 a reading (reading-lite-gh423). Nothing is claimed, billed, listed or
-searchable until then.
+searchable until then. MCP `import_markdown` stages here and MCP has no
+promote tool; REST `POST /api/readings/import-markdown` still imports directly.
 
 - **Inbox item** — one `inbox_items` row (`in_…`): a source URL, an optional
   title and the Markdown itself, capped at 128,000 bytes. One item per tenant
