@@ -34,6 +34,7 @@ const ROUTER_REST_PATHS = [
   "/api/auth/provider/usage",
   "/api/inbox",
   "/api/inbox/{id}",
+  "/api/inbox/{id}/promote",
   "/api/readings",
   "/api/readings/import-markdown",
   "/api/readings/lookup",
@@ -74,6 +75,7 @@ const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = 
   { path: "/api/inbox", method: "post" },
   { path: "/api/inbox/{id}", method: "get" },
   { path: "/api/inbox/{id}", method: "delete" },
+  { path: "/api/inbox/{id}/promote", method: "post" },
   { path: "/api/readings", method: "get" },
   { path: "/api/readings", method: "post" },
   { path: "/api/readings/import-markdown", method: "post" },
@@ -102,6 +104,7 @@ const COOKIE_CSRF_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = 
   { path: "/api/exports", method: "post" },
   { path: "/api/inbox", method: "post" },
   { path: "/api/inbox/{id}", method: "delete" },
+  { path: "/api/inbox/{id}/promote", method: "post" },
   { path: "/api/readings", method: "post" },
   { path: "/api/readings/import-markdown", method: "post" },
   { path: "/api/readings/similar", method: "post" },
@@ -154,6 +157,14 @@ const REQUIRED_SCHEMAS = [
   "ListInboxResponse",
   "InboxMarkdownTooLargeResponse",
   "InboxFullResponse",
+  "PostInboxPromoteBody",
+  "PostInboxPromoteActivatedResponse",
+  "PostInboxPromoteExistingResponse",
+  "InboxPromoteErrorMessage",
+  "InboxPromoteUnavailable",
+  "InboxPromoteQuotaDenied",
+  "InboxPromoteUsageGuardUnavailable",
+  "InboxPromoteTooLarge",
   "PostReadingReprocessBody",
   "ListReadingsResponse",
   "Manifest",
@@ -362,6 +373,28 @@ describe("docs/openapi.yaml", () => {
     expect(validate).toBeDefined();
     expect(validate?.(attempt)).toBe(true);
     expect(validate?.({ ...attempt, unexpected: true })).toBe(false);
+  });
+
+  // A refused promote answers import-markdown's body for the outcome plus the
+  // item it kept, so each error schema keeps its outcome's fields.
+  it.each([
+    ["InboxPromoteErrorMessage", { error: "reading already has an active attempt" }],
+    ["InboxPromoteUnavailable", { error: "queue send failed", id: "rd_01" }],
+    [
+      "InboxPromoteQuotaDenied",
+      { error: "request rate limit exceeded", code: "rate_limited", limit: "request_rate", reset_at: "2026-09-29T18:00:00.000Z" },
+    ],
+    ["InboxPromoteUsageGuardUnavailable", { error: "usage guard unavailable" }],
+    ["InboxPromoteTooLarge", { error: "markdown too large", code: "markdown_too_large", limit_bytes: 126976 }],
+  ])("%s carries its outcome's fields and the kept item", (name, body) => {
+    const ajv = new Ajv2020({ strict: false });
+    addFormats(ajv);
+    ajv.addSchema(loadSpec(), "reading-lite-openapi");
+    const validate = ajv.getSchema(`reading-lite-openapi#/components/schemas/${name}`);
+    expect(validate, `missing schema ${name}`).toBeDefined();
+    expect(validate!({ ...body, inbox_item_id: "in_01" })).toBe(true);
+    expect(validate!(body)).toBe(false);
+    expect(validate!({ ...body, inbox_item_id: "in_01", unexpected: true })).toBe(false);
   });
 
   describe("reading detail relationship_targets", () => {
