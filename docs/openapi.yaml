@@ -1652,7 +1652,7 @@ paths:
               schema:
                 oneOf:
                   - $ref: "#/components/schemas/ErrorMessage"
-                  - $ref: "#/components/schemas/InboxPromoteError"
+                  - $ref: "#/components/schemas/InboxPromoteErrorMessage"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
@@ -1660,7 +1660,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InboxPromoteError"
+                $ref: "#/components/schemas/InboxPromoteErrorMessage"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "413":
@@ -1673,7 +1673,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InboxPromoteError"
+                $ref: "#/components/schemas/InboxPromoteTooLarge"
         "429":
           description: |
             Request rate or reading quota exceeded, or usage guard unavailable
@@ -1687,7 +1687,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InboxPromoteError"
+                oneOf:
+                  - $ref: "#/components/schemas/InboxPromoteQuotaDenied"
+                  - $ref: "#/components/schemas/InboxPromoteUsageGuardUnavailable"
         "503":
           description: |
             Queue unbound, contention, or the import's setup or queue send
@@ -1695,7 +1697,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InboxPromoteError"
+                $ref: "#/components/schemas/InboxPromoteUnavailable"
       x-required-scope: readings:import
 
 components:
@@ -2773,20 +2775,88 @@ components:
         - $ref: "#/components/schemas/InboxPromoteFields"
       unevaluatedProperties: false
 
-    InboxPromoteError:
+    InboxPromoteItemId:
       description: |
-        The error body import-markdown gives the same outcome (ErrorMessage,
-        QuotaDeniedResponse, UsageGuardUnavailableResponse or
-        UnavailableError), or InboxMarkdownTooLargeResponse for 413, plus the
-        item, which is kept.
+        The item a refused promote kept. The error schemas below are the bodies
+        import-markdown gives the same outcome (ErrorMessage,
+        UnavailableError, QuotaDeniedResponse, UsageGuardUnavailableResponse)
+        or stage's InboxMarkdownTooLargeResponse, each with this field added.
       type: object
-      required: [error, inbox_item_id]
+      required: [inbox_item_id]
       properties:
-        error:
-          type: string
         inbox_item_id:
           type: string
           pattern: "^in_"
+
+    InboxPromoteErrorMessage:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+      unevaluatedProperties: false
+
+    InboxPromoteUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+              description: Human-readable unavailable reason
+            id:
+              type: string
+              description: Present when the reading already existed or an id was allocated before the failure
+      unevaluatedProperties: false
+
+    InboxPromoteQuotaDenied:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error, code, limit, reset_at]
+          properties:
+            error:
+              type: string
+            code:
+              type: string
+              enum: [rate_limited, quota_exhausted]
+            limit:
+              type: string
+              enum: [request_rate, hourly, monthly]
+            reset_at:
+              type: string
+              format: date-time
+      unevaluatedProperties: false
+
+    InboxPromoteUsageGuardUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+              const: usage guard unavailable
+      unevaluatedProperties: false
+
+    InboxPromoteTooLarge:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error, code, limit_bytes]
+          properties:
+            error:
+              type: string
+            code:
+              type: string
+              const: markdown_too_large
+            limit_bytes:
+              type: integer
+              const: 126976
+      unevaluatedProperties: false
 
     ReprocessMarkdownSource:
       type: object
