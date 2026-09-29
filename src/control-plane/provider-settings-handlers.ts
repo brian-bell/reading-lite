@@ -4,6 +4,7 @@ import { DEFAULT_OPENAI_SUMMARIZATION_MODEL } from "../modules/summarizer";
 import {
   PostProviderKeyBodySchema,
   PostProviderPreferencesBodySchema,
+  ProviderUsageResponseSchema,
   type ProviderSettingsError,
 } from "../schemas/api";
 import type { AppBindings } from "../middleware";
@@ -12,7 +13,8 @@ import { fromSql } from "./db";
 import { checkOpenAIProviderKey, type ProviderKeyRejection } from "./provider-key-check";
 import { deleteProviderCredentials, upsertProviderCredential } from "./provider-credentials";
 import { readProviderKeyRoots } from "./provider-key-crypto";
-import { loadProviderSettings, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
+import { loadProviderSettings, loadSpendCaps, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
+import { fetchTenantSpendStatus } from "./spend-status";
 
 const KEY_REJECTION: Record<ProviderKeyRejection, { error: string; status: number }> = {
   invalid_key: { error: "invalid key", status: 400 },
@@ -40,6 +42,27 @@ function summarizationModel(env: AppBindings["Bindings"]): string {
 export async function handleGetProviderSettings(c: Context<AppBindings>): Promise<Response> {
   const userId = String(c.get("principal").userId);
   return settingsResponse(await loadProviderSettings(fromSql(c.get("sql")), userId));
+}
+
+/**
+ * Read-only: today's charges against the reader's effective cap. The caps come
+ * from PostgreSQL and the charges from the spend guard, so the two are separate
+ * observations; the guard's clock picks the day and its reset.
+ */
+export async function handleGetProviderUsage(c: Context<AppBindings>): Promise<Response> {
+  const userId = String(c.get("principal").userId);
+  const caps = await loadSpendCaps(fromSql(c.get("sql")), userId);
+  if (caps === "not_found") return jsonAuth({ error: "not found" }, 404);
+  if (caps === "limits_missing") return jsonAuth({ error: "internal" }, 500);
+  const status = await fetchTenantSpendStatus(c.env.GLOBAL_USAGE_GUARD, userId);
+  if (!status) return jsonAuth({ error: "usage unavailable" }, 503);
+  return jsonAuth(ProviderUsageResponseSchema.parse({
+    day_key: status.dayKey,
+    charged_microdollars: status.tenantChargedMicrodollars,
+    effective_daily_spend_microdollars: caps.effective_daily_spend_microdollars,
+    reset_at_ms: status.resetAtMs,
+    observed_at_ms: status.observedAtMs,
+  }), 200);
 }
 
 export async function handleConnectProviderKey(

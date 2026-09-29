@@ -6,7 +6,7 @@ const Amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const Positive = Amount.refine(n => n > 0);
 const Page = <T extends z.ZodType>(record: T) => z.object({ complete: z.boolean(), records: z.array(record) });
 export const LeaseInspectionSchema = Page(z.object({ key: z.string(), expiresAtMs: Amount, inFlight: z.boolean(), occupiesSlot: z.boolean(), attemptId: z.string(), heartbeatOverdueMs: Amount, tenantId: z.string().optional() }));
-export const SpendInspectionSchema = Page(z.object({ key: z.string(), tenantId: z.string(), dayKey: z.string(), state: z.enum(['reserved', 'dispatched', 'settled', 'released']), maxMicrodollars: Amount, chargedMicrodollars: Amount, expiresAtMs: Amount.optional() }));
+export const SpendInspectionSchema = Page(z.object({ key: z.string(), tenantId: z.string(), payer: z.enum(['tenant', 'operator']).optional(), dayKey: z.string(), state: z.enum(['reserved', 'dispatched', 'settled', 'released']), maxMicrodollars: Amount, chargedMicrodollars: Amount, expiresAtMs: Amount.optional() }));
 const Headroom = z.object({ count: Amount, limit: Positive, remaining: Amount, resetAtMs: Amount });
 export const TenantInspectionSchema = z.object({ observedAtMs: Amount, policyVersion: Positive, requests: Headroom, hourly: Headroom, monthly: Headroom, maxConcurrentWork: Positive, reservations: Page(z.object({ key: z.string(), status: z.enum(['held', 'consumed', 'released']), hourKey: z.string(), monthKey: z.string(), expiresAtMs: Amount, expired: z.boolean() })), leases: LeaseInspectionSchema });
 export const OperatorDetailsSchema = z.object({ observedAtMs: Amount, spend: SpendInspectionSchema, leases: LeaseInspectionSchema });
@@ -47,12 +47,12 @@ export async function inspectLeases(storage: Pick<Storage, 'list'>, now: number,
 }
 export async function inspectSpend(storage: Pick<Storage, 'list'>) {
     const rows = await page(storage, 'spend:op:');
-    const schema = z.object({ tenantId: z.string().min(1), policyVersion: Positive, state: z.enum(['reserved', 'dispatched', 'settled', 'released']), quote: z.object({ dayKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), maxMicrodollars: Amount, catalogVersion: Amount, requestFingerprint: z.string().min(1) }), actualMicrodollars: Amount.optional(), expiresAtMs: Amount.optional() });
+    const schema = z.object({ tenantId: z.string().min(1), payer: z.enum(['tenant', 'operator']).optional(), policyVersion: Positive, state: z.enum(['reserved', 'dispatched', 'settled', 'released']), quote: z.object({ dayKey: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), maxMicrodollars: Amount, catalogVersion: Amount, requestFingerprint: z.string().min(1) }), actualMicrodollars: Amount.optional(), expiresAtMs: Amount.optional() });
     return { complete: rows.complete, records: rows.entries.map(([key, value]) => {
             const r = schema.parse(value);
             if (r.state === 'settled' && (r.actualMicrodollars === undefined || r.actualMicrodollars > r.quote.maxMicrodollars))
                 throw Error('Invalid settled spend');
-            return { key, tenantId: r.tenantId, dayKey: r.quote.dayKey, state: r.state, maxMicrodollars: r.quote.maxMicrodollars, chargedMicrodollars: r.state === 'released' ? 0 : r.state === 'settled' ? r.actualMicrodollars! : r.quote.maxMicrodollars, ...(r.expiresAtMs === undefined ? {} : { expiresAtMs: r.expiresAtMs }) };
+            return { key, tenantId: r.tenantId, ...(r.payer === undefined ? {} : { payer: r.payer }), dayKey: r.quote.dayKey, state: r.state, maxMicrodollars: r.quote.maxMicrodollars, chargedMicrodollars: r.state === 'released' ? 0 : r.state === 'settled' ? r.actualMicrodollars! : r.quote.maxMicrodollars, ...(r.expiresAtMs === undefined ? {} : { expiresAtMs: r.expiresAtMs }) };
         }) };
 }
 export async function inspectGlobal(storage: Pick<Storage, 'list'>, now: number) {

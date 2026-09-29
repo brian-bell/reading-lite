@@ -2,6 +2,7 @@ import type { Env } from "../index";
 import { actualPaidCost, quotePaidRequest } from "../modules/paid-pricing";
 import { GLOBAL_USAGE_GUARD_NAME } from "./constants";
 import { DeferPaidWorkError } from "./processing-leases";
+import type { SpendPayer } from "./spend-ledger";
 
 // The hosted pipeline's only paid fetch seam. Install INSIDE provider retry:
 // each invocation is a new possible bill and gets a fresh operation UUID. RPC
@@ -97,13 +98,16 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       dayKey: new Date(nowMs).toISOString().slice(0, 10),
       catalogVersion: quote.catalogVersion, requestFingerprint: quote.fingerprint, maxMicrodollars: quote.maxMicrodollars,
     }};
-    const reserve = { ...identity, kind: "reserve_spend", nowMs };
+    // The tenant pays only when its own key is attached; deployment keys and
+    // operator tools bill the operator.
+    const payer: SpendPayer = deps.authorization?.mode === "tenant" ? "tenant" : "operator";
+    const reserve = { ...identity, kind: "reserve_spend", nowMs, payer };
     const call = async (body: Record<string, unknown>): Promise<RpcDecision> => {
       try { return await deps.rpc(body); }
       catch { return { ok: false, reason: "unavailable" }; }
     };
     const report = (state: string, fields: Record<string, unknown> = {}) => console.info(JSON.stringify({
-      event: "paid_spend", tenant_id: deps.tenantId, op_id: opId,
+      event: "paid_spend", tenant_id: deps.tenantId, op_id: opId, payer,
       state, max_microdollars: quote.maxMicrodollars, ...fields,
     }));
     const result = await call(reserve);

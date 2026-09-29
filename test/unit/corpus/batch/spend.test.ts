@@ -69,7 +69,7 @@ describe("batch spend admission", () => {
   const admit = (rpc: SpendRpc) =>
     admitBatchSpend(bound, { tenantId: TENANT, rpc, nowMs: NOW_MS, opId: "op-1" });
 
-  it("reserves then marks one operation for the whole batch, and returns the identity to persist", async () => {
+  it("reserves then marks one operator-funded operation for the whole batch, and returns the identity to persist", async () => {
     const a = authority();
     const identity = await admit(a.rpc);
     expect(a.kinds()).toEqual(["reserve_spend", "mark_spend_dispatched"]);
@@ -78,7 +78,7 @@ describe("batch spend admission", () => {
       opId: "op-1",
       quote: { dayKey: "2026-09-19", catalogVersion: 1, requestFingerprint: "f".repeat(64), maxMicrodollars: 900 },
     });
-    expect(a.calls[0]).toMatchObject({ ...identity, nowMs: NOW_MS });
+    expect(a.calls[0]).toMatchObject({ ...identity, nowMs: NOW_MS, payer: "operator" });
   });
 
   it.each([

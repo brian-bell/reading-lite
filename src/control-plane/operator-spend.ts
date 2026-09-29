@@ -16,7 +16,8 @@ const identity = {
 };
 
 const SpendRequestSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("reserve_spend"), ...identity, nowMs: z.number().finite().nonnegative() }).strict(),
+  // Operator tools spend deployment keys, so this route cannot admit tenant-funded work.
+  z.object({ kind: z.literal("reserve_spend"), ...identity, nowMs: z.number().finite().nonnegative(), payer: z.literal("operator") }).strict(),
   z.object({ kind: z.literal("mark_spend_dispatched"), ...identity }).strict(),
   z.object({ kind: z.literal("release_spend"), ...identity }).strict(),
   z.object({ kind: z.literal("settle_spend"), ...identity, actualMicrodollars: z.number().int().nonnegative().safe() }).strict(),
