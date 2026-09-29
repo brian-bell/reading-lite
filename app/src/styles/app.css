@@ -767,6 +767,124 @@ textarea {
   line-height: 1.5;
 }
 
+/* Provider (reading-lite-gh341.8): the key's card, then effort and the daily
+   limit as plain sections, all in the account page's one column. */
+.provider-page .account-sections {
+  max-width: 68ch;
+}
+
+.provider-intro {
+  max-width: 62ch;
+  margin: 0 0 var(--space-6);
+  font-size: 17px;
+  line-height: 1.6;
+}
+
+/* The key sits on the surface the export card uses, so the one thing here
+   that is connected or not reads as a thing with a state. */
+.provider-card {
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.provider-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.provider-status-connected {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.provider-status-invalid {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* What the key is for, two facts side by side where they fit. */
+.provider-roles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-4) 0 0;
+  border-top: 1px solid var(--border);
+}
+
+.provider-roles dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.provider-roles dd {
+  margin: var(--space-1) 0 0;
+  font-size: 15px;
+}
+
+.provider-text {
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.provider-text strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.provider-text-warning {
+  color: var(--danger);
+}
+
+/* Four characters of a key, set apart so they are read as characters. */
+.provider-last-four {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.provider-removed {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--accent);
+  background: var(--accent-soft);
+}
+
+.provider-removed .provider-text {
+  color: var(--ink);
+}
+
+.provider-removed .provider-text:last-child {
+  margin-bottom: 0;
+}
+
+.provider-key-form,
+.provider-cap-form {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-4) 0 var(--space-5);
+}
+
+.provider-key-form .form-hint,
+.provider-cap-form .form-hint {
+  margin: 0;
+}
+
+.provider-effort-field,
+.provider-cap-input {
+  max-width: 16rem;
+}
+
+.provider-usage {
+  margin: 0 0 var(--space-3);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
 .session-cap-warning {
   margin: 0 0 var(--space-4);
   padding: var(--space-3) var(--space-4);

@@ -7,6 +7,7 @@ import {
   loginHref,
   rememberReturnPath,
   safeReturnPath,
+  stepUpLoginHref,
 } from "../src/auth/return-path";
 
 afterEach(() => {
@@ -14,8 +15,8 @@ afterEach(() => {
   sessionStorage.clear();
 });
 
-// Acceptance matrix, Return paths: same-origin /, /readings/:id, /save, and
-// /account/security, each with only its own parameters.
+// Acceptance matrix, Return paths: same-origin /, /readings/:id, /save,
+// /account/security, and /account/provider, each with only its own parameters.
 describe("safeReturnPath", () => {
   it.each([
     ["/", "/"],
@@ -25,6 +26,7 @@ describe("safeReturnPath", () => {
     ["/readings/rd_ONE?view=source", "/readings/rd_ONE?view=source"],
     ["/save", "/save"],
     ["/account/security", "/account/security"],
+    ["/account/provider", "/account/provider"],
     ["  /save  ", "/save"],
   ])("accepts %j", (raw, expected) => {
     expect(safeReturnPath(raw)).toBe(expected);
@@ -37,6 +39,7 @@ describe("safeReturnPath", () => {
     ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
     ["/save?url=https://example.com", "/save"],
     ["/account/security?next=https://evil.example", "/account/security"],
+    ["/account/provider?key=sk-proj-abc", "/account/provider"],
     ["/?q=a&q=b", "/?q=a"],
     ["/?q=&tag=ai", "/?tag=ai"],
     ["/readings/rd_ONE#section", "/readings/rd_ONE"],
@@ -146,7 +149,8 @@ describe("loginHref", () => {
     expect(loginHref("/login?next=%2Fsave")).toBe("/login");
   });
 
-  it("has a step-up link back to the account page", () => {
+  it("has step-up links back to the account and provider pages", () => {
     expect(STEP_UP_LOGIN_HREF).toBe("/login?step_up=1&next=%2Faccount%2Fsecurity");
+    expect(stepUpLoginHref("/account/provider")).toBe("/login?step_up=1&next=%2Faccount%2Fprovider");
   });
 });

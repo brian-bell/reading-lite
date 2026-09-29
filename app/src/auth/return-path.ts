@@ -10,7 +10,13 @@
 
 export const LOGIN_NEXT_STORAGE_KEY = "reading-lite.loginNext";
 export const ACCOUNT_SECURITY_PATH = "/account/security";
-export const STEP_UP_LOGIN_HREF = `/login?step_up=1&next=${encodeURIComponent(ACCOUNT_SECURITY_PATH)}`;
+export const ACCOUNT_PROVIDER_PATH = "/account/provider";
+
+/** The step-up sign-in (email locked) that returns to `path` once the new link is opened. */
+export function stepUpLoginHref(path: typeof ACCOUNT_SECURITY_PATH | typeof ACCOUNT_PROVIDER_PATH): string {
+  return `/login?step_up=1&next=${encodeURIComponent(path)}`;
+}
+export const STEP_UP_LOGIN_HREF = stepUpLoginHref(ACCOUNT_SECURITY_PATH);
 
 const READING_PATH = /^\/readings\/[A-Za-z0-9_-]+$/;
 
@@ -22,7 +28,7 @@ const BASE = "https://return-path.invalid";
 function allowedParams(pathname: string): readonly string[] | undefined {
   if (pathname === "/") return ["q", "tag", "offset"];
   if (READING_PATH.test(pathname)) return ["view"];
-  if (pathname === "/save" || pathname === ACCOUNT_SECURITY_PATH) return [];
+  if (pathname === "/save" || pathname === ACCOUNT_SECURITY_PATH || pathname === ACCOUNT_PROVIDER_PATH) return [];
   return undefined;
 }
 

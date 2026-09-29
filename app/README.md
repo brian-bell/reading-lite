@@ -70,7 +70,7 @@ return path is per origin.
   the mailed path, and its `/login/verify` alias redeem the fragment credential
   only on Continue. Return paths go through `src/auth/return-path.ts`: an
   allowlist of `/` (`q`, `tag`, `offset`), `/readings/:id` (`view`), `/save`,
-  and `/account/security`, with other parameters dropped. The path is stored in
+  `/account/security`, and `/account/provider`, with other parameters dropped. The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
   cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
   signed-out reader to `/login?next=<URL>`; signed out, `/` shows the form in
@@ -138,6 +138,18 @@ return path is per origin.
   focuses its section's heading through `src/components/jump-to.ts`, the
   reading page's phone jump, so the URL keeps no hash and Back leaves the
   page. Every section stays on the page; the nav only shortens the scroll.
+- **Provider.** `/account/provider` (reading-lite-gh341.8, ADR 0004), linked
+  from the account menu, reads `GET /api/auth/provider` and
+  `GET /api/auth/provider/usage` in the browser (`src/provider.ts`,
+  `src/api/provider.ts`). The OpenAI key is missing, connected (last four and
+  when it was checked), or invalid; a removal on this visit shows what stays.
+  Connect and replace `POST` the key and remove sends `DELETE`, each with CSRF
+  and the tenant pin; the recent-auth 403 is a fresh sign-in link back to
+  `/account/provider`, and OpenAI's refusal is the field's error. The key lives
+  only in the field and the request body, never browser storage. Effort saves
+  as it changes, and the daily limit may only be lowered, through
+  `POST /api/auth/provider/preferences`; today's charges sit beside it and can
+  be unavailable on their own.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit
