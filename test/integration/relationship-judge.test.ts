@@ -13,6 +13,8 @@ import type { SimilarityMatch } from "../../src/modules/stores/similarity";
 import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
 import type { Services } from "../../src/services";
+import { parseProviderKeySecret } from "../../src/control-plane/crypto";
+import { upsertProviderCredential } from "../../src/control-plane/provider-credentials";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
 
@@ -466,6 +468,48 @@ describe("hosted relationship judge", () => {
     expect(retry).not.toHaveBeenCalled();
     expect(provider).not.toHaveBeenCalled();
     expect(await testStore().readManifest(keyPrefix)).toEqual(original);
+  });
+
+  it("acks a missing founder key without a provider call or a deployment-key request", async () => {
+    runtime.TENANT_PROVIDER_KEYS = "1";
+    runtime.OPENAI_API_KEY = "sk-deployment-not-used";
+    runtime.PROVIDER_KEY_SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    const logged: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+      logged.push(args.map(String).join(" "));
+    });
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await consumeRelationshipRefresh({ body: job, ack, retry } as unknown as Message<unknown>, runtime, undefined, services);
+    expect(provider).not.toHaveBeenCalled();
+    expect(retry).not.toHaveBeenCalled();
+    expect(ack).toHaveBeenCalledOnce();
+    expect(logged.join("\n")).toContain("connect a key, then retry");
+    expect(logged.join("\n")).not.toContain("sk-deployment-not-used");
+  });
+
+  it("pays the founder refresh with the founder's stored key", async () => {
+    const founderKey = "sk-founder-refresh-4242";
+    runtime.TENANT_PROVIDER_KEYS = "1";
+    runtime.OPENAI_API_KEY = "sk-deployment-not-used";
+    runtime.PROVIDER_KEY_SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    await upsertProviderCredential(testControlPlane(env), {
+      tenantId: FOUNDER_TENANT_ID,
+      plaintext: founderKey,
+      root: { secret: parseProviderKeySecret(runtime.PROVIDER_KEY_SECRET), version: 1 },
+      nowMs: Date.parse(runAt),
+      validatedAtMs: Date.parse(runAt),
+    });
+    await processRelationshipJudge(job, runtime, services);
+    expect(provider.mock.calls.map((call) => new Headers(call[1]?.headers).get("authorization"))).toEqual([
+      "Bearer sk-founder-refresh-4242",
+    ]);
+    const checkpoint = await testControlPlane(env).first<{ result_json: string }>(
+      "SELECT result_json::text AS result_json FROM relationship_refresh_jobs WHERE reading_id = ?",
+      id,
+    );
+    expect(checkpoint?.result_json ?? "").not.toContain(founderKey);
+    expect(checkpoint?.result_json ?? "").not.toContain("sk-deployment-not-used");
   });
 
 });

@@ -1,5 +1,6 @@
 import { RateLimitedError } from "./modules/http-retry";
 import { DeferPaidWorkError } from "./control-plane/processing-leases";
+import { TenantProviderKeyError } from "./control-plane/tenant-provider-keys";
 import { processRelationshipJudge } from "./relationship-judge";
 import { processTensionJudge } from "./tension-judge";
 import { processTensionRepair } from "./tension-repair";
@@ -349,6 +350,10 @@ export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env
     msg.ack();
   } catch (error) {
     console.error(error);
+    if (error instanceof TenantProviderKeyError) {
+      msg.ack();
+      return;
+    }
     const delay = error instanceof RateLimitedError ? Math.ceil((error.retryAfterMs ?? 30_000) / 1000)
       : error instanceof DeferPaidWorkError ? error.delaySeconds : 30;
     const delaySeconds = Math.min(43_200, Math.max(1, delay));

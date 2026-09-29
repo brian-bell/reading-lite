@@ -89,7 +89,7 @@ const ANTHROPIC_EFFORTS_BY_MODEL: Record<
 export interface SummarizerDeps {
   fetch: typeof fetch;
   provider?: string;
-  openaiApiKey: string;
+  openaiApiKey?: string;
   openaiModel?: string;
   openaiReasoningEffort?: string;
   anthropicApiKey?: string;
@@ -104,6 +104,7 @@ export interface SummarizeReadingResult {
 }
 
 export function validateProcessingCredentials(config: {
+  tenantProviderKeys?: boolean;
   provider?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
@@ -111,6 +112,10 @@ export function validateProcessingCredentials(config: {
   anthropicReasoningEffort?: string;
   anthropicModel?: string;
 }): void {
+  if (config.tenantProviderKeys) {
+    parseReasoningEffort(config.openaiReasoningEffort);
+    return;
+  }
   const provider = parseSummarizerProvider(config.provider);
   if (!config.openaiApiKey) {
     throw new SummarizerConfigError(
@@ -165,7 +170,7 @@ export async function summarizeReading(
       },
     };
   }
-  if (!deps.openaiApiKey) {
+  if (deps.openaiApiKey !== undefined && !deps.openaiApiKey) {
     throw new SummarizerConfigError(
       "missing OPENAI_API_KEY for SUMMARIZER_PROVIDER=openai",
     );

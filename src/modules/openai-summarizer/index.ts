@@ -43,7 +43,7 @@ export const OPENAI_SUMMARIZE_OUTPUT_JSON_SCHEMA = {
 
 export interface OpenAISummarizerDeps {
   fetch: typeof fetch;
-  apiKey: string;
+  apiKey?: string;
   model: string;
   reasoningEffort: OpenAIReasoningEffort;
   retry?: RetryDeps;
@@ -201,7 +201,7 @@ export async function summarizeReading(
   const init: RequestInit = {
     method: "POST",
     headers: {
-      authorization: `Bearer ${deps.apiKey}`,
+      ...(deps.apiKey ? { authorization: `Bearer ${deps.apiKey}` } : {}),
       "content-type": "application/json",
     },
     body: JSON.stringify(body),

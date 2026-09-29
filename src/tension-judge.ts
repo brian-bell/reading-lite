@@ -21,6 +21,7 @@ import type { RefreshEnvelope } from "./relationship-refresh";
 import { activeRefreshFounder } from "./relationship-refresh";
 import { fromSql } from "./control-plane/db";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
+import { hostedProviderSelection, paidAuthorizationFor, tenantProviderKeysEnabled } from "./control-plane/tenant-provider-keys";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readTensionJob, markTensionDispatched, saveTensionResult, markTensionRateLimited, releaseTensionClaim, type SavedTensionResult, type TensionPairKey } from "./control-plane/tension-refresh-jobs";
 import { withSqlSession, type Sql } from "./modules/db/sql";
@@ -160,9 +161,10 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: TensionJob, env: 
       await presentLeaseBeforePaidDispatch(env, hold, clock);
     };
     let providerDispatched = false;
+    const tenantKeys = tenantProviderKeysEnabled(env);
     const paidFetch = createPaidFetch({
       tenantId: job.tenantId, attemptId, stage: "summarize", fetch: (...args) => { providerDispatched = true; return services.fetch(...args); },
-      rpc: spendRpcFor(env), now: Date.now, beforeDispatch: assertCurrent,
+      rpc: spendRpcFor(env), now: Date.now, authorization: paidAuthorizationFor(env, db, job.tenantId), beforeDispatch: assertCurrent,
       onAuthorizedDispatch: async () => {
         await assertCurrent();
         // Revalidate after claiming: purge may have just removed the checkpoint.
@@ -183,10 +185,11 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: TensionJob, env: 
       },
     });
     const result = await judgeTension(input, {
-      fetch: paidFetch, provider: env.SUMMARIZER_PROVIDER,
-      openaiApiKey: env.OPENAI_API_KEY, openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
+      fetch: paidFetch, ...hostedProviderSelection(env),
+      ...(tenantKeys ? {} : { openaiApiKey: env.OPENAI_API_KEY }),
+      openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
       openaiReasoningEffort: env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
-      anthropicApiKey: env.ANTHROPIC_API_KEY, anthropicModel: env.ANTHROPIC_MODEL,
+      anthropicModel: env.ANTHROPIC_MODEL,
       anthropicReasoningEffort: env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
       retry: retryDepsFromEnv(env),
     });
