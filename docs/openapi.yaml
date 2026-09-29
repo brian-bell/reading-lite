@@ -1635,6 +1635,113 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:import
 
+  /api/inbox/{id}/promote:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/InboxItemId"
+    post:
+      tags: [inbox]
+      operationId: promoteInboxItem
+      summary: Promote an inbox item into the library
+      description: |
+        Imports the item's Markdown, URL and title exactly as
+        `POST /api/readings/import-markdown` would, and answers with that
+        route's status and body plus `inbox_item_id`. A new URL is claimed
+        (202), a failed owner is re-imported in place (202), and a ready or
+        pending owner is returned (200). The request rate and the reading quota
+        are charged here, not at stage.
+
+        The item is deleted only on 202 or 200. If it was re-staged while the
+        import ran, the newer item is kept and the body adds
+        `inbox_item_retained: true`. Every other outcome keeps the item, so a
+        promote can be retried; a retry after an import that activated returns
+        the reading (200) and deletes the item.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostInboxPromoteBody"
+      responses:
+        "200":
+          description: Existing ready or pending owner; the item is deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostInboxPromoteExistingResponse"
+        "202":
+          description: New or re-imported pending attempt; the item is deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostInboxPromoteActivatedResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: |
+            Missing `readings:import`, or the account stopped being active
+            before the import committed (the body then carries
+            `inbox_item_id`). The item is kept.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorMessage"
+                  - $ref: "#/components/schemas/InboxPromoteErrorMessage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The reading has an active attempt. The item is kept.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxPromoteErrorMessage"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "413":
+          description: |
+            The promote message would exceed 126,976 bytes: the JSON of
+            `source_url`, the title it carries and `markdown`. Stage already
+            refuses such items, so this happens only when an untitled item's
+            failed owner lends it a title stage did not count. Nothing is
+            written, and the item is kept.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxPromoteTooLarge"
+        "429":
+          description: |
+            Request rate or reading quota exceeded, or usage guard unavailable
+            (with `Retry-After`). The item is kept.
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                minimum: 1
+              description: Seconds until the caller may retry
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/InboxPromoteQuotaDenied"
+                  - $ref: "#/components/schemas/InboxPromoteUsageGuardUnavailable"
+        "503":
+          description: |
+            Queue unbound, contention, or the import's setup or queue send
+            failed. The item is kept.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InboxPromoteUnavailable"
+      x-required-scope: readings:import
+
 components:
   securitySchemes:
     sessionCookie:
@@ -2691,6 +2798,141 @@ components:
         limit:
           type: integer
           const: 200
+
+    PostInboxPromoteBody:
+      type: object
+      properties:
+        email:
+          type: boolean
+          default: false
+          description: Notify when the reading is ready. Defaults to silent, like import-markdown.
+
+    InboxPromoteFields:
+      type: object
+      required: [inbox_item_id]
+      properties:
+        inbox_item_id:
+          type: string
+          pattern: "^in_"
+        inbox_item_retained:
+          type: boolean
+          const: true
+          description: |
+            Present only when the import succeeded but the item was re-staged
+            meanwhile: the newer item stays in the inbox for review.
+
+    PostInboxPromoteActivatedResponse:
+      description: ActivatedReading plus the promoted item.
+      type: object
+      additionalProperties: false
+      required: [id, status, poll, attempt_id, inbox_item_id]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          const: pending
+        poll:
+          type: string
+          description: Relative path to poll, e.g. `/api/readings/{id}`
+        attempt_id:
+          type: string
+        inbox_item_id:
+          type: string
+          pattern: "^in_"
+        inbox_item_retained:
+          type: boolean
+          const: true
+
+    PostInboxPromoteExistingResponse:
+      description: The existing owner's manifest plus the promoted item.
+      allOf:
+        - $ref: "#/components/schemas/ManifestFields"
+        - $ref: "#/components/schemas/InboxPromoteFields"
+      unevaluatedProperties: false
+
+    InboxPromoteItemId:
+      description: |
+        The item a refused promote kept. The error schemas below are the bodies
+        import-markdown gives the same outcome (ErrorMessage,
+        UnavailableError, QuotaDeniedResponse, UsageGuardUnavailableResponse)
+        or stage's InboxMarkdownTooLargeResponse, each with this field added.
+      type: object
+      required: [inbox_item_id]
+      properties:
+        inbox_item_id:
+          type: string
+          pattern: "^in_"
+
+    InboxPromoteErrorMessage:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+      unevaluatedProperties: false
+
+    InboxPromoteUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+              description: Human-readable unavailable reason
+            id:
+              type: string
+              description: Present when the reading already existed or an id was allocated before the failure
+      unevaluatedProperties: false
+
+    InboxPromoteQuotaDenied:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error, code, limit, reset_at]
+          properties:
+            error:
+              type: string
+            code:
+              type: string
+              enum: [rate_limited, quota_exhausted]
+            limit:
+              type: string
+              enum: [request_rate, hourly, monthly]
+            reset_at:
+              type: string
+              format: date-time
+      unevaluatedProperties: false
+
+    InboxPromoteUsageGuardUnavailable:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error]
+          properties:
+            error:
+              type: string
+              const: usage guard unavailable
+      unevaluatedProperties: false
+
+    InboxPromoteTooLarge:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error, code, limit_bytes]
+          properties:
+            error:
+              type: string
+            code:
+              type: string
+              const: markdown_too_large
+            limit_bytes:
+              type: integer
+              const: 126976
+      unevaluatedProperties: false
 
     ReprocessMarkdownSource:
       type: object

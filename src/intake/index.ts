@@ -78,6 +78,9 @@ const RETRY: unique symbol = Symbol("retry");
  * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
  * - `tenant_inactive` — the account stopped being active between admission and
  *                     the claim transaction, which committed nothing (→ 403).
+ * - `too_large`     — importMarkdown only, when the caller passed `fitsMessage`:
+ *                     the queue message this import would send does not fit,
+ *                     so nothing was written or reserved (→ 413).
  */
 export type IntakeOutcome =
   | ActivationOutcome
@@ -89,7 +92,27 @@ export type IntakeOutcome =
   | { kind: "rate_limited"; limit: "request_rate"; resetAtMs: number }
   | { kind: "quota_exhausted"; limit: "hourly" | "monthly"; resetAtMs: number }
   | { kind: "guard_unavailable" }
-  | { kind: "tenant_inactive" };
+  | { kind: "tenant_inactive" }
+  | { kind: "too_large" };
+
+// The Markdown fields an import forwards in its queue message, with the title
+// already resolved (a failed owner's title stands in for a missing one).
+export interface ForwardedMarkdown {
+  source_url: string;
+  title?: string;
+  markdown: string;
+}
+
+// importMarkdown's options. `fitsMessage` measures the message before anything
+// is written: inbox promote passes it, because an untitled item promoted over
+// a failed owner carries that owner's title, which stage may never have seen.
+// Without it (the REST import) an oversized message fails at the send, as it
+// always has.
+export interface ImportMarkdownOptions {
+  title?: string;
+  email: boolean;
+  fitsMessage?: (fields: ForwardedMarkdown) => boolean;
+}
 
 export interface ReadingIntakeDeps {
   /** Tenant-scoped stores — hosted callers build them from a TenantContext. */
@@ -128,11 +151,7 @@ export class ReadingIntake {
     });
   }
 
-  async importMarkdown(
-    url: string,
-    markdown: string,
-    opts: { title?: string; email: boolean },
-  ): Promise<IntakeOutcome> {
+  async importMarkdown(url: string, markdown: string, opts: ImportMarkdownOptions): Promise<IntakeOutcome> {
     const gated = await this.gateRequest();
     if (gated) return gated;
     return this.resolving(url, {
@@ -286,7 +305,7 @@ export class ReadingIntake {
   private async importOwned(
     owner: Owner,
     markdown: string,
-    opts: { title?: string; email: boolean },
+    opts: ImportMarkdownOptions,
   ): Promise<IntakeOutcome | typeof RETRY> {
     const effective = this.annotate(owner.manifest);
     if (effective.status !== "failed") {
@@ -313,12 +332,13 @@ export class ReadingIntake {
       },
       { over: effective },
     );
-    const source: ProcessReadingSource = {
+    const source: MarkdownSource = {
       kind: "markdown",
       markdown,
       // The drafted title already resolved the supplied-vs-prior fallback.
       ...(pendingManifest.title === undefined ? {} : { title: pendingManifest.title }),
     };
+    if (!fitsMessage(opts, effective.url, source)) return { kind: "too_large" };
     const args: ProcessReadingArgs = {
       id: effective.id,
       url: effective.url,
@@ -376,14 +396,15 @@ export class ReadingIntake {
   private async createForImport(
     url: string,
     markdown: string,
-    opts: { title?: string; email: boolean },
+    opts: ImportMarkdownOptions,
     retry: typeof RETRY,
   ): Promise<IntakeOutcome | typeof RETRY> {
-    const source: ProcessReadingSource = {
+    const source: MarkdownSource = {
       kind: "markdown",
       markdown,
       ...(opts.title === undefined ? {} : { title: opts.title }),
     };
+    if (!fitsMessage(opts, url, source)) return { kind: "too_large" };
     const args = await newReadingArgs(url, this.deps.services, source);
     const attemptStartedAt = this.deps.services.now();
     const attemptId = newAttemptId(this.deps.services);
@@ -541,6 +562,17 @@ function startRefused(
   if (kind === "conflict") return { kind: "conflict", reason: "active_attempt" };
   if (kind === "tenant_inactive") return { kind: "tenant_inactive" };
   return RETRY;
+}
+
+// Measured on the source the import will forward, so the title is the one the
+// message carries, not the one the caller supplied.
+function fitsMessage(opts: ImportMarkdownOptions, url: string, source: MarkdownSource): boolean {
+  if (!opts.fitsMessage) return true;
+  return opts.fitsMessage({
+    source_url: url,
+    ...(source.title === undefined ? {} : { title: source.title }),
+    markdown: source.markdown,
+  });
 }
 
 export type UsageDenial = Extract<IntakeOutcome, { kind: "rate_limited" | "quota_exhausted" | "guard_unavailable" }>;

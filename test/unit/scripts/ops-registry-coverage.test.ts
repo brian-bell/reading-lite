@@ -31,6 +31,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
     "refresh-connections",
     "refresh-tensions",
     "purge-connections",
+    "redact-key-echoes",
   ],
   reading: ["submit"],
   import: ["markdown", "bookmarks", "reddit", "youtube"],

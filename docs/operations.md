@@ -1529,6 +1529,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
 | `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
+| `npm run ops -- corpus redact-key-echoes` | find stored reading and attempt errors that still carry a provider key fragment and redact them in place (plan-first; no provider call; `--execute` re-scans and exits 1 on leftovers) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
 
 The `refresh-neighbours`, `refresh-connections`, and `refresh-tensions`
@@ -2246,6 +2247,32 @@ same work through the offline provider Batch API path described below.
 npm run ops -- corpus audit --tenant "$TENANT" --execute      # writes index.json + INDEX.md
 npm run ops -- corpus recover --tenant "$TENANT" --index ./index.json --execute
 ```
+
+### Redacting key fragments in stored errors
+
+Before reading-lite-gh341.1, provider error text was stored verbatim, and
+OpenAI's 401 echoes a masked piece of the rejected key (`Incorrect API key
+provided: sk-proj-****wxyz`). New writes are redacted; rows written before then
+keep the fragment, and the reading API, MCP, the frontend and
+`GET /api/readings/:id/diagnostics` all serve it. `ops corpus redact-key-echoes`
+applies the same `redactProviderKeys` to the rows already stored.
+
+```sh
+# Plan: list every affected row and field, printing only the redacted text.
+npm run ops -- corpus redact-key-echoes --tenant "$TENANT"
+
+# Apply, then re-scan; exits 1 if any row still matches.
+npm run ops -- corpus redact-key-echoes --tenant "$TENANT" --execute
+```
+
+It scans `readings.error`, `active_attempt`, `last_attempt` and
+`enrichment_degradation`, and each `reading_attempts` row's `error` and
+`events`. `--execute` rewrites one reading per transaction under its row lock,
+so it needs no `--sole-writer`, and changes no status, ownership, content or
+`updated_at`. A reprocess would replace only the reading's own error, never the
+attempt history, and pays for a summary to do it; recovering a reading that
+failed on a rejected key is a separate `corpus audit` and `corpus recover` pass.
+The redaction fails safe, so a fetch error naming an `sk-` host is redacted too.
 
 ### Purging the manifest-era layout (reading-lite-gh351.5)
 

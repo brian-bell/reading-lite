@@ -180,6 +180,7 @@ export const ESSENTIAL_NODE_FILES = [
   "test/unit/scripts/ops-account-s5.test.ts",
   "test/unit/scripts/ops-cli.test.ts",
   "test/unit/scripts/ops-corpus-pg.test.ts",
+  "test/unit/scripts/ops-corpus-redact-key-echoes.test.ts",
   "test/unit/scripts/ops-db-migrate.test.ts",
   "test/unit/scripts/ops-deploy-staging.test.ts",
   "test/unit/scripts/ops-export.test.ts",
