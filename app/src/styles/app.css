@@ -471,6 +471,20 @@ textarea {
   }
 }
 
+/* Press feedback like the shell's nav items and every button: settle to 0.96,
+   a scale-only transition so hover stays instant. Only where motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  .account-nav-link {
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }
+
+  .account-nav-link:active {
+    scale: 0.96;
+  }
+}
+
 .account-sections {
   min-width: 0;
 }
