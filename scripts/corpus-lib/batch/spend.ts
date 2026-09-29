@@ -140,7 +140,8 @@ export async function admitBatchSpend(
       maxMicrodollars: bound.maxMicrodollars,
     },
   };
-  const reserved = await call(deps.rpc, { ...identity, kind: "reserve_spend", nowMs: deps.nowMs });
+  // Provider batches run on the operator's keys; only the reserve names the payer.
+  const reserved = await call(deps.rpc, { ...identity, kind: "reserve_spend", nowMs: deps.nowMs, payer: "operator" });
   if (!reserved.ok || reserved.state !== "reserved") {
     throw new SpendAdmissionError(reserved.reason ?? "operation_conflict");
   }

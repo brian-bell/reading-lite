@@ -40,7 +40,9 @@ describe("operator spend entrypoint", () => {
     ["a non-tenant id", { ...identity, kind: "release_spend", tenantId: "global" }],
     ["an extra field", { ...identity, kind: "release_spend", attemptId: "at_x" }],
     ["a negative settlement", { ...identity, kind: "settle_spend", actualMicrodollars: -1 }],
-    ["a reserve without a clock", { ...identity, kind: "reserve_spend" }],
+    ["a reserve without a clock", { ...identity, kind: "reserve_spend", payer: "operator" }],
+    ["a reserve without a payer", { ...identity, kind: "reserve_spend", nowMs: 1 }],
+    ["a tenant-funded reserve", { ...identity, kind: "reserve_spend", nowMs: 1, payer: "tenant" }],
     ["a non-object", "reserve_spend"],
   ])("rejects %s without reaching the guard", async (_label, body) => {
     expect((await endpoint({} as Env).fetch(spendRequest(body))).status).toBe(400);

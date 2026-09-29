@@ -977,6 +977,48 @@ paths:
         "500":
           $ref: "#/components/responses/AuthMisconfigured"
 
+  /api/auth/provider/usage:
+    get:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: getProviderUsage
+      summary: Return today's spend against the reader's daily cap
+      description: |
+        Session cookie only (bearer 403). CSRF and recent-auth are not
+        required. Read-only: returns the tenant's UTC-day total charged
+        against its spend budget, the effective daily cap, and when the day
+        resets. Charged includes unsettled maxima and unused holds, so it is
+        not a provider invoice, and it counts every spend operation billed to
+        this tenant, whoever pays. The cap is read from PostgreSQL and the
+        charge from the spend guard; they are separate observations.
+        Optional `X-Expected-Tenant` mismatch returns 412.
+      parameters:
+        - $ref: "#/components/parameters/ExpectedTenant"
+      responses:
+        "200":
+          description: Today's charged spend and the effective cap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderUsageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+        "503":
+          description: The spend guard could not answer. No figure is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+
   /api/readings:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -2407,6 +2449,40 @@ components:
           type: integer
           minimum: 1
           description: tenant_limits.daily_spend_microdollars.
+
+    ProviderUsageResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - day_key
+        - charged_microdollars
+        - effective_daily_spend_microdollars
+        - reset_at_ms
+        - observed_at_ms
+      properties:
+        day_key:
+          type: string
+          pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+          description: The UTC day the guard is charging.
+        charged_microdollars:
+          type: integer
+          minimum: 0
+          description: |
+            Charged against the tenant budget today: settled usage plus
+            unsettled maxima and unused holds. Can exceed the effective cap
+            after the cap is lowered.
+        effective_daily_spend_microdollars:
+          type: integer
+          minimum: 1
+          description: The cap enforcement uses. Never above the operator default.
+        reset_at_ms:
+          type: integer
+          minimum: 0
+          description: Epoch milliseconds of the next UTC midnight.
+        observed_at_ms:
+          type: integer
+          minimum: 0
+          description: When the spend guard read its counters.
 
     PostProviderKeyBody:
       type: object

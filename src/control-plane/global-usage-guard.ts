@@ -6,6 +6,7 @@ import { withControlPlane } from "./db";
 import { GLOBAL_USAGE_GUARD_NAME, SPEND_RESERVATION_TTL_MS } from "./constants";
 import { scheduleCleanupAlarm } from "./do-alarm";
 import { parseTenantId } from "./ids";
+import { effectiveDailySpend } from "./provider-settings";
 import { PolicyCache, policyCacheTtlMs } from "./policy-cache";
 import {
   acquireLease as acquireStoredLease,
@@ -19,6 +20,7 @@ import {
 import type { ProcessingLeaseDecision } from "./tenant-usage-guard";
 import {
   markSpendDispatched,
+  isSpendPayer,
   releaseSpend,
   reserveSpend,
   settleSpend,
@@ -34,6 +36,8 @@ import {
 // global processing concurrency and daily paid-work spend. Addressed by
 // idFromName(GLOBAL_USAGE_GUARD_NAME). The system_policy row is the source of both
 // limits; a NULL daily spend budget fails closed rather than inventing one.
+// The tenant cap is the operator default on tenant_limits, lowered by the
+// reader's own cap on user_settings when they set one.
 
 type AcquireLeaseBody = { kind: "acquire_lease"; tenantId: string; attemptId: string; nowMs: number };
 type FenceLeaseBody = {
@@ -106,10 +110,12 @@ type GlobalSpendPolicy = { dailySpendMicrodollars: number; tenantDailySpendMicro
 async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<GlobalSpendPolicy | "deleted" | null> {
   try {
     const row = await withControlPlane(env, (db) =>
-      db.first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; policy_version: number; catalog_version: number; paid_work_enabled: boolean }>(
+      db.first<{ status: string; daily_spend_microdollars: number | null; tenant_daily_spend_microdollars: number; user_daily_spend_cap_microdollars?: number | null; policy_version: number; catalog_version: number; paid_work_enabled: boolean }>(
         `SELECT u.status, sp.daily_spend_microdollars, sp.policy_version, sp.catalog_version, sp.paid_work_enabled,
-                tl.daily_spend_microdollars AS tenant_daily_spend_microdollars
+                tl.daily_spend_microdollars AS tenant_daily_spend_microdollars,
+                us.daily_spend_cap_microdollars AS user_daily_spend_cap_microdollars
          FROM users u JOIN system_policy sp ON sp.id = 1 JOIN tenant_limits tl ON tl.tenant_id = u.id
+         LEFT JOIN user_settings us ON us.user_id = u.id
          WHERE u.id = ?`,
         tenantId,
       ),
@@ -117,10 +123,12 @@ async function loadGlobalSpendPolicy(env: Env, tenantId: string): Promise<Global
     if (!row) return null;
     if (row.status !== "active") return "deleted";
     const dailySpendMicrodollars = positiveInt(row.daily_spend_microdollars);
-    const tenantDailySpendMicrodollars = positiveInt(row.tenant_daily_spend_microdollars);
+    const operatorTenantMicrodollars = positiveInt(row.tenant_daily_spend_microdollars);
+    const userCap = row.user_daily_spend_cap_microdollars == null ? null : positiveInt(row.user_daily_spend_cap_microdollars);
     const policyVersion = positiveInt(row.policy_version);
     const catalogVersion = Number(row.catalog_version);
-    if (dailySpendMicrodollars === null || tenantDailySpendMicrodollars === null || policyVersion === null || !Number.isSafeInteger(catalogVersion) || catalogVersion < 0) return null;
+    if (dailySpendMicrodollars === null || operatorTenantMicrodollars === null || (row.user_daily_spend_cap_microdollars != null && userCap === null) || policyVersion === null || !Number.isSafeInteger(catalogVersion) || catalogVersion < 0) return null;
+    const tenantDailySpendMicrodollars = effectiveDailySpend(userCap, operatorTenantMicrodollars);
     return { dailySpendMicrodollars, tenantDailySpendMicrodollars, policyVersion, catalogVersion, paidWorkEnabled: row.paid_work_enabled === true };
   } catch {
     return null;
@@ -166,12 +174,12 @@ function parseGuardBody(value: unknown): GuardBody | null {
     return parseTenantId(tenantId) ? { kind, tenantId } : null;
   }
   if (kind === "reserve_spend") {
-    if (!tenantId || !Number.isFinite(nowMs) || nowMs < 0 || !validSpendQuote(body.quote)) return null;
+    if (!tenantId || !Number.isFinite(nowMs) || nowMs < 0 || !validSpendQuote(body.quote) || !isSpendPayer(body.payer)) return null;
     // Spend operation ids are deliberately independent of processing attempts;
     // use opId rather than the shared lease parser's attemptId.
     const opId = typeof body.opId === "string" ? body.opId : "";
     if (!opId) return null;
-    return { kind, tenantId, opId, quote: body.quote, nowMs };
+    return { kind, tenantId, opId, quote: body.quote, nowMs, payer: body.payer };
   }
   if (kind === "mark_spend_dispatched" || kind === "release_spend") {
     const opId = typeof body.opId === "string" ? body.opId : "";
@@ -334,6 +342,7 @@ export class GlobalUsageGuard implements DurableObject {
     return json(await reserveSpend(this.state.storage, {
       opKey,
       quote: body.quote,
+      payer: body.payer,
       policyVersion: policy.policyVersion,
       limitMicrodollars: policy.dailySpendMicrodollars,
       tenantId: body.tenantId,

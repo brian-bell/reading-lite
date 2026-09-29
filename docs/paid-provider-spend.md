@@ -67,7 +67,8 @@ while preserving incurred spend in the global daily aggregate.
 `system_policy.daily_spend_microdollars` (PostgreSQL migration
 `db/migrations/0003_control_plane.sql`) is nullable, and NULL blocks hosted paid work.
 Configure an explicit global cap and catalog version 1 before deployment;
-tenant caps use `tenant_limits.daily_spend_microdollars`. No production budget
+tenant caps use `tenant_limits.daily_spend_microdollars`, lowered by a reader's
+own cap ([below](#who-pays-and-the-readers-cap)). No production budget
 was selected or changed. Calibration belongs to #193.
 
 The global guard checks the existing `paid_work_enabled` switch at reservation
@@ -84,8 +85,45 @@ workflows are deferred.
 The single-authority RPC verbs are `reserve_spend`, `mark_spend_dispatched`,
 `release_spend`, and `settle_spend`. Requests carry tenant id, operation id, and
 an immutable quote `{dayKey, catalogVersion, requestFingerprint,
-maxMicrodollars}`. Reserve also carries admission time; settlement carries
+maxMicrodollars}`. Reserve also carries admission time and the
+[payer](#who-pays-and-the-readers-cap); settlement carries
 `actualMicrodollars`. No tenant-side spend RPC or two-phase compensation remains.
+
+## Who pays and the reader's cap
+
+ADR 0004 records who pays for every spend operation. `reserve_spend` carries
+`payer`, `tenant` or `operator`, and the guard refuses a reservation without
+one. The operation record keeps it, and a replay that names the other payer
+is an operation conflict. `createPaidFetch` sets `tenant` only when it attaches
+the tenant's own key (`TENANT_PROVIDER_KEYS=1`); hosted calls on deployment
+keys and every operator tool are `operator`. The `OperatorSpend` entrypoint
+accepts only `operator`, so an operator command cannot admit tenant-funded
+work. Every `paid_spend` log line carries the same `payer` field, and
+`system status --details` shows it on each retained operation. Records written
+before the payer was recorded show none until retention discards them.
+
+The payer labels spend; it does not split budgets. Both payers charge the
+same tenant and global daily counters, and admission is the same for both.
+
+The tenant cap the guard admits against is the operator default on
+`tenant_limits.daily_spend_microdollars`, lowered by the reader's own
+`user_settings.daily_spend_cap_microdollars` when they set one: the smaller of
+the two. The reader sets it through `POST /api/auth/provider/preferences`,
+which refuses a cap above the operator default; an operator lowering the
+default below a reader's cap takes effect too. The guard reads both at
+reservation and again at dispatch authorization, so a cap lowered between the
+two denies a reservation that no longer fits. A denial is the usual
+`daily_spend` deferral. The global cap is unchanged. Because the counter is
+per tenant, operator commands billed to a tenant with `--billing-tenant` are
+admitted under that reader's lowered cap as well.
+
+`GET /api/auth/provider/usage` is the reader's read-only view for the settings
+page: the tenant's charged total for the current UTC day, the effective cap,
+and the reset time. Charged has the meaning described under
+[operator policy](#operator-policy-and-accounting), so it can exceed the cap
+after the cap is lowered. The cap comes from PostgreSQL and the total from the
+guard; they are separate observations, and an unreachable guard answers 503
+with no figure.
 
 ## Operator policy and accounting
 
@@ -145,7 +183,9 @@ blind retry.
   dollar is 1,000,000 microdollars. Zero is invalid; use the switch to disable.
 - `--catalog-version <n>`: this checkout's supported catalog version (currently 1).
 - `--tenant usr_… --daily-spend-microdollars <positive integer>`: one existing
-  tenant's budget, acknowledged against that tenant_limits row's version.
+  tenant's budget, acknowledged against that tenant_limits row's version. This
+  is the operator default; a reader's lower cap still applies, and
+  `system status` does not show it.
 
 Global and tenant changes require separate invocations. Global fields may be
 combined in one update, including setting a budget/catalog and enabling paid
@@ -160,19 +200,21 @@ uncertain charges, changes reading attempts, nor resets daily accounting.
 
 ### Operator dispatch inventory
 
-Every operator path that pays a provider, and who is charged. "Per attempt"
-means one operation per provider HTTP attempt, as in hosted processing. The
-payer's daily cap and the global cap both admit each operation. Plan mode
+Every operator path that pays a provider, and which tenant's budget admits it.
+All of them are operator-funded: the `payer` on their operations is `operator`.
+"Per attempt" means one operation per provider HTTP attempt, as in hosted
+processing. The billing tenant's daily cap and the global cap both admit each
+operation. Plan mode
 reaches none of these providers.
 
-| Path | Provider request | Operation | Payer and authority |
+| Path | Provider request | Operation | Billing tenant and authority |
 | --- | --- | --- | --- |
 | `corpus refresh-connections`, `corpus refresh-tensions` | Synchronous OpenAI Responses or Anthropic Messages judgements | Per attempt | `--billing-tenant`, default a real `--tenant`; authority from `--bucket` |
 | `corpus ingest`, `corpus recover --batch` | OpenAI Batch or Anthropic Message Batches summaries, plus synchronous OpenAI embeddings | One per provider batch; embeddings per attempt | As above; a resume pays with the tenant its sidecar recorded |
 | `eval summarizer`, compare-summary-effort script | Synchronous OpenAI or Anthropic summaries | Per attempt | `--billing-tenant` required; authority from `--env` |
 | `corpus recover` without `--batch`, `reading submit`, `import …`, `staging smoke`, `extract agent` | None from the operator: the hosted consumer calls the provider | Hosted, per attempt | The bearer token's tenant; `--billing-tenant` does not apply |
 
-`--tenant global` is a storage selector, not a payer, so it always needs
+`--tenant global` is a storage selector, not a billing tenant, so it always needs
 `--billing-tenant` to execute paid work.
 
 ### Synchronous operator clients
@@ -230,7 +272,7 @@ like any synchronous client.
   resume after that gets a settlement refusal; the run logs the maximum as
   permanently held and completes. A sidecar that carries no spend operation
   resumes unmetered.
-- **Payer.** A resume settles against the tenant its sidecar records and needs no
+- **Billing tenant.** A resume settles against the tenant its sidecar records and needs no
   `--billing-tenant`; naming a different one is refused. The spend authority
   follows `--bucket`; an unmapped bucket cannot execute a batch.
 

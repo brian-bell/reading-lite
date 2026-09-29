@@ -73,6 +73,7 @@ describe("operator status entrypoint", () => {
           method: "POST",
           body: JSON.stringify({
             kind,
+            payer: "tenant",
             tenantId: FOUNDER_TENANT_ID,
             opId: "status-op",
             quote,

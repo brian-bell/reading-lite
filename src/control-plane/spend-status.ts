@@ -3,6 +3,7 @@
 import { OperatorDetailsSchema, TenantInspectionSchema } from "./operator-inspection";
 import { z } from "zod";
 import { utcSpendDay, utcSpendDayResetAt } from "./spend-ledger";
+import { GLOBAL_USAGE_GUARD_NAME } from "./constants";
 const Amount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export const SpendStatusSchema = z.object({
   details: OperatorDetailsSchema.optional(),
@@ -41,4 +42,25 @@ export async function readSpendStatus(
         }
       : {}),
   };
+}
+
+/** One tenant's counters from the guard; null when it is unbound or cannot answer. */
+export async function fetchTenantSpendStatus(
+  ns: DurableObjectNamespace | undefined,
+  tenantId: string,
+): Promise<SpendStatus & { tenantChargedMicrodollars: number } | null> {
+  if (!ns) return null;
+  try {
+    const response = await ns.get(ns.idFromName(GLOBAL_USAGE_GUARD_NAME)).fetch("https://guard/", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "spend_status", tenantId }),
+    });
+    if (!response.ok) return null;
+    const status = SpendStatusSchema.parse(await response.json());
+    if (status.tenantId !== tenantId || status.tenantChargedMicrodollars === undefined) return null;
+    return { ...status, tenantChargedMicrodollars: status.tenantChargedMicrodollars };
+  } catch {
+    return null;
+  }
 }

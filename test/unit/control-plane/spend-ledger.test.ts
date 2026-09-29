@@ -37,7 +37,7 @@ describe("spend ledger", () => {
   it("holds a maximum then settles actual usage atomically and idempotently", async () => {
     const map = new Map<string, unknown>();
     const book = storage(map);
-    expect(await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 150 })).toEqual({
+    expect(await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 150 })).toEqual({
       ok: true,
       state: "reserved",
     });
@@ -61,7 +61,7 @@ describe("spend ledger", () => {
   it("permits dispatch exactly once and keeps an unknown dispatched maximum", async () => {
     const map = new Map<string, unknown>();
     const book = storage(map);
-    await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 100 });
+    await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 100 });
     expect(await markSpendDispatched(book, { limits, opKey: "spend:op:one", quote: quote() })).toEqual({
       ok: true,
       state: "dispatched",
@@ -84,8 +84,8 @@ describe("spend ledger", () => {
 
   it("rejects quote reuse, caps actual use, and reports a UTC reset", async () => {
     const book = storage();
-    await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 100 });
-    expect(await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote({ maxMicrodollars: 99 }), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
+    await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 100 });
+    expect(await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote({ maxMicrodollars: 99 }), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
       ok: false,
       reason: "operation_conflict",
     });
@@ -94,17 +94,30 @@ describe("spend ledger", () => {
       ok: false,
       reason: "actual_exceeds_max",
     });
-    expect(await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:two", quote: quote({ requestFingerprint: "sha256:two", maxMicrodollars: 1 }), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
+    expect(await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:two", quote: quote({ requestFingerprint: "sha256:two", maxMicrodollars: 1 }), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
       ok: false,
       reason: "daily_spend",
       resetAtMs: utcSpendDayResetAt(NOW),
     });
   });
 
+  it("records who pays and refuses a replay that names the other payer", async () => {
+    const map = new Map<string, unknown>();
+    const book = storage(map);
+    const reserve = (payer: "tenant" | "operator") => reserveSpend(book, { payer, tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:one", quote: quote(), policyVersion: 7, limitMicrodollars: 1000 });
+    expect(await reserve("operator")).toEqual({ ok: true, state: "reserved" });
+    expect(map.get("spend:op:one")).toMatchObject({ payer: "operator", state: "reserved" });
+    expect(await reserve("tenant")).toEqual({ ok: false, reason: "operation_conflict" });
+    expect(map.get(`spend:day:${quote().dayKey}`)).toEqual({ microdollars: 100 });
+    await markSpendDispatched(book, { limits, opKey: "spend:op:one", quote: quote(), nowMs: NOW });
+    await settleSpend(book, { opKey: "spend:op:one", quote: quote(), actualMicrodollars: 40 });
+    expect(map.get("spend:op:one")).toMatchObject({ payer: "operator", state: "settled" });
+  });
+
   it("fails closed on a corrupt aggregate counter and never underflows it", async () => {
     const map = new Map<string, unknown>([[`spend:day:${quote().dayKey}`, { microdollars: "bad" }]]);
     const book = storage(map);
-    expect(await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:bad", quote: quote(), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
+    expect(await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:bad", quote: quote(), policyVersion: 7, limitMicrodollars: 100 })).toEqual({
       ok: false,
       reason: "unavailable",
     });
@@ -119,7 +132,7 @@ describe("spend ledger", () => {
   it("expires only an undispatched reservation, refunds it, and denies a late mark", async () => {
     const map = new Map<string, unknown>();
     const book = storage(map);
-    await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:expired", quote: quote(), policyVersion: 7, limitMicrodollars: 100, expiresAtMs: 10 });
+    await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:expired", quote: quote(), policyVersion: 7, limitMicrodollars: 100, expiresAtMs: 10 });
     expect(await sweepExpiredSpend(book, 10)).toBe(Date.parse("2026-09-07T00:00:00Z"));
     expect(map.get(`spend:day:${quote().dayKey}`)).toEqual({ microdollars: 0 });
     expect(await markSpendDispatched(book, { limits, opKey: "spend:op:expired", quote: quote(), nowMs: 10 })).toMatchObject({ ok: false });
@@ -128,7 +141,7 @@ describe("spend ledger", () => {
   it("does not expire a dispatched maximum", async () => {
     const map = new Map<string, unknown>();
     const book = storage(map);
-    await reserveSpend(book, { tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:live", quote: quote(), policyVersion: 7, limitMicrodollars: 100, expiresAtMs: 10 });
+    await reserveSpend(book, { payer:"tenant", tenantId:"tenant", tenantLimitMicrodollars:1000, opKey: "spend:op:live", quote: quote(), policyVersion: 7, limitMicrodollars: 100, expiresAtMs: 10 });
     await markSpendDispatched(book, { limits, opKey: "spend:op:live", quote: quote(), nowMs: 9 });
     await sweepExpiredSpend(book, 10);
     expect(map.get(`spend:day:${quote().dayKey}`)).toEqual({ microdollars: 100 });
@@ -137,7 +150,7 @@ describe("spend ledger", () => {
   it("updates both budgets together through release, expiry, and late settlement", async () => {
     const map = new Map<string,unknown>();
     const book = storage(map);
-    const reserve = (opKey:string, q=quote()) => reserveSpend(book,{opKey,quote:q,policyVersion:1,
+    const reserve = (opKey:string, q=quote()) => reserveSpend(book,{opKey,quote:q,policyVersion:1,payer:"tenant",
       tenantId:"tenant",tenantLimitMicrodollars:100,limitMicrodollars:200,expiresAtMs:NOW+600000});
     await reserve("a");
     expect(map.get(`spend:tenant:tenant:day:${quote().dayKey}`)).toEqual({microdollars:100});
@@ -160,7 +173,7 @@ describe("spend ledger", () => {
   it("discards old operation records without refunding uncertain charges", async () => {
     const map = new Map<string,unknown>();
     const book = storage(map);
-    await reserveSpend(book,{tenantId:"tenant",tenantLimitMicrodollars:1000,opKey:"a",quote:quote(),policyVersion:1,limitMicrodollars:100,expiresAtMs:NOW+600000});
+    await reserveSpend(book,{payer:"tenant",tenantId:"tenant",tenantLimitMicrodollars:1000,opKey:"a",quote:quote(),policyVersion:1,limitMicrodollars:100,expiresAtMs:NOW+600000});
     await markSpendDispatched(book,{limits,opKey:"a",quote:quote(),nowMs:NOW});
     await sweepExpiredSpend(book,Date.parse("2026-09-07T00:00:00Z"));
     expect(map.has("a")).toBe(false);

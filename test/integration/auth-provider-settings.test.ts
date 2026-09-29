@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
-import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
+import { GLOBAL_USAGE_GUARD_NAME, SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
+import { utcSpendDay, utcSpendDayResetAt } from "../../src/control-plane/spend-ledger";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
 import { toTimestamp } from "../../src/control-plane/pg-time";
 import { decryptProviderKey } from "../../src/control-plane/provider-key-crypto";
@@ -10,7 +11,7 @@ import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
 import { createApp } from "../../src/router";
 import { testControlPlane } from "../helpers/control-plane-db";
-import { FOUNDER_TENANT_ID, insertSecondTenant } from "../helpers/tenant-fixtures";
+import { FOUNDER_TENANT_ID, OTHER_TENANT_ID, insertSecondTenant } from "../helpers/tenant-fixtures";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -148,6 +149,7 @@ describe("/api/auth/provider", () => {
       { method: "POST", path: "/api/auth/provider", body: { api_key: KEY } },
       { method: "DELETE", path: "/api/auth/provider" },
       { method: "POST", path: "/api/auth/provider/preferences", body: { effort: "low" } },
+      { method: "GET", path: "/api/auth/provider/usage" },
     ];
     for (const route of routes) {
       const { res } = await request(route.path, {
@@ -557,5 +559,62 @@ describe("/api/auth/provider", () => {
     });
     expect(await storedKey(other.userId)).toBeNull();
     expect(await storedKey(owner.userId)).toBe(KEY);
+  });
+});
+
+// Charges land through the guard itself, as hosted dispatch would make them.
+async function chargeToday(tenantId: string, opId: string, maxMicrodollars: number) {
+  const ns = (env as unknown as Env).GLOBAL_USAGE_GUARD!;
+  const stub = ns.get(ns.idFromName(GLOBAL_USAGE_GUARD_NAME));
+  const quote = { dayKey: utcSpendDay(Date.now()), catalogVersion: 1, requestFingerprint: opId, maxMicrodollars };
+  for (const kind of ["reserve_spend", "mark_spend_dispatched"]) {
+    const response = await stub.fetch("https://guard/", {
+      method: "POST",
+      body: JSON.stringify({ kind, payer: "tenant", tenantId, opId, quote, nowMs: Date.now() }),
+    });
+    expect(await response.json(), kind).toMatchObject({ ok: true });
+  }
+}
+
+describe("/api/auth/provider/usage", () => {
+  it("shows the reader's own charges today against their effective cap", async () => {
+    await insertSecondTenant(env as unknown as Env);
+    const session = await redeem("founder@test.example", "clm_provider_usage");
+    await chargeToday(session.userId, "usage-own", 25);
+    await chargeToday(OTHER_TENANT_ID, "usage-other", 40);
+    await request("/api/auth/provider/preferences", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { daily_spend_cap_microdollars: 250_000 },
+    });
+
+    const before = Date.now();
+    const { res } = await request("/api/auth/provider/usage", { cookie: session.cookie });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as { observed_at_ms: number };
+    expect(body).toEqual({
+      day_key: utcSpendDay(body.observed_at_ms),
+      charged_microdollars: 25,
+      effective_daily_spend_microdollars: 250_000,
+      reset_at_ms: utcSpendDayResetAt(body.observed_at_ms),
+      observed_at_ms: expect.any(Number),
+    });
+    expect(body.observed_at_ms).toBeGreaterThanOrEqual(before);
+  });
+
+  it("answers 503 with no figure when the spend authority is unreachable", async () => {
+    const session = await redeem("founder@test.example", "clm_provider_usage_down");
+    const workerEnv = env as unknown as Env;
+    const guard = workerEnv.GLOBAL_USAGE_GUARD;
+    delete workerEnv.GLOBAL_USAGE_GUARD;
+    try {
+      const { res } = await request("/api/auth/provider/usage", { cookie: session.cookie });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: "usage unavailable" });
+    } finally {
+      workerEnv.GLOBAL_USAGE_GUARD = guard;
+    }
   });
 });

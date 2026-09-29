@@ -245,6 +245,21 @@ export const ProviderSettingsResponseSchema = z.object({
 });
 export type ProviderSettingsResponse = z.infer<typeof ProviderSettingsResponseSchema>;
 
+/**
+ * GET /api/auth/provider/usage: today's UTC spend charged against the reader's
+ * tenant budget, as the spend guard counts it. Charged includes unsettled
+ * maxima and unused holds, so it is not a provider invoice, and it counts
+ * operator-funded work billed to this tenant as well as the reader's own.
+ */
+export const ProviderUsageResponseSchema = z.object({
+  day_key: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  charged_microdollars: z.number().int().nonnegative(),
+  effective_daily_spend_microdollars: z.number().int().positive(),
+  reset_at_ms: z.number().int().nonnegative(),
+  observed_at_ms: z.number().int().nonnegative(),
+});
+export type ProviderUsageResponse = z.infer<typeof ProviderUsageResponseSchema>;
+
 export const PostProviderKeyBodySchema = z.object({
   api_key: z.string().min(4).max(256).regex(/^\S+$/),
 });

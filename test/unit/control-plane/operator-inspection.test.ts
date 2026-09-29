@@ -27,6 +27,12 @@ describe('read-only operator inspection', () => {
         expect(result.records.map(r => [r.state, r.chargedMicrodollars])).toEqual([['reserved', 90], ['dispatched', 90], ['settled', 12]]);
         expect(JSON.stringify(result)).not.toContain('private');
     });
+    it('shows who pays, and omits the payer from records written before it was recorded', async () => {
+        const base = { tenantId: 'usr_one', policyVersion: 1, state: 'dispatched', quote: { dayKey: '2026-09-05', catalogVersion: 1, requestFingerprint: 'f', maxMicrodollars: 90 } };
+        const result = await inspectSpend(storage({ 'spend:op:usr_one:a': { ...base, payer: 'tenant' }, 'spend:op:usr_one:b': { ...base, payer: 'operator' }, 'spend:op:usr_one:c': base }));
+        expect(result.records.map(r => r.payer)).toEqual(['tenant', 'operator', undefined]);
+        await expect(inspectSpend(storage({ 'spend:op:usr_one:d': { ...base, payer: 'someone' } }))).rejects.toThrow();
+    });
     it('marks a bounded scan incomplete rather than claiming zero outstanding work', async () => {
         const data = Object.fromEntries(Array.from({ length: 1001 }, (_, i) => ['lease:' + i, { fence: 'x', expiresAt: now + 1, inFlight: false }]));
         const r = await inspectLeases(storage(data), now, 'tenant');
