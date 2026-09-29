@@ -190,7 +190,9 @@ export function buildAnthropicRelationshipRequestBody(
     messages: [
       {
         role: "user",
-        content: buildRelationshipJudgementUserMessage(input),
+        // Uncached. tool_choice auto (Sonnet 5.5) allows a text reply, and the
+        // parsers accept only this tool. The system/tool prefix stays cached.
+        content: `${buildRelationshipJudgementUserMessage(input)}\n\nCall the ${JUDGE_RELATIONSHIPS_TOOL_NAME} tool. Do not write free-form prose.`,
       },
     ],
   };

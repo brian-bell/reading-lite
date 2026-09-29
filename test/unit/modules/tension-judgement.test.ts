@@ -105,6 +105,28 @@ describe("tension judgement prompt", () => {
     expect(next.system).toEqual(earlier.system);
   });
 
+  it("tells the model to call the tool in the uncached user message", () => {
+    const evidence = buildTensionJudgementUserMessage(input);
+    const openai = buildOpenAITensionRequestBody(input, "gpt-5.6-terra", "high") as any;
+    expect(JSON.stringify(openai.input)).not.toContain(JUDGE_TENSION_TOOL_NAME);
+    for (const model of ["claude-sonnet-5", "claude-sonnet-5-5"]) {
+      const body = buildAnthropicTensionRequestBody(input, model, "low") as any;
+      expect(body.messages[0].content.startsWith(evidence)).toBe(true);
+      expect(body.messages[0].content).toContain(
+        `Call the ${JUDGE_TENSION_TOOL_NAME} tool.`,
+      );
+      expect(body.messages[0].content).toContain("Do not write free-form prose.");
+      expect(body.system[0].text).toBe(TENSION_JUDGEMENT_INSTRUCTIONS);
+      expect(body.system[0].text).not.toContain(JUDGE_TENSION_TOOL_NAME);
+    }
+    const prefix = buildAnthropicTensionRequestBody(
+      input,
+      "claude-sonnet-5-5",
+      "low",
+    ) as any;
+    expect({ tools: prefix.tools, system: prefix.system }).toMatchSnapshot();
+  });
+
   it("sends a strict Anthropic tool with the shared schema's fields, spelling nullable side as anyOf", () => {
     const tool = (buildAnthropicTensionRequestBody(input, "claude-sonnet-5", "high") as any)
       .tools[0];

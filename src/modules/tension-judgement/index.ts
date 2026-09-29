@@ -175,7 +175,12 @@ export function buildAnthropicTensionRequestBody(
       ? { type: "tool", name: JUDGE_TENSION_TOOL_NAME }
       : { type: "auto" },
     messages: [
-      { role: "user", content: buildTensionJudgementUserMessage(input) },
+      {
+        role: "user",
+        // Uncached. tool_choice auto (Sonnet 5.5) allows a text reply, and the
+        // parsers accept only this tool. The system/tool prefix stays cached.
+        content: `${buildTensionJudgementUserMessage(input)}\n\nCall the ${JUDGE_TENSION_TOOL_NAME} tool. Do not write free-form prose.`,
+      },
     ],
   };
 }
