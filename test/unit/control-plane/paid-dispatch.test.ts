@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPaidFetch, SpendAdmissionError, type SpendRpc } from "../../../src/control-plane/paid-dispatch";
+import { TenantProviderKeyError } from "../../../src/control-plane/tenant-provider-keys";
 import { buildSummarizeRequestBody } from "../../../src/modules/openai-summarizer";
 import { fetchWithRetry } from "../../../src/modules/http-retry";
 
@@ -134,5 +135,74 @@ describe("paid dispatch", () => {
     const f = fixture({ fetch: async () => Response.json({error: "unknown"}, {status:500}) });
     await f.wrapped(url, init);
     expect(f.calls.some(c => c.body.kind === "settle_spend" || c.body.kind === "release_spend")).toBe(false);
+  });
+
+  it("sets the tenant key after admission and before quota commit, overwriting any adapter header", async () => {
+    const order: string[] = [];
+    const sent: string[] = [];
+    const f = fixture({
+      authorization: { mode: "tenant", resolve: async () => { order.push("resolve"); return "sk-tenant-live"; } },
+      onAuthorizedDispatch: async () => { order.push("commit"); },
+      fetch: async (_url, request) => {
+        order.push("fetch");
+        sent.push(new Headers(request?.headers).get("authorization") ?? "");
+        return response();
+      },
+    });
+    await f.wrapped(url, { ...init, headers: { ...init.headers, authorization: "Bearer sk-deployment-key" } });
+    expect(f.calls.map(c => c.body.kind)).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(order).toEqual(["resolve", "commit", "fetch"]);
+    expect(sent).toEqual(["Bearer sk-tenant-live"]);
+    expect(JSON.stringify(f.calls)).not.toContain("sk-tenant-live");
+  });
+
+  it("settles zero and does not call the provider when the tenant key is missing", async () => {
+    const commit = vi.fn(async () => {});
+    const f = fixture({
+      authorization: { mode: "tenant", resolve: async () => { throw new TenantProviderKeyError("provider_key_required"); } },
+      onAuthorizedDispatch: commit,
+    });
+    await expect(f.wrapped(url, init)).rejects.toMatchObject({ name: "provider_key_required", message: "connect a key, then retry" });
+    expect(f.fetch).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    expect(f.calls.map(c => c.body.kind)).toEqual(["reserve_spend", "mark_spend_dispatched", "settle_spend"]);
+    expect(f.calls.at(-1)!.body.actualMicrodollars).toBe(0);
+  });
+
+  it("does not retry a missing tenant key as a transport failure", async () => {
+    let resolves = 0;
+    const f = fixture({
+      authorization: { mode: "tenant", resolve: async () => { resolves += 1; throw new TenantProviderKeyError("provider_key_required"); } },
+    });
+    const sleep = vi.fn(async () => {});
+    await expect(fetchWithRetry(f.wrapped, url, init, { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep })).rejects.toMatchObject({
+      name: "provider_key_required",
+    });
+    expect(resolves).toBe(1);
+    expect(sleep).not.toHaveBeenCalled();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it("resolves again on an HTTP retry and keeps the deployment header when tenant keys are off", async () => {
+    let resolves = 0;
+    const sent: string[] = [];
+    const f = fixture({
+      authorization: { mode: "tenant", resolve: async () => `sk-retry-${++resolves}` },
+      fetch: vi.fn(async (_url, request) => {
+        sent.push(new Headers(request?.headers).get("authorization") ?? "");
+        if (sent.length === 1) throw new Error("timeout");
+        return response();
+      }) as typeof fetch,
+    });
+    await fetchWithRetry(f.wrapped, url, init, { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0, sleep: async () => {} });
+    expect(sent).toEqual(["Bearer sk-retry-1", "Bearer sk-retry-2"]);
+    const deployment = fixture({
+      fetch: async (_url, request) => {
+        sent.push(new Headers(request?.headers).get("authorization") ?? "");
+        return response();
+      },
+    });
+    await deployment.wrapped(url, { ...init, headers: { ...init.headers, authorization: "Bearer sk-deployment-key" } });
+    expect(sent.at(-1)).toBe("Bearer sk-deployment-key");
   });
 });

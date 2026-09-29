@@ -24,6 +24,10 @@ export class SpendAdmissionError extends DeferPaidWorkError {
 type RpcDecision = { ok: boolean; state?: string; fresh?: boolean; reason?: string };
 export type SpendRpc = (body: Record<string, unknown>) => Promise<RpcDecision>;
 
+export type PaidAuthorization =
+  | { mode: "deployment" }
+  | { mode: "tenant"; resolve: () => Promise<string> };
+
 export interface PaidFetchDeps {
   tenantId: string;
   attemptId: string;
@@ -35,6 +39,7 @@ export interface PaidFetchDeps {
   newDispatchId?: () => string;
   beforeDispatch?: () => Promise<void>;
   onAuthorizedDispatch?: () => Promise<void>;
+  authorization?: PaidAuthorization;
 }
 
 export function spendRpcFor(env: Env): SpendRpc {
@@ -119,6 +124,15 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       report("blocked", {reason: permission.reason ?? "dispatch_uncertain"});
       throw new SpendAdmissionError(permission.reason ?? "dispatch_uncertain");
     }
+    if (deps.authorization?.mode === "tenant") {
+      try {
+        init = withBearer(init, await deps.authorization.resolve());
+      } catch (error) {
+        const canceled = await call({ ...identity, kind: "settle_spend", actualMicrodollars: 0 });
+        report(canceled.ok ? "settled" : "unresolved", {actual_microdollars: 0, reason: "credential_unavailable"});
+        throw error;
+      }
+    }
     try {
       await deps.onAuthorizedDispatch?.();
     } catch (error) {
@@ -151,4 +165,10 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
     } else report("unresolved", {reason: "missing_valid_usage"});
     return response;
   };
+}
+
+function withBearer(init: RequestInit | undefined, key: string): RequestInit {
+  const headers = new Headers(init?.headers);
+  headers.set("authorization", `Bearer ${key}`);
+  return { ...init, headers };
 }
