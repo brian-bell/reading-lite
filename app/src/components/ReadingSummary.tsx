@@ -3,7 +3,8 @@ import rehypeSanitize from "rehype-sanitize";
 import { degradationNotice, noveltyPanel, summaryBodyBelowLead } from "../reading-presentation";
 import type { Reading } from "../reading";
 import { ExternalLink } from "./ExternalLink";
-import { CONTEXT_HEADING_ID, jumpTo } from "./ReadingContext";
+import { jumpTo } from "./jump-to";
+import { CONTEXT_HEADING_ID } from "./ReadingContext";
 
 // The Summary view (#370, design spec: Data mapping, Novelty, Reading surface).
 //

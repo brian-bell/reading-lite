@@ -7,6 +7,7 @@ import type { Env } from "../../src/index";
 import { FOUNDER_TENANT_ID } from "../helpers/tenant-fixtures";
 import { GLOBAL_USAGE_GUARD_NAME } from "../../src/control-plane/constants";
 import { testControlPlane } from "../helpers/control-plane-db";
+import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
 
 const url = "https://api.openai.com/v1/embeddings";
 const init = { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({model: "text-embedding-3-small", input: "Hello"}) };
@@ -15,6 +16,12 @@ const rpc = () => spendRpcFor(env as unknown as Env);
 async function limitTenant(amount: number) {
   await testControlPlane(env).run(
     "UPDATE tenant_limits SET daily_spend_microdollars = ? WHERE tenant_id = ?",
+    amount, FOUNDER_TENANT_ID,
+  );
+}
+async function capReader(amount: number | null) {
+  await testControlPlane(env).run(
+    "UPDATE user_settings SET daily_spend_cap_microdollars = ? WHERE user_id = ?",
     amount, FOUNDER_TENANT_ID,
   );
 }
@@ -30,6 +37,18 @@ describe("hosted spend guards", () => {
     const fetch = vi.fn(async () => response());
     await expect(paid(fetch)(url, init)).rejects.toBeInstanceOf(SpendAdmissionError);
     expect(fetch).not.toHaveBeenCalled();
+  });
+  it("defers at a reader's cap below the operator default and admits once it is cleared", async () => {
+    const quote = (await quotePaidRequest(url, init))!;
+    await limitTenant(quote.maxMicrodollars * 3);
+    await capReader(quote.maxMicrodollars - 1);
+    const fetch = vi.fn(async () => response());
+    const denied = paid(fetch)(url, init);
+    await expect(denied).rejects.toBeInstanceOf(DeferPaidWorkError);
+    await expect(denied).rejects.toMatchObject({ reason: "daily_spend" });
+    expect(fetch).not.toHaveBeenCalled();
+    await capReader(null);
+    expect((await paid(fetch)(url, init)).status).toBe(200);
   });
   it("requires an explicit global budget without consuming tenant admission", async () => {
     const quote = (await quotePaidRequest(url, init))!;

@@ -57,15 +57,15 @@ describe("spend guard RPCs", () => {
       state(storage()),
       env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: true, policy_version: 8, catalog_version: 3 }),
     );
-    expect(await post(guard, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
+    expect(await post(guard, { kind: "reserve_spend", payer: "tenant", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
       ok: true,
       state: "reserved",
     });
-    expect(await post(guard, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-2", quote: { ...quote, requestFingerprint: "sha256:two", maxMicrodollars: 1 }, nowMs: NOW })).toMatchObject({
+    expect(await post(guard, { kind: "reserve_spend", payer: "tenant", tenantId: TENANT, opId: "dispatch-2", quote: { ...quote, requestFingerprint: "sha256:two", maxMicrodollars: 1 }, nowMs: NOW })).toMatchObject({
       ok: false,
       reason: "daily_spend",
     });
-    expect(await post(guard, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-3", quote: { ...quote, catalogVersion: 2 }, nowMs: NOW })).toEqual({
+    expect(await post(guard, { kind: "reserve_spend", payer: "tenant", tenantId: TENANT, opId: "dispatch-3", quote: { ...quote, catalogVersion: 2 }, nowMs: NOW })).toEqual({
       ok: false,
       reason: "catalog_version",
     });
@@ -76,7 +76,7 @@ describe("spend guard RPCs", () => {
       state(storage()),
       env({ status: "active", daily_spend_microdollars: null, policy_version: 8, catalog_version: 3 }),
     );
-    expect(await post(unset, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
+    expect(await post(unset, { kind: "reserve_spend", payer: "tenant", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
       ok: false,
       reason: "missing_limits",
     });
@@ -84,7 +84,7 @@ describe("spend guard RPCs", () => {
       state(storage()),
       env({ status: "deleting", daily_spend_microdollars: 100, policy_version: 8, catalog_version: 3 }),
     );
-    expect(await post(deleting, { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
+    expect(await post(deleting, { kind: "reserve_spend", payer: "tenant", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW })).toEqual({
       ok: false,
       reason: "deleted_tenant",
     });
@@ -95,7 +95,7 @@ describe("spend guard RPCs", () => {
     const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:100,
       tenant_daily_spend_microdollars:100,paid_work_enabled:true,policy_version:1,catalog_version:3}));
     const yesterday=NOW-86400000;
-    expect(await post(guard,{kind:"reserve_spend",tenantId:TENANT,opId:"old",
+    expect(await post(guard,{kind:"reserve_spend",payer:"tenant",tenantId:TENANT,opId:"old",
       quote:{...quote,dayKey:utcSpendDay(yesterday)},nowMs:yesterday})).toMatchObject({ok:false,reason:"operation_conflict"});
     expect(map.size).toBe(0);
   });
@@ -108,7 +108,7 @@ describe("spend guard RPCs", () => {
       const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
         tenant_daily_spend_microdollars:50,paid_work_enabled:true,policy_version:1,catalog_version:3}));
       const originalQuote = {...quote,dayKey:utcSpendDay(before)};
-      const body = {kind:"reserve_spend",tenantId:TENANT,opId:"midnight",quote:originalQuote,nowMs:before};
+      const body = {kind:"reserve_spend",payer:"tenant",tenantId:TENANT,opId:"midnight",quote:originalQuote,nowMs:before};
       const key = `spend:op:${TENANT}:midnight`;
       expect(await post(guard,body)).toMatchObject({ok:true,state:"reserved"});
       const original = structuredClone(map.get(key));
@@ -132,7 +132,7 @@ describe("spend guard RPCs", () => {
       const guard = new GlobalUsageGuard(state(storage(map)),env({status:"active",daily_spend_microdollars:50,
         tenant_daily_spend_microdollars:50,paid_work_enabled:true,policy_version:1,catalog_version:3}));
       const originalQuote = {...quote,dayKey:utcSpendDay(before)};
-      const body = {kind:"reserve_spend",tenantId:TENANT,opId:"released",quote:originalQuote,nowMs:before};
+      const body = {kind:"reserve_spend",payer:"tenant",tenantId:TENANT,opId:"released",quote:originalQuote,nowMs:before};
       await post(guard,body);
       await post(guard,{...body,kind:"release_spend"});
       clock.mockReturnValue(before+2000);
@@ -145,15 +145,29 @@ describe("spend guard RPCs", () => {
     } finally { clock.mockRestore(); }
   });
 
-  it.each(["daily_spend_microdollars", "tenant_daily_spend_microdollars"])(
+  it("requires and records who pays for a reservation", async () => {
+    const map = new Map<string, unknown>();
+    const guard = new GlobalUsageGuard(
+      state(storage(map)),
+      env({ status: "active", daily_spend_microdollars: 50, tenant_daily_spend_microdollars: 50, paid_work_enabled: true, policy_version: 8, catalog_version: 3 }),
+    );
+    const body = { kind: "reserve_spend", tenantId: TENANT, opId: "dispatch-1", quote, nowMs: NOW };
+    expect(await post(guard, body)).toEqual({ error: "invalid_body" });
+    expect(await post(guard, { ...body, payer: "someone" })).toEqual({ error: "invalid_body" });
+    expect(map.size).toBe(0);
+    expect(await post(guard, { ...body, payer: "operator" })).toEqual({ ok: true, state: "reserved" });
+    expect(map.get(`spend:op:${TENANT}:dispatch-1`)).toMatchObject({ payer: "operator", tenantId: TENANT });
+  });
+
+  it.each(["daily_spend_microdollars", "tenant_daily_spend_microdollars", "user_daily_spend_cap_microdollars"])(
     "denies dispatch when %s is tightened below the reserved aggregate", async (limit) => {
       const map = new Map<string, unknown>();
       const policy = {status:"active",daily_spend_microdollars:100,tenant_daily_spend_microdollars:100,
         paid_work_enabled:true,policy_version:1,catalog_version:3};
       const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
       const identity = {tenantId:TENANT,opId:"held",quote};
-      await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
-      await post(guard,{...identity,opId:"other",quote:{...quote,maxMicrodollars:20},kind:"reserve_spend",nowMs:NOW});
+      await post(guard,{...identity,kind:"reserve_spend",payer:"tenant",nowMs:NOW});
+      await post(guard,{...identity,opId:"other",quote:{...quote,maxMicrodollars:20},kind:"reserve_spend",payer:"tenant",nowMs:NOW});
       policy[limit as "daily_spend_microdollars"] = 60; // This request fits; the aggregate 70 does not.
       expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:false,reason:"daily_spend"});
       expect(map.get(`spend:op:${TENANT}:held`)).toMatchObject({state:"reserved"});
@@ -167,7 +181,7 @@ describe("spend guard RPCs", () => {
       paid_work_enabled:true,policy_version:1,catalog_version:3};
     const guard = new GlobalUsageGuard(state(storage()),env(policy));
     const identity = {tenantId:TENANT,opId:"fits",quote};
-    await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
+    await post(guard,{...identity,kind:"reserve_spend",payer:"tenant",nowMs:NOW});
     policy.daily_spend_microdollars = policy.tenant_daily_spend_microdollars = limit;
     expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"dispatched",fresh:true});
   });
@@ -178,7 +192,7 @@ describe("spend guard RPCs", () => {
       paid_work_enabled:true,policy_version:1,catalog_version:3};
     const guard = new GlobalUsageGuard(state(storage(map)),env(policy));
     const identity = {tenantId:TENANT,opId:"sent",quote};
-    await post(guard,{...identity,kind:"reserve_spend",nowMs:NOW});
+    await post(guard,{...identity,kind:"reserve_spend",payer:"tenant",nowMs:NOW});
     expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,fresh:true});
     policy.daily_spend_microdollars = policy.tenant_daily_spend_microdollars = 1;
     expect(await post(guard,{...identity,kind:"mark_spend_dispatched"})).toMatchObject({ok:true,state:"dispatched",fresh:false});
@@ -196,7 +210,7 @@ describe("spend guard RPCs", () => {
     const results = await Promise.all(
       ["one", "two", "three"].map((opId) =>
         post(guard, {
-          kind: "reserve_spend",
+          kind: "reserve_spend", payer: "tenant",
           tenantId: TENANT,
           opId,
           quote: { ...quote, requestFingerprint: `sha256:${opId}`, maxMicrodollars: 25 },
@@ -216,7 +230,7 @@ describe("spend guard RPCs", () => {
       paid_work_enabled: true, policy_version: 8, catalog_version: 3,
     }));
     const reserve = (tenantId: string, opId: string, amount: number) => post(guard, {
-      kind: "reserve_spend", tenantId, opId,
+      kind: "reserve_spend", payer: "tenant", tenantId, opId,
       quote: { ...quote, maxMicrodollars: amount }, nowMs: NOW,
     });
 

@@ -47,12 +47,13 @@ import {
 import { settingsQueryOptions } from "../settings-query";
 import type { TokensList } from "../tokens";
 import { tokensQueryOptions } from "../tokens-query";
-import { ExportSection, type ExportSectionProps } from "./AccountExport";
-import { TokensSection, type RevealedToken, type TokensSectionProps } from "./AccountTokens";
+import { ExportSection, EXPORT_HEADING_ID, type ExportSectionProps } from "./AccountExport";
+import { API_TOKENS_HEADING_ID, TokensSection, type RevealedToken, type TokensSectionProps } from "./AccountTokens";
 import { StepUpNotice } from "./StepUpNotice";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { BackToLibrary } from "./BackToLibrary";
+import { jumpTo } from "./jump-to";
 import {
   AccountChanged,
   Forbidden,
@@ -81,6 +82,28 @@ import {
 // for a revoke; offline and server errors stay in the section, and their
 // Retry reopens the dialog rather than sending another delete unasked.
 // Success drops the account and this tab alone shows the closing page.
+//
+// A section nav (reading-lite-e0l2) lists the six sections in page order:
+// beside them as a sticky rail at desktop widths, above them where the
+// columns stack, so none is a long scroll away. A link jumps to its section's
+// heading (jump-to.ts): focus lands there and the URL keeps no hash, since
+// the design spec keeps everything but the library filters and the reading
+// view out of the URL.
+
+const EMAIL_HEADING_ID = "email-heading";
+const NOTIFICATIONS_HEADING_ID = "notifications-heading";
+const SESSIONS_HEADING_ID = "sessions-heading";
+const DELETE_ACCOUNT_HEADING_ID = "delete-account-heading";
+
+/** The sections in page order, each labelled with its heading's text. */
+const ACCOUNT_SECTIONS = [
+  { id: EMAIL_HEADING_ID, label: "Email" },
+  { id: NOTIFICATIONS_HEADING_ID, label: "Notifications" },
+  { id: SESSIONS_HEADING_ID, label: "Sessions" },
+  { id: API_TOKENS_HEADING_ID, label: "API tokens" },
+  { id: EXPORT_HEADING_ID, label: "Export your archive" },
+  { id: DELETE_ACCOUNT_HEADING_ID, label: "Delete account" },
+] as const;
 
 type RevokeTarget = { kind: "one"; session: SessionListItem } | { kind: "all" };
 
@@ -479,39 +502,44 @@ function pageFor(
       return (
         <div className="page account-page">
           <PageHeading>Account</PageHeading>
-          <EmailSection {...actions.email} />
-          <NotificationsSection {...actions.settings} />
-          <section className="account-section" aria-labelledby="sessions-heading">
-            {/* Revoke-all sits with the sessions it ends, not at the top of the page. */}
-            <div className="account-section-head">
-              <h2 id="sessions-heading" className="account-section-title">
-                Sessions
-              </h2>
-              <button
-                type="button"
-                className="button"
-                ref={actions.revokeAllRef}
-                onClick={actions.onConfirmAll}
-                disabled={actions.busy}
-              >
-                Revoke all sessions
-              </button>
+          <div className="account-layout">
+            <AccountSectionNav />
+            <div className="account-sections">
+              <EmailSection {...actions.email} />
+              <NotificationsSection {...actions.settings} />
+              <section className="account-section" aria-labelledby={SESSIONS_HEADING_ID}>
+                {/* Revoke-all sits with the sessions it ends, not at the top of the page. */}
+                <div className="account-section-head">
+                  <h2 id={SESSIONS_HEADING_ID} className="account-section-title" tabIndex={-1}>
+                    Sessions
+                  </h2>
+                  <button
+                    type="button"
+                    className="button"
+                    ref={actions.revokeAllRef}
+                    onClick={actions.onConfirmAll}
+                    disabled={actions.busy}
+                  >
+                    Revoke all sessions
+                  </button>
+                </div>
+                {sessions.kind === "offline" ? <OfflineNotice onRetry={actions.onRetry} /> : null}
+                {sessions.kind === "loading" ? <LoadingRegion /> : null}
+                {listed ? (
+                  <SessionsList
+                    listed={listed}
+                    busy={actions.busy}
+                    revokingId={actions.revokingId}
+                    onRevoke={actions.onRevoke}
+                    hereRef={actions.hereRef}
+                  />
+                ) : null}
+              </section>
+              <TokensSection {...actions.tokens} />
+              <ExportSection {...actions.exports} />
+              <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
             </div>
-            {sessions.kind === "offline" ? <OfflineNotice onRetry={actions.onRetry} /> : null}
-            {sessions.kind === "loading" ? <LoadingRegion /> : null}
-            {listed ? (
-              <SessionsList
-                listed={listed}
-                busy={actions.busy}
-                revokingId={actions.revokingId}
-                onRevoke={actions.onRevoke}
-                hereRef={actions.hereRef}
-              />
-            ) : null}
-          </section>
-          <TokensSection {...actions.tokens} />
-          <ExportSection {...actions.exports} />
-          <DeleteAccountSection busy={actions.busy} {...actions.deletion} />
+          </div>
           {actions.confirmAll ? (
             <ConfirmDialog
               title="Revoke all browser sessions?"
@@ -543,6 +571,33 @@ function pageFor(
 }
 
 /**
+ * Every section, in page order (reading-lite-e0l2). A link jumps to its
+ * section's heading rather than following the hash, so the URL stays as it
+ * is and Back leaves the page; the heading takes focus so the jump is
+ * announced. The nav comes before the sections in the document, where the
+ * columns stack and where a keyboard reaches it before the forms.
+ */
+function AccountSectionNav() {
+  return (
+    <nav className="account-nav" aria-label="Account sections">
+      <ul className="account-nav-items">
+        {ACCOUNT_SECTIONS.map((section) => (
+          <li key={section.id}>
+            <a
+              className="account-nav-link"
+              href={`#${section.id}`}
+              onClick={(event) => jumpTo(event, section.id)}
+            >
+              {section.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
+/**
  * Change email (#340.6.2), as the SPA's form: the new address, then a
  * generic "check your inbox" once the request is accepted. The typed address
  * stays through every outcome, so an offline or failed request can be sent
@@ -558,8 +613,8 @@ function EmailSection({ current, sending, outcome, failure, onSend, onEdit, onRe
     if (invalid) inputRef.current?.focus();
   }, [invalid, outcome]);
   return (
-    <section className="account-section" aria-labelledby={`${id}-heading`}>
-      <h2 id={`${id}-heading`} className="account-section-title">
+    <section className="account-section" aria-labelledby={EMAIL_HEADING_ID}>
+      <h2 id={EMAIL_HEADING_ID} className="account-section-title" tabIndex={-1}>
         Email
       </h2>
       {current ? (
@@ -652,8 +707,8 @@ function NotificationsSection({
   onDiscard,
 }: SettingsActions) {
   return (
-    <section className="account-section" aria-labelledby="notifications-heading">
-      <h2 id="notifications-heading" className="account-section-title">
+    <section className="account-section" aria-labelledby={NOTIFICATIONS_HEADING_ID}>
+      <h2 id={NOTIFICATIONS_HEADING_ID} className="account-section-title" tabIndex={-1}>
         Notifications
       </h2>
       {view.kind === "loading" ? <LoadingRegion /> : null}
@@ -940,8 +995,8 @@ function DeleteAccountSection({
   buttonRef,
 }: DeletionActions & { busy: boolean }) {
   return (
-    <section className="account-section account-delete" aria-labelledby="delete-account-heading">
-      <h2 id="delete-account-heading" className="account-section-title">
+    <section className="account-section account-delete" aria-labelledby={DELETE_ACCOUNT_HEADING_ID}>
+      <h2 id={DELETE_ACCOUNT_HEADING_ID} className="account-section-title" tabIndex={-1}>
         Delete account
       </h2>
       <p className="account-delete-text">

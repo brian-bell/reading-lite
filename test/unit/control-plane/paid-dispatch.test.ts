@@ -30,6 +30,23 @@ describe("paid dispatch", () => {
     expect(f.fetch).toHaveBeenCalledOnce();
     expect(new Set(f.calls.map(c => c.body.opId)).size).toBe(1);
   });
+  it.each([
+    ["deployment keys", undefined, "operator"],
+    ["the tenant's key", { mode: "tenant" as const, resolve: async () => "sk-tenant" }, "tenant"],
+  ])("tags the reservation and every paid_spend line with who pays for %s", async (_label, authorization, payer) => {
+    const lines: string[] = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line: string) => void lines.push(line));
+    try {
+      const f = fixture(authorization ? { authorization } : {});
+      await f.wrapped(url, init);
+      expect(f.calls[0]!.body).toMatchObject({ kind: "reserve_spend", payer });
+      const events = lines.map((line) => JSON.parse(line)).filter((line) => line.event === "paid_spend");
+      expect(events.map((event) => event.state)).toEqual(["reserved", "settled"]);
+      expect(events.every((event) => event.payer === payer)).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
+  });
   it("pins OpenAI standard pricing in the request actually sent", async () => {
     const requests: RequestInit[] = [];
     const f = fixture({fetch: async (_url,init) => {requests.push(init!); return Response.json({});}});

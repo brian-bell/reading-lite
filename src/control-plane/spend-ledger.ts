@@ -4,6 +4,8 @@
 // bound with actual provider usage. Operation records expire one day after the
 // admission day ends; daily aggregates keep uncertain charges. The authority
 // rejects old admission days, so discarded operations cannot authorize replay.
+// Each operation records who pays for it (ADR 0004); both payers share the
+// tenant and global counters, so the payer labels spend without splitting caps.
 
 export type SpendQuote = {
   /** UTC YYYY-MM-DD, selected before the first reserve and immutable thereafter. */
@@ -13,8 +15,15 @@ export type SpendQuote = {
   maxMicrodollars: number;
 };
 
+/** `tenant` when the tenant's own provider key is billed; `operator` for deployment keys and operator tools. */
+export type SpendPayer = "tenant" | "operator";
+
+export function isSpendPayer(value: unknown): value is SpendPayer {
+  return value === "tenant" || value === "operator";
+}
+
 export type SpendBody =
-  | { kind: "reserve_spend"; tenantId: string; opId: string; quote: SpendQuote; nowMs: number }
+  | { kind: "reserve_spend"; tenantId: string; opId: string; quote: SpendQuote; nowMs: number; payer: SpendPayer }
   | { kind: "mark_spend_dispatched"; tenantId: string; opId: string; quote: SpendQuote }
   | { kind: "release_spend"; tenantId: string; opId: string; quote: SpendQuote }
   | { kind: "settle_spend"; tenantId: string; opId: string; quote: SpendQuote; actualMicrodollars: number };
@@ -36,6 +45,8 @@ export type SpendDecision =
 
 export type SpendRecord = {
   tenantId?: string;
+  /** Absent only on records written before the payer was recorded. */
+  payer?: SpendPayer;
   quote: SpendQuote;
   policyVersion: number;
   state: "reserved" | "dispatched" | "settled" | "released";
@@ -109,11 +120,11 @@ async function counterOf(storage: LedgerStorage, key: string): Promise<number | 
  */
 export async function reserveSpend(
   storage: DurableObjectStorage,
-  args: { opKey: string; quote: SpendQuote; policyVersion: number; limitMicrodollars: number; tenantId?: string; tenantLimitMicrodollars?: number; expiresAtMs?: number },
+  args: { opKey: string; quote: SpendQuote; payer: SpendPayer; policyVersion: number; limitMicrodollars: number; tenantId?: string; tenantLimitMicrodollars?: number; expiresAtMs?: number },
 ): Promise<SpendDecision> {
   const existing = (await storage.get(args.opKey)) as SpendRecord | undefined;
   if (existing) {
-    if (!validRecord(existing) || !sameSpendQuote(existing.quote, args.quote)) {
+    if (!validRecord(existing) || !sameSpendQuote(existing.quote, args.quote) || existing.payer !== args.payer) {
       return { ok: false, reason: "operation_conflict" };
     }
     if (existing.state === "released") return { ok: false, reason: "operation_conflict" };
@@ -135,7 +146,7 @@ export async function reserveSpend(
   await putTogether(
     storage,
     args.opKey,
-    { tenantId: args.tenantId, quote: args.quote, policyVersion: args.policyVersion, state: "reserved", expiresAtMs: args.expiresAtMs ?? Number.MAX_SAFE_INTEGER } satisfies SpendRecord,
+    { tenantId: args.tenantId, payer: args.payer, quote: args.quote, policyVersion: args.policyVersion, state: "reserved", expiresAtMs: args.expiresAtMs ?? Number.MAX_SAFE_INTEGER } satisfies SpendRecord,
     args.quote.dayKey,
     charged + args.quote.maxMicrodollars,
     args.expiresAtMs ?? Number.MAX_SAFE_INTEGER,
@@ -287,6 +298,7 @@ function validRecord(record: SpendRecord): boolean {
     validSpendQuote(record.quote) &&
     Number.isSafeInteger(record.policyVersion) &&
     record.policyVersion >= 0 &&
+    (record.payer === undefined || isSpendPayer(record.payer)) &&
     (record.state === "reserved" || record.state === "dispatched" || record.state === "settled" || record.state === "released") &&
     (record.expiresAtMs === undefined || (Number.isSafeInteger(record.expiresAtMs) && record.expiresAtMs > 0)) &&
     (record.actualMicrodollars === undefined ||

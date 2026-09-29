@@ -593,7 +593,7 @@ describe("processReading immediate notification recipient", () => {
   });
 
   it("keeps the manifest ready when recipient lookup throws", async () => {
-    const lookup = interceptSql(/LEFT JOIN user_settings/, () => new Error("recipient lookup failed"));
+    const lookup = interceptSql(/s\.notify_immediate\s+FROM users u\s+LEFT JOIN user_settings/, () => new Error("recipient lookup failed"));
 
     const fetchFn = makeStubFetch();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});

@@ -69,6 +69,7 @@ import {
   handleConnectProviderKey,
   handleDeleteProviderKey,
   handleGetProviderSettings,
+  handleGetProviderUsage,
   handleUpdateProviderPreferences,
 } from "./control-plane/provider-settings-handlers";
 import { handleDeleteAccount } from "./control-plane/account-handlers";
@@ -170,6 +171,7 @@ export function createApp(opts: AppOptions = {}) {
   );
   app.delete("/api/auth/provider", requireRecentAuth(authNowMs), (c) => handleDeleteProviderKey(c));
   app.post("/api/auth/provider/preferences", (c) => handleUpdateProviderPreferences(c, authNowMs()));
+  app.get("/api/auth/provider/usage", (c) => handleGetProviderUsage(c));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));
   app.all("/api/auth/*", () => jsonAuth({ error: "method not allowed" }, 405));
 

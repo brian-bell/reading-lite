@@ -313,6 +313,7 @@ the layout table map onto it. Controls:
 | Component | States |
 | --- | --- |
 | Navigation | Active item; account menu (email, Account, Sign out); theme control; compact bar at ≤650 px |
+| Account section nav | Sticky rail beside the sections above 850 px; wrapping pill links under the heading at ≤850 px, 44 px tall at ≤650 px |
 | Reading card | Ready, pending, failed, reprocess failed; long title; tag buttons |
 | Filter bar | Search draft, active tag, clear controls |
 | Pager | First page, middle, last (`has_more = false`) |
@@ -335,6 +336,8 @@ the layout table map onto it. Controls:
 - Tabs follow the ARIA tabs pattern: arrows, Home, End; the panel is focusable.
 - Phone "Connections & tensions" jump moves focus to that section's heading;
   "Back to the reading" returns focus to the jump link.
+- Account section links move focus to that section's heading the same way,
+  without writing a hash into the URL.
 - Status outcomes are announced in a polite live region. Focus does not move.
 - Dialogs are modal `<dialog>` elements; focus returns to the opening control.
 - Smooth scrolling only under `prefers-reduced-motion: no-preference`.

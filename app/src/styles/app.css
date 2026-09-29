@@ -422,6 +422,105 @@ textarea {
 
 /* ---- Account ---------------------------------------------------------- */
 
+/* Six sections and a nav that jumps to each (reading-lite-e0l2). At desktop
+   widths the nav is an 11rem rail beside the sections, sticky so every
+   section stays one click away however far the page has scrolled; the grid
+   row is as tall as the sections, so the rail has that far to travel. Where
+   the columns stack (≤850 px) the links wrap in a row under the page heading. */
+.account-layout {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 68ch);
+  gap: 0 var(--space-9);
+  align-items: start;
+}
+
+/* Shifted left by the links' padding, so their labels line up with the page
+   heading and the hover tint sits in the page's own gutter. */
+.account-nav {
+  position: sticky;
+  top: var(--space-7);
+  margin-left: calc(-1 * var(--space-3));
+}
+
+.account-nav-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* Quiet links, muted until the pointer arrives. */
+.account-nav-link {
+  display: flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+@media (hover: hover) {
+  .account-nav-link:hover {
+    background: var(--button-hover-fill);
+    color: var(--ink);
+  }
+}
+
+/* Press feedback like the shell's nav items and every button: settle to 0.96,
+   a scale-only transition so hover stays instant. Only where motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  .account-nav-link {
+    transition-property: scale;
+    transition-duration: 150ms;
+    transition-timing-function: ease-out;
+  }
+
+  .account-nav-link:active {
+    scale: 0.96;
+  }
+}
+
+.account-sections {
+  min-width: 0;
+}
+
+@container shell (max-width: 850px) {
+  .account-layout {
+    display: block;
+  }
+
+  .account-nav {
+    position: static;
+    margin: 0 0 var(--space-6);
+  }
+
+  .account-nav-items {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  /* Pills in the secondary button's outline, so each is a target on its own. */
+  .account-nav-link {
+    padding: 0 var(--space-4);
+    border: 1px solid var(--control-border);
+    border-radius: 999px;
+    color: var(--ink);
+  }
+}
+
+@container shell (max-width: 650px) {
+  /* Navigation items are 44 px tall on phones (design spec, Spacing and controls). */
+  .account-nav-link {
+    min-height: 44px;
+  }
+}
+
 .account-section {
   max-width: 68ch;
 }
@@ -447,6 +546,8 @@ textarea {
   font-size: 22px;
   font-weight: 400;
   line-height: 1.25;
+  /* Room above a heading the section nav scrolls to. */
+  scroll-margin-top: var(--space-5);
 }
 
 /* A hairline between sections, so each reads as its own group on a long page. */

@@ -2006,3 +2006,41 @@ describe("account deletion", () => {
   });
 });
 
+
+// The section navigation (reading-lite-e0l2): every section, in page order,
+// one click away. A link moves focus to the heading it names and writes no
+// hash into the URL, as the reading page's phone jump does (design spec,
+// Routes and navigation state). Where the nav sits at each width, and the
+// heading coming into view, are the browser suite's (e2e/specs/account.spec.ts).
+describe("the account page's section navigation", () => {
+  it("lists every section in page order and moves focus to the heading a link names", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    mockApi();
+    const { router } = await openAccount();
+    await screen.findByText("Firefox (this device)");
+
+    const nav = screen.getByRole("navigation", { name: "Account sections" });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual([
+      "Email",
+      "Notifications",
+      "Sessions",
+      "API tokens",
+      "Export your archive",
+      "Delete account",
+    ]);
+    // Each link names the heading it lands on, and the links follow the page.
+    const targets = links.map((link) => document.getElementById(link.getAttribute("href")!.slice(1))!);
+    for (const [index, target] of targets.entries()) {
+      expect(target).toHaveRole("heading");
+      expect(target).toHaveTextContent(links[index]!.textContent!);
+      if (index > 0) {
+        expect(targets[index - 1]!.compareDocumentPosition(target) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    }
+
+    await userEvent.click(within(nav).getByRole("link", { name: "Sessions" }));
+    expect(screen.getByRole("heading", { level: 2, name: "Sessions" })).toHaveFocus();
+    expect(router.state.location.href).toBe("/account/security");
+  });
+});

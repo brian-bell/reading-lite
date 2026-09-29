@@ -28,11 +28,20 @@ export type ProviderSettingsLoad = ProviderSettingsResponse | "not_found" | "lim
 
 export type ProviderPreferenceResult = "ok" | "not_found" | "limits_missing" | "cap_above_operator_default";
 
-function effectiveDailySpend(userCap: number | null, operator: number): number {
+/** The tenant cap the spend guard admits against: the reader may only lower the operator default. */
+export function effectiveDailySpend(userCap: number | null, operator: number): number {
   return userCap === null ? operator : Math.min(userCap, operator);
 }
 
-export async function loadProviderSettings(db: ControlPlaneDb, userId: string): Promise<ProviderSettingsLoad> {
+type SpendCaps = {
+  effort: SummarizationEffort;
+  daily_spend_cap_microdollars: number | null;
+  effective_daily_spend_microdollars: number;
+  operator_daily_spend_microdollars: number;
+};
+
+/** The reader's effort and daily caps, as the settings page and usage view show them. */
+export async function loadSpendCaps(db: ControlPlaneDb, userId: string): Promise<SpendCaps | "not_found" | "limits_missing"> {
   const settingsRow = await db.first(
     `SELECT summarization_effort, daily_spend_cap_microdollars
      FROM user_settings WHERE user_id = ?`,
@@ -44,16 +53,25 @@ export async function loadProviderSettings(db: ControlPlaneDb, userId: string): 
     userId,
   );
   if (!limitsRow) return "limits_missing";
+  const settings = SettingsRowSchema.parse(settingsRow);
+  const operator = LimitsRowSchema.parse(limitsRow).daily_spend_microdollars;
+  return {
+    effort: settings.summarization_effort,
+    daily_spend_cap_microdollars: settings.daily_spend_cap_microdollars,
+    effective_daily_spend_microdollars: effectiveDailySpend(settings.daily_spend_cap_microdollars, operator),
+    operator_daily_spend_microdollars: operator,
+  };
+}
+
+export async function loadProviderSettings(db: ControlPlaneDb, userId: string): Promise<ProviderSettingsLoad> {
+  const caps = await loadSpendCaps(db, userId);
+  if (typeof caps === "string") return caps;
   const maskRow = await db.first(
     `SELECT provider, last_four, status, validated_at
      FROM tenant_provider_credentials WHERE tenant_id = ? AND provider = 'openai'`,
     userId,
   );
-
-  const settings = SettingsRowSchema.parse(settingsRow);
-  const limits = LimitsRowSchema.parse(limitsRow);
   const mask = maskRow === null ? null : MaskRowSchema.parse(maskRow);
-  const operator = limits.daily_spend_microdollars;
   return ProviderSettingsResponseSchema.parse({
     credential: mask
       ? {
@@ -63,10 +81,7 @@ export async function loadProviderSettings(db: ControlPlaneDb, userId: string): 
           validated_at_ms: fromTimestamp(mask.validated_at),
         }
       : null,
-    effort: settings.summarization_effort,
-    daily_spend_cap_microdollars: settings.daily_spend_cap_microdollars,
-    effective_daily_spend_microdollars: effectiveDailySpend(settings.daily_spend_cap_microdollars, operator),
-    operator_daily_spend_microdollars: operator,
+    ...caps,
   });
 }
 
