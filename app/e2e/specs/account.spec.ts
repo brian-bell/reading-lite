@@ -31,6 +31,12 @@
 //
 // The session cookie (#392): signIn sets it HttpOnly, as the backend does, so
 // a real session an external run supplies is never readable by page script.
+//
+// The section nav (reading-lite-e0l2): the component tests own its contents
+// and the focus a link moves; this proves the layout a browser lays out. At
+// desktop widths the rail stays beside the sections however far the page has
+// scrolled, at 390 px the links sit above them, and either way the heading a
+// link lands on comes into view.
 
 import { expect, test as base, type Page } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
@@ -345,4 +351,40 @@ test("requests an export, follows it to ready, and downloads it through a plain 
   expect(downloads).toHaveLength(1);
   expect(new URL(downloads[0]!.url()).pathname).toBe("/api/exports/exp_e2e/download");
   expect(downloads[0]!.isNavigationRequest()).toBe(true);
+});
+
+function sectionNav(page: Page) {
+  return page.getByRole("navigation", { name: "Account sections" });
+}
+
+test("keeps the section nav beside the sections while scrolled, and a link brings its heading into view", async ({
+  page,
+  baseURL,
+}) => {
+  await openAccount(page, baseURL!);
+  await page.getByRole("button", { name: "Delete account…" }).scrollIntoViewIfNeeded();
+  await expect(sectionNav(page).getByRole("link", { name: "Email" })).toBeInViewport();
+
+  await sectionNav(page).getByRole("link", { name: "Sessions" }).click();
+  const heading = page.getByRole("heading", { level: 2, name: "Sessions" });
+  await expect(heading).toBeFocused();
+  await expect(heading).toBeInViewport();
+  await expect(page).toHaveURL(/\/account\/security$/);
+});
+
+test.describe("at 390 px", () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test("puts the section links above the sections, and a link brings its heading into view", async ({ page, baseURL }) => {
+    await openAccount(page, baseURL!);
+    const nav = await sectionNav(page).boundingBox();
+    const email = await page.getByRole("heading", { level: 2, name: "Email" }).boundingBox();
+    expect(nav!.y + nav!.height, "the links sit above the first section").toBeLessThanOrEqual(email!.y);
+
+    await sectionNav(page).getByRole("link", { name: "Delete account" }).click();
+    const heading = page.getByRole("heading", { level: 2, name: "Delete account" });
+    await expect(heading).toBeFocused();
+    await expect(heading).toBeInViewport();
+    await expect(page).toHaveURL(/\/account\/security$/);
+  });
 });

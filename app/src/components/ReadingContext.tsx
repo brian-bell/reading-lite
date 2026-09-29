@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useId, type MouseEvent } from "react";
+import { useId } from "react";
 import {
   connectionsComputedOn,
   relationshipCards,
@@ -8,6 +8,7 @@ import {
 } from "../reading-relationships";
 import { trailAfterFollowing, type TrailHop } from "../reading-trail";
 import type { Reading } from "../reading";
+import { jumpTo } from "./jump-to";
 import { useTrail } from "./ReturnTrail";
 
 // Connections and tensions beside the reading (#371; design spec: Relationship
@@ -15,27 +16,11 @@ import { useTrail } from "./ReturnTrail";
 // column sits beside the article. On phones it follows the reading: the
 // "Connections & tensions" jump moves focus to this section's heading, and
 // "Back to the reading" returns focus to the jump link. Neither changes the
-// URL or adds a history entry. They scroll smoothly only under
-// prefers-reduced-motion: no-preference; a page-wide scroll-behavior rule
-// would also animate the router's scroll-to-top on every route change.
+// URL or adds a history entry, and both scroll smoothly only when motion is
+// welcome (jump-to.ts).
 
 export const CONTEXT_HEADING_ID = "context-heading";
 export const CONTEXT_JUMP_ID = "context-jump";
-
-/** Scroll to and focus a same-page target without writing its hash into the URL. */
-export function jumpTo(event: MouseEvent<HTMLAnchorElement>, targetId: string): void {
-  const target = document.getElementById(targetId);
-  if (!target) return; // Let the browser follow the hash.
-  event.preventDefault();
-  target.scrollIntoView({ behavior: scrollBehaviour() });
-  target.focus({ preventScroll: true });
-}
-
-/** Smooth only when motion is welcome. jsdom has no matchMedia; then it is instant. */
-function scrollBehaviour(): ScrollBehavior {
-  const welcome = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: no-preference)").matches;
-  return welcome ? "smooth" : "auto";
-}
 
 /** The phone-only jump link in the reading column. */
 export function ContextJump() {

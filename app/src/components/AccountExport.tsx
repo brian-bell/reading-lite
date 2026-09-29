@@ -37,6 +37,9 @@ import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
 // allowed. The download is a plain link: the archive can be large, and the
 // browser streams it to disk under the backend's Content-Disposition.
 
+/** The section heading's id: what the page's section nav points at. */
+export const EXPORT_HEADING_ID = "export-heading";
+
 export interface ExportSectionProps {
   view: AccountView<ExportLatest>;
   /** Reads the status again after a failed read. */
@@ -107,8 +110,8 @@ export function ExportSection({ view, onRetry }: ExportSectionProps) {
   }
 
   return (
-    <section className="account-section" aria-labelledby="export-heading">
-      <h2 id="export-heading" className="account-section-title">
+    <section className="account-section" aria-labelledby={EXPORT_HEADING_ID}>
+      <h2 id={EXPORT_HEADING_ID} className="account-section-title" tabIndex={-1}>
         Export your archive
       </h2>
       <p className="account-export-text">
