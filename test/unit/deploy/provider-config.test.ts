@@ -52,7 +52,7 @@ describe("checked-in summarizer provider configuration", () => {
     expect(envVar(wrangler, "local", "SUMMARIZER_PROVIDER")).toBe("openai");
     expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_MODEL")).toBe("gpt-5.6-terra");
     expect(envVar(wrangler, "local", "OPENAI_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
-    expect(envVar(wrangler, "local", "ANTHROPIC_MODEL")).toBe("claude-sonnet-5");
+    expect(envVar(wrangler, "local", "ANTHROPIC_MODEL")).toBe("claude-sonnet-5-5");
     expect(envVar(wrangler, "local", "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT")).toBe("low");
   });
 
@@ -80,7 +80,7 @@ describe("checked-in summarizer provider configuration", () => {
       envVar(wrangler, "production", "OPENAI_SUMMARIZATION_REASONING_EFFORT"),
     ).toBe("high");
     expect(envVar(wrangler, "production", "ANTHROPIC_MODEL")).toBe(
-      "claude-sonnet-5",
+      "claude-sonnet-5-5",
     );
     expect(
       envVar(wrangler, "production", "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT"),
@@ -96,7 +96,7 @@ describe("checked-in summarizer provider configuration", () => {
     expect(testConfig).toContain(
       'OPENAI_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
-    expect(testConfig).toContain('ANTHROPIC_MODEL = "claude-sonnet-5"');
+    expect(testConfig).toContain('ANTHROPIC_MODEL = "claude-sonnet-5-5"');
     expect(testConfig).toContain(
       'ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low"',
     );
@@ -105,14 +105,14 @@ describe("checked-in summarizer provider configuration", () => {
     expect(devExample).toContain("SUMMARIZER_PROVIDER=openai");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(devExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=low");
-    expect(devExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5");
+    expect(devExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5-5");
     expect(devExample).toContain("ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=low");
 
     const stgExample = read(".stg.vars.example");
     expect(stgExample).toContain("SUMMARIZER_PROVIDER=anthropic");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra");
     expect(stgExample).toContain("OPENAI_SUMMARIZATION_REASONING_EFFORT=high");
-    expect(stgExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5");
+    expect(stgExample).toContain("ANTHROPIC_MODEL=claude-sonnet-5-5");
     expect(stgExample).toContain(
       "ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium",
     );

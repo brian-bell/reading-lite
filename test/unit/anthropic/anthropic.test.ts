@@ -374,6 +374,26 @@ describe("buildSummarizeRequestBody", () => {
     );
   });
 
+  it("sends Sonnet 5.5 between_tools and auto tool choice without changing the cache prefix", () => {
+    const input = {
+      url: "https://example.com/a",
+      extractedText: "hello",
+      similarReadings: [],
+    };
+    const previous = buildSummarizeRequestBody(input, "claude-sonnet-5", "low") as Record<string, any>;
+    const next = buildSummarizeRequestBody(input, "claude-sonnet-5-5", "high") as Record<string, any>;
+    expect(next.model).toBe("claude-sonnet-5-5");
+    expect(next.thinking).toEqual({ type: "between_tools" });
+    expect(next.tool_choice).toEqual({ type: "auto" });
+    expect(next.output_config).toEqual({ effort: "high" });
+    expect(previous.thinking).toEqual({ type: "disabled" });
+    expect(previous.tool_choice).toEqual({ type: "any" });
+    expect({ tools: next.tools, system: next.system }).toEqual({
+      tools: previous.tools,
+      system: previous.system,
+    });
+  });
+
   it("keeps the cacheable prefix (tools + system) stable", () => {
     const body = buildSummarizeRequestBody(
       { url: "https://example.com/a", extractedText: "hello", similarReadings: [] },

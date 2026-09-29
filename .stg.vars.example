@@ -46,7 +46,7 @@ RESEND_API_KEY=
 SUMMARIZER_PROVIDER=anthropic
 OPENAI_SUMMARIZATION_MODEL=gpt-5.6-terra
 OPENAI_SUMMARIZATION_REASONING_EFFORT=high
-ANTHROPIC_MODEL=claude-sonnet-5
+ANTHROPIC_MODEL=claude-sonnet-5-5
 ANTHROPIC_SUMMARIZATION_REASONING_EFFORT=medium
 
 # Optional: used only for scripts/manual smoke and docs examples.

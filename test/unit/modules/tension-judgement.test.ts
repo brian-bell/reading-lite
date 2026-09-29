@@ -93,6 +93,16 @@ describe("tension judgement prompt", () => {
     expect(anthropic.tools).toHaveLength(1);
     expect(anthropic.tools[0].name).toBe(JUDGE_TENSION_TOOL_NAME);
     expect(anthropic.tool_choice).toEqual({ type: "tool", name: JUDGE_TENSION_TOOL_NAME });
+    expect(anthropic.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("keeps the Sonnet 5.5 cache prefix and drops forced tool choice", () => {
+    const earlier = buildAnthropicTensionRequestBody(input, "claude-sonnet-5", "high") as any;
+    const next = buildAnthropicTensionRequestBody(input, "claude-sonnet-5-5", "low") as any;
+    expect(next.thinking).toEqual({ type: "between_tools" });
+    expect(next.tool_choice).toEqual({ type: "auto" });
+    expect(next.tools).toEqual(earlier.tools);
+    expect(next.system).toEqual(earlier.system);
   });
 
   it("sends a strict Anthropic tool with the shared schema's fields, spelling nullable side as anyOf", () => {

@@ -46,7 +46,7 @@ describe("resolveBatchConfig", () => {
     void OPENAI_SUMMARIZATION_REASONING_EFFORT;
     void SUMMARIZER_PROVIDER;
     const cfg = resolveBatchConfig({ tenant: TENANT }, { vars: noModel });
-    expect(cfg.anthropicModel).toBe("claude-sonnet-5");
+    expect(cfg.anthropicModel).toBe("claude-sonnet-5-5");
     expect(cfg.openaiModel).toBe("gpt-5.6-terra");
     expect(cfg.openaiReasoningEffort).toBe("low");
     expect(cfg.anthropicReasoningEffort).toBe("low");

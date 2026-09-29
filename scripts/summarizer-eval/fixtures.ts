@@ -321,9 +321,9 @@ not a factual claim. The archive stores seeds only.`,
 export const EVALUATION_CANDIDATES: EvaluationCandidate[] = [
   {
     id: "anthropic",
-    label: "Anthropic Sonnet 5",
+    label: "Anthropic Sonnet 5.5",
     provider: "anthropic",
-    model: "claude-sonnet-5",
+    model: "claude-sonnet-5-5",
     anthropicEffort: "low",
   },
   {

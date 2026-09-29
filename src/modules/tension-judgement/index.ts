@@ -22,6 +22,7 @@ import { providerErrorText } from "../provider-error-text";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  anthropicMessagesControls,
   parseAnthropicEffort,
   parseReasoningEffort,
   parseSummarizerProvider,
@@ -148,10 +149,11 @@ export function buildAnthropicTensionRequestBody(
   model: string,
   effort: ReturnType<typeof parseAnthropicEffort>,
 ): object {
+  const controls = anthropicMessagesControls(model);
   return {
     model,
     max_tokens: 1024,
-    thinking: { type: "disabled" },
+    thinking: controls.thinking,
     output_config: { effort },
     system: [
       {
@@ -169,7 +171,9 @@ export function buildAnthropicTensionRequestBody(
         strict: true,
       },
     ],
-    tool_choice: { type: "tool", name: JUDGE_TENSION_TOOL_NAME },
+    tool_choice: controls.forceTool
+      ? { type: "tool", name: JUDGE_TENSION_TOOL_NAME }
+      : { type: "auto" },
     messages: [
       { role: "user", content: buildTensionJudgementUserMessage(input) },
     ],

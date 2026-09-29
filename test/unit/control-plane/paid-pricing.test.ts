@@ -173,6 +173,31 @@ describe("runtime paid-request pricing", () => {
     expect(oneHour!.maxMicrodollars).toBeGreaterThan(ordinary!.maxMicrodollars);
   });
 
+  it("quotes Sonnet 5.5 at Sonnet 5 rates only with between_tools and auto tool choice", async () => {
+    const sonnet5 = buildAnthropicRequest(summaryInput, "claude-sonnet-5", "low");
+    const sonnet55 = buildAnthropicRequest(summaryInput, "claude-sonnet-5-5", "medium");
+    const earlier = await quotePaidRequest("https://api.anthropic.com/v1/messages", request(sonnet5));
+    const next = await quotePaidRequest("https://api.anthropic.com/v1/messages", request(sonnet55));
+    expect(earlier).not.toBeNull();
+    expect(next).toMatchObject({
+      provider: "anthropic",
+      kind: "messages",
+      model: "claude-sonnet-5-5",
+    });
+    // Same published rates. The reservation ceiling follows serialized body
+    // bytes, which differ because the thinking and tool_choice settings differ.
+    const usage = { usage: { input_tokens: 1, output_tokens: 0 } };
+    expect(actualPaidCost(next!, usage)).toBe(actualPaidCost(earlier!, usage));
+    await expect(quotePaidRequest(
+      "https://api.anthropic.com/v1/messages",
+      request({
+        ...(sonnet55 as Record<string, unknown>),
+        thinking: { type: "disabled" },
+        tool_choice: { type: "any" },
+      }),
+    )).resolves.toBeNull();
+  });
+
   it("accepts the hosted relationship and tension request builders", async () => {
     const tension = {
       a: { id: "rd_a", url: "https://a.test", title: "A", tldr: "a", summary_markdown: "a" },
@@ -185,8 +210,10 @@ describe("runtime paid-request pricing", () => {
     const bodies = [
       ["https://api.openai.com/v1/responses", buildOpenAITensionRequestBody(tension, "gpt-5.6-terra", "low")],
       ["https://api.anthropic.com/v1/messages", buildAnthropicTensionRequestBody(tension, "claude-sonnet-5", "low")],
+      ["https://api.anthropic.com/v1/messages", buildAnthropicTensionRequestBody(tension, "claude-sonnet-5-5", "low")],
       ["https://api.openai.com/v1/responses", buildOpenAIRelationshipRequestBody(relationship, "gpt-5.6-terra", "low")],
       ["https://api.anthropic.com/v1/messages", buildAnthropicRelationshipRequestBody(relationship, "claude-sonnet-5", "low")],
+      ["https://api.anthropic.com/v1/messages", buildAnthropicRelationshipRequestBody(relationship, "claude-sonnet-5-5", "medium")],
     ] as const;
     for (const [url, body] of bodies) {
       await expect(quotePaidRequest(url, request(body))).resolves.not.toBeNull();

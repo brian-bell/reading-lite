@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_ANTHROPIC_MODEL,
   parseAnthropicEffort,
   summarizeReading,
   SummarizerConfigError,
@@ -410,6 +411,24 @@ describe("parseAnthropicEffort", () => {
         new RegExp(`unsupported ANTHROPIC_MODEL for effort: ${model}`),
       );
     }
+  });
+
+  it("pins the default model to Claude Sonnet 5.5", () => {
+    expect(DEFAULT_ANTHROPIC_MODEL).toBe("claude-sonnet-5-5");
+  });
+
+  it("accepts Sonnet 5.5 at high or below and rejects xhigh|max with between_tools", () => {
+    // between_tools is the lowest thinking setting Sonnet 5.5 accepts, and it
+    // 400s at xhigh or max. Official efforts above high stay fail-closed.
+    for (const effort of ["low", "medium", "high"] as const) {
+      expect(parseAnthropicEffort(effort, "claude-sonnet-5-5")).toBe(effort);
+    }
+    expect(() => parseAnthropicEffort("xhigh", "claude-sonnet-5-5")).toThrow(
+      /invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/,
+    );
+    expect(() => parseAnthropicEffort("max", "claude-sonnet-5-5")).toThrow(
+      /invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: max/,
+    );
   });
 
   it("accepts Opus 5 at high or below and rejects xhigh|max with thinking disabled", () => {

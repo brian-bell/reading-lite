@@ -7,6 +7,8 @@
  * microdollar.  Keeping the unit integral avoids a floating-point money value
  * crossing the reservation boundary.
  */
+import { anthropicMessagesControls } from "../summarizer/anthropic-models";
+
 export const PAID_PRICE_CATALOG_VERSION = 1;
 
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
@@ -76,6 +78,9 @@ const OPENAI_RESPONSE_RATES: Record<string, OpenAIRates> = {
 // to Sonnet 4 / 4.5 under the context-1m beta header, which this service never
 // sends.  Re-check both pages before adding a model here.
 const ANTHROPIC_MESSAGE_RATES: Record<string, AnthropicRates> = {
+  // Same published rates as claude-sonnet-5, confirmed 2026-09-29:
+  // https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+  "claude-sonnet-5-5": { input: 200, cacheRead: 20, cacheWrite: 250, cacheWrite1h: 400, output: 1000 },
   "claude-sonnet-5": { input: 200, cacheRead: 20, cacheWrite: 250, cacheWrite1h: 400, output: 1000 },
   "claude-sonnet-4-6": { input: 300, cacheRead: 30, cacheWrite: 375, cacheWrite1h: 600, output: 1500 },
   "claude-opus-5": { input: 500, cacheRead: 50, cacheWrite: 625, cacheWrite1h: 1000, output: 2500 },
@@ -332,10 +337,9 @@ function isOpenAITextInput(value: unknown): boolean {
 
 function isHostedAnthropicMessage(body: Record<string, unknown>): boolean {
   if (!hasExactKeys(body, ["model", "max_tokens", "thinking", "output_config", "system", "tools", "tool_choice", "messages"])) return false;
-  if (!isExactRecord(body.thinking, ["type"]) || body.thinking.type !== "disabled") return false;
   if (!isExactRecord(body.output_config, ["effort"]) || typeof body.output_config.effort !== "string") return false;
   if (!Array.isArray(body.tools) || body.tools.length === 0 || !body.tools.every(isHostedAnthropicTool)) return false;
-  if (!isHostedToolChoice(body.tool_choice, body.tools)) return false;
+  if (!hostedControlsMatch(stringValue(body.model) ?? "", body.thinking, body.tool_choice, body.tools)) return false;
   if (!Array.isArray(body.messages) || body.messages.length !== 1) return false;
   const system = body.system;
   if (!(typeof system === "string" || isHostedSystemBlocks(system))) return false;
@@ -348,6 +352,20 @@ function isHostedAnthropicTool(value: unknown): boolean {
   return isRecord(value) && hasAllAndOnlyKeys(value, ["name", "description", "input_schema"], ["strict"])
     && (value.strict === undefined || value.strict === true)
     && typeof value.name === "string" && value.name.length > 0 && typeof value.description === "string" && isRecord(value.input_schema);
+}
+
+function hostedControlsMatch(
+  model: string,
+  thinking: unknown,
+  toolChoice: unknown,
+  tools: unknown[],
+): boolean {
+  const controls = anthropicMessagesControls(model);
+  if (!isExactRecord(thinking, ["type"]) || thinking.type !== controls.thinking.type) return false;
+  if (!controls.forceTool) {
+    return isExactRecord(toolChoice, ["type"]) && toolChoice.type === "auto";
+  }
+  return isHostedToolChoice(toolChoice, tools);
 }
 
 function isHostedToolChoice(value: unknown, tools: unknown[]): boolean {

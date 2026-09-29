@@ -100,6 +100,24 @@ describe("relationship judgement prompt", () => {
       type: "tool",
       name: JUDGE_RELATIONSHIPS_TOOL_NAME,
     });
+    expect(anthropic.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("keeps the Sonnet 5.5 cache prefix and drops forced tool choice", () => {
+    const earlier = buildAnthropicRelationshipRequestBody(
+      input,
+      "claude-sonnet-5",
+      "high",
+    ) as any;
+    const next = buildAnthropicRelationshipRequestBody(
+      input,
+      "claude-sonnet-5-5",
+      "medium",
+    ) as any;
+    expect(next.thinking).toEqual({ type: "between_tools" });
+    expect(next.tool_choice).toEqual({ type: "auto" });
+    expect(next.tools).toEqual(earlier.tools);
+    expect(next.system).toEqual(earlier.system);
   });
 
   it("sends a strict Anthropic tool: the shared schema minus the string bounds", () => {
