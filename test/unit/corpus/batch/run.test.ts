@@ -1,27 +1,21 @@
-import { stubBatchCorpus } from "../../../helpers/batch-corpus";
 import { describe, expect, it, vi } from "vitest";
+import { harness, manifest, NOW, reading, row } from "./run-harness";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   newBatchAttemptId,
   runBatch,
-  type BatchRunDeps,
 } from "../../../../scripts/corpus-lib/batch/run";
 import { loadSidecar } from "../../../../scripts/corpus-lib/batch/sidecar";
 import { ManifestSchema, type Manifest } from "../../../../src/schemas/manifest";
 import { isBatchOwnedPending } from "../../../../src/modules/staleness";
-import { EMIT_READING_TOOL_NAME } from "../../../../src/modules/anthropic";
-import type { AuditRow } from "../../../../scripts/corpus-lib/types";
-import type { ExtractedContent } from "../../../../src/modules/extractor";
 import { BILLING_TENANT, batchSpendAuthority } from "../../../helpers/operator-spend";
 import type {
   ExtractedTarget,
   PersistedSidecar,
   Sidecar,
 } from "../../../../scripts/corpus-lib/batch/types";
-
-const NOW = "2026-06-18T12:00:00.000Z";
 
 describe("newBatchAttemptId", () => {
   it("keeps the durable batch marker used by pending-state readers", () => {
@@ -39,135 +33,6 @@ describe("newBatchAttemptId", () => {
     })).toBe(true);
   });
 });
-
-function manifest(id: string, over: Partial<Manifest> = {}): Manifest {
-  return {
-    id,
-    url: `https://example.com/${id}`,
-    url_hash: id.padEnd(64, "0").slice(0, 64).replace(/[^0-9a-f]/g, "0"),
-    status: "failed",
-    content_type: "text/html",
-    content_status: "captured",
-    content_bytes: 10,
-    content_sha256: "b".repeat(64),
-    created_at: "2026-01-01T00:00:00.000Z",
-    updated_at: "2026-01-02T00:00:00.000Z",
-    ...over,
-  } as Manifest;
-}
-
-function row(id: string): AuditRow {
-  return {
-    category: "failed",
-    url: `https://example.com/${id}`,
-    short: `example.com/${id}`,
-    reading_id: id,
-    key_prefix: `readings/kp-${id}`,
-    attempts: 1,
-  };
-}
-
-const reading = {
-  title: "Title",
-  tldr: "Tldr.",
-  tags: ["t"],
-  keywords: ["keyword one", "keyword two", "keyword three"],
-  people: [],
-  orgs: [],
-  novelty_verdict: "novel" as const,
-  connections: [],
-  summary_markdown: "body",
-};
-
-// Orchestration harness; PostgreSQL behavior is owned by postgres.test.ts.
-function harness(seedManifests: Record<string, Manifest>) {
-  const store = new Map<string, string>();
-  for (const [id, m] of Object.entries(seedManifests)) {
-    store.set(`readings/kp-${id}/manifest.json`, JSON.stringify(m));
-    store.set(`readings/kp-${id}/extracted.md`, `# ${id}\n\nsaved markdown`);
-  }
-  const r2 = {
-    get: vi.fn(async (k: string) => store.get(k) ?? null),
-    put: vi.fn(async (k: string, b: Uint8Array | string) => {
-      store.set(k, typeof b === "string" ? b : new TextDecoder().decode(b));
-    }),
-    head: vi.fn(async (k: string) => store.has(k)),
-    delete: vi.fn(async (k: string) => {
-      store.delete(k);
-    }),
-    listKeys: vi.fn(async () => [...store.keys()]),
-  };
-  let sidecar: PersistedSidecar | null = null;
-  let inputJsonl: string | null = null;
-  const batch = {
-    create: vi.fn(async (requests: Array<{ custom_id: string }>) => ({
-      id: "msgbatch_run",
-      processing_status: "in_progress",
-      results_url: null,
-      _ids: requests.map((r) => r.custom_id),
-    })),
-    get: vi.fn(async () => ({ id: "msgbatch_run", processing_status: "ended", results_url: "https://results" })),
-    results: vi.fn(async () =>
-      (sidecar?.targets ?? []).map((t) => ({
-        custom_id: t.customId,
-        result: {
-          type: "succeeded" as const,
-          message: {
-            content: [{ type: "tool_use", id: "x", name: EMIT_READING_TOOL_NAME, input: { ...reading, title: `Title ${t.customId}` } }],
-            usage: { input_tokens: 5, output_tokens: 2 },
-          },
-        },
-      })),
-    ),
-  };
-  const extract = vi.fn(
-    async (url: string): Promise<ExtractedContent> => ({
-      raw: new TextEncoder().encode("x"),
-      content_type: "text/html",
-      content_status: "captured",
-      content_bytes: 1,
-      content_sha256: "c".repeat(64),
-      markdown: `fresh ${url}`,
-      title: "Fresh",
-    }),
-  );
-  const authority = batchSpendAuthority();
-  const deps: BatchRunDeps = {
-    r2: r2 as any,
-    corpus: stubBatchCorpus(store),
-    spend: authority.spend,
-    batch: batch as any,
-    embed: {
-      embedMany: vi.fn(async (inputs: string[]) => ({
-        embeddings: inputs.map(() => Array.from({ length: 1536 }, () => 0.1)),
-        tokensByInput: inputs.map(() => 4),
-      })),
-    },
-    extract,
-    model: "claude-opus-4-8",
-    newAttemptId: () => "at_recover_1",
-    now: () => NOW,
-    sleep: vi.fn(async () => {}),
-    loadSidecar: vi.fn(async () => null),
-    saveSidecar: vi.fn(async (s: PersistedSidecar) => {
-      sidecar = s;
-    }),
-    clearSidecar: vi.fn(async () => {
-      sidecar = null;
-    }),
-    saveInputJsonl: vi.fn(async (jsonl: string) => {
-      inputJsonl = jsonl;
-    }),
-    loadInputJsonl: vi.fn(async () => inputJsonl),
-    // The reconciler's create-window lock isn't relevant to integration
-    // tests — provide a no-op so the lock release path doesn't touch the fs.
-    reconcileAcquireLock: async () => ({
-      release: async () => undefined,
-    }),
-    poll: { intervalMs: 1, maxPolls: 5 },
-  };
-  return { store, r2, batch, extract, deps, authority, getSidecar: () => sidecar, setSidecar: (s: PersistedSidecar | null) => (sidecar = s), getInputJsonl: () => inputJsonl, setInputJsonl: (s: string | null) => (inputJsonl = s) };
-}
 
 // A minimal OpenAI batch client with sensible defaults so tests don't have to
 // thread listFiles / listBatches through every fixture.
@@ -1339,56 +1204,6 @@ describe("runBatch — recover resume", () => {
 // calls sit in the lifecycle.
 describe("runBatch — spend admission", () => {
   const OP_ID = "operator:anthropic-batch:op-1";
-
-  function traced(h: ReturnType<typeof harness>) {
-    const events: string[] = [];
-    const saved: PersistedSidecar[] = [];
-    const rpc = h.deps.spend.rpc;
-    h.deps.spend = {
-      ...h.deps.spend,
-      rpc: async (body) => {
-        events.push(String(body.kind));
-        return rpc(body);
-      },
-    };
-    const save = h.deps.saveSidecar;
-    h.deps.saveSidecar = async (s) => {
-      events.push(`sidecar:${s.phase}`);
-      saved.push(s);
-      await save(s);
-    };
-    const create = h.batch.create;
-    h.batch.create = vi.fn(async (requests: Array<{ custom_id: string }>) => {
-      events.push("create");
-      return create(requests);
-    });
-    return { events, saved };
-  }
-
-  it("reserves and marks before the first pending sidecar, which precedes create, then settles the results", async () => {
-    const h = harness({ rd_a: manifest("rd_a") });
-    const { events, saved } = traced(h);
-
-    const result = await runBatch([row("rd_a")], h.deps);
-
-    expect(events).toEqual([
-      "reserve_spend",
-      "mark_spend_dispatched",
-      "sidecar:activating",
-      "sidecar:creating",
-      "create",
-      "sidecar:submitted",
-      "settle_spend",
-    ]);
-    expect(saved.map((s) => s.spend?.opId)).toEqual([OP_ID, OP_ID, OP_ID]);
-    // 5 input × 500 + 2 output × 2,500 hundredths of a µ$, × 1.1 geography.
-    expect(result.spend).toEqual({
-      state: "settled",
-      actualMicrodollars: 83,
-      maxMicrodollars: saved[0]!.spend!.quote.maxMicrodollars,
-    });
-    expect(h.authority.calls.at(-1)).toMatchObject({ opId: OP_ID, actualMicrodollars: 83 });
-  });
 
   it.each([
     ["a budget denial", { ok: false, reason: "daily_spend" }],

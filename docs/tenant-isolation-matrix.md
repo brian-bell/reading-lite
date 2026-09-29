@@ -6,9 +6,10 @@ unknown resource. Collection queries must return only the caller's records.
 Scope denial precedes ownership lookup (403 for both foreign and unknown
 resources). Positive controls prove an authorized owner can still do the work.
 
-All test paths below run in `npm test` through `vitest.workspace.ts` and the
-Worker CI job in `.github/workflows/ci.yml`. `npm run test:quiet` runs the same
-suite with filtered logs and preserves failures. No live credentials, production
+All test paths below run in `npm test` through `vitest.workspace.ts`. The
+Worker CI job runs `npm run test:ci`, the essential lists in `test/ci-scope.ts`.
+A path outside those lists still runs in `npm test`. `npm run test:quiet` runs
+the same full suite as `npm test`, with filtered logs, and preserves failures. No live credentials, production
 writes, or paid provider calls are needed; integration tests use local
 PostgreSQL with pgvector (a per-file database cloned from a migrated template),
 local R2, and provider fakes. This validates the application boundary (every
@@ -20,7 +21,7 @@ SSRF and cost-control coverage inventory is outside this work item.
 
 | Route | Adversarial behavior and owner control | Canonical evidence |
 | --- | --- | --- |
-| `POST /api/readings` | Two principals save the same URL and finish with independent ids, URL claims, list rows and embeddings. | `test/integration/readings.test.ts`: `two-tenant save-to-ready lifecycle` |
+| `POST /api/readings` | Two principals save the same URL and finish with independent ids, URL claims, list rows and embeddings. | `test/integration/readings-contract.test.ts`: `two-tenant save-to-ready lifecycle` |
 | `POST /api/readings/import-markdown` | Same URL imports in B's slot; A's manifest and lookup remain unchanged. | Same file: `cross-tenant mutation matrix` |
 | `GET /api/readings` | List/search exclude A from B; owner search finds A. MCP additionally pages populated A/B corpora. | Same file: `cross-tenant read-path matrix`; MCP matrix below |
 | `GET /api/readings/lookup` | Owner URL resolves; foreign URL equals never-submitted URL. Separate lookup tests prohibit repair writes. | Same file: `cross-tenant read-path matrix` and lookup tests |
@@ -61,7 +62,7 @@ matrix runs through `/mcp`; alias correctness is a separate dispatch test.
 | Account deletion | B enters deleting; A stays active with a working session. Mismatched `x-expected-tenant` returns 412 and fences nothing. | `test/integration/auth-account-delete.test.ts` |
 | Reading queue admission | An envelope claiming A with B's credential is acknowledged before processing or mutation. | `test/integration/dead-letter.test.ts`, `test/unit/control-plane/envelope.test.ts` |
 | Reading DLQ | Identical id/key in A and B: only the admitted tenant's reading becomes failed. | `test/integration/dead-letter.test.ts` |
-| Retry and concurrent publication | Admission precedes retry dispatch; concurrent A/B terminal commits preserve separate list rows and embeddings. | `test/unit/queue/dispatch.test.ts`, `test/integration/readings.test.ts` |
+| Retry and concurrent publication | Admission precedes retry dispatch; concurrent A/B terminal commits preserve separate list rows and embeddings. | `test/unit/queue/dispatch.test.ts`, `test/integration/readings-contract.test.ts` |
 | Digest send and DLQ | Separate tenant recipients/content; digest DLQ changes its ledger, not reading state. | `test/integration/digest-pipeline.test.ts` |
 | Wipe and teardown replay | The target tenant's rows, embeddings, refresh checkpoints and prefix are removed while another tenant's rows, checkpoints and prefix survive; saved reading, wipe and digest jobs cannot recreate torn-down data. | `test/integration/account-wipe.test.ts`, `account-deletion-queue-limits.test.ts` |
 | Destructive corpus maintenance | Drop, sweep and purge-connections delete only the selected tenant's rows and R2 root. A full neighbour refresh rewrites no other tenant's rows; connection and tension refresh write only the selected tenant's relationships. | `test/unit/scripts/ops-corpus-pg.test.ts`, `ops-corpus-refresh-pg.test.ts`, `ops-corpus-refresh-neighbours.test.ts`, `ops-corpus-refresh-connections.test.ts`, `ops-corpus-refresh-tensions.test.ts` |

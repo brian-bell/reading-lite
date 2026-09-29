@@ -1,6 +1,7 @@
 import { defineWorkersProject } from "@cloudflare/vitest-pool-workers/config";
 import { configDefaults, defineProject } from "vitest/config";
-import { testDatabaseUrl } from "./test/helpers/test-database";
+import { ESSENTIAL_NODE_FILES, ESSENTIAL_WORKERS_FILES } from "./test/ci-scope";
+import { hostEnv, testDatabaseUrl } from "./test/helpers/test-database";
 
 const AUTH_ROOT_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -19,7 +20,9 @@ const hyperdrives = { HYPERDRIVE: testDatabaseUrl() };
 // which skips the per-file database clone and founder bootstrap in
 // test/apply-control-plane.ts that dominates the workers pool's wall time.
 // Integration tests always run on workerd.
-const WORKERS_RUNTIME_UNIT_TESTS = [
+const essentialScope = hostEnv().CI_SCOPE === "essential";
+
+export const WORKERS_RUNTIME_UNIT_TESTS = [
   "test/unit/extractor/safe-fetch.test.ts",
   "test/unit/intake/activation.test.ts",
   "test/unit/intake/intake.test.ts",
@@ -56,7 +59,9 @@ export default [
       // it out in auth-sessions.test.ts).
       testTimeout: 60_000,
       hookTimeout: 60_000,
-      include: ["test/integration/**/*.test.ts", ...WORKERS_RUNTIME_UNIT_TESTS],
+      include: essentialScope
+        ? [...ESSENTIAL_WORKERS_FILES]
+        : ["test/integration/**/*.test.ts", ...WORKERS_RUNTIME_UNIT_TESTS],
       exclude: ["test/integration/account-deletion-guard-storage.test.ts"],
       setupFiles: ["./test/apply-control-plane.ts"],
       poolOptions: {
@@ -120,7 +125,7 @@ export default [
   defineProject({
     test: {
       name: "node",
-      include: ["test/unit/**/*.test.ts"],
+      include: essentialScope ? [...ESSENTIAL_NODE_FILES] : ["test/unit/**/*.test.ts"],
       exclude: [...configDefaults.exclude, ...WORKERS_RUNTIME_UNIT_TESTS],
       environment: "node",
     },
