@@ -182,7 +182,7 @@ PostgreSQL query is `WHERE tenant_id = $1`. Paths are under `src/modules/`:
 | `stores/postgres/reading-writer.ts` | Claims, attempts, publication, failure, purge (one transaction each) |
 | `stores/postgres/similarity-store.ts` | Exact cosine scan over one tenant's embeddings |
 | `stores/postgres/manifest-rows.ts` | The manifest-to-rows mapping, shared with seeding |
-| `stores/postgres/inbox-store.ts` | Staged Markdown awaiting review (`inbox_items`): stage, list, get, discard |
+| `stores/postgres/inbox-store.ts` | Staged Markdown awaiting review (`inbox_items`): stage, list, get, discard, delete-if-unchanged for promote |
 | `stores/content-store.ts` | R2 bytes by relative key under the tenant root |
 | `stores/layout.ts` | Key constants, `buildKeyPrefix`, `r2KeyLayout`, and the revision key family |
 | `staleness.ts` | Read-time stale-attempt annotation |

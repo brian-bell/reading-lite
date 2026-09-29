@@ -111,13 +111,14 @@ Markdown staged for review before it becomes a reading (reading-lite-gh423).
 Staging writes only the inbox row: no reading, URL claim, attempt, job,
 embedding or queue message, and no reading quota; it is charged one request
 against the request rate. Inbox items never appear in the reading list, search,
-similarity or `/lookup`. Promote is a later slice.
+similarity or `/lookup` until they are promoted.
 
 | Method and path | Behavior |
 |---|---|
 | `POST /api/inbox` | `{ source_url, markdown, title? }` (title at most 1000 characters); requires `readings:import`. 201 `{ inbox_item_id, replaced: false }` for a new item; 200 `{ inbox_item_id, replaced: true }` when it overwrites the URL's item (same id; an omitted title clears it). A ready or pending reading that owns the URL returns 200 `{ existing: true, reading }`, stages nothing, and discards any item staged for the URL earlier; a failed owner adds `corpus_reading: { id, status }`. 413 `markdown_too_large` when the JSON of `source_url`, `title` and `markdown` exceeds 126,976 bytes (the 128,000-byte promote message less its envelope; an untitled item for a failed owner counts the owner's title, which promote keeps), or for a body too large to hold an item, with or without Content-Length; 429 `inbox_full` for a new URL at 200 items (an overwrite is allowed); 429 request rate; 403 for an account no longer active |
 | `GET /api/inbox` | `{ items }`: every item's metadata (`id`, `url`, `title`, `markdown_bytes`, `created_at`, `updated_at`), most recently staged first; requires `readings:read` |
 | `GET /api/inbox/:id` | One item with its `markdown`; 404 for an unknown id; requires `readings:read` |
+| `POST /api/inbox/:id/promote` | Optional `{ email? }` (default `false`); requires `readings:import`. Imports the item's Markdown, URL and title exactly as `POST /api/readings/import-markdown` would, and answers with that route's status and body plus `inbox_item_id`: 202 for a new URL or an in-place re-import of a failed owner, 200 with the manifest for a ready or pending owner, and 409, 429, 503 or 403 as import-markdown gives them. The item is deleted only on 202 or 200; if it was re-staged while the import ran, the newer item is kept and the body adds `inbox_item_retained: true`. Every other outcome keeps the item. 413 `markdown_too_large` when the promote message would exceed 126,976 bytes, which happens only when an untitled item's failed owner lends a title stage did not count. 404 for an unknown id. The request rate and reading quota are charged here, not at stage |
 | `DELETE /api/inbox/:id` | Discards the item (204); 404 for an unknown id; requires `readings:import` |
 
 ## MCP connector

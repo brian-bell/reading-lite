@@ -45,9 +45,11 @@ searchable until then.
   like a claim. Before writing it resolves the URL's owner: a ready or
   pending owner is returned, nothing is staged, and an item staged for the URL
   earlier is discarded; a failed owner is named on the item. Charged against the request rate only.
-- **Promote** (a later slice) — turns an item into a reading through
-  `ReadingIntake.importMarkdown`, then deletes the item only if it is still the
-  version that was promoted (`deleteIfUnchanged`). The reading quota and paid
+- **Promote** (`POST /api/inbox/:id/promote`, `src/inbox/promote.ts`) — turns
+  an item into a reading through `ReadingIntake.importMarkdown`, then, only
+  when that activated or found an existing owner, deletes the item if it is
+  still the version that was promoted (`deleteIfUnchanged`). A re-staged item
+  is kept (`inbox_item_retained`). The request rate, reading quota and paid
   work are charged here, not at stage.
 - **Discard** — deletes an item. Not a reading purge: there is no reading.
 
