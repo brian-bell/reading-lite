@@ -333,7 +333,7 @@ describe("two-tenant save-to-ready lifecycle", () => {
 
 describe.each([
   ["openai", "gpt-5.6-terra"],
-  ["anthropic", "claude-sonnet-5"],
+  ["anthropic", "claude-sonnet-5-5"],
 ] as const)("realtime summarizer provider %s", (provider, model) => {
   it("completes submit, markdown import, and reprocess through the selected provider", async () => {
     const workerEnv = env as unknown as Env;

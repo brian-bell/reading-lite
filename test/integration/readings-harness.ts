@@ -165,7 +165,7 @@ export function makeStubFetch(opts: {
         id: "msg_01",
         type: "message",
         role: "assistant",
-        model: "claude-sonnet-5",
+        model: "claude-sonnet-5-5",
         stop_reason: "tool_use",
         content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: await summaryToolInput() }],
         usage: { input_tokens: 100, output_tokens: 50 },
