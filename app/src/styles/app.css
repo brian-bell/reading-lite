@@ -744,6 +744,8 @@ textarea {
 /* Design spec, Cards: 20 px padding (16 px at ≤650), 7 px radius. */
 .library-card {
   position: relative;
+  /* Keep raised tag links inside the card, below the navigation's popover. */
+  isolation: isolate;
   padding: var(--space-5);
   border: 1px solid var(--border);
   border-radius: 7px;
