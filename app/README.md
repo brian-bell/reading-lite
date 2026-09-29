@@ -132,6 +132,12 @@ return path is per origin.
   without a logout call and only this tab shows "Your account is being
   deleted." at the same URL. A reload is an ordinary signed-out tab, and
   sign-in is refused while the account is deleting.
+- **Account section nav.** A `<nav>` lists the six sections in page order: a
+  sticky rail beside them at container widths above 850 px, a row of pill
+  links under the heading where the columns stack. A link scrolls to and
+  focuses its section's heading through `src/components/jump-to.ts`, the
+  reading page's phone jump, so the URL keeps no hash and Back leaves the
+  page. Every section stays on the page; the nav only shortens the scroll.
 - **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit

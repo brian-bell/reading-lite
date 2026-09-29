@@ -48,6 +48,9 @@ import { StepUpNotice } from "./StepUpNotice";
 // from the row's Revoke button, on success or failure, goes to the section
 // heading.
 
+/** The section heading's id: what the page's section nav points at. */
+export const API_TOKENS_HEADING_ID = "api-tokens-heading";
+
 export interface TokensSectionProps {
   view: AccountView<TokensList>;
   /** Reads the tokens again. */
@@ -136,8 +139,8 @@ export function TokensSection({ view, onRetry, revealed, onReveal, onDismiss }: 
   }
 
   return (
-    <section className="account-section" aria-labelledby="api-tokens-heading">
-      <h2 id="api-tokens-heading" className="account-section-title" ref={headingRef} tabIndex={-1}>
+    <section className="account-section" aria-labelledby={API_TOKENS_HEADING_ID}>
+      <h2 id={API_TOKENS_HEADING_ID} className="account-section-title" ref={headingRef} tabIndex={-1}>
         API tokens
       </h2>
       {view.kind === "loading" ? <LoadingRegion /> : null}
