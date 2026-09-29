@@ -8,6 +8,7 @@ import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
 } from "../summarizer/instructions";
+import { anthropicMessagesControls } from "../summarizer/anthropic-models";
 import type {
   AnthropicReasoningEffort,
   SummarizeReadingInput,
@@ -185,12 +186,14 @@ export function buildSummarizeRequestBody(
   model: string,
   effort: AnthropicReasoningEffort,
 ): object {
+  const controls = anthropicMessagesControls(model);
   return {
     model,
     max_tokens: 8192,
-    // Sonnet 5 turns adaptive thinking on if `thinking` is omitted. Disable it
-    // explicitly so summarization stays a single tool call at the 8192 cap.
-    thinking: { type: "disabled" },
+    // Omitting `thinking` turns adaptive thinking on. Sonnet 5.5 rejects
+    // `disabled` and uses `between_tools` (no up-front thinking, high or
+    // below). Earlier models still send `disabled`.
+    thinking: controls.thinking,
     output_config: { effort },
     system: [
       {
@@ -215,7 +218,9 @@ export function buildSummarizeRequestBody(
         strict: true,
       },
     ],
-    tool_choice: { type: "any" },
+    // Sonnet 5.5 rejects forced tool_choice ("any" and "tool"). The system
+    // prompt still requires exactly one tool; strict schemas are unchanged.
+    tool_choice: controls.forceTool ? { type: "any" } : { type: "auto" },
     messages: [
       {
         role: "user",

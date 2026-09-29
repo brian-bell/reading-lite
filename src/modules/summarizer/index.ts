@@ -14,6 +14,10 @@ import {
   parseSummarizerProvider,
   SummarizerConfigError,
 } from "./config";
+import {
+  ANTHROPIC_EFFORTS_BY_MODEL,
+  CLAUDE_SONNET_5_5,
+} from "./anthropic-models";
 
 export {
   ReadingSummarySchema,
@@ -34,8 +38,9 @@ export {
 
 export const DEFAULT_OPENAI_SUMMARIZATION_MODEL = "gpt-5.6-terra";
 export const DEFAULT_OPENAI_SUMMARIZATION_REASONING_EFFORT = "low";
-export const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5";
+export const DEFAULT_ANTHROPIC_MODEL = CLAUDE_SONNET_5_5;
 export const DEFAULT_ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+export { anthropicMessagesControls } from "./anthropic-models";
 const OPENAI_REASONING_EFFORTS = [
   "none",
   "low",
@@ -44,47 +49,6 @@ const OPENAI_REASONING_EFFORTS = [
   "xhigh",
   "max",
 ] as const satisfies readonly OpenAIReasoningEffort[];
-
-// Intersection of official effort availability and thinking-disabled
-// compatibility. buildSummarizeRequestBody always sends
-// thinking: { type: "disabled" }.
-// https://platform.claude.com/docs/en/build-with-claude/effort
-// https://platform.claude.com/docs/en/build-with-claude/thinking
-// Fable 5, Mythos 5, and Mythos Preview reject disabled thinking (omitted).
-// Opus 5 accepts disabled thinking only at high or below; xhigh|max 400.
-// Unknown models fail closed.
-const ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH = [
-  "low",
-  "medium",
-  "high",
-] as const satisfies readonly AnthropicReasoningEffort[];
-const ANTHROPIC_EFFORT_WITH_MAX = [
-  "low",
-  "medium",
-  "high",
-  "max",
-] as const satisfies readonly AnthropicReasoningEffort[];
-const ANTHROPIC_EFFORT_ALL = [
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies readonly AnthropicReasoningEffort[];
-
-const ANTHROPIC_EFFORTS_BY_MODEL: Record<
-  string,
-  readonly AnthropicReasoningEffort[]
-> = {
-  "claude-sonnet-5": ANTHROPIC_EFFORT_ALL,
-  // Disabled thinking is accepted only at high or below.
-  "claude-opus-5": ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
-  "claude-opus-4-8": ANTHROPIC_EFFORT_ALL,
-  "claude-opus-4-7": ANTHROPIC_EFFORT_ALL,
-  "claude-sonnet-4-6": ANTHROPIC_EFFORT_WITH_MAX,
-  "claude-opus-4-6": ANTHROPIC_EFFORT_WITH_MAX,
-  "claude-opus-4-5-20251101": ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
-};
 
 export interface SummarizerDeps {
   fetch: typeof fetch;

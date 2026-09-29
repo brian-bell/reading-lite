@@ -185,7 +185,7 @@ describe("compare-summary-effort", () => {
       execute: false,
       efforts: ["low", "medium", "high", "xhigh"],
       includeAnthropic: true,
-      anthropicModel: "claude-sonnet-5",
+      anthropicModel: "claude-sonnet-5-5",
       anthropicEffort: "low",
       outputDir: undefined,
       model: undefined,
@@ -202,7 +202,7 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
+      { provider: "anthropic", model: "claude-sonnet-5-5", anthropicEffort: "low" },
     ]);
   });
 
@@ -270,7 +270,7 @@ describe("compare-summary-effort", () => {
     expect(
       parseComparisonArgs(["--target", "rd_MAIN", "--anthropic-effort", "high"]),
     ).toMatchObject({
-      anthropicModel: "claude-sonnet-5",
+      anthropicModel: "claude-sonnet-5-5",
       anthropicEffort: "high",
     });
     expect(
@@ -305,6 +305,14 @@ describe("compare-summary-effort", () => {
         "rd_MAIN",
         "--anthropic-model",
         "claude-sonnet-4-6",
+        "--anthropic-effort",
+        "xhigh",
+      ]),
+    ).toThrow(/invalid ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: xhigh/);
+    expect(() =>
+      parseComparisonArgs([
+        "--target",
+        "rd_MAIN",
         "--anthropic-effort",
         "xhigh",
       ]),
@@ -415,7 +423,7 @@ describe("compare-summary-effort", () => {
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "medium" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "high" },
       { provider: "openai", model: "gpt-5.6-terra", reasoningEffort: "xhigh" },
-      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
+      { provider: "anthropic", model: "claude-sonnet-5-5", anthropicEffort: "low" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.736_096, 6);
     expect(fetchFn).toHaveBeenCalledTimes(5);
@@ -476,7 +484,7 @@ describe("compare-summary-effort", () => {
     expect(plan.readings[1]!.input.extractedText).toBe("# Other");
     expect(plan.candidates).toEqual([
       { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-      { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
+      { provider: "anthropic", model: "claude-sonnet-5-5", anthropicEffort: "low" },
     ]);
     expect(plan.estimatedMaximumCostUsd).toBeCloseTo(0.642_368, 6);
     expect(
@@ -797,7 +805,7 @@ describe("compare-summary-effort", () => {
     expect(summarize).not.toHaveBeenCalled();
     expect(stdout.join("")).toContain("[DRY RUN] 1 reading × 2 candidates = 2 provider calls");
     expect(stdout.join("")).toContain("conservative maximum:");
-    expect(stdout.join("")).toContain("anthropic/claude-sonnet-5");
+    expect(stdout.join("")).toContain("anthropic/claude-sonnet-5-5");
     expect(stdout.join("")).toContain("No provider calls made");
 
     const outputDir = await mkdtemp(
@@ -841,7 +849,7 @@ describe("compare-summary-effort", () => {
       expect(summarize).toHaveBeenCalledTimes(2);
       expect(summarize.mock.calls.map((call) => call[1])).toEqual([
         { provider: "openai", model: "gpt-5.6-luna", reasoningEffort: "max" },
-        { provider: "anthropic", model: "claude-sonnet-5", anthropicEffort: "low" },
+        { provider: "anthropic", model: "claude-sonnet-5-5", anthropicEffort: "low" },
       ]);
       expect(
         fetchFn.mock.calls.every((call) => {
@@ -990,7 +998,7 @@ describe("compare-summary-effort", () => {
         "gpt-5.6-luna",
       );
       expect(low).toEqual(high);
-      expect(candidateLabel(low[1]!)).toBe("anthropic/claude-sonnet-5 effort=low");
+      expect(candidateLabel(low[1]!)).toBe("anthropic/claude-sonnet-5-5 effort=low");
       const creds = {
         fetch: globalThis.fetch,
         openaiApiKey: "sk-openai",

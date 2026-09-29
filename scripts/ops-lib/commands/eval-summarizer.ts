@@ -14,7 +14,10 @@ import {
   type EvaluationCase,
 } from "../../summarizer-eval/fixtures";
 import { UsageError, type BaseDeps, type CommandDefinition, type CommandIo } from "../contract";
-import type { SummarizerDeps } from "../../../src/modules/summarizer";
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  type SummarizerDeps,
+} from "../../../src/modules/summarizer";
 import { BILLING_TENANT_FLAG_HELP, resolveBillingTenant, withOperatorPaidFetch } from "../operator-spend";
 import { policyEnvironment } from "../../system-lib/policy";
 import type { OpenOperatorSpend } from "../../system-lib/spend";
@@ -215,7 +218,7 @@ include credential values. There is no provider fallback.`,
               fetch: paidFetch,
               openaiApiKey: vars.OPENAI_API_KEY!,
               anthropicApiKey: vars.ANTHROPIC_API_KEY,
-              fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? "claude-sonnet-5",
+              fallbackAnthropicModel: vars.ANTHROPIC_MODEL ?? DEFAULT_ANTHROPIC_MODEL,
             }),
           ),
         onProgress: (observation) => {

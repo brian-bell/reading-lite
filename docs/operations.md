@@ -415,11 +415,13 @@ staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` is `low` locally
 and `medium` in staging/production, and is applied only when
 `SUMMARIZER_PROVIDER=anthropic`. Staging and production summarize, and run
 nightly relationship-refresh judgements, with Anthropic; local uses OpenAI. Claude Sonnet
-5 (`ANTHROPIC_MODEL=claude-sonnet-5`) accepts `low`, `medium`, `high`, `xhigh`,
-or `max` on `output_config.effort`; invalid values, efforts the configured
-model cannot take, and model/effort pairs that 400 with
-`thinking: { type: "disabled" }` (Fable 5, Mythos 5, Mythos Preview; Opus 5 at
-`xhigh` or `max`) fail closed before any source fetch or upstream spend.
+5.5 (`ANTHROPIC_MODEL=claude-sonnet-5-5`) accepts `low`, `medium`, or `high` on
+`output_config.effort` with `thinking: { type: "between_tools" }`. `xhigh` and
+`max` 400 with that setting. Invalid values, efforts the configured model
+cannot take, and model/effort pairs that 400 with the thinking setting the
+request sends (Fable 5, Mythos 5, and Mythos Preview with thinking disabled;
+Opus 5 at `xhigh` or `max`; Sonnet 5.5 at `xhigh` or `max`) fail closed before
+any source fetch or upstream spend.
 
 Optional version vars (`AUTH_ROOT_KEY_VERSION`, `AUTH_PREVIOUS_ROOT_KEY_VERSION`)
 default to `1`. HKDF includes the version, so a secret-only rotation must keep
@@ -2435,8 +2437,8 @@ of creating a second, double-billed one. The sidecar pins provider, model,
 OpenAI reasoning effort, and a stable run id, so an environment change cannot
 switch a resume to another provider. New Anthropic batches send
 `output_config.effort` from `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` on the
-same request body as realtime (`low`, `medium`, `high`, `xhigh`, or `max` on
-Claude Sonnet 5; invalid values fail closed before submit). OpenAI's pre-submit upload/create phases are
+same request body as realtime (`low`, `medium`, or `high` on Claude Sonnet
+5.5; invalid values fail closed before submit). OpenAI's pre-submit upload/create phases are
 persisted, a companion `<sidecar>.input.jsonl` holds the exact JSONL bytes,
 written before the `uploading` checkpoint. On resume the reconciler adopts what
 already exists: remote files by filename (`reading-lite-${runId}.jsonl`), remote

@@ -15,6 +15,7 @@ const ANTHROPIC_PRICES: Record<
   string,
   { input: number; cacheWrite: number; cached: number; output: number }
 > = {
+  "claude-sonnet-5-5": { input: 2, cacheWrite: 2.5, cached: 0.2, output: 10 },
   "claude-sonnet-5": { input: 2, cacheWrite: 2.5, cached: 0.2, output: 10 },
   "claude-sonnet-4-6": { input: 3, cacheWrite: 3.75, cached: 0.3, output: 15 },
   "claude-opus-5": { input: 5, cacheWrite: 6.25, cached: 0.5, output: 25 },

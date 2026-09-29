@@ -26,10 +26,11 @@ export type OpenAIReasoningEffort =
   | "xhigh"
   | "max";
 
-// Claude Sonnet 5 (`ANTHROPIC_MODEL`) accepts output_config.effort values
-// low|medium|high|xhigh|max with thinking disabled. Availability is per-model;
-// parseAnthropicEffort rejects pairs the configured model cannot take with
-// thinking: { type: "disabled" }. `none` is OpenAI-only.
+// Claude Sonnet 5.5 (`ANTHROPIC_MODEL`) accepts output_config.effort values
+// low|medium|high with thinking: { type: "between_tools" }. Availability is
+// per-model; parseAnthropicEffort rejects pairs the configured model cannot
+// take with the thinking setting anthropicMessagesControls sends. `none` is
+// OpenAI-only.
 export type AnthropicReasoningEffort =
   | "low"
   | "medium"

@@ -10,6 +10,7 @@ import { providerErrorText } from "../provider-error-text";
 import {
   DEFAULT_ANTHROPIC_MODEL,
   DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  anthropicMessagesControls,
   parseAnthropicEffort,
   parseReasoningEffort,
   parseSummarizerProvider,
@@ -162,10 +163,11 @@ export function buildAnthropicRelationshipRequestBody(
   model: string,
   effort: ReturnType<typeof parseAnthropicEffort>,
 ): object {
+  const controls = anthropicMessagesControls(model);
   return {
     model,
     max_tokens: 1024,
-    thinking: { type: "disabled" },
+    thinking: controls.thinking,
     output_config: { effort },
     system: [
       {
@@ -182,11 +184,15 @@ export function buildAnthropicRelationshipRequestBody(
         strict: true,
       },
     ],
-    tool_choice: { type: "tool", name: JUDGE_RELATIONSHIPS_TOOL_NAME },
+    tool_choice: controls.forceTool
+      ? { type: "tool", name: JUDGE_RELATIONSHIPS_TOOL_NAME }
+      : { type: "auto" },
     messages: [
       {
         role: "user",
-        content: buildRelationshipJudgementUserMessage(input),
+        // Uncached. tool_choice auto (Sonnet 5.5) allows a text reply, and the
+        // parsers accept only this tool. The system/tool prefix stays cached.
+        content: `${buildRelationshipJudgementUserMessage(input)}\n\nCall the ${JUDGE_RELATIONSHIPS_TOOL_NAME} tool. Do not write free-form prose.`,
       },
     ],
   };

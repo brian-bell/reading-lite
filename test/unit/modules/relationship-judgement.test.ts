@@ -100,6 +100,46 @@ describe("relationship judgement prompt", () => {
       type: "tool",
       name: JUDGE_RELATIONSHIPS_TOOL_NAME,
     });
+    expect(anthropic.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("keeps the Sonnet 5.5 cache prefix and drops forced tool choice", () => {
+    const earlier = buildAnthropicRelationshipRequestBody(
+      input,
+      "claude-sonnet-5",
+      "high",
+    ) as any;
+    const next = buildAnthropicRelationshipRequestBody(
+      input,
+      "claude-sonnet-5-5",
+      "medium",
+    ) as any;
+    expect(next.thinking).toEqual({ type: "between_tools" });
+    expect(next.tool_choice).toEqual({ type: "auto" });
+    expect(next.tools).toEqual(earlier.tools);
+    expect(next.system).toEqual(earlier.system);
+  });
+
+  it("tells the model to call the tool in the uncached user message", () => {
+    const evidence = buildRelationshipJudgementUserMessage(input);
+    const openai = buildOpenAIRelationshipRequestBody(input, "gpt-5.6-terra", "high") as any;
+    expect(JSON.stringify(openai.input)).not.toContain(JUDGE_RELATIONSHIPS_TOOL_NAME);
+    for (const model of ["claude-sonnet-5", "claude-sonnet-5-5"]) {
+      const body = buildAnthropicRelationshipRequestBody(input, model, "high") as any;
+      expect(body.messages[0].content.startsWith(evidence)).toBe(true);
+      expect(body.messages[0].content).toContain(
+        `Call the ${JUDGE_RELATIONSHIPS_TOOL_NAME} tool.`,
+      );
+      expect(body.messages[0].content).toContain("Do not write free-form prose.");
+      expect(body.system[0].text).toBe(RELATIONSHIP_JUDGEMENT_INSTRUCTIONS);
+      expect(body.system[0].text).not.toContain(JUDGE_RELATIONSHIPS_TOOL_NAME);
+    }
+    const prefix = buildAnthropicRelationshipRequestBody(
+      input,
+      "claude-sonnet-5-5",
+      "medium",
+    ) as any;
+    expect({ tools: prefix.tools, system: prefix.system }).toMatchSnapshot();
   });
 
   it("sends a strict Anthropic tool: the shared schema minus the string bounds", () => {

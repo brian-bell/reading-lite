@@ -58,7 +58,7 @@ describe("summarizer evaluation corpus", () => {
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "high";
       const high = evaluationCandidateIdentity(EVALUATION_CANDIDATES[0]!);
       expect(low).toBe(high);
-      expect(low).toBe("anthropic/claude-sonnet-5 effort=low");
+      expect(low).toBe("anthropic/claude-sonnet-5-5 effort=low");
       expect(evaluationCandidateIdentity(EVALUATION_CANDIDATES[2]!)).toBe(
         "openai/gpt-5.6-terra effort=low",
       );
@@ -260,6 +260,7 @@ describe("evaluation aggregation and reporting", () => {
 
   it("prices every Anthropic model accepted by summarizer configuration", () => {
     const models = [
+      "claude-sonnet-5-5",
       "claude-sonnet-5",
       "claude-opus-5",
       "claude-opus-4-8",
