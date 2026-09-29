@@ -80,6 +80,24 @@ async function openLibrary(page: Page, baseURL: string): Promise<Recorded> {
   return recorded;
 }
 
+test("account menu stays above overlapping card tags", async ({ page, baseURL }) => {
+  await openLibrary(page, baseURL!);
+  await page.locator(".account-menu summary").click();
+  const panel = page.locator(".account-menu-panel");
+  const tag = page.locator(".library-card-tags .tag").first();
+  const menuBox = (await panel.boundingBox())!;
+  const tagBox = (await tag.boundingBox())!;
+  await page.evaluate((offset) => window.scrollBy(0, offset), tagBox.y - menuBox.y - 40);
+  const overlap = await tag.boundingBox();
+  expect(overlap).not.toBeNull();
+  const x = Math.max(menuBox.x, overlap!.x) + 5;
+  const y = overlap!.y + overlap!.height / 2;
+  expect(x).toBeLessThan(menuBox.x + menuBox.width);
+  expect(y).toBeGreaterThan(menuBox.y);
+  expect(y).toBeLessThan(menuBox.y + menuBox.height);
+  expect(await panel.evaluate((element, point) => element.contains(document.elementFromPoint(point.x, point.y)), { x, y })).toBe(true);
+});
+
 test("hydrates the server-rendered first page without asking for it again", async ({ page, baseURL }) => {
   const recorded = await openLibrary(page, baseURL!);
   expect(recorded.documents).toEqual(["/"]);
