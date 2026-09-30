@@ -15,7 +15,6 @@ import { deleteProviderCredentials, upsertProviderCredential } from "./provider-
 import { readProviderKeyRoots } from "./provider-key-crypto";
 import { loadProviderSettings, loadSpendCaps, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
 import { fetchTenantSpendStatus } from "./spend-status";
-import { tenantProviderKeysEnabled } from "./tenant-provider-keys";
 
 const KEY_REJECTION: Record<ProviderKeyRejection, { error: string; status: number }> = {
   invalid_key: { error: "invalid key", status: 400 },
@@ -42,7 +41,7 @@ function summarizationModel(env: AppBindings["Bindings"]): string {
 
 export async function handleGetProviderSettings(c: Context<AppBindings>): Promise<Response> {
   const userId = String(c.get("principal").userId);
-  return settingsResponse(await loadProviderSettings(fromSql(c.get("sql")), userId, tenantProviderKeysEnabled(c.env)));
+  return settingsResponse(await loadProviderSettings(fromSql(c.get("sql")), userId));
 }
 
 /**
@@ -99,14 +98,14 @@ export async function handleConnectProviderKey(
     nowMs,
     validatedAtMs: nowMs,
   });
-  return settingsResponse(await loadProviderSettings(db, userId, tenantProviderKeysEnabled(c.env)));
+  return settingsResponse(await loadProviderSettings(db, userId));
 }
 
 export async function handleDeleteProviderKey(c: Context<AppBindings>): Promise<Response> {
   const userId = String(c.get("principal").userId);
   const db = fromSql(c.get("sql"));
   await deleteProviderCredentials(db, userId);
-  return settingsResponse(await loadProviderSettings(db, userId, tenantProviderKeysEnabled(c.env)));
+  return settingsResponse(await loadProviderSettings(db, userId));
 }
 
 export async function handleUpdateProviderPreferences(c: Context<AppBindings>, nowMs: number): Promise<Response> {
@@ -129,5 +128,5 @@ export async function handleUpdateProviderPreferences(c: Context<AppBindings>, n
   }
   if (updated === "not_found") return jsonAuth({ error: "not found" }, 404);
   if (updated === "limits_missing") return jsonAuth({ error: "internal" }, 500);
-  return settingsResponse(await loadProviderSettings(db, userId, tenantProviderKeysEnabled(c.env)));
+  return settingsResponse(await loadProviderSettings(db, userId));
 }

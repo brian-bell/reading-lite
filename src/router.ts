@@ -221,7 +221,8 @@ export function createApp(opts: AppOptions = {}) {
   // (reading-lite-1xk); see GetWhoamiResponseSchema for the contract.
   app.get("/api/whoami", async (c) => {
     const principal = c.get("principal");
-    const user = await fromSql(c.get("sql")).first<{ email_display: string }>(
+    const db = fromSql(c.get("sql"));
+    const user = await db.first<{ email_display: string }>(
       "SELECT email_display FROM users WHERE id = ?",
       String(principal.userId),
     );
@@ -230,6 +231,7 @@ export function createApp(opts: AppOptions = {}) {
       user_id: string;
       principal: AuthenticatedPrincipal["kind"];
       tenant_data_plane: boolean;
+      needs_provider_key: boolean;
       email: string;
       csrf_token?: string;
     } = {
@@ -237,6 +239,7 @@ export function createApp(opts: AppOptions = {}) {
       user_id: String(principal.userId),
       principal: principal.kind,
       tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
+      needs_provider_key: !(await providerKeyReady(c.env, db, String(principal.tenantId))),
       email: user?.email_display ?? "",
     };
     if (principal.kind === "session") {

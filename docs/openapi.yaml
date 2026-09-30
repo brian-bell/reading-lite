@@ -2008,7 +2008,7 @@ components:
     WhoamiResponse:
       type: object
       additionalProperties: false
-      required: [tenant_id, user_id, principal, tenant_data_plane, email]
+      required: [tenant_id, user_id, principal, tenant_data_plane, needs_provider_key, email]
       properties:
         tenant_id:
           type: string
@@ -2019,6 +2019,12 @@ components:
           enum: [api_token, session]
         tenant_data_plane:
           type: boolean
+        needs_provider_key:
+          type: boolean
+          description: |
+            True when tenant provider keys are on and the tenant has no active
+            key. Save, import and reprocess then answer 409
+            `provider_key_required` until the reader connects one.
         email:
           type: string
           description: Verified display email for the authenticated user
@@ -2552,7 +2558,6 @@ components:
       additionalProperties: false
       required:
         - credential
-        - key_required
         - effort
         - daily_spend_cap_microdollars
         - effective_daily_spend_microdollars
@@ -2562,12 +2567,6 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ProviderCredentialView"
             - type: "null"
-        key_required:
-          type: boolean
-          description: >-
-            True when tenant provider keys are on: reading work runs only under
-            the reader's own active key, and save, import and reprocess answer
-            409 `provider_key_required` without one.
         effort:
           $ref: "#/components/schemas/SummarizationEffort"
         daily_spend_cap_microdollars:
