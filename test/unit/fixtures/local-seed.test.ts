@@ -9,13 +9,12 @@ import {
 import {
   applyStaleness,
 } from "../../../src/modules/staleness";
-import { manifestToIndexItem } from "../../../src/modules/stores/list-items";
+import { manifestToIndexItem } from "../../helpers/list-items";
 import {
   ManifestSchema,
   ProcessingAttemptSchema,
   type Manifest,
 } from "../../../src/schemas/manifest";
-import { ListIndexSchema } from "../../../src/schemas/api";
 import { urlHash } from "../../../scripts/corpus-lib/url-hash";
 
 const NOW = "2026-09-11T10:00:00.000Z";
@@ -119,15 +118,6 @@ describe("local seed fixture pack", () => {
     );
     expect(plan.objects.filter((o) => !contentKeys.has(o.key)).map((o) => o.key)).toEqual([]);
     expect(plan.objects.length).toBeGreaterThan(0);
-  });
-
-  it("derives list rows that match their manifests, newest first", () => {
-    const list = ListIndexSchema.parse(plan.listIndex);
-    expect(list.items).toHaveLength(plan.fixtures.length);
-    for (const fixture of plan.fixtures) {
-      const row = list.items.find((i) => i.id === fixture.id);
-      expect(row).toEqual(manifestToIndexItem(fixture.manifest, fixture.keyPrefix));
-    }
   });
 
   it("gives every fixture its own URL, so each is its URL's owner", () => {

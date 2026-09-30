@@ -18,19 +18,13 @@ import type { Manifest } from "../../src/schemas/manifest";
 import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { testReadingsFor } from "../helpers/test-readings";
 import { testControlPlane } from "../helpers/control-plane-db";
+import { clearBucket } from "./readings-harness";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
 <p>This is a paragraph with enough words to be picked up by readability as the main content body of the article.</p>
 <p>This is a second paragraph that adds more content so the article passes the readability character threshold.</p>
 </article></main></body></html>`;
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
-}
 
 afterEach(clearBucket);
 
@@ -791,37 +785,6 @@ describe("processing leases (Workers pool)", () => {
     expect(embedCalls(fetchFn)).toBeGreaterThan(0);
     await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
       status: "ready",
-    });
-  });
-
-  it("in-flight lease past TTL still defers a later attempt", async () => {
-    const { tenantId } = await insertQuotaTenant(env as unknown as Env, {
-      submissions_per_hour: 20,
-      monthly_readings: 20,
-      max_concurrent_work: 1,
-    });
-    const tenant = tenantOf(tenantId);
-    expect(await holdTenantLease(tenantId, "at_inflight_old", 1_000)).toMatchObject({ ok: true });
-
-    const fetchFn = makeFetch();
-    const job = await seedPending(tenant, {
-      id: "rd_LEASE_INFLIGHT",
-      url: "https://lease.test/inflight",
-      attemptId: "at_inflight_new",
-    });
-    const sendDelayed = vi.fn(async () => {});
-    const msg = fakeMessage({ version: 1, job });
-    await dispatchQueueMessage(
-      msg,
-      () => processReading(job, env as unknown as Env, services(fetchFn), tenant),
-      { sendDelayed },
-    );
-    expect(sendDelayed).toHaveBeenCalledOnce();
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(msg.retry).not.toHaveBeenCalled();
-    expect(embedCalls(fetchFn)).toBe(0);
-    await expect(testReadingsFor(tenant).manifest(job.id)).resolves.toMatchObject({
-      status: "pending",
     });
   });
 

@@ -30,7 +30,8 @@ import {
   submitPending,
 } from "../../src/modules/manifest-drafting";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
-import { compareUrlOwnership, manifestToIndexItem } from "../../src/modules/stores/list-items";
+import { compareUrlOwnership } from "../../src/modules/stores/list-items";
+import { manifestToIndexItem } from "../helpers/list-items";
 import {
   ManifestSchema,
   ProcessingAttemptSchema,

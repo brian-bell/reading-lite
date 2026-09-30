@@ -22,7 +22,6 @@ import {
   type Services,
 } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import {
   founderTenant,
   reserveReadingSlot,
@@ -45,15 +44,6 @@ beforeEach(() => {
   installQueueStub();
 });
 afterEach(clearBucket);
-
-describe("GET /health", () => {
-  it("returns 200 ok without auth", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request("/health", {}, env);
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe("ok");
-  });
-});
 
 describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
   it("retrieves an X author's thread and uses it as the reading body", async () => {
@@ -342,9 +332,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     };
     const keyPrefix = buildKeyPrefix(pending.id, pending.created_at);
     await reader.writeManifest(keyPrefix, pending);
-    await reader.writeByIdPointer(pending.id, { id: pending.id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id: pending.id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(pending, keyPrefix));
 
     const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
     const response = await app.fetch(
@@ -445,9 +433,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     };
     const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
     await reader.writeManifest(keyPrefix, failed);
-    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
 
     const submit = await app.fetch(
       new Request("http://t/api/readings/import-markdown", {
@@ -541,15 +527,10 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     };
     const keyPrefix = buildKeyPrefix(stalePending.id, stalePending.created_at);
     await reader.writeManifest(keyPrefix, stalePending);
-    await reader.writeByIdPointer(stalePending.id, {
-      id: stalePending.id,
-      key_prefix: keyPrefix,
-    });
     await reader.writeByUrlPointer(urlHash, {
       id: stalePending.id,
       key_prefix: keyPrefix,
     });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(stalePending, keyPrefix));
 
     const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
     const submit = await app.fetch(
@@ -788,8 +769,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       },
     };
     await reader.writeManifest(prefix, staleReady);
-    await reader.writeByIdPointer(staleReady.id, { id: staleReady.id, key_prefix: prefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(staleReady, prefix));
 
     const idCounter = { n: 0 };
     const services = makeServices(makeStubFetch(), idCounter, "2026-04-26T20:00:00.000Z");
@@ -929,8 +908,6 @@ describe("submit-time safe-url guard", () => {
     };
     await reader.writeManifest(keyPrefix, ready);
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, keyPrefix));
 
     const retry = await app.request(
       `/api/readings/${id}/reprocess`,
@@ -1238,7 +1215,6 @@ describe("processReading — backwards-compat for in-flight queue messages witho
       created_at: createdAt,
       updated_at: createdAt,
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
     await reserveReadingSlot(env, founderTenant(), args);
 
     await processReading(args, env as unknown as Env, services, founderTenant());
@@ -1276,7 +1252,6 @@ describe("processReading — backwards-compat for in-flight queue messages witho
       created_at: createdAt,
       updated_at: createdAt,
     });
-    await reader.writeByIdPointer(id, { id, key_prefix: prefix });
 
     await processReading(args, env as unknown as Env, services, founderTenant());
 

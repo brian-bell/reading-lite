@@ -194,7 +194,7 @@ With `TENANT_DATA_PLANE=1`, R2 keys live under `u/{tenantId}/`; stored
 
 Beside the PostgreSQL stores, three storage-free modules in `stores/` hold what
 the Worker, the operator scripts and the batch pipeline share: `tenant-root.ts`
-(`tenantKeyRoot`, the gate), `list-items.ts` (`manifestToIndexItem` and the URL
+(`tenantKeyRoot`, the gate), `list-items.ts` (the list query shapes and the URL
 ownership ranking) and `similarity.ts` (top-K, the similarity floor and the
 snapshot). An embedding is a row that deletes with its reading, so the
 account wipe is rows (readings and inbox items), then objects. Inbox items are

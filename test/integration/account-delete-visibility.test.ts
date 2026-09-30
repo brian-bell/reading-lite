@@ -11,6 +11,7 @@ import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
 import { beginAccountDeletion } from "../../src/control-plane/account-delete";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { submitPending } from "../../src/modules/manifest-drafting";
+import { clearBucket } from "./readings-harness";
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -79,11 +80,6 @@ function makeServices(fetchFn: typeof fetch): Services {
     now: () => "2026-04-26T20:00:00.000Z",
     newId: () => "rd_VIS",
   };
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
 }
 
 beforeEach(clearBucket);

@@ -1,11 +1,9 @@
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { consumeProcessReadingMessage, type ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { ApiScope } from "../../src/control-plane/principal";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
-import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import type { Manifest } from "../../src/schemas/manifest";
@@ -20,38 +18,10 @@ import {
 import { testReadingsFor } from "../helpers/test-readings";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { toTimestamp } from "../../src/control-plane/pg-time";
+import { clearBucket, drainQueue, installQueueStub, queuedEnvelopes, queuedJobs } from "./readings-harness";
 
 const TOKEN = "test-token";
 const WEB_BASE = "https://reading.test.example";
-
-let queuedEnvelopes: ProcessReadingEnvelopeV1[] = [];
-let queuedJobs: ProcessReadingArgs[] = [];
-function installQueueStub(): ProcessReadingArgs[] {
-  queuedEnvelopes = [];
-  queuedJobs = [];
-  (env as unknown as { READING_JOBS: Queue<ProcessReadingEnvelopeV1> }).READING_JOBS = {
-    send: vi.fn(async (msg: ProcessReadingEnvelopeV1) => {
-      queuedEnvelopes.push(msg);
-      queuedJobs.push(msg.job);
-    }),
-  } as unknown as Queue<ProcessReadingEnvelopeV1>;
-  return queuedJobs;
-}
-
-async function drainQueue(services: Services): Promise<void> {
-  while (queuedEnvelopes.length > 0) {
-    const envelope = queuedEnvelopes.shift()!;
-    queuedJobs.shift();
-    await consumeProcessReadingMessage(
-      { body: envelope, ack() {} },
-      {
-        db: testControlPlane((env as unknown as Env)),
-        nowMs: Date.now(),
-        process: (job, tenant) => processReading(job, env as unknown as Env, services, tenant),
-      },
-    );
-  }
-}
 
 const HTML = `<!doctype html><html><head><title>Test Article</title></head><body>
 <main><article><h1>Test Article</h1>
@@ -121,13 +91,6 @@ function makeServices(fetchFn: typeof fetch, idCounter = { n: 0 }): Services {
       return mintReadingId();
     },
   };
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
 }
 
 beforeEach(() => {

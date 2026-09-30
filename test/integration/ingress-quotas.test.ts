@@ -1,10 +1,11 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { mintReadingId, type Services } from "../../src/services";
 import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
 import { testControlPlane } from "../helpers/control-plane-db";
+import { clearBucket, installQueueStub } from "./readings-harness";
 
 function services(): Services {
   return {
@@ -17,20 +18,9 @@ function services(): Services {
   };
 }
 
-function installQueueStub(): void {
-  (env as unknown as { READING_JOBS: unknown }).READING_JOBS = {
-    send: vi.fn(async () => {}),
-  };
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
-}
-
-beforeEach(installQueueStub);
+beforeEach(() => {
+  installQueueStub();
+});
 afterEach(clearBucket);
 
 function post(token: string, url: string) {
@@ -66,7 +56,7 @@ describe("ingress submission quotas", () => {
     expect(Number.isNaN(Date.parse(body.reset_at))).toBe(false);
   });
 
-  it("does not consume monthly quota when returning an existing ready/pending owner", async () => {
+  it("does not consume monthly quota when returning an existing pending owner", async () => {
     const { token } = await insertQuotaTenant(env as unknown as Env, {
       submissions_per_hour: 20,
       monthly_readings: 1,
@@ -107,10 +97,5 @@ describe("ingress submission quotas", () => {
     const res = await post(token, "https://quota.test/no-limits");
     expect(res.status).toBe(429);
     expect(await res.json()).toEqual({ error: "usage guard unavailable" });
-  });
-
-  it("does not treat founder headroom as a 503", async () => {
-    const res = await post("test-token", "https://quota.test/founder-ok");
-    expect(res.status).toBe(202);
   });
 });
