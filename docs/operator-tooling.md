@@ -49,8 +49,9 @@ The identity is over **inventory rows, not files on disk**:
   and retired in reading-lite-gh351.4; `corpus purge-legacy` was added in
   reading-lite-gh351.5 and retired, with `account sweep-wipe-prefix`, in
   reading-lite-gh351.7; `export inspect` and `export cancel` were added in
-  reading-lite-mxwx.9, already on PostgreSQL. So `ls scripts/ops-lib/commands/`
-  reads **36** (36 − 1 − 1 + 2). Checking 44 against the directory listing is
+  reading-lite-mxwx.9, already on PostgreSQL; `provider-keys reencrypt` was
+  added in reading-lite-gh341.12. So `ls scripts/ops-lib/commands/` reads
+  **37** (36 − 1 − 1 + 2 + 1). Checking 44 against the directory listing is
   the wrong check.
 
 `scripts/account-lib/vector-ledger.ts` and `scripts/account-lib/operator-ledger.ts`
@@ -146,6 +147,15 @@ verdict or counts toward the 44.
 | --- | --- | --- | --- |
 | `export inspect` | `export-inspect.ts` | `archive_exports` rows through the operator-db pairing; the tenant's `exports/` R2 prefix | Read-only view of a tenant's archive exports: lease, cursor, error, and the parts each one holds, including parts with no row. |
 | `export cancel` | `export-cancel.ts` | The same row, locked; deletes the export's prefix through `ContentStore.deletePrefix` | Ends a stuck queued or building export when the queue cannot, and sweeps an ended export's leftover parts. Refuses ready and expired rows, which expiry owns. |
+
+### provider-keys
+
+Added after the inventory (reading-lite-gh341.12), so it has no verdict and
+does not count toward the 44.
+
+| Command | File | Reads today | Why |
+| --- | --- | --- | --- |
+| `provider-keys reencrypt` | `provider-keys-reencrypt.ts` | Every `tenant_provider_credentials` row through the environment's database pairing; reseals each under its row lock | After a provider-key secret rotation, moves every stored key onto the current `PROVIDER_KEY_VERSION` so the previous secret can be removed. See [provider key rotation](operations.md#provider-key-rotation). |
 
 ### extract
 

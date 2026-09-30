@@ -89,7 +89,7 @@ operator-funded requests.
   additional authenticated data, so a ciphertext copied to another tenant or row
   fails to decrypt.
 - Rotation mirrors the auth root: `PROVIDER_KEY_PREVIOUS_SECRET` decrypts during
-  a bounded window, and a plan-first `ops` command re-encrypts rows under the new
+  a bounded window, and a plan-first `ops` command (`provider-keys reencrypt`) re-encrypts rows under the new
   version. Losing the secret makes stored keys unrecoverable; readers reconnect
   their keys, and no reading data is affected.
 - Plaintext appears only in Worker memory for the duration of a provider call. It

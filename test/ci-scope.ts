@@ -185,6 +185,7 @@ export const ESSENTIAL_NODE_FILES = [
   "test/unit/scripts/ops-deploy-staging.test.ts",
   "test/unit/scripts/ops-export.test.ts",
   "test/unit/scripts/ops-lease-clear.test.ts",
+  "test/unit/scripts/ops-provider-keys-reencrypt.test.ts",
   "test/unit/scripts/ops-registry-coverage.test.ts",
   "test/unit/scripts/ops-release-gate.test.ts",
   "test/unit/scripts/realtime-tenant.test.ts",

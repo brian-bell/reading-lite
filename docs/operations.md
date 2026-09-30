@@ -428,8 +428,53 @@ default to `1`. HKDF includes the version, so a secret-only rotation must keep
 the previous root on the same version the tokens were minted with (the default).
 Bump both version vars explicitly when advancing the key generation.
 `PROVIDER_KEY_VERSION` and `PROVIDER_KEY_PREVIOUS_VERSION` default to `1`.
-HKDF info for tenant provider keys includes that version, so a secret-only
-rotation keeps the previous secret on the version that sealed the stored keys.
+HKDF info for tenant provider keys includes that version, and each stored key
+records the version that sealed it. Rotate them as
+[provider key rotation](#provider-key-rotation) describes.
+
+#### Provider key rotation
+
+Tenant provider keys are sealed under `PROVIDER_KEY_SECRET` (ADR 0004). A
+rotation moves every stored key onto a new secret without readers noticing:
+
+1. Generate the new secret (`openssl rand -hex 32`) and keep the old one and
+   its version (default `1`).
+2. On the Worker, with `wrangler secret put … --env <env>`: set
+   `PROVIDER_KEY_PREVIOUS_SECRET` and `PROVIDER_KEY_PREVIOUS_VERSION` to the old
+   pair, and `PROVIDER_KEY_SECRET` and `PROVIDER_KEY_VERSION` to the new secret
+   and the old version plus one. The Worker now seals new connects under the new
+   version and still opens rows sealed under the old one.
+3. Replace your own key in settings (the same key is fine). The Worker seals it
+   under the new version, and that row is the command's proof that your local
+   secret matches the Worker's.
+4. Put the same four values in `.stg.vars` / `.prd.vars` (or the environment)
+   and reseal the stored rows:
+
+   ```sh
+   npm run ops -- provider-keys reencrypt --env production                    # plan: counts per key_version
+   npm run ops -- provider-keys reencrypt --env production --execute --confirm-production
+   ```
+
+   Plan mode trial-decrypts every row and changes nothing. `--execute` refuses
+   to write unless a row is already on the new version and every such row opens
+   under the supplied `PROVIDER_KEY_SECRET`. Without that proof, a mistyped
+   local secret would reseal every key under a secret the Worker lacks. It then
+   reseals one row per transaction under its row lock and exits 0 only when
+   every row is on the new version. Credential versions, status, and
+   `updated_at` do not change. Rerunning is safe.
+5. Once it exits 0, delete `PROVIDER_KEY_PREVIOUS_SECRET` and
+   `PROVIDER_KEY_PREVIOUS_VERSION` from the Worker and the local vars file.
+
+The versions must differ: a row records only its version, so equal versions
+give the command nothing to tell rows apart by, and it refuses them.
+
+**Recovery.** A row neither secret opens is listed by tenant and left in place;
+`--execute` then exits 1. Losing the secret that sealed a row makes that key
+unrecoverable. Dispatch fails the reader's attempts with
+`provider_key_undecryptable` until they connect their key again in settings,
+which replaces the row under the current secret. Readings, content, and
+embeddings are unaffected. If the previous secret was removed from the Worker
+too early, restore it with its version and rerun step 4.
 
 `founder-bootstrap` cannot read Wrangler secrets. Put the **same**
 `AUTH_ROOT_SECRET` plus `READER_API_TOKEN` (and `FOUNDER_EMAIL` unless you pass
