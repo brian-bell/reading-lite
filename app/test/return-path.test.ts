@@ -16,7 +16,8 @@ afterEach(() => {
 });
 
 // Acceptance matrix, Return paths: same-origin /, /readings/:id, /save,
-// /account/security, and /account/provider, each with only its own parameters.
+// /inbox and /inbox/:id (reading-lite-fy8t), /account/security, and
+// /account/provider, each with only its own parameters.
 describe("safeReturnPath", () => {
   it.each([
     ["/", "/"],
@@ -25,6 +26,8 @@ describe("safeReturnPath", () => {
     ["/readings/rd_0123456789", "/readings/rd_0123456789"],
     ["/readings/rd_ONE?view=source", "/readings/rd_ONE?view=source"],
     ["/save", "/save"],
+    ["/inbox", "/inbox"],
+    ["/inbox/in_0123456789", "/inbox/in_0123456789"],
     ["/account/security", "/account/security"],
     ["/account/provider", "/account/provider"],
     ["  /save  ", "/save"],
@@ -38,6 +41,7 @@ describe("safeReturnPath", () => {
     ["/readings/rd_ONE?view=source&q=x", "/readings/rd_ONE?view=source"],
     ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
     ["/save?url=https://example.com", "/save"],
+    ["/inbox/in_ONE?view=source", "/inbox/in_ONE"],
     ["/account/security?next=https://evil.example", "/account/security"],
     ["/account/provider?key=sk-proj-abc", "/account/provider"],
     ["/?q=a&q=b", "/?q=a"],
@@ -79,6 +83,9 @@ describe("safeReturnPath", () => {
     "/account/security/extra",
     "/account",
     "/save/extra",
+    "/inbox/",
+    "/inbox/in_ONE/extra",
+    "/inbox/%2F%2Fevil.example",
   ])("rejects %j", (raw) => {
     expect(safeReturnPath(raw)).toBeUndefined();
   });

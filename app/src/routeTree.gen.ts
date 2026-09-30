@@ -16,11 +16,13 @@ import { Route as DmcaRouteImport } from './routes/dmca'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as TermsRouteImport } from './routes/terms'
+import { Route as AuthedInboxRouteImport } from './routes/_authed/inbox'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
 import { Route as AuthedAccountProviderRouteImport } from './routes/_authed/account.provider'
 import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
+import { Route as AuthedInboxIdRouteImport } from './routes/_authed/inbox_.$id'
 import { Route as AuthedReadingsIdRouteImport } from './routes/_authed/readings.$id'
 
 const IndexRoute = IndexRouteImport.update({
@@ -57,6 +59,11 @@ const TermsRoute = TermsRouteImport.update({
   path: '/terms',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedInboxRoute = AuthedInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedSaveRoute = AuthedSaveRouteImport.update({
   id: '/save',
   path: '/save',
@@ -82,6 +89,11 @@ const AuthedAccountSecurityRoute = AuthedAccountSecurityRouteImport.update({
   path: '/account/security',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedInboxIdRoute = AuthedInboxIdRouteImport.update({
+  id: '/inbox_/$id',
+  path: '/inbox/$id',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedReadingsIdRoute = AuthedReadingsIdRouteImport.update({
   id: '/readings/$id',
   path: '/readings/$id',
@@ -95,11 +107,13 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
+  '/inbox/$id': typeof AuthedInboxIdRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRoutesByTo {
@@ -109,11 +123,13 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
+  '/inbox/$id': typeof AuthedInboxIdRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRoutesById {
@@ -125,11 +141,13 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
   '/terms': typeof TermsRoute
+  '/_authed/inbox': typeof AuthedInboxRoute
   '/_authed/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
   '/_authed/account/provider': typeof AuthedAccountProviderRoute
   '/_authed/account/security': typeof AuthedAccountSecurityRoute
+  '/_authed/inbox_/$id': typeof AuthedInboxIdRoute
   '/_authed/readings/$id': typeof AuthedReadingsIdRoute
 }
 export interface FileRouteTypes {
@@ -141,11 +159,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/inbox'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
     | '/account/provider'
     | '/account/security'
+    | '/inbox/$id'
     | '/readings/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -155,11 +175,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/inbox'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
     | '/account/provider'
     | '/account/security'
+    | '/inbox/$id'
     | '/readings/$id'
   id:
     | '__root__'
@@ -170,11 +192,13 @@ export interface FileRouteTypes {
     | '/login'
     | '/privacy'
     | '/terms'
+    | '/_authed/inbox'
     | '/_authed/save'
     | '/auth/verify'
     | '/login_/verify'
     | '/_authed/account/provider'
     | '/_authed/account/security'
+    | '/_authed/inbox_/$id'
     | '/_authed/readings/$id'
   fileRoutesById: FileRoutesById
 }
@@ -241,6 +265,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TermsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authed/inbox': {
+      id: '/_authed/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AuthedInboxRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/save': {
       id: '/_authed/save'
       path: '/save'
@@ -276,6 +307,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedAccountSecurityRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/inbox_/$id': {
+      id: '/_authed/inbox_/$id'
+      path: '/inbox/$id'
+      fullPath: '/inbox/$id'
+      preLoaderRoute: typeof AuthedInboxIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/readings/$id': {
       id: '/_authed/readings/$id'
       path: '/readings/$id'
@@ -287,16 +325,20 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthedRouteChildren {
+  AuthedInboxRoute: typeof AuthedInboxRoute
   AuthedSaveRoute: typeof AuthedSaveRoute
   AuthedAccountProviderRoute: typeof AuthedAccountProviderRoute
   AuthedAccountSecurityRoute: typeof AuthedAccountSecurityRoute
+  AuthedInboxIdRoute: typeof AuthedInboxIdRoute
   AuthedReadingsIdRoute: typeof AuthedReadingsIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
+  AuthedInboxRoute: AuthedInboxRoute,
   AuthedSaveRoute: AuthedSaveRoute,
   AuthedAccountProviderRoute: AuthedAccountProviderRoute,
   AuthedAccountSecurityRoute: AuthedAccountSecurityRoute,
+  AuthedInboxIdRoute: AuthedInboxIdRoute,
   AuthedReadingsIdRoute: AuthedReadingsIdRoute,
 }
 

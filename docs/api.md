@@ -137,7 +137,8 @@ no OAuth and no network re-fetch of the public host.
 | `list_inbox`, `get_inbox_item`, `discard_inbox_item` | The caller's inbox: metadata, one item's Markdown (chunked like `get_reading_content`), or a discard |
 
 There is no promote tool: agent-supplied Markdown reaches the library only when
-a person promotes it with `POST /api/inbox/:id/promote`. Results that name a
+a person promotes it with `POST /api/inbox/:id/promote`, which the web app's
+Inbox page does with "Add to library". Results that name a
 reading include `public_url` and `public_markdown_link` when
 `WEB_BASE_URL` is configured. Production uses `https://readinglite.ai/`.
 Use the [README connector example](../README.md#api-and-mcp) with your client's

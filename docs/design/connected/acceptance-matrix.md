@@ -54,7 +54,8 @@ Evidence: routes in `web/src/App.tsx` on current main.
 `/readings/:id` and `/account/security`, and rejects any `?` or `#`. The new
 frontend extends the allowlist to same-origin `/` with only `q`, `tag`, and
 `offset`, `/readings/:id` with only `view`, and `/save` with no parameters
-(`/account/security` stays). Parse candidates with `URL`
+(`/account/security` stays). The inbox (reading-lite-fy8t) adds `/inbox` and
+`/inbox/:id`, with no parameters. Parse candidates with `URL`
 against the app origin and drop unknown parameters. Clear the stored return
 path once it is consumed. The two login-return failures in the current SPA
 tests are this defect; the new tests must cover it.

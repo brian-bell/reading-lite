@@ -2525,6 +2525,78 @@ textarea {
   }
 }
 
+/* ---- Inbox (reading-lite-fy8t) --------------------------------------- */
+
+/* The lede keeps to the cards' width. */
+.inbox-lede {
+  max-width: 68ch;
+}
+
+/* A card's metadata: the library card's size and no trailing margin, which
+   .reading-meta (for its separators) would otherwise add under the last line. */
+.inbox-card-meta {
+  margin: 0;
+  font-size: 13px;
+}
+
+/* An untitled item is named by its URL: the UI face at a smaller size, so an
+   address reads as an address rather than a headline. */
+.inbox-card-url {
+  font-family: var(--font-ui);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+/* An empty inbox: the nav's inbox icon above the sentence, in a quiet
+   outlined panel at the cards' width and radius. */
+.inbox-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  max-width: 68ch;
+  padding: var(--space-5);
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  color: var(--muted);
+}
+
+.inbox-empty .auth-lede {
+  margin: 0;
+}
+
+/* The staged Markdown, framed as a paper card so what the agent wrote reads
+   apart from the page's own title and actions. Its padding is past 24 px of
+   the code blocks inside, so their 6 px radius stands on its own. */
+.inbox-preview {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-6) var(--space-7) var(--space-7);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+/* A section label like the connection groups', ruled off from the content. */
+.inbox-preview-title {
+  margin: 0 0 var(--space-5);
+  padding: 0 0 var(--space-3);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+@container shell (max-width: 650px) {
+  .inbox-preview {
+    padding: var(--space-4) var(--space-4) var(--space-5);
+  }
+}
+
 /* ---- Compact bar at container width ≤650 px --------------------------- */
 
 @container shell (max-width: 650px) {

@@ -121,6 +121,15 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // The Markdown inbox (reading-lite-fy8t): the writes' CSRF token and
+    // tenant pin, adding an item opening the reading without a new document,
+    // and the discard dialog's Escape and focus. The component tests own the
+    // outcomes and the states.
+    name: "inbox",
+    testMatch: /inbox\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Account sessions (#340.1): the confirm dialog's focus and Escape, and
     // revoking this device / all sessions sending the reader to sign in. The
     // component tests own the list and the common states.

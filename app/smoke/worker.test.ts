@@ -297,6 +297,26 @@ describe("signed-in identity", () => {
     ).toEqual([]);
   });
 
+  // The inbox (reading-lite-fy8t) is read in the browser only: the server
+  // renders its frame busy, under the signed-in guard, and nothing from it is
+  // dehydrated into the page.
+  it.each([
+    ["/inbox", "Inbox"],
+    ["/inbox/in_FXSLOW0001", "Inbox item"],
+  ])("server-renders %s without the inbox", async (path, title) => {
+    const signedOut = await request(path);
+    expect([302, 307]).toContain(signedOut.status);
+    expect(location(signedOut)).toBe(`/login?next=${encodeURIComponent(path)}`);
+
+    const response = await request(path, { headers: { Cookie: A.cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    const html = await response.text();
+    expect(html).toContain(heading(title));
+    expect(html).toContain('aria-busy="true"');
+    expect(dehydratedQueryKeys(html).filter((key) => key.startsWith('["inbox"'))).toEqual([]);
+  });
+
   // The common states on the library (#416), in the HTML before any script
   // runs: the state page with its own heading, the account menu still there.
   // 403 and 412 are values and travel with the page.

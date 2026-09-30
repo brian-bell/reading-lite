@@ -70,7 +70,8 @@ return path is per origin.
   the mailed path, and its `/login/verify` alias redeem the fragment credential
   only on Continue. Return paths go through `src/auth/return-path.ts`: an
   allowlist of `/` (`q`, `tag`, `offset`), `/readings/:id` (`view`), `/save`,
-  `/account/security`, and `/account/provider`, with other parameters dropped. The path is stored in
+  `/inbox`, `/inbox/:id`, `/account/security`, and `/account/provider`, with
+  other parameters dropped. The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
   cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
   signed-out reader to `/login?next=<URL>`; signed out, `/` shows the form in
@@ -369,6 +370,37 @@ return path is per origin.
   A 429 that names neither a limit nor the guard still throws. `src/api/save.ts` is
   the browser's POST, with the CSRF token and the tenant pin as the library's
   reads have.
+- **Inbox.** `/inbox` and `/inbox/:id` (reading-lite-fy8t) are where a reader
+  reviews the Markdown agents staged over MCP (`import_markdown`, which stages
+  rather than imports; reading-lite-gh423). Both are under
+  `src/routes/_authed` and read in the browser only (`src/inbox-query.ts`),
+  as the account page's lists are, so neither is part of the server render and
+  the backend's `FrontendReads` entrypoint has no inbox method. The reads are
+  never stale on their own but are asked for again each time a page mounts,
+  because the agent staging into the inbox is not this tab; there is no timed
+  read. `src/inbox.ts` maps what `GET /api/inbox`, `GET /api/inbox/:id`,
+  `POST /api/inbox/:id/promote`, and `DELETE /api/inbox/:id` answered, with
+  loose zod projections, and every read and write is pinned with
+  `x-expected-tenant`. The list uses the library's cards: the title (or the
+  URL when the agent gave none) links to the item, over the host, the staged
+  size, and when it was staged; an empty inbox says so, and 403, 412, offline,
+  and 5xx are the account page's common states (`src/account-state.ts`). The
+  item page renders the staged Markdown under "Preview" through the Source
+  view's renderer (`SourceMarkdown` in `src/components/ReadingSource.tsx`):
+  sanitized, no raw HTML, links resolved against the staged URL, images as
+  placeholders. "Add to library" promotes the item. Promote answers with
+  import-markdown's status and body, so the save page's `submitFromResponse`
+  reads it and the page handles each outcome as `/save` does: a 202 or 200
+  opens the reading (a 200 with the save notice), a 409 or 400 is a notice
+  with nothing to retry, a 429 or 503 is the capture refusal notice with Try
+  again, and 403 and 412 are the shared states. Promote's own 404 is the
+  "This item isn't in your inbox." page, and its 413 a notice with nothing to
+  retry. "Discard…" deletes the item after a confirm dialog and returns to
+  the inbox; it is sent at once even offline, and a failed one's Retry opens
+  the dialog again rather than resending. Either write drops the item from the
+  cached list and marks the inbox stale without refetching the item on screen,
+  which would answer 404 under a page that is leaving. A promote never sends
+  `email`.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in

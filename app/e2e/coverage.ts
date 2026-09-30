@@ -4,14 +4,15 @@
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
-// missing reading, sign-in, save, one trail hop, Source, Details, account
-// sessions, a ready archive export, account deletion's confirmation and
-// closing page, a missing and a connected provider key, public legal pages):
-// CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a
-// state from the fixture pack (docs/design/connected/fixture-pack.md);
-// e2e/backend-stub.js serves it from e2e/fixtures/fixture-pack.json, so a new
-// fixture state is one edit in test/fixtures/local-seed.ts plus
-// `npm run fixtures:app` at the repo root. Mark it `anyHost` only if it expects nothing the stub or the pack
+// missing reading, sign-in, save, one trail hop, Source, Details, the inbox
+// and an inbox item, account sessions, a ready archive export, account
+// deletion's confirmation and closing page, a missing and a connected provider
+// key, public legal pages): CI runs those alone (e2e/scope.ts) and the rest
+// locally. `fixture` names a state from the fixture pack
+// (docs/design/connected/fixture-pack.md); e2e/backend-stub.js serves it from
+// e2e/fixtures/fixture-pack.json, so a new fixture state is one edit in
+// test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo root.
+// Mark it `anyHost` only if it expects nothing the stub or the pack
 // supplies, so it also passes against a deployed host (E2E_BASE_URL, #392).
 
 import { expect, type Page } from "@playwright/test";
@@ -28,6 +29,7 @@ import {
   serveAccountDeleteInBrowser,
   serveExportInBrowser,
   serveImportInBrowser,
+  serveInboxInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -506,6 +508,112 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await serveImportInBrowser(page, { status: 409, json: { error: "reading already has an active attempt" } });
     },
     prepare: importAndExpect("This reading is already processing."),
+  },
+  // The Markdown inbox (reading-lite-fy8t). Read in the browser only, so
+  // every signed-in case stubs it (serveInboxInBrowser); without that the
+  // frontend Worker answers /api/* with 404, the item-gone page.
+  { name: "inbox-signed-out", anyHost: true, path: "/inbox", state: "signed-out", heading: "Sign in" },
+  {
+    name: "inbox",
+    essential: true,
+    path: "/inbox",
+    state: "signed-in",
+    heading: "Inbox",
+    stub: async (page) => {
+      await serveInboxInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByRole("list", { name: "Inbox items" }).getByRole("listitem")).toHaveCount(2);
+    },
+  },
+  {
+    name: "inbox-empty",
+    path: "/inbox",
+    state: "signed-in",
+    heading: "Inbox",
+    stub: async (page) => {
+      await serveInboxInBrowser(page, { items: [] });
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("Your inbox is empty.")).toBeVisible();
+    },
+  },
+  {
+    name: "inbox-server-error",
+    path: "/inbox",
+    state: "signed-in",
+    heading: "Something went wrong on our side.",
+    stub: async (page) => {
+      await serveInboxInBrowser(page, { list: { status: 503, json: { error: "storage unavailable" } } });
+    },
+  },
+  {
+    name: "inbox-item",
+    essential: true,
+    path: "/inbox/in_FXSLOW0001",
+    state: "signed-in",
+    heading: "Slow reading week",
+    stub: async (page) => {
+      await serveInboxInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByRole("region", { name: "Preview" }).getByRole("button", { name: "Load image" })).toBeVisible();
+    },
+  },
+  // No title: the staged URL is the heading, and wraps rather than widening the page.
+  {
+    name: "inbox-item-untitled",
+    path: "/inbox/in_FXDRAFT001",
+    state: "signed-in",
+    heading: "https://fieldnotes.example/2026/09/drafts/untitled-notes-on-attention-maintenance-and-the-upkeep-of-shared-spaces",
+    stub: async (page) => {
+      await serveInboxInBrowser(page);
+    },
+  },
+  {
+    name: "inbox-item-discard-confirm",
+    essential: true,
+    path: "/inbox/in_FXSLOW0001",
+    state: "signed-in",
+    heading: "Slow reading week",
+    stub: async (page) => {
+      await serveInboxInBrowser(page);
+    },
+    prepare: async (page) => {
+      await page.waitForLoadState("networkidle");
+      await page.getByRole("button", { name: "Discard…" }).click();
+      await expect(page.getByRole("dialog", { name: "Discard this item?" })).toBeVisible();
+    },
+  },
+  // A refusal that will pass: a notice with Try again above the item.
+  {
+    name: "inbox-item-rate-limited",
+    path: "/inbox/in_FXSLOW0001",
+    state: "signed-in",
+    heading: "Slow reading week",
+    stub: async (page) => {
+      await serveInboxInBrowser(page, {
+        promote: {
+          status: 429,
+          json: { error: "rate limited", code: "rate_limited", limit: "hourly", reset_at: "2026-09-11T11:00:00.000Z" },
+        },
+      });
+    },
+    prepare: async (page) => {
+      await page.waitForLoadState("networkidle");
+      await page.getByRole("button", { name: "Add to library" }).click();
+      await expect(page.getByRole("button", { name: "Try again" })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
+    name: "inbox-item-not-found",
+    path: "/inbox/in_FXMISSING1",
+    state: "signed-in",
+    heading: "This item isn't in your inbox.",
+    stub: async (page) => {
+      await serveInboxInBrowser(page);
+    },
   },
   { name: "login", anyHost: true, essential: true, path: "/login", state: "signed-out", heading: "Sign in" },
 
