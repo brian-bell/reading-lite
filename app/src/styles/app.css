@@ -780,30 +780,72 @@ textarea {
   line-height: 1.6;
 }
 
-/* The key sits on the surface the export card uses, so the one thing here
-   that is connected or not reads as a thing with a state. */
+/* The key sits on a raised surface, so the one thing here that is connected
+   or not reads as a thing with a state. Its edge is a transparent ring in the
+   shadow rather than a border, so it holds on the grain in both themes; the
+   border stays, transparent, for forced colors, where shadows are dropped. */
 .provider-card {
   padding: var(--space-5);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 7px;
   background: var(--surface);
-  box-shadow: var(--card-shadow);
+  box-shadow:
+    0 0 0 1px light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.08)),
+    var(--card-shadow);
 }
 
+/* The provider's mark beside its name, as in the design's provider card. */
+.provider-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.provider-mark {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+  background: var(--soft);
+  color: var(--accent);
+}
+
+/* The key's state at a glance: a dot and the word, so the state never rests
+   on color alone. */
 .provider-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   margin: 0;
   color: var(--muted);
   font-size: 14px;
 }
 
+.provider-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
 .provider-status-connected {
-  color: var(--ink);
+  color: var(--positive);
   font-weight: 600;
 }
 
 .provider-status-invalid {
   color: var(--danger);
   font-weight: 600;
+}
+
+/* A stored key, working or refused, fills its dot; with no key it stays an outline. */
+.provider-status-connected::before,
+.provider-status-invalid::before {
+  background: currentColor;
 }
 
 /* What the key is for, two facts side by side where they fit. */
@@ -847,10 +889,12 @@ textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+/* What a removal left in place, on the accent-soft tint the token reveal
+   uses, rounded like the controls beside it. */
 .provider-removed {
   margin: 0 0 var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border-left: 3px solid var(--accent);
+  border-radius: 6px;
   background: var(--accent-soft);
 }
 

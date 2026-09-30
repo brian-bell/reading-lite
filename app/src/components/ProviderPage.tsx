@@ -27,6 +27,7 @@ import { expectedLayoutOf } from "../reading";
 import { formatSessionTime } from "../sessions";
 import { BackToLibrary } from "./BackToLibrary";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { PendingLabel } from "./PendingLabel";
 import {
@@ -329,9 +330,15 @@ function KeySection({
   return (
     <section className="account-section provider-card" aria-labelledby={KEY_HEADING_ID}>
       <div className="account-section-head">
-        <h2 id={KEY_HEADING_ID} className="account-section-title" tabIndex={-1}>
-          OpenAI
-        </h2>
+        <div className="provider-name">
+          {/* The design's provider mark: decorative, the heading names it. */}
+          <span className="provider-mark">
+            <Icon name="sliders" size={22} />
+          </span>
+          <h2 id={KEY_HEADING_ID} className="account-section-title" tabIndex={-1}>
+            OpenAI
+          </h2>
+        </div>
         <p className={`provider-status provider-status-${state.kind}`}>{KEY_STATUS[state.kind]}</p>
       </div>
       <dl className="provider-roles">
