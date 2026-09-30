@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ManifestSchema,
-  EmitReadingToolInputSchema,
+  ReadingSummarySchema,
   ByUrlPointerSchema,
   ProcessingAttemptSchema,
   type Manifest,
@@ -350,7 +350,7 @@ describe("ProcessingAttemptSchema", () => {
   });
 });
 
-describe("EmitReadingToolInputSchema", () => {
+describe("ReadingSummarySchema", () => {
   const valid = {
     title: "T",
     tldr: "summary",
@@ -364,30 +364,30 @@ describe("EmitReadingToolInputSchema", () => {
   };
 
   it("accepts a valid tool input", () => {
-    expect(EmitReadingToolInputSchema.parse(valid)).toEqual(valid);
+    expect(ReadingSummarySchema.parse(valid)).toEqual(valid);
   });
 
   it("rejects unknown novelty_verdict", () => {
-    expect(() => EmitReadingToolInputSchema.parse({ ...valid, novelty_verdict: "maybe" })).toThrow();
+    expect(() => ReadingSummarySchema.parse({ ...valid, novelty_verdict: "maybe" })).toThrow();
   });
 
   it("rejects empty title", () => {
-    expect(() => EmitReadingToolInputSchema.parse({ ...valid, title: "" })).toThrow();
+    expect(() => ReadingSummarySchema.parse({ ...valid, title: "" })).toThrow();
   });
 
   it("rejects titles longer than 120 characters", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, title: "x".repeat(121) }),
+      ReadingSummarySchema.parse({ ...valid, title: "x".repeat(121) }),
     ).toThrow();
   });
 
   it("rejects empty tldr", () => {
-    expect(() => EmitReadingToolInputSchema.parse({ ...valid, tldr: "" })).toThrow();
+    expect(() => ReadingSummarySchema.parse({ ...valid, tldr: "" })).toThrow();
   });
 
   it("rejects connection with empty id", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({
+      ReadingSummarySchema.parse({
         ...valid,
         connections: [{ id: "", reason: "x" }],
       }),
@@ -396,13 +396,13 @@ describe("EmitReadingToolInputSchema", () => {
 
   it("requires at least one tag", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, tags: [] }),
+      ReadingSummarySchema.parse({ ...valid, tags: [] }),
     ).toThrow();
   });
 
   it("accepts no more than six tags", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({
+      ReadingSummarySchema.parse({
         ...valid,
         tags: ["one", "two", "three", "four", "five", "six", "seven"],
       }),
@@ -411,13 +411,13 @@ describe("EmitReadingToolInputSchema", () => {
 
   it("requires at least three keywords", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, keywords: ["one", "two"] }),
+      ReadingSummarySchema.parse({ ...valid, keywords: ["one", "two"] }),
     ).toThrow();
   });
 
   it("accepts no more than fifteen keywords", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({
+      ReadingSummarySchema.parse({
         ...valid,
         keywords: Array.from({ length: 16 }, (_, index) => `keyword-${index}`),
       }),
@@ -427,15 +427,15 @@ describe("EmitReadingToolInputSchema", () => {
   it("requires all enrichment arrays even if empty", () => {
     const { tags: _tags, ...without } = valid;
     void _tags;
-    expect(() => EmitReadingToolInputSchema.parse(without)).toThrow();
+    expect(() => ReadingSummarySchema.parse(without)).toThrow();
   });
 
   it("rejects tensions from the ingest summarizer contract", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, tensions: [] }),
+      ReadingSummarySchema.parse({ ...valid, tensions: [] }),
     ).toThrow();
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, tensions_judged: [] }),
+      ReadingSummarySchema.parse({ ...valid, tensions_judged: [] }),
     ).toThrow();
     expect(Object.keys(READING_SUMMARY_JSON_SCHEMA.properties)).not.toContain("tensions");
     expect(Object.keys(RELATIONSHIP_JUDGEMENT_JSON_SCHEMA.properties)).not.toContain(
@@ -452,10 +452,10 @@ describe("EmitReadingToolInputSchema", () => {
 
   it("rejects unknown summary and connection fields", () => {
     expect(() =>
-      EmitReadingToolInputSchema.parse({ ...valid, unexpected: true }),
+      ReadingSummarySchema.parse({ ...valid, unexpected: true }),
     ).toThrow();
     expect(() =>
-      EmitReadingToolInputSchema.parse({
+      ReadingSummarySchema.parse({
         ...valid,
         connections: [{ id: "rd_01XYZ", reason: "same topic", unexpected: true }],
       }),

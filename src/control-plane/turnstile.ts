@@ -17,7 +17,6 @@ export const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turns
 
 /** Cloudflare dummy keys for tests. Never valid on a production widget. */
 export const TURNSTILE_TEST_SITE_KEY_PASS = "1x00000000000000000000AA";
-export const TURNSTILE_TEST_SITE_KEY_BLOCK = "2x00000000000000000000AB";
 export const TURNSTILE_TEST_SECRET_PASS = "1x0000000000000000000000000000000AA";
 export const TURNSTILE_TEST_SECRET_FAIL = "2x0000000000000000000000000000000AA";
 

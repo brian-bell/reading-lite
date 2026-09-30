@@ -10,7 +10,6 @@ import { parseAuthRootSecret } from "../../../src/control-plane/crypto";
 import { parseUserId } from "../../../src/control-plane/ids";
 import { API_SCOPES } from "../../../src/control-plane/principal";
 import {
-  countActiveApiTokens,
   createApiToken,
   listApiTokensForUser,
   revokeOwnedApiToken,
@@ -120,8 +119,6 @@ describe("createApiToken", () => {
 
   it("409s at 10 active tokens including the founder legacy row", async () => {
     const { raw, db, userId, founder } = await seeded();
-    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(1);
-
     for (let i = 0; i < MAX_ACTIVE_TOKENS - 1; i += 1) {
       const minted = await createApiToken(db, {
         userId,
@@ -134,7 +131,6 @@ describe("createApiToken", () => {
       });
       expect(minted.kind).toBe("ok");
     }
-    expect(await countActiveApiTokens(db, { userId, nowMs: NOW_MS })).toBe(MAX_ACTIVE_TOKENS);
 
     const blocked = await createApiToken(db, {
       userId,

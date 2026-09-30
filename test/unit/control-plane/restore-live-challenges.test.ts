@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { restoreLiveLoginChallenges } from "../../../src/control-plane/auth-handlers";
+import { restoreLiveChallenges } from "../../../src/control-plane/auth-handlers";
 import { bootstrapFounder } from "../../../src/control-plane/bootstrap";
 import { issueEmailChangeChallenge, issueLoginChallenge } from "../../../src/control-plane/challenges";
 import { EMAIL_CHANGE_PURPOSE } from "../../../src/control-plane/constants";
@@ -43,7 +43,7 @@ async function markMailSent(
   await raw.run("UPDATE auth_challenges SET mail_sent_at = ? WHERE id = ?", toTimestamp(atMs), challengeId);
 }
 
-describe("restoreLiveLoginChallenges", () => {
+describe("restoreLiveChallenges", () => {
   it("does not revive a predecessor that was consumed before issue revoked it", async () => {
     const { raw, db } = await seeded();
     const first = await issueLoginChallenge(db, {
@@ -75,7 +75,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(second.kind).toBe("issued");
     if (second.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+    await restoreLiveChallenges(db, second.challengeId, snapshot);
 
     expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "consumed" },
@@ -128,7 +128,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(second.kind).toBe("issued");
     if (second.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+    await restoreLiveChallenges(db, second.challengeId, snapshot);
 
     const predecessor = withMs(await raw.first(
       "SELECT state, claim_id, consumed_at FROM auth_challenges WHERE id = ?",
@@ -186,7 +186,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(late.kind).toBe("issued");
     if (late.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, late.challengeId, listedFirst);
+    await restoreLiveChallenges(db, late.challengeId, listedFirst);
 
     expect(await challengeStates(raw)).toEqual([
       { id: older.challengeId, state: "revoked" },
@@ -244,7 +244,7 @@ describe("restoreLiveLoginChallenges", () => {
     });
     expect(redeemedNew.kind).toBe("ok");
 
-    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+    await restoreLiveChallenges(db, second.challengeId, snapshot);
 
     expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "revoked" },
@@ -284,8 +284,8 @@ describe("restoreLiveLoginChallenges", () => {
     expect(b.kind).toBe("issued");
     if (b.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, a.challengeId, snapshotA);
-    await restoreLiveLoginChallenges(db, b.challengeId, snapshotB);
+    await restoreLiveChallenges(db, a.challengeId, snapshotA);
+    await restoreLiveChallenges(db, b.challengeId, snapshotB);
 
     expect(await challengeStates(raw)).toEqual([
       { id: delivered.challengeId, state: "issued" },
@@ -352,7 +352,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(c.kind).toBe("issued");
     if (c.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, c.challengeId, snapshotC);
+    await restoreLiveChallenges(db, c.challengeId, snapshotC);
 
     expect(await challengeStates(raw)).toEqual([
       { id: a.challengeId, state: "revoked" },
@@ -397,7 +397,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(second.kind).toBe("issued");
     if (second.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, second.challengeId, []);
+    await restoreLiveChallenges(db, second.challengeId, []);
 
     expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "issued" },
@@ -441,7 +441,7 @@ describe("restoreLiveLoginChallenges", () => {
     expect(second.kind).toBe("issued");
     if (second.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, second.challengeId, snapshot);
+    await restoreLiveChallenges(db, second.challengeId, snapshot);
 
     expect(await challengeStates(raw)).toEqual([
       { id: first.challengeId, state: "issued" },
@@ -506,7 +506,7 @@ describe("restoreLiveChallenges email_change", () => {
     expect(toB.kind).toBe("issued");
     if (toB.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, toB.challengeId, snapshot);
+    await restoreLiveChallenges(db, toB.challengeId, snapshot);
 
     const rows = withMs(await raw.all(
       "SELECT email_canonical, state FROM auth_challenges WHERE purpose = ? ORDER BY issued_at",
@@ -592,7 +592,7 @@ describe("restoreLiveChallenges email_change", () => {
     expect(callerB.kind).toBe("issued");
     if (callerB.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
+    await restoreLiveChallenges(db, callerB.challengeId, snapshot);
 
     const rows = withMs(await raw.all(
       `SELECT email_canonical, user_id, state FROM auth_challenges
@@ -704,7 +704,7 @@ describe("restoreLiveChallenges email_change", () => {
     expect(thirdB.kind).toBe("issued");
     if (thirdB.kind !== "issued") return;
 
-    await restoreLiveLoginChallenges(db, callerB.challengeId, snapshot);
+    await restoreLiveChallenges(db, callerB.challengeId, snapshot);
 
     const rows = withMs(await raw.all(
       `SELECT email_canonical, user_id, state FROM auth_challenges

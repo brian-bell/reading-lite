@@ -5,7 +5,6 @@ import {
   SimilaritySnapshotSchema,
   SummarizationUsageSchema,
 } from "../schemas/manifest";
-import type { EmbeddingResult } from "./embeddings";
 import type { SimilarContext, SummarizeReadingResult } from "./summarizer";
 import type { SimilaritySnapshot } from "./stores/similarity";
 
@@ -46,10 +45,6 @@ export const ProcessingCheckpointSchema = z
   .strip();
 
 export type ProcessingCheckpoint = z.infer<typeof ProcessingCheckpointSchema>;
-
-export function embedSourceCheckpoint(result: EmbeddingResult): ProcessingCheckpoint["embed_source"] {
-  return result;
-}
 
 export function summarizeCheckpoint(
   result: SummarizeReadingResult,

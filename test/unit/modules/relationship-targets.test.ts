@@ -3,7 +3,7 @@ import {
   projectRelationshipTargets,
   relationshipTargetIds,
 } from "../../../src/modules/relationship-targets";
-import type { ListIndex, ListIndexItem } from "../../../src/schemas/api";
+import type { ListIndexItem } from "../../../src/schemas/api";
 
 const NOW = "2026-09-11T12:00:00.000Z";
 const TTL = 300;
@@ -19,10 +19,6 @@ function row(id: string, over: Partial<ListIndexItem> = {}): ListIndexItem {
     updated_at: "2026-09-11T11:59:00.000Z",
     ...over,
   };
-}
-
-function index(...items: ListIndexItem[]): ListIndex {
-  return { version: 1, items };
 }
 
 describe("relationshipTargetIds", () => {
@@ -50,7 +46,7 @@ describe("projectRelationshipTargets", () => {
   it("maps each indexed target to its url, title, and status", () => {
     const targets = projectRelationshipTargets(
       ["rd_A", "rd_B"],
-      index(row("rd_A"), row("rd_B", { status: "failed" })),
+      [row("rd_A"), row("rd_B", { status: "failed" })],
       TTL,
       NOW,
     );
@@ -63,7 +59,7 @@ describe("projectRelationshipTargets", () => {
   it("omits the title when the list row has none", () => {
     const targets = projectRelationshipTargets(
       ["rd_A"],
-      index(row("rd_A", { title: undefined, status: "pending" })),
+      [row("rd_A", { title: undefined, status: "pending" })],
       TTL,
       NOW,
     );
@@ -72,17 +68,13 @@ describe("projectRelationshipTargets", () => {
   });
 
   it("omits ids with no list row instead of inventing a status", () => {
-    expect(projectRelationshipTargets(["rd_GONE"], index(row("rd_A")), TTL, NOW)).toEqual({});
-  });
-
-  it("returns an empty map when the tenant has no list index", () => {
-    expect(projectRelationshipTargets(["rd_A"], null, TTL, NOW)).toEqual({});
+    expect(projectRelationshipTargets(["rd_GONE"], [row("rd_A")], TTL, NOW)).toEqual({});
   });
 
   it("reports a stale pending target as failed, matching the list view", () => {
     const targets = projectRelationshipTargets(
       ["rd_OLD"],
-      index(row("rd_OLD", { status: "pending", updated_at: "2026-09-11T11:00:00.000Z" })),
+      [row("rd_OLD", { status: "pending", updated_at: "2026-09-11T11:00:00.000Z" })],
       TTL,
       NOW,
     );
@@ -91,7 +83,7 @@ describe("projectRelationshipTargets", () => {
 
   it("ignores list rows that are not relationship targets", () => {
     expect(
-      Object.keys(projectRelationshipTargets(["rd_A"], index(row("rd_A"), row("rd_Z")), TTL, NOW)),
+      Object.keys(projectRelationshipTargets(["rd_A"], [row("rd_A"), row("rd_Z")], TTL, NOW)),
     ).toEqual(["rd_A"]);
   });
 });

@@ -56,8 +56,8 @@ describe("the local fixture pack as PostgreSQL rows", () => {
     const ids = [...new Set(ready.flatMap((fixture) => relationshipTargetIds(fixture.manifest)))];
     expect(ids).toContain(plan.removedTargetId);
     const items = await postgres.relationshipTargets(ids);
-    expect(projectRelationshipTargets(ids, { version: 1, items }, 900, NOW)).toEqual(
-      projectRelationshipTargets(ids, plan.listIndex, 900, NOW),
+    expect(projectRelationshipTargets(ids, items, 900, NOW)).toEqual(
+      projectRelationshipTargets(ids, plan.listIndex.items, 900, NOW),
     );
   });
 
