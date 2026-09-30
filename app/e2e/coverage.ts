@@ -6,11 +6,12 @@
 // it is a major state of a route (the library, a ready, pending, failed, and
 // missing reading, sign-in, save, one trail hop, Source, Details, account
 // sessions, a ready archive export, account deletion's confirmation and
-// closing page, public legal pages): CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from
-// the fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
-// serves it from e2e/fixtures/fixture-pack.json, so a new fixture state is one
-// edit in test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo
-// root. Mark it `anyHost` only if it expects nothing the stub or the pack
+// closing page, a missing and a connected provider key, public legal pages):
+// CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a
+// state from the fixture pack (docs/design/connected/fixture-pack.md);
+// e2e/backend-stub.js serves it from e2e/fixtures/fixture-pack.json, so a new
+// fixture state is one edit in test/fixtures/local-seed.ts plus
+// `npm run fixtures:app` at the repo root. Mark it `anyHost` only if it expects nothing the stub or the pack
 // supplies, so it also passes against a deployed host (E2E_BASE_URL, #392).
 
 import { expect, type Page } from "@playwright/test";
@@ -31,7 +32,10 @@ import {
   serveSessionsInBrowser,
   serveSettingsInBrowser,
   serveTokensInBrowser,
+  serveProviderInBrowser,
   E2E_EXPORT_DAILY_LIMIT,
+  E2E_PROVIDER,
+  E2E_PROVIDER_API_KEY,
   E2E_EXPORTS,
   E2E_TOKEN_SECRET,
   E2E_TOKENS,
@@ -907,6 +911,137 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await dialog.getByLabel("Type delete to confirm").fill("delete");
       await dialog.getByRole("button", { name: "Delete account" }).click();
       await expect(page.getByRole("heading", { level: 1, name: "Your account is being deleted." })).toBeFocused();
+    },
+  },
+
+  // Provider settings (reading-lite-gh341.8). The settings and today's usage
+  // are fetched in the browser, so every signed-in case stubs both. A missing
+  // and a connected key are the major states; the removed state is reached by
+  // removing one, since the backend has no removed state of its own.
+  { name: "provider-signed-out", anyHost: true, path: "/account/provider", state: "signed-out", heading: "Sign in" },
+  {
+    name: "provider-missing",
+    essential: true,
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page);
+    },
+    prepare: async (page) => {
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await expect(key.getByText("Not connected")).toBeVisible();
+      await expect(key.getByRole("button", { name: "Connect key" })).toBeVisible();
+      await expect(page.getByText("Today: $0.12 of your $2.00 limit.", { exact: false })).toBeVisible();
+    },
+  },
+  {
+    name: "provider-connected",
+    essential: true,
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
+    },
+    prepare: async (page) => {
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await expect(key.getByText("Key ending in", { exact: false })).toContainText("c0de");
+      await expect(key.getByRole("button", { name: "Remove key…" })).toBeVisible();
+    },
+  },
+  {
+    name: "provider-invalid",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { json: E2E_PROVIDER.invalid });
+    },
+    prepare: async (page) => {
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await expect(key.getByText("Key not accepted")).toBeVisible();
+      await expect(key.getByRole("button", { name: "Replace key" })).toBeVisible();
+    },
+  },
+  {
+    name: "provider-remove-confirm",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Remove key…" }).click();
+      const dialog = page.getByRole("dialog", { name: "Remove your OpenAI key?" });
+      await expect(dialog.getByText("may still finish and be charged", { exact: false })).toBeVisible();
+    },
+  },
+  {
+    name: "provider-removed",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
+    },
+    prepare: async (page) => {
+      await page.getByRole("button", { name: "Remove key…" }).click();
+      await page.getByRole("dialog", { name: "Remove your OpenAI key?" }).getByRole("button", { name: "Remove key" }).click();
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await expect(key.getByText("Removed", { exact: true })).toBeVisible();
+      await expect(key.getByText("search stay as they are", { exact: false })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
+    name: "provider-step-up",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, {
+        connect: { status: 403, json: { error: "recent authentication required" } },
+      });
+    },
+    prepare: async (page) => {
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await key.getByLabel("API key").fill(E2E_PROVIDER_API_KEY);
+      await key.getByRole("button", { name: "Connect key" }).click();
+      await expect(key.getByRole("link", { name: "Request a fresh sign-in link" })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
+    name: "provider-key-rejected",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, {
+        connect: { status: 400, json: { error: "invalid key", code: "invalid_key" } },
+      });
+    },
+    prepare: async (page) => {
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await key.getByLabel("API key").fill(E2E_PROVIDER_API_KEY);
+      await key.getByRole("button", { name: "Connect key" }).click();
+      await expect(key.getByText("OpenAI didn't accept this key.", { exact: false })).toBeVisible();
+      await page.locator("#main h1").focus();
+    },
+  },
+  {
+    name: "provider-usage-unavailable",
+    path: "/account/provider",
+    state: "signed-in",
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { usage: { status: 503, json: { error: "usage unavailable" } } });
+    },
+    prepare: async (page) => {
+      const spending = page.getByRole("region", { name: "Daily spending limit" });
+      await expect(spending.getByText("Today's charges aren't available right now.")).toBeVisible();
     },
   },
 

@@ -4,8 +4,9 @@ import { loginHref } from "../auth/return-path";
 import type { SignOutResult } from "../auth/session";
 import { Icon } from "./Icon";
 
-// Navigation account menu (design spec, Components: email, Account, Sign out),
-// server-rendered from the whoami query. A <details> disclosure, so it opens
+// Navigation account menu (design spec, Components: email, Account, Sign out;
+// Provider since reading-lite-gh341.8), server-rendered from the whoami
+// query. A <details> disclosure, so it opens
 // before hydration. Signed out shows a sign-in link back to the current URL,
 // except on the sign-in pages themselves; while identity is unknown or
 // unavailable, neither is shown. The account page lands with Phase 5.
@@ -72,6 +73,9 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
         <ul className="account-menu-items">
           <li>
             <a href="/account/security">Account</a>
+          </li>
+          <li>
+            <a href="/account/provider">Provider</a>
           </li>
           <li>
             <button type="button" disabled={signingOut} onClick={() => void signOut()}>

@@ -52,6 +52,7 @@ import { API_TOKENS_HEADING_ID, TokensSection, type RevealedToken, type TokensSe
 import { StepUpNotice } from "./StepUpNotice";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PageHeading, PageStateFocus } from "./PageHeading";
+import { PendingLabel } from "./PendingLabel";
 import { BackToLibrary } from "./BackToLibrary";
 import { jumpTo } from "./jump-to";
 import {
@@ -950,20 +951,6 @@ function SessionsList({
         ))}
       </ul>
     </>
-  );
-}
-
-/**
- * A button label that swaps to its pending text without resizing the button:
- * both are laid out in one grid cell, so the button keeps the wider one's
- * width, and the one not showing is hidden from sight and the accessible name.
- */
-function PendingLabel({ label, pending, isPending }: { label: string; pending: string; isPending: boolean }) {
-  return (
-    <span className="label-swap">
-      <span aria-hidden={isPending ? true : undefined}>{label}</span>
-      <span aria-hidden={isPending ? undefined : true}>{pending}</span>
-    </span>
   );
 }
 

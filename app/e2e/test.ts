@@ -553,6 +553,113 @@ export async function serveExportInBrowser(
   return { requests, downloads };
 }
 
+const E2E_PROVIDER_KEY = { provider: "openai", last_four: "c0de", status: "active", validated_at_ms: PACK_NOW_MS - HOUR_MS };
+const E2E_PROVIDER_LIMITS = {
+  effort: "high",
+  daily_spend_cap_microdollars: null,
+  effective_daily_spend_microdollars: 2_000_000,
+  operator_daily_spend_microdollars: 2_000_000,
+};
+
+/** GET /api/auth/provider bodies, one per key state the backend has (reading-lite-gh341.8). */
+export const E2E_PROVIDER = {
+  missing: { ...E2E_PROVIDER_LIMITS, credential: null },
+  connected: { ...E2E_PROVIDER_LIMITS, credential: E2E_PROVIDER_KEY },
+  invalid: { ...E2E_PROVIDER_LIMITS, credential: { ...E2E_PROVIDER_KEY, status: "invalid" } },
+};
+
+/** A key the connect form can be given: never sent anywhere but the stub. */
+export const E2E_PROVIDER_API_KEY = "sk-proj-e2e0000000000000000c0de";
+
+/**
+ * GET, POST, and DELETE /api/auth/provider, POST .../preferences, and GET
+ * .../usage (reading-lite-gh341.8). Awaited for the same reason as the
+ * sessions route: the provider page reads the settings and usage on mount.
+ * A connect stores the key's last four and a removal clears it, unless
+ * `connect` or `remove` gives the answer instead; a preferences save answers
+ * with the settings changed by the body. Usage answers today's charges
+ * against the effective limit, unless `usage` gives the answer instead.
+ */
+export async function serveProviderInBrowser(
+  page: Page,
+  answer: {
+    json?: unknown;
+    connect?: { status: number; json: unknown };
+    remove?: { status: number; json: unknown };
+    usage?: { status: number; json: unknown };
+  } = {},
+): Promise<{ connects: Request[]; removes: Request[]; saves: Request[] }> {
+  const connects: Request[] = [];
+  const removes: Request[] = [];
+  const saves: Request[] = [];
+  let stored = { ...((answer.json ?? E2E_PROVIDER.missing) as typeof E2E_PROVIDER.missing) } as Record<string, unknown>;
+  await page.route("**/api/auth/provider**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/auth/provider/usage" && request.method() === "GET") {
+      await route.fulfill(
+        answer.usage ?? {
+          status: 200,
+          json: {
+            day_key: pack.generated_at.slice(0, 10),
+            charged_microdollars: 120_000,
+            effective_daily_spend_microdollars: stored.effective_daily_spend_microdollars,
+            reset_at_ms: Date.parse(`${pack.generated_at.slice(0, 10)}T00:00:00Z`) + 24 * HOUR_MS,
+            observed_at_ms: PACK_NOW_MS,
+          },
+        },
+      );
+      return;
+    }
+    if (path === "/api/auth/provider/preferences" && request.method() === "POST") {
+      saves.push(request);
+      const body = request.postDataJSON() as { effort?: string; daily_spend_cap_microdollars?: number | null };
+      if (body.effort !== undefined) stored = { ...stored, effort: body.effort };
+      if (body.daily_spend_cap_microdollars !== undefined) {
+        const cap = body.daily_spend_cap_microdollars;
+        stored = {
+          ...stored,
+          daily_spend_cap_microdollars: cap,
+          effective_daily_spend_microdollars: cap ?? stored.operator_daily_spend_microdollars,
+        };
+      }
+      await route.fulfill({ status: 200, json: stored });
+      return;
+    }
+    if (path !== "/api/auth/provider") {
+      await route.fallback();
+      return;
+    }
+    if (request.method() === "GET") {
+      await route.fulfill({ status: 200, json: stored });
+      return;
+    }
+    if (request.method() === "POST") {
+      connects.push(request);
+      if (answer.connect) {
+        await route.fulfill(answer.connect);
+        return;
+      }
+      const key = String((request.postDataJSON() as { api_key: string }).api_key);
+      stored = { ...stored, credential: { ...E2E_PROVIDER_KEY, last_four: key.slice(-4), validated_at_ms: PACK_NOW_MS } };
+      await route.fulfill({ status: 200, json: stored });
+      return;
+    }
+    if (request.method() === "DELETE") {
+      removes.push(request);
+      if (answer.remove) {
+        await route.fulfill(answer.remove);
+        return;
+      }
+      stored = { ...stored, credential: null };
+      await route.fulfill({ status: 200, json: stored });
+      return;
+    }
+    await route.fallback();
+  });
+  return { connects, removes, saves };
+}
+
 /**
  * Serves DELETE /api/account in the browser (#340.8). Nothing reaches the
  * backend stub: the answer is whatever the spec asks for, and each request is

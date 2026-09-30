@@ -99,13 +99,14 @@ describe("AppShell", () => {
 });
 
 describe("AppShell account menu", () => {
-  it("shows the signed-in email, Account, and Sign out inside the navigation", async () => {
+  it("shows the signed-in email, Account, Provider, and Sign out inside the navigation", async () => {
     await renderShell("/", "system", vi.fn(), { status: "signed-in", email: "a@example.com" });
     const nav = screen.getByRole("navigation", { name: "Main" });
     const menu = within(nav).getByRole("group", { name: "Account menu, signed in as a@example.com" });
     const toggle = within(menu).getByText("Account", { selector: "summary *" });
     expect(within(menu).getByText("a@example.com")).toBeInTheDocument();
     expect(within(menu).getByRole("link", { name: "Account" })).toHaveAttribute("href", "/account/security");
+    expect(within(menu).getByRole("link", { name: "Provider" })).toHaveAttribute("href", "/account/provider");
     expect(within(menu).getByRole("button", { name: "Sign out" })).toBeEnabled();
     expect(within(nav).queryByRole("link", { name: "Sign in" })).toBeNull();
 

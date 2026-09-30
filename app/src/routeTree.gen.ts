@@ -19,6 +19,7 @@ import { Route as TermsRouteImport } from './routes/terms'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
+import { Route as AuthedAccountProviderRouteImport } from './routes/_authed/account.provider'
 import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
 import { Route as AuthedReadingsIdRouteImport } from './routes/_authed/readings.$id'
 
@@ -71,6 +72,11 @@ const LoginVerifyRoute = LoginVerifyRouteImport.update({
   path: '/login/verify',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthedAccountProviderRoute = AuthedAccountProviderRouteImport.update({
+  id: '/account/provider',
+  path: '/account/provider',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthedAccountSecurityRoute = AuthedAccountSecurityRouteImport.update({
   id: '/account/security',
   path: '/account/security',
@@ -92,6 +98,7 @@ export interface FileRoutesByFullPath {
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
+  '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
 }
@@ -105,6 +112,7 @@ export interface FileRoutesByTo {
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
+  '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
 }
@@ -120,6 +128,7 @@ export interface FileRoutesById {
   '/_authed/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
+  '/_authed/account/provider': typeof AuthedAccountProviderRoute
   '/_authed/account/security': typeof AuthedAccountSecurityRoute
   '/_authed/readings/$id': typeof AuthedReadingsIdRoute
 }
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/save'
     | '/auth/verify'
     | '/login/verify'
+    | '/account/provider'
     | '/account/security'
     | '/readings/$id'
   fileRoutesByTo: FileRoutesByTo
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/save'
     | '/auth/verify'
     | '/login/verify'
+    | '/account/provider'
     | '/account/security'
     | '/readings/$id'
   id:
@@ -162,6 +173,7 @@ export interface FileRouteTypes {
     | '/_authed/save'
     | '/auth/verify'
     | '/login_/verify'
+    | '/_authed/account/provider'
     | '/_authed/account/security'
     | '/_authed/readings/$id'
   fileRoutesById: FileRoutesById
@@ -250,6 +262,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginVerifyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/_authed/account/provider': {
+      id: '/_authed/account/provider'
+      path: '/account/provider'
+      fullPath: '/account/provider'
+      preLoaderRoute: typeof AuthedAccountProviderRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/account/security': {
       id: '/_authed/account/security'
       path: '/account/security'
@@ -269,12 +288,14 @@ declare module '@tanstack/react-router' {
 
 interface AuthedRouteChildren {
   AuthedSaveRoute: typeof AuthedSaveRoute
+  AuthedAccountProviderRoute: typeof AuthedAccountProviderRoute
   AuthedAccountSecurityRoute: typeof AuthedAccountSecurityRoute
   AuthedReadingsIdRoute: typeof AuthedReadingsIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedSaveRoute: AuthedSaveRoute,
+  AuthedAccountProviderRoute: AuthedAccountProviderRoute,
   AuthedAccountSecurityRoute: AuthedAccountSecurityRoute,
   AuthedReadingsIdRoute: AuthedReadingsIdRoute,
 }
