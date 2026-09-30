@@ -9,8 +9,8 @@ import { testReadingsFor, type TestReadings } from "./test-readings";
 // by-url and by-id pointers, a list row. `rowStore` keeps those verbs so each
 // test still reads as the scenario it describes, and maps them onto rows:
 //
-// - writeManifest seeds the reading (its rows ARE the list row and the by-id
-//   pointer, so those two writes have nothing left to do);
+// - writeManifest seeds the reading; its rows are the list row and the by-id
+//   pointer, so there is no separate write for either;
 // - writeByUrlPointer makes that reading the URL's owner, which is all a by-url
 //   pointer ever meant. One that names a reading not seeded yet is applied when
 //   the reading arrives;
@@ -62,9 +62,6 @@ export function rowStore(tenant: TenantContext = founderTenant()) {
       const keyPrefix = await readings.keyPrefix(readingId);
       return keyPrefix === null ? null : { id: readingId, key_prefix: keyPrefix };
     },
-    // The reading's rows are its by-id pointer and its list row.
-    writeByIdPointer: async (_id: string, _pointer: unknown): Promise<void> => undefined,
-    appendOrReplaceListIndexItem: async (_item: ListIndexItem): Promise<void> => undefined,
     writeListIndex: (index: { version?: 1; items: ListIndexItem[] }) => readings.seedListItems(index.items),
     async readListIndex(): Promise<{ version: 1; items: ListIndexItem[] }> {
       return { version: 1, items: await readings.store.allListItems() };

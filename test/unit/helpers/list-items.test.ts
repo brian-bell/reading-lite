@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { manifestToIndexItem } from "../../../src/modules/stores/list-items";
+import { manifestToIndexItem } from "../../helpers/list-items";
 import type { Manifest } from "../../../src/schemas/manifest";
 
 function emptyManifest(overrides: Partial<Manifest> = {}): Manifest {

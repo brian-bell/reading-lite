@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import type { ProcessReadingEnvelopeV1 } from "../../src/control-plane/envelope";
@@ -10,6 +10,7 @@ import {
   readingApiFor,
 } from "../../scripts/lib/reading-api";
 import { insertQuotaTenant, PUBLIC_LOOKUP } from "../helpers/tenant-fixtures";
+import { clearBucket, installQueueStub } from "./readings-harness";
 
 // Contract test for the operator-side Reading API client: the pure
 // decodeIntakeResponse must round-trip the REAL router's responses (toHttp's
@@ -31,20 +32,9 @@ function services(): Services {
   };
 }
 
-function installQueueStub(): void {
-  (env as unknown as { READING_JOBS: unknown }).READING_JOBS = {
-    send: vi.fn(async () => {}),
-  };
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
-}
-
-beforeEach(installQueueStub);
+beforeEach(() => {
+  installQueueStub();
+});
 afterEach(clearBucket);
 
 function post(path: string, body: unknown) {

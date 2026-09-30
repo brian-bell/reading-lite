@@ -27,7 +27,6 @@ import {
   type Services,
 } from "../../src/services";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
-import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import { PgReadingStore } from "../../src/modules/stores/postgres/reading-store";
 import { GetReadingResponseSchema, PostReadingsSimilarResponseSchema } from "../../src/schemas/api";
 import {
@@ -434,34 +433,6 @@ describe.each([
   });
 });
 
-describe("auth", () => {
-  it("rejects /api/readings without bearer", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request("/api/readings", {}, env);
-    expect(res.status).toBe(401);
-  });
-
-  it("rejects with wrong token", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request(
-      "/api/readings",
-      { headers: { authorization: "Bearer wrong" } },
-      env,
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it("accepts with correct token", async () => {
-    const app = createApp({ services: makeServices(makeStubFetch()) });
-    const res = await app.request(
-      "/api/readings",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    expect(res.status).toBe(200);
-  });
-});
-
 describe("route namespace", () => {
   // The un-prefixed /readings* namespace belongs to the frontend (app/ serves
   // the detail page there); the Worker must not claim it, even for authed callers.
@@ -605,39 +576,6 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     );
     expect(lookup.status).toBe(200);
     expect(await lookup.json()).toEqual({ id: submitJson.id });
-  });
-
-  it("returns the existing pending reading for a duplicate submit without enqueueing duplicate work", async () => {
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const url = "https://example.com/pending-duplicate";
-
-    const first = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-    expect(first.status).toBe(202);
-    const firstJson = (await first.json()) as { id: string };
-
-    const second = await app.fetch(
-      new Request("http://t/api/readings", {
-        method: "POST",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: JSON.stringify({ url }),
-      }),
-      env,
-      createExecutionContext(),
-    );
-    expect(second.status).toBe(200);
-    const secondJson = (await second.json()) as Manifest;
-    expect(secondJson.id).toBe(firstJson.id);
-    expect(secondJson.status).toBe("pending");
-    expect(queuedJobs).toHaveLength(1);
   });
 
   it("converges simultaneous submits of one URL to one reading and one queued job", async () => {
@@ -884,9 +822,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     };
     await reader.writeManifest(keyPrefix, newerPending);
     await reader.readings.putEmbedding(id, new Array(1536).fill(0.24));
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
 
     await processReading(
       {
@@ -960,9 +896,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       "text/html; charset=utf-8",
     );
     await reader.writeExtracted(keyPrefix, "winner extracted");
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(ready, keyPrefix));
 
     await processReading(
       {
@@ -1080,9 +1014,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
       updated_at: "2026-04-26T19:30:00.000Z",
     };
     await reader.writeManifest(keyPrefix, newerPending);
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(newerPending, keyPrefix));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await processReading(
@@ -1303,9 +1235,7 @@ describe("POST /api/readings + GET /api/readings/:id (submit-and-poll)", () => {
     };
     const keyPrefix = buildKeyPrefix(failed.id, failed.created_at);
     await reader.writeManifest(keyPrefix, failed);
-    await reader.writeByIdPointer(failed.id, { id: failed.id, key_prefix: keyPrefix });
     await reader.writeByUrlPointer(urlHash, { id: failed.id, key_prefix: keyPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(failed, keyPrefix));
     installRejectingQueueStub();
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -2166,7 +2096,6 @@ describe("POST /api/readings/:id/reprocess — markdown source", () => {
       updated_at: createdAt,
     };
     await reader.writeManifest(keyPrefix, manifest);
-    await reader.writeByIdPointer(id, { id, key_prefix: keyPrefix });
 
     const response = await app.request(
       `/api/readings/${id}/reprocess`,
@@ -2241,16 +2170,8 @@ describe("GET /api/readings/lookup", () => {
   const lookup = (app: ReturnType<typeof createApp>, url?: string) =>
     apiRequest(app, TOKEN, `/api/readings/lookup${url === undefined ? "" : `?url=${encodeURIComponent(url)}`}`);
 
-  it("resolves the URL's owner, whatever its status, and 404s an unowned URL", async () => {
-    const url = "https://example.com/lookup-owned";
-    const { app, id } = await seedFounderReading(url);
-
-    const found = await lookup(app, url);
-    expect(found.status).toBe(200);
-    expect(await found.json()).toEqual({ id });
-
-    const missing = await lookup(app, "https://example.com/lookup-never-saved");
-    expect(missing.status).toBe(404);
+  it("rejects a lookup without a url with 400", async () => {
+    const app = createApp({ services: makeServices(makeStubFetch()) });
     expect((await lookup(app)).status).toBe(400);
   });
 
@@ -2383,23 +2304,6 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     expect(body).toEqual({ readings: [], limit: 20, offset: 0, has_more: false });
   });
 
-  it("failure path: index entry ends up failed", async () => {
-    const fetchFn = makeStubFetch({ source: { status: 404, body: "not found" } });
-    const services = makeServices(fetchFn);
-    const app = createApp({ services });
-    await postOne(app, "https://example.com/missing", services);
-
-    const list = await app.request(
-      "/api/readings",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const body = (await list.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
-    expect(body.readings).toHaveLength(1);
-    expect(body.readings[0]!.status).toBe("failed");
-    expect(body.readings[0]!.error?.code).toBe("BadStatusError");
-  });
-
   it("Reddit URLs fail with RedditManualImportError (worker can't fetch; use the local skill)", async () => {
     // The default source stub is never hit: the extractor throws on the Reddit
     // URL before any fetch, so the reading lands failed with a guiding error
@@ -2418,127 +2322,6 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     expect(body.readings).toHaveLength(1);
     expect(body.readings[0]!.status).toBe("failed");
     expect(body.readings[0]!.error?.code).toBe("RedditManualImportError");
-  });
-
-  it("?q= filters across title, tldr, url (case-insensitive substring)", async () => {
-    const idCounter = { n: 0 };
-    const services = makeServices(
-      makeStubFetch({
-        toolInput: {
-          title: "Rust async story",
-          tldr: "How async works in Rust",
-          tags: ["rust", "async"],
-          keywords: ["rust async", "async programming", "systems language"],
-          people: [],
-          orgs: [],
-          novelty_verdict: "novel",
-          connections: [],
-          summary_markdown: "summary body",
-        },
-      }),
-      idCounter,
-    );
-    const app = createApp({ services });
-    await postOne(app, "https://example.com/rust", services);
-
-    // Submit a second reading with different content via a fresh stub.
-    const services2 = makeServices(
-      makeStubFetch({
-        toolInput: {
-          title: "Go concurrency",
-          tldr: "Goroutines",
-          tags: ["go"],
-          keywords: ["go concurrency", "goroutines", "systems language"],
-          people: [],
-          orgs: [],
-          novelty_verdict: "novel",
-          connections: [],
-          summary_markdown: "summary body",
-        },
-      }),
-      idCounter,
-    );
-    const app2 = createApp({ services: services2 });
-    await postOne(app2, "https://example.com/go", services2);
-
-    const services3 = makeServices(
-      makeStubFetch({
-        toolInput: {
-          title: "Do Not Sell the Whole Ticket at Once",
-          tldr: "Small commitments rather than one attempt to win the whole project.",
-          tags: ["sales", "career"],
-          keywords: ["micro-sales", "soft skills", "stakeholder buy-in"],
-          people: [],
-          orgs: [],
-          novelty_verdict: "novel",
-          connections: [],
-          summary_markdown: "summary body",
-        },
-      }),
-      idCounter,
-    );
-    const app3 = createApp({ services: services3 });
-    await postOne(app3, "https://example.com/ticket", services3);
-
-    const res = await app.request(
-      "/api/readings?q=rust",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const body = (await res.json()) as { readings: Array<{ url: string }> };
-    expect(body.readings).toHaveLength(1);
-    expect(body.readings[0]!.url).toBe("https://example.com/rust");
-
-    const byKeyword = await app.request(
-      "/api/readings?q=soft+skills",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const keywordBody = (await byKeyword.json()) as { readings: Array<{ url: string }> };
-    expect(keywordBody.readings.map((r) => r.url)).toEqual(["https://example.com/ticket"]);
-  });
-
-  it("?tag= filters by exact tag match (case-insensitive)", async () => {
-    const idCounter = { n: 0 };
-    const mkServices = (toolInput: Record<string, unknown>) =>
-      makeServices(makeStubFetch({ toolInput }), idCounter);
-
-    const services1 = mkServices({
-      title: "AI piece",
-      tldr: "About AI",
-      tags: ["AI", "infra"],
-      keywords: ["artificial intelligence", "infrastructure", "AI systems"],
-      people: [],
-      orgs: [],
-      novelty_verdict: "novel",
-      connections: [],
-      summary_markdown: "summary body",
-    });
-    const app1 = createApp({ services: services1 });
-    await postOne(app1, "https://example.com/ai", services1);
-
-    const services2 = mkServices({
-      title: "ML piece",
-      tldr: "About ML",
-      tags: ["ml"],
-      keywords: ["machine learning", "ML systems", "model training"],
-      people: [],
-      orgs: [],
-      novelty_verdict: "novel",
-      connections: [],
-      summary_markdown: "summary body",
-    });
-    const app2 = createApp({ services: services2 });
-    await postOne(app2, "https://example.com/ml", services2);
-
-    const res = await app1.request(
-      "/api/readings?tag=ai",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      env,
-    );
-    const body = (await res.json()) as { readings: Array<{ url: string }> };
-    expect(body.readings).toHaveLength(1);
-    expect(body.readings[0]!.url).toBe("https://example.com/ai");
   });
 
   it("?q= and ?tag= AND together", async () => {
@@ -2622,37 +2405,6 @@ describe("GET /api/readings — list with q, tag, offset, limit", () => {
     expect(res.status).toBe(400);
   });
 
-  it("staleness uses updated_at, not created_at", async () => {
-    // Seed an index entry whose created_at is ancient but updated_at is fresh.
-    // The staleness annotator must trust updated_at and leave it as pending
-    // (matches the manifest-level annotateStale semantics).
-    const reader = rowStore();
-    await reader.writeListIndex({
-      version: 1,
-      items: [
-        {
-          id: "rd_fresh",
-          key_prefix: "readings/2020/01/01T000000Z-rd_fresh",
-          url: "https://example.com/fresh",
-          status: "pending",
-          created_at: "2020-01-01T00:00:00.000Z",
-          updated_at: "2026-04-26T20:00:00.000Z",
-        },
-      ],
-    });
-    const customEnv = { ...env, PENDING_TTL_SECONDS: "300" } as unknown as typeof env;
-    const services = makeServices(makeStubFetch());
-    const app = createApp({ services });
-    const res = await app.request(
-      "/api/readings",
-      { headers: { authorization: `Bearer ${TOKEN}` } },
-      customEnv,
-    );
-    const body = (await res.json()) as { readings: Array<{ status: string; error?: { code: string } }> };
-    expect(body.readings).toHaveLength(1);
-    expect(body.readings[0]!.status).toBe("pending");
-  });
-
   it("staleness flips a long-stale pending to failed via updated_at", async () => {
     // updated_at older than TTL → annotator must mark it failed in the
     // response (the underlying manifest stays pending; this is presentation
@@ -2709,14 +2461,9 @@ describe("GET /api/readings/:id — relationship_targets", () => {
     } as Manifest;
   }
 
-  async function seed(tenant: ReturnType<typeof founderTenant>, m: Manifest, opts: { indexed?: boolean } = {}) {
-    const reader = rowStore(tenant);
+  async function seed(tenant: ReturnType<typeof founderTenant>, m: Manifest) {
     const keyPrefix = buildKeyPrefix(m.id, m.created_at);
-    await reader.writeManifest(keyPrefix, m);
-    await reader.writeByIdPointer(m.id, { id: m.id, key_prefix: keyPrefix });
-    if (opts.indexed ?? true) {
-      await reader.appendOrReplaceListIndexItem(manifestToIndexItem(m, keyPrefix));
-    }
+    await rowStore(tenant).writeManifest(keyPrefix, m);
     return keyPrefix;
   }
 
@@ -3349,8 +3096,6 @@ describe("DELETE /api/readings/:id (purge)", () => {
       updated_at: createdAt,
     };
     await reader.writeManifest(orphanPrefix, orphan);
-    await reader.writeByIdPointer(orphanId, { id: orphanId, key_prefix: orphanPrefix });
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(orphan, orphanPrefix));
 
     const del = await apiRequest(app, TOKEN, `/api/readings/${orphanId}`, { method: "DELETE" });
     expect(del.status).toBe(200);

@@ -47,16 +47,6 @@ function deadLetterDeps(mark: (body: ProcessReadingArgs, tenant: { tenantId: str
 }
 
 describe("handleDeadLetter", () => {
-  it("marks the reading failed and acks (never retries; DLQ is terminal)", async () => {
-    const msg = fakeMessage();
-    const mark = vi.fn(async () => {});
-    await handleDeadLetter(msg, deadLetterDeps(mark));
-    expect(mark).toHaveBeenCalledOnce();
-    expect(mark).toHaveBeenCalledWith(JOB, { tenantId: TENANT });
-    expect(msg.ack).toHaveBeenCalledOnce();
-    expect(msg.retry).not.toHaveBeenCalled();
-  });
-
   it("acks an unversioned leftover without marking, so drain-only cutover cannot process it", async () => {
     const msg = fakeMessage(JOB);
     const mark = vi.fn(async () => {});

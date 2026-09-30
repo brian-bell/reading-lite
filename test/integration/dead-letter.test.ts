@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { markDeadLettered, type ProcessReadingArgs } from "../../src/process-reading";
 import worker, { type Env } from "../../src/index";
 import type { Services } from "../../src/services";
-import { manifestToIndexItem } from "../../src/modules/stores/list-items";
 import { parseTenantId } from "../../src/control-plane/ids";
 import { tenantUsageFor } from "../../src/control-plane/tenant-usage-guard";
 import {
@@ -22,6 +21,7 @@ import type { Manifest } from "../../src/schemas/manifest";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql, TENANT_STATUS_LOOKUP } from "../helpers/sql-faults";
+import { clearBucket } from "./readings-harness";
 
 const READING_ID = "rd_0123456780";
 const KEY_PREFIX = buildKeyPrefix(READING_ID, "2026-05-07T12:00:00.000Z");
@@ -74,11 +74,6 @@ function pendingManifest(): Manifest {
   };
 }
 
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
-}
-
 describe("markDeadLettered", () => {
   beforeEach(clearBucket);
 
@@ -86,7 +81,6 @@ describe("markDeadLettered", () => {
     const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
     const pointer = { id: READING_ID, key_prefix: KEY_PREFIX };
     await reader.writeByUrlPointer(DLQ_URL_HASH, pointer);
 
@@ -148,7 +142,6 @@ describe("markDeadLettered", () => {
     const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
     // Written after the purge's own sweep, as a late consumer would.
     await reader.writeAttempt(KEY_PREFIX, {
       id: `at_${READING_ID}`,
@@ -178,7 +171,6 @@ describe("markDeadLettered", () => {
     const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
     await testControlPlane(env).run("UPDATE users SET status = 'deleting' WHERE id = ?", FOUNDER_TENANT_ID);
     try {
       await markDeadLettered(args(), env as unknown as Env, services(), founderTenant());
@@ -193,7 +185,6 @@ describe("markDeadLettered", () => {
     const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
     const lookup = interceptSql(TENANT_STATUS_LOOKUP, () => new Error("database hiccup"));
     const consoleErr = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -288,7 +279,6 @@ describe("markDeadLettered", () => {
       },
     };
     await reader.writeManifest(KEY_PREFIX, v2);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(v2, KEY_PREFIX));
 
     await markDeadLettered(
       args({ attemptId: "at_ORIGINAL" }),
@@ -407,7 +397,6 @@ describe("queue() dead-letter routing", () => {
     const reader = rowStore();
     const manifest = pendingManifest();
     await reader.writeManifest(KEY_PREFIX, manifest);
-    await reader.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
     const msg = dlqMessage();
     const batch = {
@@ -434,9 +423,7 @@ describe("queue() dead-letter routing", () => {
     const founderManifest: Manifest = { ...pendingManifest(), title: "founder pending" };
     const otherManifest: Manifest = { ...pendingManifest(), title: "other pending" };
     await founder.writeManifest(KEY_PREFIX, founderManifest);
-    await founder.appendOrReplaceListIndexItem(manifestToIndexItem(founderManifest, KEY_PREFIX));
     await other.writeManifest(KEY_PREFIX, otherManifest);
-    await other.appendOrReplaceListIndexItem(manifestToIndexItem(otherManifest, KEY_PREFIX));
 
     const msg = {
       ...dlqMessage(),
@@ -469,7 +456,6 @@ describe("queue() dead-letter routing", () => {
     const founder = rowStore(founderTenant());
     const manifest: Manifest = { ...pendingManifest(), title: "founder pending" };
     await founder.writeManifest(KEY_PREFIX, manifest);
-    await founder.appendOrReplaceListIndexItem(manifestToIndexItem(manifest, KEY_PREFIX));
 
     const msg = {
       ...dlqMessage(),
