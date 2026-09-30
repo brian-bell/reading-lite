@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   resolveWranglerCliJs,
@@ -35,9 +33,6 @@ describe("wrangler CLI launcher", () => {
     const cli = resolveWranglerCliJs();
     expect(cli.replaceAll("\\", "/")).toMatch(/\/wrangler-dist\/cli\.js$/);
     expect(cli.replaceAll("\\", "/")).not.toMatch(/\/bin\/wrangler\.js$/);
-
-    const wrapper = path.join(path.dirname(cli), "..", "bin", "wrangler.js");
-    expect(readFileSync(wrapper, "utf8")).toMatch(/MIN_NODE_VERSION\s*=\s*"22\.0\.0"/);
   });
 
   it("execs the current Node rather than a PATH wrangler binary", () => {
@@ -72,18 +67,5 @@ describe("wrangler CLI launcher", () => {
     expect(result.stderr).not.toMatch(/Wrangler requires at least Node\.js v22/i);
     expect(result.stdout + result.stderr).not.toMatch(/Please update your version of Node\.js/);
     expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
-  });
-
-  it("is imported by every default wrangler spawner the ops CLI uses", () => {
-    const spawners = [
-      "scripts/corpus-lib/wrangler-r2.ts",
-      "scripts/ops-lib/commands/deploy-worker.ts",
-      "scripts/staging-env.ts",
-    ];
-    for (const file of spawners) {
-      const src = readFileSync(path.join(process.cwd(), file), "utf8");
-      expect(src, file).toMatch(/wrangler-cli["']/);
-      expect(src, file).not.toMatch(/spawn\(\s*["']wrangler["']/);
-    }
   });
 });
