@@ -44,6 +44,7 @@ const SUPPORTED_WORKFLOWS: Record<string, string[]> = {
   eval: ["summarizer"],
   account: ["wipe", "residue-scan"],
   export: ["inspect", "cancel"],
+  "provider-keys": ["reencrypt"],
 };
 
 const repoRoot = path.resolve(__dirname, "../../..");

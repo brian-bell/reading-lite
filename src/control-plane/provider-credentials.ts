@@ -3,6 +3,7 @@ import { lockKey, type ControlPlaneDb } from "./db";
 import { parseUserId } from "./ids";
 import { fromTimestamp, toTimestamp } from "./pg-time";
 import {
+  decryptProviderKey,
   encryptProviderKey,
   type ProviderKeyRoot,
 } from "./provider-key-crypto";
@@ -132,6 +133,71 @@ export async function upsertProviderCredential(
       throw new Error("provider credential was not stored");
     }
     return stored;
+  });
+}
+
+// Every tenant's credential rows, for the operator's rotation command. The
+// ciphertext never leaves the process that reads it.
+export async function listProviderCredentials(db: ControlPlaneDb): Promise<ProviderCredential[]> {
+  const rows = await db.all(`SELECT ${COLUMNS} FROM tenant_provider_credentials ORDER BY tenant_id, provider`);
+  return rows.map(toCredential);
+}
+
+export type ReencryptOutcome = "reencrypted" | "current" | "gone" | "other_version" | "undecryptable";
+
+// Rotation (ADR 0004): reseals one row sealed under `from` under `to`, keeping
+// its credential version, so the AAD, the dispatch's mark-invalid-by-version
+// and the reader's settings are unchanged. Decided under the row lock: a row
+// replaced since the caller listed it is already on `to` and is left alone.
+// updated_at stays put; a reseal is not a change to the credential.
+export async function reencryptProviderCredential(
+  db: ControlPlaneDb,
+  input: { tenantId: string; provider?: ProviderName; from: ProviderKeyRoot; to: ProviderKeyRoot },
+): Promise<ReencryptOutcome> {
+  const tenantId = requireTenant(input.tenantId);
+  const provider = input.provider ?? PROVIDER_OPENAI;
+  return db.transaction(async (tx) => {
+    const row = await tx.first(
+      `SELECT ${COLUMNS} FROM tenant_provider_credentials
+       WHERE tenant_id = ? AND provider = ?
+       FOR UPDATE`,
+      tenantId,
+      provider,
+    );
+    if (!row) return "gone";
+    const current = toCredential(row);
+    if (current.keyVersion === input.to.version) return "current";
+    if (current.keyVersion !== input.from.version) return "other_version";
+    let plaintext: string;
+    try {
+      plaintext = await decryptProviderKey({
+        roots: { providerKeyRoot: input.from },
+        tenantId,
+        credentialVersion: current.credentialVersion,
+        keyVersion: current.keyVersion,
+        ciphertext: current.ciphertext,
+        iv: current.iv,
+      });
+    } catch {
+      return "undecryptable";
+    }
+    const sealed = await encryptProviderKey({
+      root: input.to,
+      tenantId,
+      credentialVersion: current.credentialVersion,
+      plaintext,
+    });
+    await tx.run(
+      `UPDATE tenant_provider_credentials
+       SET ciphertext = ?, iv = ?, key_version = ?
+       WHERE tenant_id = ? AND provider = ?`,
+      sealed.ciphertext,
+      sealed.iv,
+      input.to.version,
+      tenantId,
+      provider,
+    );
+    return "reencrypted";
   });
 }
 
