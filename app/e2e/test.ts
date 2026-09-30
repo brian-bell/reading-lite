@@ -42,6 +42,27 @@ export const test = base.extend<EvidenceOptions>({
 export { expect };
 
 /**
+ * Answers `GET /api/whoami` in the browser with the reader e2e/backend-stub.js
+ * signs in. Public pages (the legal notices, the sample library) read identity
+ * in the browser only (src/public-paths.ts), and the Worker under test
+ * answers `/api/*` with 404, so a signed-in public page needs this.
+ */
+export async function serveIdentityInBrowser(page: Page): Promise<void> {
+  await page.route("**/api/whoami", async (route) => {
+    await route.fulfill({
+      json: {
+        tenant_id: "usr_aaaaaaaa",
+        user_id: "usr_aaaaaaaa",
+        principal: "session",
+        tenant_data_plane: true,
+        email: "reader-a@example.com",
+        csrf_token: "csrf-token-for-a",
+      },
+    });
+  });
+}
+
+/**
  * Serves `GET /api/readings/:id` in the browser from the fixture pack, so a
  * client-side navigation between readings has a backend to ask. The frontend
  * Worker under test answers `/api/*` with 404 by design (ADR 0003: the backend

@@ -38,6 +38,13 @@ declare module "@tanstack/history" {
 export const TRAIL_LIMIT = 10;
 
 /**
+ * Where a hop's reading lives: the reader's library, or the public sample
+ * library (reading-lite-gh341.10), whose relationships lead only to other
+ * samples.
+ */
+export type ReadingRoute = "/readings/$id" | "/samples/$id";
+
+/**
  * One id per document load, minted on first use. Not at import time: workerd
  * refuses random values in module scope, and this module is part of the
  * reading route's server bundle. The server's id never matches a browser's.

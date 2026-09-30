@@ -1,5 +1,5 @@
 import { Link, useCanGoBack, useRouter } from "@tanstack/react-router";
-import { previousHop, trailAfterReturning, trailOf, type TrailHop } from "../reading-trail";
+import { previousHop, trailAfterReturning, trailOf, type ReadingRoute, type TrailHop } from "../reading-trail";
 import { useRenderedLocation } from "./rendered-location";
 
 // The return trail above a reading reached by following a relationship
@@ -21,12 +21,13 @@ export function useTrail(): readonly TrailHop[] {
   return useRenderedLocation((location) => trailOf(location.state));
 }
 
-export function ReturnTrail({ hops }: { hops: readonly TrailHop[] }) {
+/** `route` is where the previous hop lives: a reading, or on the sample library's pages, a sample. */
+export function ReturnTrail({ hops, route = "/readings/$id" }: { hops: readonly TrailHop[]; route?: ReadingRoute }) {
   const previous = previousHop(hops);
   if (!previous) return null;
   return (
     <nav className="reading-trail" aria-label="Return trail">
-      <BackTo hops={hops} previous={previous} className="reading-trail-back" />
+      <BackTo hops={hops} previous={previous} className="reading-trail-back" route={route} />
       <p className="reading-trail-context">
         You followed a {previous.kind} from <strong>{previous.title}</strong>.
       </p>
@@ -35,7 +36,17 @@ export function ReturnTrail({ hops }: { hops: readonly TrailHop[] }) {
   );
 }
 
-export function BackTo({ hops, previous, className }: { hops: readonly TrailHop[]; previous: TrailHop; className?: string }) {
+export function BackTo({
+  hops,
+  previous,
+  className,
+  route = "/readings/$id",
+}: {
+  hops: readonly TrailHop[];
+  previous: TrailHop;
+  className?: string;
+  route?: ReadingRoute;
+}) {
   const router = useRouter();
   const canGoBack = useCanGoBack();
   const label = `Back to ${previous.title}`;
@@ -49,7 +60,7 @@ export function BackTo({ hops, previous, className }: { hops: readonly TrailHop[
   return (
     <Link
       className={className}
-      to="/readings/$id"
+      to={route}
       params={{ id: previous.id }}
       state={(prev) => ({ libraryReturn: prev?.libraryReturn, trail: trailAfterReturning(hops) })}
     >

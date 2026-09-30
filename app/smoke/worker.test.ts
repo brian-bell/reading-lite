@@ -141,6 +141,31 @@ describe("public legal pages", () => {
   });
 });
 
+// The public sample library (reading-lite-gh341.10): bundled readings,
+// rendered without identity or any backend read, and cacheable like the legal
+// pages.
+describe("public sample library", () => {
+  const PAGES = [
+    ["/samples", "Sample library", "A quieter internet is a choice we can make"],
+    ["/samples/a-quieter-internet", "A quieter internet is a choice we can make", "Libraries are gardens, not warehouses"],
+  ] as const;
+
+  it.each(PAGES)("server-renders %s signed out, without private no-store or identity", async (path, title, text) => {
+    const response = await request(path, { headers: { Cookie: "__Host-session=session-a" } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control") ?? "").not.toMatch(/no-store|private/);
+    expect(response.headers.get("Content-Security-Policy")).toBe("img-src 'self' https: data:");
+    const html = await response.text();
+    expect(html).toContain(heading(title));
+    expect(html).toContain(text);
+    expect(html).toContain('href="/login"');
+    expect(html).not.toContain("Account menu");
+    expect(html).not.toContain("reader-a@example.com");
+    expect(html).not.toContain("csrf-token-for-a");
+    expect(dehydratedQueryKeys(html)).toEqual([]);
+  });
+});
+
 describe("signed-in identity", () => {
   const A = {
     cookie: "__Host-session=session-a",

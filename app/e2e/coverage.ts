@@ -7,9 +7,10 @@
 // missing reading, sign-in, save, one trail hop, Source, Details, the inbox
 // and an inbox item, account sessions, a ready archive export, account
 // deletion's confirmation and closing page, a missing and a connected provider
-// key, public legal pages): CI runs those alone (e2e/scope.ts) and the rest
-// locally. `fixture` names a state from the fixture pack
-// (docs/design/connected/fixture-pack.md); e2e/backend-stub.js serves it from
+// key, public legal pages, the sample library and a sample): CI runs those
+// alone (e2e/scope.ts) and the rest locally. `fixture` names a state from the
+// fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
+// serves it from
 // e2e/fixtures/fixture-pack.json, so a new fixture state is one edit in
 // test/fixtures/local-seed.ts plus `npm run fixtures:app` at the repo root.
 // Mark it `anyHost` only if it expects nothing the stub or the pack
@@ -30,6 +31,7 @@ import {
   serveExportInBrowser,
   serveImportInBrowser,
   serveInboxInBrowser,
+  serveIdentityInBrowser,
   serveSaveInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -623,6 +625,52 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   { name: "terms", anyHost: true, essential: true, path: "/terms", state: "signed-out", heading: "Terms of Service" },
   { name: "privacy", anyHost: true, essential: true, path: "/privacy", state: "signed-out", heading: "Privacy Policy" },
   { name: "dmca", anyHost: true, essential: true, path: "/dmca", state: "signed-out", heading: "Copyright Complaints" },
+
+  // The public sample library (reading-lite-gh341.10). Bundled in the
+  // frontend, so every signed-out case holds on any host: the list, a sample
+  // with a connection and a tension, one followed connection, a sample the
+  // archive had nothing close to, and a link that names no sample. Signed in,
+  // identity is read in the browser only, so the call to action needs whoami
+  // served there.
+  { name: "samples", anyHost: true, essential: true, path: "/samples", state: "signed-out", heading: "Sample library" },
+  {
+    name: "sample-reading",
+    anyHost: true,
+    essential: true,
+    path: "/samples/a-quieter-internet",
+    state: "signed-out",
+    heading: "A quieter internet is a choice we can make",
+  },
+  {
+    name: "sample-trail-one-hop",
+    anyHost: true,
+    path: "/samples/a-quieter-internet",
+    state: "signed-out",
+    heading: "A quieter internet is a choice we can make",
+    prepare: async (page) => {
+      await followCard(page, "Libraries are gardens, not warehouses");
+    },
+  },
+  {
+    name: "sample-sparse",
+    anyHost: true,
+    path: "/samples/against-the-endless-queue",
+    state: "signed-out",
+    heading: "Against the endless queue",
+  },
+  { name: "sample-not-found", anyHost: true, path: "/samples/nowhere", state: "signed-out", heading: "This sample doesn't exist." },
+  {
+    name: "sample-reading-signed-in",
+    path: "/samples/a-quieter-internet",
+    state: "signed-in",
+    heading: "A quieter internet is a choice we can make",
+    stub: async (page) => {
+      await serveIdentityInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByRole("link", { name: "Open your library" })).toBeVisible();
+    },
+  },
 
   // Account (#340.1, #340.6, #340.7, reading-lite-mxwx.5). The sessions list,
   // the notification settings, the tokens, and the export status are fetched

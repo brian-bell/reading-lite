@@ -64,7 +64,7 @@ describe("withResponsePolicy", () => {
     expect(response.headers.get("Location")).toBe("/");
   });
 
-  it.each(["/terms", "/privacy", "/dmca"])("leaves %s off private, no-store", (pathname) => {
+  it.each(["/terms", "/privacy", "/dmca", "/samples", "/samples/a-quieter-internet"])("leaves %s off private, no-store", (pathname) => {
     const original = new Response("<!doctype html>", {
       headers: { "Content-Type": "text/html", "Cache-Control": "private, no-store" },
     });

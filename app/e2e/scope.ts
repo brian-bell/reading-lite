@@ -34,6 +34,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "inbox",
   "account",
   "controls",
+  "samples",
 ]);
 
 export function inScope(project: { name?: string; metadata?: { anyHost?: boolean } }): boolean {

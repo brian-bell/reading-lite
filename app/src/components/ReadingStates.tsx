@@ -64,6 +64,24 @@ export function InboxItemNotFound() {
 }
 
 /**
+ * A sample library link that names no sample (reading-lite-gh341.10): a
+ * wrong or outdated link. The samples are bundled, so nothing else can be
+ * missing.
+ */
+export function SampleNotFound() {
+  return (
+    <StatePage heading="This sample doesn't exist.">
+      <p className="auth-lede">The link may be wrong, or the sample may have been replaced.</p>
+      <div className="form-actions">
+        <Link to="/samples" className="button button-primary">
+          All samples
+        </Link>
+      </div>
+    </StatePage>
+  );
+}
+
+/**
  * 403. Never a sign-out: the session stays exactly as it was. `children` is
  * the action offered, if the page has one to offer.
  */
