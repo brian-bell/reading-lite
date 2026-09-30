@@ -13,11 +13,9 @@ import { registerMcpTools, type McpToolContext } from "./tools";
 import type { McpDispatch } from "./dispatch";
 
 export const MCP_SERVER_NAME = "reading-lite";
-export const MCP_SERVER_VERSION = "1.0.0";
-
-export function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+// 2.0.0: import_markdown stages in the inbox instead of importing
+// (reading-lite-gh423), poll_until_ready is gone, and the inbox tools exist.
+export const MCP_SERVER_VERSION = "2.0.0";
 
 export interface CreateMcpServerOptions extends McpToolContext {}
 
@@ -26,15 +24,11 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
     { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
     {
       instructions:
-        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url, import_markdown, and reprocess_reading mutate the corpus. After a successful import, include a markdown link to public_url when the result has one.",
+        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url and reprocess_reading mutate the corpus. import_markdown STAGES markdown in the user's inbox: it is not in the library until a person promotes it, so never present an inbox item as saved or give it a public link. Review staged items with list_inbox and get_inbox_item, and remove one with discard_inbox_item. When a result has public_markdown_link, include it in your reply.",
     },
   );
   registerMcpTools(server, opts);
   return server;
-}
-
-export interface McpHandlerOptions {
-  sleep?: (ms: number) => Promise<void>;
 }
 
 function methodNotAllowed(): Response {
@@ -50,9 +44,7 @@ function methodNotAllowed(): Response {
 
 export function createMcpHandler(
   dispatchFrom: (c: Context<AppBindings>) => McpDispatch,
-  opts: McpHandlerOptions = {},
 ): MiddlewareHandler<AppBindings> {
-  const sleep = opts.sleep ?? defaultSleep;
   return async (c) => {
     if (c.req.method !== "POST") {
       return methodNotAllowed();
@@ -62,7 +54,6 @@ export function createMcpHandler(
     const server = createMcpServer({
       dispatch,
       webBaseUrl: c.env.WEB_BASE_URL,
-      sleep,
     });
     const transport = new StreamableHTTPTransport({ enableJsonResponse: true });
     await server.connect(transport);

@@ -132,9 +132,13 @@ no OAuth and no network re-fetch of the public host.
 | `list_readings`, `search_readings` | Metadata, with pagination/filtering |
 | `get_reading`, `get_reading_content` | Manifest or opt-in extracted Markdown by ID |
 | `get_diagnostics` | URL-ownership/content/attempt diagnostics |
-| `submit_url`, `import_markdown`, `reprocess_reading` | Corpus writes subject to the caller's scopes |
+| `submit_url`, `reprocess_reading` | Corpus writes subject to the caller's scopes. `reprocess_reading` refuses a Markdown source without dispatching |
+| `import_markdown` | Stages Markdown through `POST /api/inbox`: `{ inbox_item_id, replaced, corpus_reading? }`, never a `public_url`. A ready or pending owner returns `{ existing: true, reading, public_url }` and stages nothing |
+| `list_inbox`, `get_inbox_item`, `discard_inbox_item` | The caller's inbox: metadata, one item's Markdown (chunked like `get_reading_content`), or a discard |
 
-Successful imports include `public_url` and `public_markdown_link` when
+There is no promote tool: agent-supplied Markdown reaches the library only when
+a person promotes it with `POST /api/inbox/:id/promote`. Results that name a
+reading include `public_url` and `public_markdown_link` when
 `WEB_BASE_URL` is configured. Production uses `https://readinglite.ai/`.
 Use the [README connector example](../README.md#api-and-mcp) with your client's
 remote-connector configuration. Never commit the bearer token.

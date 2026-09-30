@@ -102,9 +102,9 @@ For a remote MCP client:
 }
 ```
 
-Keep the token out of git. The connector has eight tools for listing, searching,
-reading content, submitting URLs, importing Markdown, reprocessing, and
-diagnostics. See [MCP setup and routes](docs/api.md#mcp-connector).
+Keep the token out of git. The connector has eleven tools for listing, searching,
+reading content, submitting URLs, reprocessing, diagnostics, and staging
+Markdown in the inbox for a person to review and promote. See [MCP setup and routes](docs/api.md#mcp-connector).
 
 ## Imports and operations
 

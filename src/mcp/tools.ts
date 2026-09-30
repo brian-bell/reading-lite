@@ -3,13 +3,11 @@ import { z } from "zod";
 import { apiErrorResult, dispatchApi, jsonBody, type McpDispatch } from "./dispatch";
 import {
   CONTENT_CHUNK_BYTES,
+  errorToolResult,
   jsonToolResult,
-  POLL_INTERVAL_MS,
-  POLL_MAX_WAIT_MS,
   publicMarkdownLink,
   publicReadingUrl,
   sliceUtf8,
-  maxPolls,
 } from "./format";
 
 export const MCP_TOOL_NAMES = [
@@ -21,13 +19,22 @@ export const MCP_TOOL_NAMES = [
   "import_markdown",
   "reprocess_reading",
   "get_diagnostics",
+  "list_inbox",
+  "get_inbox_item",
+  "discard_inbox_item",
 ] as const;
 
 export interface McpToolContext {
   dispatch: McpDispatch;
   webBaseUrl: string;
-  sleep: (ms: number) => Promise<void>;
 }
+
+// Agent-supplied Markdown reaches the corpus only through a person's review
+// (reading-lite-gh423): import_markdown stages it in the inbox, promote is
+// REST-only, and reprocess_reading refuses a Markdown source.
+const STAGED_NOTE = "staged in your inbox; not in the library until a person promotes it";
+const MARKDOWN_REPROCESS_REFUSED =
+  "reprocess_reading does not accept a markdown source; stage the text with import_markdown for a person to review and promote";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -53,10 +60,6 @@ function readingTitleOf(value: unknown): string | undefined {
   return typeof title === "string" ? title : undefined;
 }
 
-function isTerminalStatus(status: string | undefined): boolean {
-  return status === "ready" || status === "failed";
-}
-
 function listQuery(args: { q?: string; tag?: string; limit?: number; offset?: number }): string {
   const params = new URLSearchParams();
   if (args.q !== undefined) params.set("q", args.q);
@@ -64,22 +67,6 @@ function listQuery(args: { q?: string; tag?: string; limit?: number; offset?: nu
   params.set("limit", String(args.limit ?? 20));
   params.set("offset", String(args.offset ?? 0));
   return `/api/readings?${params.toString()}`;
-}
-
-async function pollUntilTerminal(
-  ctx: McpToolContext,
-  id: string,
-): Promise<ReturnType<typeof dispatchApi>> {
-  const attempts = maxPolls(POLL_MAX_WAIT_MS, POLL_INTERVAL_MS);
-  let last = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(id)}`);
-  for (let i = 0; i < attempts; i++) {
-    if (!last.ok) return last;
-    if (isTerminalStatus(readingStatusOf(last.json))) return last;
-    if (i === attempts - 1) return last;
-    await ctx.sleep(POLL_INTERVAL_MS);
-    last = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(id)}`);
-  }
-  return last;
 }
 
 function ingestResult(
@@ -238,54 +225,41 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     {
       title: "Import markdown",
       description:
-        "MUTATES the corpus. Import extracted markdown for a source_url (the identity/dedupe key). Prefer this over submit_url when you already have text (X, YouTube transcripts, Reddit). Returns id + status. After a successful import, include public_markdown_link in your reply when the result has one. Optional poll_until_ready waits until ready or failed.",
+        "STAGES markdown in your inbox; not in the library until a person promotes it. Use when you already have the text for a source_url (X, YouTube transcripts, Reddit). source_url is the identity key: staging the same URL again replaces its inbox item. Returns inbox_item_id (never a public_url), plus corpus_reading when a failed reading already owns the URL. If a ready or pending reading already owns the URL, nothing is staged and it returns existing with that reading and its public_markdown_link.",
       inputSchema: {
         source_url: z.string().url().describe("https source URL used for identity/dedupe"),
         markdown: z.string().min(1).describe("Extracted article markdown"),
         title: z.string().min(1).optional().describe("Optional title override"),
-        poll_until_ready: z
-          .boolean()
-          .optional()
-          .describe("If true, poll GET /api/readings/:id until ready or failed (bounded)"),
       },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      // Destructive and not idempotent: a re-stage replaces the item's text
+      // and title, and a ready or pending owner discards the staged item.
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
     },
     async (args) => {
       const out = await dispatchApi(
         ctx.dispatch,
-        "/api/readings/import-markdown",
+        "/api/inbox",
         jsonBody({
           source_url: args.source_url,
           markdown: args.markdown,
           ...(args.title ? { title: args.title } : {}),
-          email: false,
         }),
       );
       if (!out.ok) return apiErrorResult(out);
-      const id = readingIdOf(out.json);
-      if (args.poll_until_ready && id && !isTerminalStatus(readingStatusOf(out.json))) {
-        const polled = await pollUntilTerminal(ctx, id);
-        if (!polled.ok) return apiErrorResult(polled);
-        const publicUrl = publicReadingUrl(ctx.webBaseUrl, id);
-        const title = readingTitleOf(polled.json) ?? args.title;
+      const body = asRecord(out.json) ?? {};
+      if (body.existing === true) {
+        const id = readingIdOf(body.reading);
+        const publicUrl = id ? publicReadingUrl(ctx.webBaseUrl, id) : undefined;
         return jsonToolResult({
-          id,
-          status: readingStatusOf(polled.json),
-          existing: out.status === 200,
-          polled: true,
-          note: isTerminalStatus(readingStatusOf(polled.json))
-            ? undefined
-            : "still pending after bounded poll",
+          existing: true,
+          reading: body.reading,
+          note: "a reading already owns this url; nothing was staged",
           ...(publicUrl
-            ? {
-                public_url: publicUrl,
-                public_markdown_link: publicMarkdownLink(title, publicUrl),
-              }
+            ? { public_url: publicUrl, public_markdown_link: publicMarkdownLink(readingTitleOf(body.reading), publicUrl) }
             : {}),
-          reading: polled.json,
         });
       }
-      return ingestResult(ctx, out.status, out.json, args.title ? { title: args.title } : {});
+      return jsonToolResult({ ...body, note: STAGED_NOTE });
     },
   );
 
@@ -294,7 +268,7 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     {
       title: "Reprocess reading",
       description:
-        "MUTATES the corpus. Start a fresh processing attempt for an existing reading id. Use when a stub exists and needs to be redone. Optional body matches POST /api/readings/:id/reprocess (force, email, source).",
+        "MUTATES the corpus. Start a fresh processing attempt for an existing reading id from its URL. Use when a stub exists and needs to be redone. Optional body takes force and email. A markdown source is refused: stage text with import_markdown instead.",
       inputSchema: {
         id: z.string().min(1).describe("Reading id (rd_…)"),
         body: z
@@ -315,6 +289,9 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
     async (args) => {
+      // Refused here, not left to zod: dropping an unknown `source` would
+      // silently turn the call into a URL reprocess.
+      if (args.body?.source) return errorToolResult(400, MARKDOWN_REPROCESS_REFUSED);
       const init: RequestInit =
         args.body === undefined
           ? { method: "POST", headers: { "content-type": "application/json" }, body: "" }
@@ -347,6 +324,69 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       );
       if (!out.ok) return apiErrorResult(out);
       return jsonToolResult(out.json);
+    },
+  );
+
+  server.registerTool(
+    "list_inbox",
+    {
+      title: "List inbox",
+      description:
+        "List the markdown staged in your inbox awaiting a person's review, metadata only (id, url, title, markdown_bytes), most recently staged first. Inbox items are not readings.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => {
+      const out = await dispatchApi(ctx.dispatch, "/api/inbox");
+      if (!out.ok) return apiErrorResult(out);
+      return jsonToolResult(out.json);
+    },
+  );
+
+  server.registerTool(
+    "get_inbox_item",
+    {
+      title: "Get inbox item",
+      description:
+        "Fetch one inbox item's staged markdown by id. Large bodies are truncated; inspect bytes_total/truncated and pass offset to continue.",
+      inputSchema: {
+        id: z.string().min(1).describe("Inbox item id (in_…)"),
+        offset: z.number().int().min(0).optional().describe("Byte offset into the staged markdown (default 0)"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const out = await dispatchApi(ctx.dispatch, `/api/inbox/${encodeURIComponent(args.id)}`);
+      if (!out.ok) return apiErrorResult(out);
+      const { markdown, markdown_bytes: _bytes, ...meta } = asRecord(out.json) ?? {};
+      const slice = sliceUtf8(typeof markdown === "string" ? markdown : "", args.offset ?? 0, CONTENT_CHUNK_BYTES);
+      return jsonToolResult({
+        ...meta,
+        bytes_total: slice.bytes_total,
+        bytes_returned: slice.bytes_returned,
+        offset: slice.offset,
+        truncated: slice.truncated,
+        next_offset: slice.next_offset,
+        markdown: slice.text,
+      });
+    },
+  );
+
+  server.registerTool(
+    "discard_inbox_item",
+    {
+      title: "Discard inbox item",
+      description:
+        "Delete one staged inbox item by id, for markdown that should not be promoted. Does not touch the library.",
+      inputSchema: {
+        id: z.string().min(1).describe("Inbox item id (in_…)"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const out = await dispatchApi(ctx.dispatch, `/api/inbox/${encodeURIComponent(args.id)}`, { method: "DELETE" });
+      if (!out.ok) return apiErrorResult(out);
+      return jsonToolResult({ id: args.id, discarded: true });
     },
   );
 }
