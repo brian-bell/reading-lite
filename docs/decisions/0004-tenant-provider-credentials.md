@@ -122,7 +122,10 @@ operator-funded requests.
 - Each attempt records a configuration snapshot without secrets: provider,
   summarization model, effort, embedding model, and catalog version. Checkpoints
   are reused only when the snapshot matches; otherwise the stage runs again.
-  Settings changes apply to new attempts.
+  Each delivery resolves the current settings, so a change made while an
+  attempt is pending applies to its stages that have not run yet, and a
+  completed stage whose configuration it changes runs again on the next
+  delivery (a changed effort reruns the summary, not the source embedding).
 - The key is resolved from PostgreSQL at every dispatch authorization, not once per
   attempt. A replacement takes effect at the next call. Checkpoints survive a key
   replacement, because outputs do not depend on which key paid.

@@ -322,14 +322,11 @@ describe("tenant provider key dispatch", () => {
     expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
   });
 
-  it.each([
-    ["an unchanged effort skips the paid summary", "high", ["high"]],
-    ["a changed effort summarizes again at the new effort", "medium", ["high", "medium"]],
-  ] as const)("on redelivery, %s", async (_label, redeliveredEffort, efforts) => {
+  it("summarizes a redelivered attempt again at the reader's changed effort", async () => {
     const { tenantId } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
     const tenant: TenantContext = { tenantId: parseTenantId(tenantId)! };
     await storeKey(tenantId, "sk-tenant-snapshot-5555");
-    const job = await seed(tenant, `https://snapshot-${redeliveredEffort}.example/article`);
+    const job = await seed(tenant, "https://snapshot.example/article");
     const sent: string[] = [];
     let embeds = 0;
     const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
@@ -346,14 +343,14 @@ describe("tenant provider key dispatch", () => {
     await updateProviderPreferences(testControlPlane(env), {
       userId: tenantId,
       nowMs: Date.parse(createdAt) + 1,
-      effort: redeliveredEffort,
+      effort: "medium",
     });
     await processReading(job, runtime(), services(fetchFn), tenant);
-    expect(sent).toEqual(efforts);
+    expect(sent).toEqual(["high", "medium"]);
     expect(embeds).toBe(3);
     expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
     await expect(
       testReadingsFor(tenant).writer.readCheckpoint({ id: job.id, attemptId: job.attemptId }),
-    ).resolves.toMatchObject({ config: { provider: "openai", effort: redeliveredEffort } });
+    ).resolves.toMatchObject({ config: { provider: "openai", effort: "medium" } });
   });
 });

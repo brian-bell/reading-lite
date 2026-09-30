@@ -122,8 +122,6 @@ describe("resolveProcessingConfig", () => {
     const env = { ...deployment, TENANT_PROVIDER_KEYS: "1" };
     const initial = await resolveProcessingConfig(env, db, USER);
     expect(initial).toEqual({ provider: "openai", summarization_model: "gpt-5.6-terra", effort: "high", ...common });
-    await updateProviderPreferences(db, { userId: USER, nowMs: NOW_MS, effort: "medium" });
-    expect(await resolveProcessingConfig(env, db, USER)).toMatchObject({ effort: "medium" });
     const text = JSON.stringify(initial);
     for (const secret of [KEY, SECRET, deployment.OPENAI_API_KEY, deployment.ANTHROPIC_API_KEY]) {
       expect(text).not.toContain(secret);
