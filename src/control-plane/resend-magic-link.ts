@@ -1,16 +1,6 @@
 import type { Env } from "../index";
 import { renderMagicLinkMail } from "./magic-link-mail";
-import { buildAuthResendPayload, sendAuthMailViaResend } from "./resend-mail";
-
-export function buildMagicLinkResendPayload(from: string, to: string, verifyUrl: string): Record<string, unknown> {
-  const rendered = renderMagicLinkMail(verifyUrl);
-  return buildAuthResendPayload(from, {
-    to,
-    subject: rendered.subject,
-    text: rendered.text,
-    html: rendered.html,
-  });
-}
+import { sendAuthMailViaResend } from "./resend-mail";
 
 export async function sendMagicLinkViaResend(
   env: Env,

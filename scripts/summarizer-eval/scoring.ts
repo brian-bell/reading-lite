@@ -48,8 +48,6 @@ export interface CandidateSummary {
   batchCostUsd: number;
 }
 
-export const EVALUATION_PRICE_DATE = SUMMARIZER_PRICE_DATE;
-
 function roundCost(value: number): number {
   return Math.round(value * 100_000_000) / 100_000_000;
 }

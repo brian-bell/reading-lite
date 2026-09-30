@@ -104,7 +104,7 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
       relationship_targets:
         targetIds.length === 0
           ? {}
-          : projectRelationshipTargets(targetIds, plan.listIndex, PENDING_TTL_SECONDS, nowIso),
+          : projectRelationshipTargets(targetIds, plan.listIndex.items, PENDING_TTL_SECONDS, nowIso),
     };
     readings[fixture.id] = body;
     fixtures.push({ name: fixture.name, id: fixture.id, status: body.status, state: fixture.state });

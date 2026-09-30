@@ -645,8 +645,6 @@ export async function restoreLiveChallenges(
   }
 }
 
-export const restoreLiveLoginChallenges = restoreLiveChallenges;
-
 /** Restore every unused snapshot row independently. Unique conflicts stay per-id. */
 async function restoreEmailChangeSnapshot(
   db: ControlPlaneDb,

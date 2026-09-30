@@ -86,19 +86,6 @@ export function tokenUsable(
   return row.revoked_at_ms == null && row.expires_at_ms > nowMs;
 }
 
-export async function countActiveApiTokens(
-  db: ControlPlaneDb,
-  input: { userId: UserId; nowMs: number },
-): Promise<number> {
-  const row = await db.first<{ n: number }>(
-    `SELECT COUNT(*) AS n FROM api_tokens
-     WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?`,
-    input.userId,
-    toTimestamp(input.nowMs),
-  );
-  return row?.n ?? 0;
-}
-
 export async function createApiToken(
   db: ControlPlaneDb,
   input: {

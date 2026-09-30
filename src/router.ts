@@ -463,7 +463,7 @@ export function createApp(opts: AppOptions = {}) {
     const targetIds = relationshipTargetIds(found.manifest);
     const relationship_targets = targetIds.length === 0
       ? {}
-      : projectRelationshipTargets(targetIds, { version: 1, items: await store.relationshipTargets(targetIds) }, ttl, now);
+      : projectRelationshipTargets(targetIds, await store.relationshipTargets(targetIds), ttl, now);
     const body: GetReadingResponse = {
       ...applyStaleness(found.manifest, ttl, now),
       relationship_targets,

@@ -2,10 +2,8 @@ import { z } from "zod";
 import {
   ConnectionSchema,
   NoveltyVerdictSchema,
-  ReadingSummarySchema,
   TensionJudgedSchema,
   TensionSchema,
-  type ReadingSummary,
 } from "./reading-summary";
 
 export {
@@ -27,9 +25,6 @@ export type {
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const sha256Hex = () => z.string().regex(SHA256_HEX, "must be 64 lowercase hex chars");
-
-export const EmitReadingToolInputSchema = ReadingSummarySchema;
-export type EmitReadingToolInput = ReadingSummary;
 
 export const ManifestStatusSchema = z.enum(["pending", "ready", "failed"]);
 export type ManifestStatus = z.infer<typeof ManifestStatusSchema>;
