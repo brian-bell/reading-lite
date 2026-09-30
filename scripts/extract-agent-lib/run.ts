@@ -27,42 +27,6 @@ export interface RunArgs {
   verbose?: boolean;
 }
 
-export function parseRunArgs(argv: string[]): RunArgs {
-  const args: RunArgs = { execute: false };
-  for (let i = 0; i < argv.length; i++) {
-    const flag = argv[i]!;
-    switch (flag) {
-      case "--execute":
-        args.execute = true;
-        break;
-      case "--dry-run":
-        args.execute = false;
-        break;
-      case "--verbose":
-        args.verbose = true;
-        break;
-      case "--limit": {
-        const raw = argv[++i];
-        const n = Number(raw);
-        if (raw === undefined || !Number.isInteger(n) || n <= 0) {
-          throw new Error(`--limit requires a positive integer, got ${JSON.stringify(raw)}`);
-        }
-        args.limit = n;
-        break;
-      }
-      case "--only": {
-        const value = argv[++i];
-        if (!value) throw new Error("--only requires a reading id or url");
-        args.only = value;
-        break;
-      }
-      default:
-        throw new Error(`unknown flag: ${flag}`);
-    }
-  }
-  return args;
-}
-
 export interface RunDeps {
   config: AgentConfig;
   pageReadings: () => Promise<ListIndexItem[]>;

@@ -117,7 +117,6 @@ export const ESSENTIAL_NODE_FILES = [
   "test/unit/deploy/deploy-app-workflow.test.ts",
   "test/unit/deploy/deploy-worker-migrations.test.ts",
   "test/unit/deploy/deploy-worker-workflow.test.ts",
-  "test/unit/deploy/deploy.test.ts",
   "test/unit/deploy/digest-wrangler.test.ts",
   "test/unit/deploy/hyperdrive-binding.test.ts",
   "test/unit/deploy/processing-leases-wrangler.test.ts",

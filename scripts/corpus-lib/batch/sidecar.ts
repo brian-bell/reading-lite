@@ -365,7 +365,3 @@ export async function loadInputJsonl(
     throw e;
   }
 }
-
-export async function clearInputJsonl(sidecarPath: string): Promise<void> {
-  await fs.rm(inputJsonlPath(sidecarPath), { force: true });
-}

@@ -43,17 +43,3 @@ export function soleWriterGuard(opts: {
       `${RULE}`,
   };
 }
-
-// The single home for the CLI glue: print the verdict's message (if any) and exit
-// non-zero on refusal. Both batch front-ends call this with `process` I/O
-// injected, so the decision *and* its side effects are unit-testable without
-// spawning a subprocess. A refused run exits 2 (matching the cred-failure exit
-// code these tools already use).
-export function enforceSoleWriter(
-  opts: { execute: boolean; acknowledged: boolean; tool: string },
-  io: { write: (s: string) => void; exit: (code: number) => void },
-): void {
-  const verdict = soleWriterGuard(opts);
-  if (verdict.message) io.write(verdict.message + "\n");
-  if (!verdict.proceed) io.exit(2);
-}

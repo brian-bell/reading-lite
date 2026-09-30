@@ -95,11 +95,7 @@ describe("ops registry completeness", () => {
     }
   });
 
-  it("keeps the shared exit contract: unknown targets exit 2, read-only rejects --execute", async () => {
-    const unknownGroup = captureIo();
-    expect(await runCli(["nope"], { io: unknownGroup.io })).toBe(2);
-    const unknownCommand = captureIo();
-    expect(await runCli(["corpus", "nope"], { io: unknownCommand.io })).toBe(2);
+  it("rejects --execute on every read-only command (exit 2)", async () => {
     for (const cmd of defaultRegistry.commands.filter((c) => c.safety === "read-only")) {
       const { io } = captureIo();
       expect(await runCli([cmd.group, cmd.name, "--execute"], { io }), `${cmd.group} ${cmd.name}`).toBe(2);

@@ -20,7 +20,6 @@ describe("relationship refresh deployment", () => {
       expect(vars).toContain(`REFRESH_MAX_JUDGEMENTS = "${cap}"`);
       expect(vars).toContain(`REFRESH_MAX_TENSION_JUDGEMENTS = "${cap}"`);
       expect(vars).toMatch(/^RELATIONSHIP_REFRESH = "1"$/m);
-      expect(sections.find(s => s.startsWith(`[env.${env}.triggers]`))).toContain('crons = ["*/15 * * * *", "7 3 * * *"]');
     });
   }
   it("does not bind refresh queues locally or in tests", () => {

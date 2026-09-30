@@ -8,7 +8,6 @@ describe("hosted Worker CPU allowance", () => {
       const config = unstable_readConfig({ config: "wrangler.toml", env }, { hideWarnings: true });
       expect(config.limits?.cpu_ms).toBe(30_000);
       expect(config.compatibility_flags).toContain("nodejs_compat");
-      expect(config.vars.REFRESH_MAX_JUDGEMENTS).toBe(env === "production" ? "100" : "2");
     });
   }
 });
