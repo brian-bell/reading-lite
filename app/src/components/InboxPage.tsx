@@ -6,6 +6,7 @@ import { inboxItemName, inboxItemSize, type InboxList } from "../inbox";
 import { inboxQueryOptions } from "../inbox-query";
 import { dateTimeOn, hostnameOf } from "../reading-presentation";
 import { BackToLibrary } from "./BackToLibrary";
+import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 
@@ -17,8 +18,10 @@ import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } 
 // replace the list, offline is a notice over whatever was loaded, and
 // anything else is the retryable server error.
 //
-// Rows are the library's cards: a title link stretched over the card (the URL
-// when the agent gave no title), then the host, size, and when it was staged.
+// Rows are the library's cards: a title link stretched over the card, then the
+// host, size, and when it was staged. An untitled item is named by its URL,
+// set in the UI face at a smaller size so a long address does not read as a
+// headline.
 
 export function InboxPage() {
   const queryClient = useQueryClient();
@@ -62,7 +65,8 @@ function pageFor(view: AccountView<InboxList>, onRetry: () => void) {
 function InboxItems({ listed }: { listed: InboxList }) {
   if (listed.items.length === 0) {
     return (
-      <div className="library-message">
+      <div className="library-message inbox-empty">
+        <Icon name="inbox" size={22} />
         <p className="auth-lede">Your inbox is empty.</p>
       </div>
     );
@@ -73,12 +77,12 @@ function InboxItems({ listed }: { listed: InboxList }) {
         const staged = dateTimeOn(item.updated_at);
         return (
           <li key={item.id} className="library-card">
-            <h2 className="library-card-title">
+            <h2 className={item.title === null ? "library-card-title inbox-card-url" : "library-card-title"}>
               <Link to="/inbox/$id" params={{ id: item.id }}>
                 {inboxItemName(item)}
               </Link>
             </h2>
-            <p className="reading-meta library-card-meta">
+            <p className="reading-meta library-card-meta inbox-card-meta">
               <span>{hostnameOf(item.url)}</span>
               <span>{inboxItemSize(item.markdown_bytes)}</span>
               {staged ? <span>Staged {staged}</span> : null}
