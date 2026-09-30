@@ -1,6 +1,7 @@
 import { RateLimitedError } from "./modules/http-retry";
 import { DeferPaidWorkError } from "./control-plane/processing-leases";
 import { TenantProviderKeyError } from "./control-plane/tenant-provider-keys";
+import { ProviderAccountError } from "./control-plane/paid-dispatch";
 import { processRelationshipJudge } from "./relationship-judge";
 import { processTensionJudge } from "./tension-judge";
 import { processTensionRepair } from "./tension-repair";
@@ -350,7 +351,7 @@ export async function consumeRelationshipRefresh(msg: Message<unknown>, env: Env
     msg.ack();
   } catch (error) {
     console.error(error);
-    if (error instanceof TenantProviderKeyError) {
+    if (error instanceof TenantProviderKeyError || error instanceof ProviderAccountError) {
       msg.ack();
       return;
     }

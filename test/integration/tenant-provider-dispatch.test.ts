@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
-import { deleteProviderCredentials, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
+import { deleteProviderCredentials, readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
@@ -319,5 +319,63 @@ describe("tenant provider key dispatch", () => {
     expect(JSON.stringify(message.body)).not.toContain(original);
     expect(JSON.stringify(message.body)).not.toContain(replaced);
     expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
+  });
+
+  const QUOTA_BODY = JSON.stringify({ error: {
+    message: "You exceeded your current quota, please check your plan and billing details.",
+    type: "insufficient_quota", param: null, code: "insufficient_quota",
+  } });
+  it.each([
+    { label: "401", status: 401, body: '{"error":{"message":"Incorrect API key provided: sk-proj-****zzzz","code":"invalid_api_key"}}',
+      code: "provider_key_invalid", retryable: false, credential: "invalid", calls: 1 },
+    { label: "403", status: 403, body: '{"error":{"message":"forbidden"}}',
+      code: "provider_key_invalid", retryable: false, credential: "invalid", calls: 1 },
+    { label: "429 insufficient_quota", status: 429, body: QUOTA_BODY,
+      code: "provider_insufficient_quota", retryable: false, credential: "active", calls: 1 },
+    { label: "429 rate limit", status: 429, body: '{"error":{"message":"Rate limit reached","code":"rate_limit_exceeded"}}',
+      code: null, retryable: null, credential: "active", calls: 1 },
+    { label: "5xx", status: 500, body: "unavailable",
+      code: "OpenAIError", retryable: true, credential: "active", calls: 2 },
+  ])("classifies a provider $label: code $code, credential $credential", async (row) => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
+    const tenant: TenantContext = { tenantId: parseTenantId(tenantId)! };
+    await storeKey(tenantId, "sk-tenant-classify-7777");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response(row.body, { status: row.status }));
+    const job = await seed(tenant, `https://classify-${row.status}-${row.calls}.example/article`);
+    const message = { id: "m_classify", timestamp: new Date(), body: job, attempts: 1, ack: vi.fn(), retry: vi.fn() };
+    await dispatchQueueMessage(message as unknown as Message<unknown>, () =>
+      processReading(job, runtime(), services(fetchFn), tenant));
+
+    expect(fetchFn).toHaveBeenCalledTimes(row.calls);
+    const manifest = await testReadingsFor(tenant).manifest(job.id);
+    if (row.code === null) {
+      expect(message.retry).toHaveBeenCalledOnce();
+      expect(manifest?.status).toBe("pending");
+    } else {
+      expect(message.ack).toHaveBeenCalledOnce();
+      expect(message.retry).not.toHaveBeenCalled();
+      expect(manifest?.status).toBe("failed");
+      expect(manifest?.error).toMatchObject({ code: row.code, retryable: row.retryable, http_status: row.status, stage: "embed_source" });
+      expect(JSON.stringify(manifest)).not.toContain("sk-tenant-classify-7777");
+    }
+    expect((await readProviderCredential(testControlPlane(env), tenantId))?.status).toBe(row.credential);
+  });
+
+  it("leaves a key replaced while the rejected request was in flight active", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
+    const tenant: TenantContext = { tenantId: parseTenantId(tenantId)! };
+    await storeKey(tenantId, "sk-tenant-rejected-5555");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      await storeKey(tenantId, "sk-tenant-replacement-6666");
+      return new Response('{"error":{"message":"invalid key"}}', { status: 401 });
+    });
+    const job = await seed(tenant, "https://replaced-in-flight.example/article");
+    await processReading(job, runtime(), services(fetchFn), tenant);
+
+    expect((await testReadingsFor(tenant).manifest(job.id))?.error?.code).toBe("provider_key_invalid");
+    const credential = await readProviderCredential(testControlPlane(env), tenantId);
+    expect(credential).toMatchObject({ status: "active", credentialVersion: 2, lastFour: "6666" });
   });
 });

@@ -7,6 +7,11 @@ import { fetchWithRetry } from "../../../src/modules/http-retry";
 const url = "https://api.openai.com/v1/embeddings";
 const init = { method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({ model: "text-embedding-3-small", input: "hello" }) };
 const response = () => Response.json({ data: [], usage: { prompt_tokens: 2, total_tokens: 2 } });
+const tenantKey = (resolve: () => Promise<string>) => ({
+  mode: "tenant" as const,
+  resolve: async () => ({ key: await resolve(), credentialVersion: 1 }),
+  markInvalid: async () => {},
+});
 function fixture(overrides: Partial<Parameters<typeof createPaidFetch>[0]> = {}) {
   const calls: Array<{ body: Record<string, unknown> }> = [];
   const rpc: SpendRpc = async (body) => {
@@ -32,7 +37,7 @@ describe("paid dispatch", () => {
   });
   it.each([
     ["deployment keys", undefined, "operator"],
-    ["the tenant's key", { mode: "tenant" as const, resolve: async () => "sk-tenant" }, "tenant"],
+    ["the tenant's key", tenantKey(async () => "sk-tenant"), "tenant"],
   ])("tags the reservation and every paid_spend line with who pays for %s", async (_label, authorization, payer) => {
     const lines: string[] = [];
     const info = vi.spyOn(console, "info").mockImplementation((line: string) => void lines.push(line));
@@ -158,7 +163,7 @@ describe("paid dispatch", () => {
     const order: string[] = [];
     const sent: string[] = [];
     const f = fixture({
-      authorization: { mode: "tenant", resolve: async () => { order.push("resolve"); return "sk-tenant-live"; } },
+      authorization: tenantKey(async () => { order.push("resolve"); return "sk-tenant-live"; }),
       onAuthorizedDispatch: async () => { order.push("commit"); },
       fetch: async (_url, request) => {
         order.push("fetch");
@@ -178,15 +183,12 @@ describe("paid dispatch", () => {
     let n = 0;
     const sent: string[] = [];
     const f = fixture({
-      authorization: {
-        mode: "tenant",
-        resolve: async () => {
-          const key = keys[n];
-          if (key === undefined) throw new TenantProviderKeyError("provider_key_required");
-          n += 1;
-          return key;
-        },
-      },
+      authorization: tenantKey(async () => {
+        const key = keys[n];
+        if (key === undefined) throw new TenantProviderKeyError("provider_key_required");
+        n += 1;
+        return key;
+      }),
       onAuthorizedDispatch: async () => { keys[1] = "sk-replaced-during-commit"; },
       fetch: async (_url, request) => {
         sent.push(new Headers(request?.headers).get("authorization") ?? "");
@@ -202,14 +204,11 @@ describe("paid dispatch", () => {
   it("does not send a key removed while quota commit is in flight", async () => {
     let n = 0;
     const f = fixture({
-      authorization: {
-        mode: "tenant",
-        resolve: async () => {
-          n += 1;
-          if (n > 1) throw new TenantProviderKeyError("provider_key_required");
-          return "sk-removed-during-commit";
-        },
-      },
+      authorization: tenantKey(async () => {
+        n += 1;
+        if (n > 1) throw new TenantProviderKeyError("provider_key_required");
+        return "sk-removed-during-commit";
+      }),
       onAuthorizedDispatch: async () => {},
     });
     await expect(f.wrapped(url, init)).rejects.toMatchObject({
@@ -225,7 +224,7 @@ describe("paid dispatch", () => {
   it("settles zero and does not call the provider when the tenant key is missing", async () => {
     const commit = vi.fn(async () => {});
     const f = fixture({
-      authorization: { mode: "tenant", resolve: async () => { throw new TenantProviderKeyError("provider_key_required"); } },
+      authorization: tenantKey(async () => { throw new TenantProviderKeyError("provider_key_required"); }),
       onAuthorizedDispatch: commit,
     });
     await expect(f.wrapped(url, init)).rejects.toMatchObject({ name: "provider_key_required", message: "connect a key, then retry" });
@@ -238,7 +237,7 @@ describe("paid dispatch", () => {
   it("does not retry a missing tenant key as a transport failure", async () => {
     let resolves = 0;
     const f = fixture({
-      authorization: { mode: "tenant", resolve: async () => { resolves += 1; throw new TenantProviderKeyError("provider_key_required"); } },
+      authorization: tenantKey(async () => { resolves += 1; throw new TenantProviderKeyError("provider_key_required"); }),
     });
     const sleep = vi.fn(async () => {});
     await expect(fetchWithRetry(f.wrapped, url, init, { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep })).rejects.toMatchObject({
@@ -253,7 +252,7 @@ describe("paid dispatch", () => {
     let resolves = 0;
     const sent: string[] = [];
     const f = fixture({
-      authorization: { mode: "tenant", resolve: async () => `sk-retry-${++resolves}` },
+      authorization: tenantKey(async () => `sk-retry-${++resolves}`),
       fetch: vi.fn(async (_url, request) => {
         sent.push(new Headers(request?.headers).get("authorization") ?? "");
         if (sent.length === 1) throw new Error("timeout");
@@ -270,5 +269,18 @@ describe("paid dispatch", () => {
     });
     await deployment.wrapped(url, { ...init, headers: { ...init.headers, authorization: "Bearer sk-deployment-key" } });
     expect(sent.at(-1)).toBe("Bearer sk-deployment-key");
+  });
+
+  it("fails an insufficient_quota 429 now on deployment keys too, and leaves a deployment-key 401 to the adapter", async () => {
+    const provider = vi.fn(async () => Response.json({ error: { type: "insufficient_quota", code: "insufficient_quota" } }, { status: 429 }));
+    const quota = fixture({ fetch: provider as typeof fetch });
+    const sleep = vi.fn(async () => {});
+    await expect(fetchWithRetry(quota.wrapped, url, init, { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep })).rejects.toMatchObject({
+      name: "provider_insufficient_quota", status: 429,
+    });
+    expect(provider).toHaveBeenCalledOnce();
+    expect(sleep).not.toHaveBeenCalled();
+    const rejected = fixture({ fetch: async () => new Response("bad key", { status: 401 }) });
+    expect((await rejected.wrapped(url, init)).status).toBe(401);
   });
 });

@@ -3117,6 +3117,14 @@ components:
         code:
           type: string
           minLength: 1
+          description: >-
+            The failing error's class. Provider account failures have their own
+            codes, none retryable until the reader acts: `provider_key_required`
+            (no active key), `provider_key_undecryptable` (the stored key will
+            not open), `provider_key_invalid` (the provider answered 401 or 403
+            to the reader's key, which is now marked invalid), and
+            `provider_insufficient_quota` (the provider's `insufficient_quota`
+            429).
         message:
           type: string
           minLength: 1

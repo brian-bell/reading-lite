@@ -54,11 +54,7 @@ export async function fetchWithRetry(
       await sleepWithAbort(wait, deps.sleep, init.signal);
     } catch (e) {
       if (e instanceof RateLimitedError) throw e;
-      if (
-        ["SpendAdmissionError", "DeferPaidWorkError", "StaleProcessingLeaseError", "ReadingReservationExpiredError", "provider_key_required", "provider_key_undecryptable"].includes(
-          errorName(e) ?? "",
-        )
-      ) throw e;
+      if (NOT_RETRIED_ERROR_NAMES.has(errorName(e) ?? "")) throw e;
       // AbortError signals caller-driven cancellation (e.g. an AbortSignal
       // tripping). Retrying would mask the cancellation intent, so surface it.
       if (isAbortError(e)) throw e;
@@ -96,6 +92,19 @@ export function parseRateLimitDelayMs(headers: Headers, now: () => number): numb
   if (!Number.isSafeInteger(resetMs)) return null;
   return Math.max(0, resetMs - now());
 }
+
+// Verdicts from the paid-dispatch seam: admission, leases, and the tenant's
+// key or provider account. Another attempt would get the same answer.
+const NOT_RETRIED_ERROR_NAMES = new Set([
+  "SpendAdmissionError",
+  "DeferPaidWorkError",
+  "StaleProcessingLeaseError",
+  "ReadingReservationExpiredError",
+  "provider_key_required",
+  "provider_key_undecryptable",
+  "provider_key_invalid",
+  "provider_insufficient_quota",
+]);
 
 function urlToString(input: URL | string): string {
   return input instanceof URL ? input.toString() : input;
