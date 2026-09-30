@@ -45,7 +45,7 @@ jobs:
     # Toggle PR checks with the DISABLE_PR_CI repository variable; main always
     # runs, and so does a manual dispatch.
     if: github.event_name != 'pull_request' || vars.DISABLE_PR_CI != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     outputs:
       worker: ${{ steps.changes.outputs.worker }}
       ops: ${{ steps.changes.outputs.ops }}
@@ -92,7 +92,7 @@ jobs:
     name: Worker (typecheck + test)
     needs: changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     # Matches Neon: PostgreSQL 18 with pgvector 0.8.x (ADR 0005). Tests never
     # connect to Neon. The workers pool reaches this through the HYPERDRIVE
     # binding's local connection string, which vitest.workspace.ts points at
@@ -138,7 +138,7 @@ jobs:
     name: Ops CLI
     needs: changes
     if: needs.changes.outputs.ops == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -160,7 +160,7 @@ jobs:
     # Skipped jobs satisfy required checks; each job runs only for the paths
     # its suite reads.
     if: needs.changes.outputs.app == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64]
     defaults:
       run:
         working-directory: app
@@ -184,6 +184,8 @@ jobs:
     name: App (browser evidence)
     needs: changes
     if: needs.changes.outputs.app-browser == 'true'
+    # The only hosted job: `playwright install --with-deps` needs passwordless
+    # sudo for its system packages, which the self-hosted runner does not have.
     runs-on: ubuntu-latest
     defaults:
       run:
