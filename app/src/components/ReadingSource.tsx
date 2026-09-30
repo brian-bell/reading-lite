@@ -140,8 +140,11 @@ function SourceFailed({ message, onRetry }: { message: string; onRetry: () => vo
  * Headings, links, and images are the three elements the spec says something
  * about, so they are the three overridden here; links resolve against the
  * captured page's URL, and images remember what the reader loaded.
+ *
+ * The inbox's preview (InboxItemPage.tsx) renders staged Markdown through
+ * this too: an agent's text is no more trusted than a captured page.
  */
-function SourceMarkdown({ markdown, base, images }: { markdown: string; base: string; images: LoadedImages }) {
+export function SourceMarkdown({ markdown, base, images }: { markdown: string; base: string; images: LoadedImages }) {
   const components = useMemo<Components>(
     () => ({
       ...SOURCE_COMPONENTS,

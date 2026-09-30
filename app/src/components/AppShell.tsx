@@ -56,6 +56,12 @@ export function AppShell({
                     <span>Save reading</span>
                   </Link>
                 </li>
+                <li>
+                  <Link to="/inbox" className="nav-item">
+                    <Icon name="inbox" size={22} />
+                    <span>Inbox</span>
+                  </Link>
+                </li>
               </ul>
               <ThemeControl value={theme} onChange={onThemeChange} />
               <AccountArea account={account} onSignOut={onSignOut} />

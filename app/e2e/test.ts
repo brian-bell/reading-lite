@@ -683,6 +683,125 @@ export async function serveAccountDeleteInBrowser(
 }
 
 /**
+ * The inbox the browser-evidence suite serves (reading-lite-fy8t): a titled
+ * item with the Markdown a preview has to render (a list, a link to resolve
+ * against the staged URL, a code block, and an image placeholder), and an
+ * untitled one with a long URL for the title that wraps. Staged before the
+ * pinned clock.
+ */
+const INBOX_MARKDOWN = `# Slow reading week
+
+A week of reading one thing at a time, and writing down what stuck.
+
+## What changed
+
+- Fewer tabs, and each one finished.
+- Notes written the same day, while the argument was still fresh.
+- A [follow-up list](/follow-ups) for everything that could wait.
+
+\`\`\`text
+monday    one essay
+tuesday   one chapter
+\`\`\`
+
+![The reading desk](https://images.notes.example/desk.jpg)
+`;
+
+function inboxItem(id: string, url: string, title: string | null, markdown: string, stagedAt: string) {
+  return {
+    id,
+    url,
+    title,
+    markdown,
+    markdown_bytes: new TextEncoder().encode(markdown).byteLength,
+    created_at: stagedAt,
+    updated_at: stagedAt,
+  };
+}
+
+export const E2E_INBOX_ITEMS = [
+  inboxItem(
+    "in_FXSLOW0001",
+    "https://notes.example/slow-reading-week",
+    "Slow reading week",
+    INBOX_MARKDOWN,
+    "2026-09-10T16:30:00.000Z",
+  ),
+  inboxItem(
+    "in_FXDRAFT001",
+    "https://fieldnotes.example/2026/09/drafts/untitled-notes-on-attention-maintenance-and-the-upkeep-of-shared-spaces",
+    null,
+    "Notes on attention and upkeep, staged without a title.\n",
+    "2026-09-09T08:05:00.000Z",
+  ),
+];
+
+/**
+ * Serves the inbox in the browser (reading-lite-fy8t): `GET /api/inbox`,
+ * `GET /api/inbox/:id`, `POST /api/inbox/:id/promote`, and
+ * `DELETE /api/inbox/:id`. The inbox is read in the browser only, so the stub
+ * entrypoint has no part in it. `items` is what is staged; a promote that
+ * lands or a discard removes its item from later reads, as the backend does.
+ * `list` replaces the list's answer with a canned one (a state page), and
+ * `promote` the promote's (202 by default, opening the pack's pending
+ * reading). Each write is recorded so a spec can read what was sent.
+ */
+export async function serveInboxInBrowser(
+  page: Page,
+  options: {
+    items?: typeof E2E_INBOX_ITEMS;
+    list?: { status: number; json: unknown };
+    promote?: { status: number; json: unknown };
+  } = {},
+): Promise<{ promotes: Request[]; discards: Request[] }> {
+  const items = options.items ?? E2E_INBOX_ITEMS;
+  const gone = new Set<string>();
+  const promotes: Request[] = [];
+  const discards: Request[] = [];
+  const promoted = options.promote ?? { status: 202, json: { id: "rd_FXPENDNG01", status: "pending" } };
+  // Await the route: the inbox fetches on mount, so a fire-and-forget install
+  // can miss the first request (Worker 404).
+  await page.route(/\/api\/inbox(\/.*)?$/, async (route) => {
+    const request = route.request();
+    const segments = new URL(request.url()).pathname.split("/").slice(3).map(decodeURIComponent);
+    const [id, verb] = segments;
+    const staged = items.find((item) => item.id === id && !gone.has(item.id));
+    if (request.method() === "GET" && id === undefined) {
+      if (options.list) {
+        await route.fulfill(options.list);
+        return;
+      }
+      const listed = items.filter((item) => !gone.has(item.id)).map(({ markdown: _markdown, ...meta }) => meta);
+      await route.fulfill({ status: 200, json: { items: listed } });
+      return;
+    }
+    if (!staged) {
+      await route.fulfill({ status: 404, json: { error: "not found" } });
+      return;
+    }
+    if (request.method() === "GET" && verb === undefined) {
+      await route.fulfill({ status: 200, json: staged });
+      return;
+    }
+    if (request.method() === "POST" && verb === "promote") {
+      promotes.push(request);
+      if (promoted.status === 200 || promoted.status === 202) gone.add(staged.id);
+      const body = { ...(promoted.json as object), inbox_item_id: staged.id };
+      await route.fulfill({ status: promoted.status, json: body });
+      return;
+    }
+    if (request.method() === "DELETE" && verb === undefined) {
+      discards.push(request);
+      gone.add(staged.id);
+      await route.fulfill({ status: 204, body: "" });
+      return;
+    }
+    await route.fallback();
+  });
+  return { promotes, discards };
+}
+
+/**
  * Sets the session cookie with the backend's attributes (HttpOnly,
  * SameSite=Lax; `url` supplies Path=/ and, on https, Secure), so a real
  * session an external run supplies is no more exposed to page script than in

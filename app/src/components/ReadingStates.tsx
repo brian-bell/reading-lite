@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState, type ReactNode } from "react";
 import { previousHop, type TrailHop } from "../reading-trail";
 import { PageHeading } from "./PageHeading";
@@ -40,6 +41,23 @@ export function ReadingNotFound({ trail = [] }: { trail?: readonly TrailHop[] })
       <div className="form-actions">
         {previous ? <BackTo hops={trail} previous={previous} className="button button-primary" /> : null}
         <BackToLibrary className="button" />
+      </div>
+    </StatePage>
+  );
+}
+
+/**
+ * 404 for an inbox item (reading-lite-fy8t): added to the library or
+ * discarded from another tab, or by the agent that staged it, or a wrong link.
+ */
+export function InboxItemNotFound() {
+  return (
+    <StatePage heading="This item isn't in your inbox.">
+      <p className="auth-lede">It may have been added to your library or discarded.</p>
+      <div className="form-actions">
+        <Link to="/inbox" className="button button-primary">
+          Back to inbox
+        </Link>
       </div>
     </StatePage>
   );

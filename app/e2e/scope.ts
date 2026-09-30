@@ -31,6 +31,7 @@ export const ESSENTIAL_PROJECTS = new Set([
   "save",
   "reading-refresh",
   "reprocess",
+  "inbox",
   "account",
   "controls",
 ]);

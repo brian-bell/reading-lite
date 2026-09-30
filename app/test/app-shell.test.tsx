@@ -31,6 +31,7 @@ async function renderShell(
   const routes = [
     createRoute({ getParentRoute: () => rootRoute, path: "/", component: () => <h1>Library</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/save", component: () => <h1>Save reading</h1> }),
+    createRoute({ getParentRoute: () => rootRoute, path: "/inbox", component: () => <h1>Inbox</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/login", component: () => <h1>Sign in</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/auth/verify", component: () => <h1>Complete sign-in</h1> }),
     createRoute({ getParentRoute: () => rootRoute, path: "/terms", component: () => <h1>Terms of Service</h1> }),
@@ -64,6 +65,13 @@ describe("AppShell", () => {
     const nav = screen.getByRole("navigation", { name: "Main" });
     expect(within(nav).getByRole("link", { name: /Save reading/ })).toHaveAttribute("aria-current", "page");
     expect(within(nav).getByRole("link", { name: /Library/ })).not.toHaveAttribute("aria-current");
+  });
+
+  it("marks Inbox current on the inbox", async () => {
+    await renderShell("/inbox");
+    const nav = screen.getByRole("navigation", { name: "Main" });
+    expect(within(nav).getByRole("link", { name: /Inbox/ })).toHaveAttribute("aria-current", "page");
+    expect(within(nav).getByRole("link", { name: /Save reading/ })).not.toHaveAttribute("aria-current");
   });
 
   it("marks Library current on the library", async () => {
