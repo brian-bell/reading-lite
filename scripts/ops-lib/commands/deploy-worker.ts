@@ -34,11 +34,11 @@ export interface DeployWorkerDeps extends BaseDeps {
   connect: (databaseUrl: string) => Promise<MigrationConnection>;
 }
 
-export function parseDeployEnv(value: unknown): DeployEnv | null {
+function parseDeployEnv(value: unknown): DeployEnv | null {
   return value === "production" || value === "staging" ? value : null;
 }
 
-export function buildWranglerArgs(args: { env: DeployEnv; execute: boolean }): string[] {
+function buildWranglerArgs(args: { env: DeployEnv; execute: boolean }): string[] {
   const out = ["deploy", "--env", args.env];
   if (!args.execute) out.push("--dry-run");
   return out;

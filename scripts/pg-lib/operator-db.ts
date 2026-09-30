@@ -82,11 +82,6 @@ export function databaseTargetForBucket(bucket: string): OperatorDatabaseTarget 
   return target;
 }
 
-/** The deploy environment that goes with a data bucket; no guess for an unknown one. */
-export function deployEnvForBucket(bucket: string): DeployEnvName {
-  return databaseTargetForBucket(bucket).env;
-}
-
 /** The data bucket that goes with a deploy environment. */
 export function bucketForDeployEnv(env: DeployEnvName): string {
   const found = Object.entries(OPERATOR_DATABASES).find(([, target]) => target.env === env);

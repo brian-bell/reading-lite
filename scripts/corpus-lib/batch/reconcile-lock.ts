@@ -53,7 +53,7 @@ export async function acquireReconcileLock(
   const host = deps.host ?? osHostname();
   const isProcessAlive = deps.isProcessAlive ?? defaultIsProcessAlive;
   const heartbeatIntervalMs = deps.heartbeatIntervalMs ?? 60_000;
-  const lockPath = sidecarPath + ".lock";
+  const lockPath = reconcileLockPath(sidecarPath);
   const record: LockRecord = {
     pid,
     host,
@@ -372,7 +372,7 @@ async function confirm(
   };
 }
 
-// Re-export path helpers for callers that want the lock file path.
+// The lock file that guards a sidecar.
 export function reconcileLockPath(sidecarPath: string): string {
   return sidecarPath + ".lock";
 }

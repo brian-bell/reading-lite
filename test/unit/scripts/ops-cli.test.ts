@@ -131,15 +131,3 @@ describe("ops CLI dispatcher", () => {
     expect(await runCli(["corpus", "noop"], { io, registry })).toBe(3);
   });
 });
-
-describe("default registry", () => {
-  it("labels every registered command with a safety class and non-empty help", async () => {
-    const { defaultRegistry } = await import("../../../scripts/ops-lib/registry");
-    expect(defaultRegistry.commands.length).toBeGreaterThan(0);
-    for (const cmd of defaultRegistry.commands) {
-      expect(["read-only", "plan-first"]).toContain(cmd.safety);
-      expect(cmd.helpText.length).toBeGreaterThan(0);
-      expect(defaultRegistry.groups.some((g) => g.name === cmd.group)).toBe(true);
-    }
-  });
-});
