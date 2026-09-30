@@ -11,15 +11,19 @@ import type { ProcessingStage, ReadingError } from "./reading";
 // error classes: renaming one at the backend fails that test rather than
 // silently demoting a reading to "Unknown".
 //
-// This module states the category and what happened; the recovery actions,
-// Retry and Import a copy, are the status card's (ReadingStatusCard.tsx).
+// This module states the category, what happened, and the reader's next step;
+// the recovery actions themselves, Retry, Import a copy, and the link to
+// provider settings, are the status card's (ReadingStatusCard.tsx).
 
 export type FailureCategory =
   | "source-unreachable"
   | "source-incomplete"
   | "provider-limit"
   | "provider-error"
-  | "key-problem"
+  | "key-missing"
+  | "key-invalid"
+  | "model-access"
+  | "billing"
   | "hosting-limit"
   | "stopped"
   | "unknown";
@@ -28,22 +32,75 @@ export interface Failure {
   category: FailureCategory;
   /** The category's fixed sentence, or the backend's message for `unknown`. */
   headline: string;
-  /** The backend's message. Shown as supporting detail unless it is the headline. */
+  /** The backend's message. */
   message: string;
+  /**
+   * What the card shows under the headline: the backend's message, unless it
+   * is the headline already or the backend's own fixed sentence that `next`
+   * says better.
+   */
+  detail?: string;
+  /** The reader's next step, when it is more than pressing Retry. */
+  next?: string;
+  /** The fix is in provider settings (/account/provider): the link's label. */
+  settings?: string;
   /** The manifest's stage as written; open so a stage added later still categorises. */
   stage?: string;
 }
 
-const HEADLINES: Record<Exclude<FailureCategory, "unknown">, string> = {
-  "source-unreachable": "The page couldn't be fetched.",
-  "source-incomplete": "The page didn't contain the full article.",
-  "provider-limit": "The AI provider is rate limiting requests.",
-  "provider-error": "The AI provider returned an error.",
-  // Hosted keys are the operator's today; Phase 6 (#341) gives this its own copy.
-  "key-problem": "The AI provider rejected the credentials for this request.",
-  "hosting-limit": "Reading Lite's processing limit was reached.",
-  stopped: "Processing stopped before finishing.",
+interface Copy {
+  headline: string;
+  next?: string;
+  settings?: string;
+}
+
+const COPY: Record<Exclude<FailureCategory, "unknown">, Copy> = {
+  "source-unreachable": { headline: "The page couldn't be fetched." },
+  "source-incomplete": { headline: "The page didn't contain the full article." },
+  "provider-limit": {
+    headline: "The AI provider is rate limiting requests.",
+    next: "Wait a few minutes, then retry.",
+  },
+  "provider-error": { headline: "The AI provider returned an error." },
+  "key-missing": {
+    headline: "No OpenAI key is connected.",
+    next: "Connect your key, then retry.",
+    settings: "Connect key",
+  },
+  "key-invalid": {
+    headline: "Your OpenAI key needs replacing.",
+    next: "Replace your key, then retry.",
+    settings: "Replace key",
+  },
+  "model-access": {
+    headline: "Your OpenAI key can't use the models Reading Lite needs.",
+    next: "Allow them for the key's project in OpenAI, or connect another key, then retry.",
+    settings: "Provider settings",
+  },
+  billing: {
+    headline: "Your OpenAI account is out of credit.",
+    next: "Add credit in OpenAI's billing settings, then retry.",
+    settings: "Provider settings",
+  },
+  "hosting-limit": {
+    headline: "Reading Lite's processing limit was reached.",
+    next: "Retry once the limit resets.",
+  },
+  stopped: { headline: "Processing stopped before finishing." },
 };
+
+// The provider-account codes (ADR 0004, Queued work and provider errors). The
+// backend fails the attempt with these at once, never retrying, because only
+// the reader can fix them: their messages are its own fixed recovery sentences,
+// which `next` replaces. `provider_key_undecryptable` is the stored key failing
+// to open; saving it again is the reader's way on, as for a rejected one.
+const ACCOUNT_CODES: ReadonlyMap<string, FailureCategory> = new Map<string, FailureCategory>([
+  ["provider_key_required", "key-missing"],
+  ["provider_key_invalid", "key-invalid"],
+  ["provider_key_undecryptable", "key-invalid"],
+  ["provider_model_access", "model-access"],
+  ["provider_insufficient_quota", "billing"],
+]);
 
 /**
  * Failed while fetching the source, and the class said nothing more specific:
@@ -100,12 +157,23 @@ const PROVIDER_CODES: ReadonlySet<string> = new Set([
 export function categorize(error: ReadingError): Failure {
   const category = categoryOf(error);
   const message = error.message;
+  if (category === "unknown") {
+    return { category, headline: message, message, ...stageOf(error) };
+  }
+  const { headline, next, settings } = COPY[category];
   return {
     category,
-    headline: category === "unknown" ? message : HEADLINES[category],
+    headline,
     message,
-    ...(error.stage === undefined ? {} : { stage: error.stage }),
+    ...(ACCOUNT_CODES.has(error.code) ? {} : { detail: message }),
+    ...(next === undefined ? {} : { next }),
+    ...(settings === undefined ? {} : { settings }),
+    ...stageOf(error),
   };
+}
+
+function stageOf(error: ReadingError): { stage?: string } {
+  return error.stage === undefined ? {} : { stage: error.stage };
 }
 
 function categoryOf(error: ReadingError): FailureCategory {
@@ -115,6 +183,8 @@ function categoryOf(error: ReadingError): FailureCategory {
   // expired attempt keeps whatever stage it had reached (`expiredActiveAttempt`
   // preserves it), so the fetch-stage fallback below would otherwise swallow
   // them and report the wrong recovery.
+  const account = ACCOUNT_CODES.get(code);
+  if (account !== undefined) return account;
   if (SOURCE_INCOMPLETE_CODES.has(code)) return "source-incomplete";
   if (STOPPED_CODES.has(code)) return "stopped";
   if (HOSTING_LIMIT_CODES.has(code)) return "hosting-limit";
@@ -124,10 +194,11 @@ function categoryOf(error: ReadingError): FailureCategory {
   if (stage !== undefined && PROVIDER_STAGES.has(stage) && PROVIDER_CODES.has(code)) {
     // The provider classes keep the provider's own message, which does not
     // repeat the status, so it is read from the field the backend records.
-    // No status lands on provider-error — never a false key problem.
+    // A 401 or 403 to the reader's own key arrives as an account code above;
+    // one that reaches an adapter was sent with Reading Lite's hosted key,
+    // which the reader cannot fix, so it stays a provider error.
     const status = error.http_status;
     if (code === "RateLimitedError" || status === 429) return "provider-limit";
-    if (status === 401 || status === 403) return "key-problem";
     return "provider-error";
   }
   return "unknown";
