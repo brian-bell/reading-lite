@@ -81,6 +81,7 @@ import {
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromSql } from "./control-plane/db";
+import { providerKeyReady } from "./control-plane/tenant-provider-keys";
 import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
@@ -108,6 +109,7 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
     pendingTtlSeconds: pendingTtlSeconds(env),
     principal,
     usage: tenantUsageFor(env, String(principal.tenantId)),
+    providerKeyReady: () => providerKeyReady(env, fromSql(sql), String(principal.tenantId)),
   });
 }
 
@@ -598,6 +600,13 @@ function toHttp(out: IntakeOutcome): {
         body: { error: "usage guard unavailable" },
         status: 429,
         headers: { "Retry-After": "5" },
+      };
+    // Tenant provider keys are on and this reader has no active key (ADR
+    // 0004): nothing was claimed. Not retryable until they connect one.
+    case "provider_key_required":
+      return {
+        body: { error: "connect a key, then retry", code: "provider_key_required" },
+        status: 409,
       };
     // The account was marked deleting after this request authenticated; the
     // claim transaction saw it under the tenant lock and wrote nothing. Same

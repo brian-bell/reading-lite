@@ -28,6 +28,7 @@ beforeEach(() => {
   workerEnv.PROVIDER_KEY_SECRET = SECRET;
   workerEnv.OPENAI_SUMMARIZATION_MODEL = SUMMARY_MODEL;
   delete workerEnv.PROVIDER_KEY_VERSION;
+  delete workerEnv.TENANT_PROVIDER_KEYS;
 });
 
 function catalog(ids: string[] | number | "throw") {
@@ -134,6 +135,7 @@ function masked(lastFour: string, patch: Record<string, unknown> = {}) {
       status: "active",
       validated_at_ms: NOW_MS,
     },
+    key_required: false,
     effort: "high",
     daily_spend_cap_microdollars: null,
     effective_daily_spend_microdollars: OPERATOR,
@@ -195,6 +197,7 @@ describe("/api/auth/provider", () => {
     expect(read.res.status).toBe(200);
     expect(await read.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -398,6 +401,14 @@ describe("/api/auth/provider", () => {
     }
   });
 
+  it("says a key is required when tenant provider keys are on", async () => {
+    (env as unknown as Env).TENANT_PROVIDER_KEYS = "1";
+    const session = await redeem("founder@test.example", "clm_provider_required");
+    const read = await request("/api/auth/provider", { cookie: session.cookie });
+    expect(read.res.status).toBe(200);
+    expect(await read.res.json()).toMatchObject({ credential: null, key_required: true });
+  });
+
   it("removes the key and leaves effort in place", async () => {
     const session = await redeem("founder@test.example", "clm_provider_delete");
     const connected = await request("/api/auth/provider", {
@@ -424,6 +435,7 @@ describe("/api/auth/provider", () => {
     expect(removed.res.status).toBe(200);
     expect(await removed.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -439,6 +451,7 @@ describe("/api/auth/provider", () => {
     expect(again.res.status).toBe(200);
     expect(await again.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -462,6 +475,7 @@ describe("/api/auth/provider", () => {
     const unchanged = await request("/api/auth/provider", { cookie: session.cookie });
     expect(await unchanged.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -477,6 +491,7 @@ describe("/api/auth/provider", () => {
     expect(lowered.res.status).toBe(200);
     expect(await lowered.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "high",
       daily_spend_cap_microdollars: 250_000,
       effective_daily_spend_microdollars: 250_000,
@@ -492,6 +507,7 @@ describe("/api/auth/provider", () => {
     expect(tightened.res.status).toBe(200);
     expect(await tightened.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "high",
       daily_spend_cap_microdollars: 250_000,
       effective_daily_spend_microdollars: 100_000,
@@ -512,6 +528,7 @@ describe("/api/auth/provider", () => {
     expect(ceiling.res.status).toBe(200);
     expect(await ceiling.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "low",
       daily_spend_cap_microdollars: OPERATOR,
       effective_daily_spend_microdollars: OPERATOR,
@@ -527,6 +544,7 @@ describe("/api/auth/provider", () => {
     expect(cleared.res.status).toBe(200);
     expect(await cleared.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -552,6 +570,7 @@ describe("/api/auth/provider", () => {
     expect(otherRead.res.status).toBe(200);
     expect(await otherRead.res.json()).toEqual({
       credential: null,
+      key_required: false,
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OTHER_OPERATOR,

@@ -18,6 +18,24 @@ export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }
   return env.TENANT_PROVIDER_KEYS === "1";
 }
 
+/**
+ * Whether this tenant's reading work can reach a provider: always with tenant
+ * keys off, since the deployment pays; with them on, only while the tenant
+ * holds an active key. Intake asks before it claims anything, so a reader with
+ * no key is told to connect one rather than handed a reading that fails at its
+ * first paid stage. Dispatch still resolves the key for itself, because a key
+ * can be removed after intake admitted the work.
+ */
+export async function providerKeyReady(
+  env: { TENANT_PROVIDER_KEYS?: string },
+  db: ControlPlaneDb,
+  tenantId: string,
+): Promise<boolean> {
+  if (!tenantProviderKeysEnabled(env)) return true;
+  const row = await readProviderCredential(db, tenantId);
+  return row?.status === "active";
+}
+
 export class TenantProviderKeyError extends Error {
   constructor(readonly code: "provider_key_required" | "provider_key_undecryptable") {
     super(code === "provider_key_required"

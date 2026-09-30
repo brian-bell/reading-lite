@@ -85,6 +85,7 @@ const REQUIRED_SCHEMAS = [
   "PostInboxPromoteActivatedResponse",
   "PostInboxPromoteExistingResponse",
   "InboxPromoteErrorMessage",
+  "InboxPromoteProviderKeyRequired",
   "InboxPromoteUnavailable",
   "InboxPromoteQuotaDenied",
   "InboxPromoteUsageGuardUnavailable",
@@ -107,6 +108,7 @@ const REQUIRED_SCHEMAS = [
   "GetReadingDiagnosticsResponse",
   "QuotaDeniedResponse",
   "UnsupportedUrlError",
+  "ProviderKeyRequiredError",
 ] as const;
 
 type OpenApiDoc = {
@@ -304,6 +306,7 @@ describe("docs/openapi.yaml", () => {
   // item it kept, so each error schema keeps its outcome's fields.
   it.each([
     ["InboxPromoteErrorMessage", { error: "reading already has an active attempt" }],
+    ["InboxPromoteProviderKeyRequired", { error: "connect a key, then retry", code: "provider_key_required" }],
     ["InboxPromoteUnavailable", { error: "queue send failed", id: "rd_01" }],
     [
       "InboxPromoteQuotaDenied",

@@ -87,6 +87,7 @@ async function makeIntake(overrides: Partial<ReadingIntakeDeps> & { reader?: Tes
     pendingTtlSeconds: TTL,
     principal: PRINCIPAL,
     usage: allowAllUsage(),
+    providerKeyReady: async () => true,
     ...rest,
   };
   return { intake: readingIntakeFor(deps), reader, sent };
@@ -807,5 +808,46 @@ describe("ReadingIntake usage quotas", () => {
     await expect(intake.submit("https://example.com/quota-guard", { email: false })).resolves.toEqual({
       kind: "guard_unavailable",
     });
+  });
+});
+
+describe("ReadingIntake provider key gate", () => {
+  it.each(["submit", "importMarkdown"] as const)(
+    "refuses %s of a new url without claiming or reserving it when no key is ready",
+    async (verb) => {
+      const usage = recordingUsage();
+      const { intake, reader, sent } = await makeIntake({ usage, providerKeyReady: async () => false });
+      const url = `https://example.com/no-key-${verb}`;
+
+      const out =
+        verb === "submit"
+          ? await intake.submit(url, { email: false })
+          : await intake.importMarkdown(url, "# Supplied\n\nBody.", { email: false });
+
+      expect(out).toEqual({ kind: "provider_key_required" });
+      expect(usage.ops).toEqual(["admit"]);
+      expect(sent).toHaveLength(0);
+      await expect(reader.urlOwnerId(url)).resolves.toBeNull();
+    },
+  );
+
+  it("refuses a reprocess without starting an attempt when no key is ready", async () => {
+    const usage = recordingUsage();
+    const { intake, reader, sent } = await makeIntake({ usage, providerKeyReady: async () => false });
+    const owner = await writeOwnedReading(reader, "https://example.com/no-key-reprocess", {
+      id: "rd_NOKEY",
+      status: "failed",
+      content_status: "failed",
+      error: { code: "provider_key_required", message: "connect a key, then retry", failed_at: NOW, retryable: false },
+    });
+
+    const out = await intake.reprocess(owner.id, { email: false });
+
+    expect(out).toEqual({ kind: "provider_key_required" });
+    expect(usage.ops).toEqual(["admit"]);
+    expect(sent).toHaveLength(0);
+    const after = await reader.store.loadReadingById(owner.id);
+    expect(after?.manifest).toMatchObject({ status: "failed", error: { code: "provider_key_required" } });
+    expect(after?.manifest.active_attempt).toBeUndefined();
   });
 });

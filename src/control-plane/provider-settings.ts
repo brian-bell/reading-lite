@@ -69,7 +69,11 @@ export async function readSummarizationEffort(db: ControlPlaneDb, userId: string
   return row === null ? null : SettingsRowSchema.pick({ summarization_effort: true }).parse(row).summarization_effort;
 }
 
-export async function loadProviderSettings(db: ControlPlaneDb, userId: string): Promise<ProviderSettingsLoad> {
+export async function loadProviderSettings(
+  db: ControlPlaneDb,
+  userId: string,
+  keyRequired: boolean,
+): Promise<ProviderSettingsLoad> {
   const caps = await loadSpendCaps(db, userId);
   if (typeof caps === "string") return caps;
   const maskRow = await db.first(
@@ -87,6 +91,7 @@ export async function loadProviderSettings(db: ControlPlaneDb, userId: string): 
           validated_at_ms: fromTimestamp(mask.validated_at),
         }
       : null,
+    key_required: keyRequired,
     ...caps,
   });
 }

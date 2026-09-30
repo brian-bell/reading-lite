@@ -1698,11 +1698,16 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
-          description: The reading has an active attempt. The item is kept.
+          description: |
+            The reading has an active attempt, or the tenant has no active
+            provider key while tenant provider keys are on
+            (`code: provider_key_required`). The item is kept.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InboxPromoteErrorMessage"
+                oneOf:
+                  - $ref: "#/components/schemas/InboxPromoteErrorMessage"
+                  - $ref: "#/components/schemas/InboxPromoteProviderKeyRequired"
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
         "413":
@@ -1872,12 +1877,17 @@ components:
             error: auth misconfigured
     IntakeConflict:
       description: |
-        Active attempt in progress, or markdown content unavailable for the
-        requested operation.
+        Active attempt in progress, markdown content unavailable for the
+        requested operation, or (`code: provider_key_required`) tenant provider
+        keys are on and the tenant has no active key. The last is decided after
+        the request-rate admission and before anything is claimed; it is not
+        retryable until the reader connects a key.
       content:
         application/json:
           schema:
-            $ref: "#/components/schemas/ErrorMessage"
+            oneOf:
+              - $ref: "#/components/schemas/ErrorMessage"
+              - $ref: "#/components/schemas/ProviderKeyRequiredError"
     Unavailable:
       description: |
         Queue unbound, claim/activation contention, or queue send failure
@@ -1912,6 +1922,17 @@ components:
       properties:
         error:
           type: string
+
+    ProviderKeyRequiredError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          const: provider_key_required
 
     ValidationError:
       type: object
@@ -2531,6 +2552,7 @@ components:
       additionalProperties: false
       required:
         - credential
+        - key_required
         - effort
         - daily_spend_cap_microdollars
         - effective_daily_spend_microdollars
@@ -2540,6 +2562,12 @@ components:
           oneOf:
             - $ref: "#/components/schemas/ProviderCredentialView"
             - type: "null"
+        key_required:
+          type: boolean
+          description: >-
+            True when tenant provider keys are on: reading work runs only under
+            the reader's own active key, and save, import and reprocess answer
+            409 `provider_key_required` without one.
         effort:
           $ref: "#/components/schemas/SummarizationEffort"
         daily_spend_cap_microdollars:
@@ -2872,6 +2900,19 @@ components:
           properties:
             error:
               type: string
+      unevaluatedProperties: false
+
+    InboxPromoteProviderKeyRequired:
+      allOf:
+        - $ref: "#/components/schemas/InboxPromoteItemId"
+        - type: object
+          required: [error, code]
+          properties:
+            error:
+              type: string
+            code:
+              type: string
+              const: provider_key_required
       unevaluatedProperties: false
 
     InboxPromoteUnavailable:

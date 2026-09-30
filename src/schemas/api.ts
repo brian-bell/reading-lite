@@ -234,10 +234,13 @@ export type ProviderCredentialView = z.infer<typeof ProviderCredentialViewSchema
  * GET /api/auth/provider and the write responses. `daily_spend_cap_microdollars`
  * is the reader's own cap (null when they have not lowered it). Effective spend
  * is that cap when it is set and still under the operator default, otherwise
- * the operator default.
+ * the operator default. `key_required` is true when tenant provider keys are on,
+ * so reading work runs only under the reader's own active key and intake
+ * refuses it (409 `provider_key_required`) without one.
  */
 export const ProviderSettingsResponseSchema = z.object({
   credential: ProviderCredentialViewSchema.nullable(),
+  key_required: z.boolean(),
   effort: SummarizationEffortSchema,
   daily_spend_cap_microdollars: z.number().int().positive().nullable(),
   effective_daily_spend_microdollars: z.number().int().positive(),
