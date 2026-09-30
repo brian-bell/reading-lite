@@ -14,7 +14,7 @@ import type { Manifest } from "../../src/schemas/manifest";
 import { purgeReading } from "../../src/reading-purge";
 import type { Services } from "../../src/services";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
-import { upsertProviderCredential } from "../../src/control-plane/provider-credentials";
+import { readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
 
@@ -510,6 +510,27 @@ describe("hosted relationship judge", () => {
     );
     expect(checkpoint?.result_json ?? "").not.toContain(founderKey);
     expect(checkpoint?.result_json ?? "").not.toContain("sk-deployment-not-used");
+  });
+
+  it("acks a founder key the provider rejects and marks it invalid", async () => {
+    runtime.TENANT_PROVIDER_KEYS = "1";
+    runtime.PROVIDER_KEY_SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    await upsertProviderCredential(testControlPlane(env), {
+      tenantId: FOUNDER_TENANT_ID,
+      plaintext: "sk-founder-rejected-4242",
+      root: { secret: parseProviderKeySecret(runtime.PROVIDER_KEY_SECRET), version: 1 },
+      nowMs: Date.parse(runAt),
+      validatedAtMs: Date.parse(runAt),
+    });
+    provider.mockImplementation(async () => new Response('{"error":{"message":"invalid key"}}', { status: 401 }));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const ack = vi.fn();
+    const retry = vi.fn();
+    await consumeRelationshipRefresh({ body: job, ack, retry } as unknown as Message<unknown>, runtime, undefined, services);
+    expect(provider).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(ack).toHaveBeenCalledOnce();
+    expect((await readProviderCredential(testControlPlane(env), FOUNDER_TENANT_ID))?.status).toBe("invalid");
   });
 
 });

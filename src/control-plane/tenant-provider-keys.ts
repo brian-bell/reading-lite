@@ -11,7 +11,7 @@ import {
 } from "../modules/summarizer";
 import { readSummarizationEffort } from "./provider-settings";
 import { decryptProviderKey, readProviderKeyRoots } from "./provider-key-crypto";
-import { readProviderCredential } from "./provider-credentials";
+import { markProviderCredentialInvalid, readProviderCredential } from "./provider-credentials";
 import type { PaidAuthorization } from "./paid-dispatch";
 
 export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }): boolean {
@@ -36,11 +36,11 @@ export async function resolveTenantOpenAIKey(
     PROVIDER_KEY_PREVIOUS_VERSION?: string;
   },
   tenantId: string,
-): Promise<string> {
+): Promise<{ key: string; credentialVersion: number }> {
   const row = await readProviderCredential(db, tenantId);
   if (!row || row.status !== "active") throw new TenantProviderKeyError("provider_key_required");
   try {
-    return await decryptProviderKey({
+    const key = await decryptProviderKey({
       roots: readProviderKeyRoots(env),
       tenantId: row.tenantId,
       credentialVersion: row.credentialVersion,
@@ -48,6 +48,7 @@ export async function resolveTenantOpenAIKey(
       ciphertext: row.ciphertext,
       iv: row.iv,
     });
+    return { key, credentialVersion: row.credentialVersion };
   } catch (error) {
     if (error instanceof TenantProviderKeyError) throw error;
     console.error(JSON.stringify({
@@ -71,7 +72,13 @@ export function paidAuthorizationFor(
   tenantId: string,
 ): PaidAuthorization {
   if (!tenantProviderKeysEnabled(env)) return { mode: "deployment" };
-  return { mode: "tenant", resolve: () => resolveTenantOpenAIKey(db, env, tenantId) };
+  return {
+    mode: "tenant",
+    resolve: () => resolveTenantOpenAIKey(db, env, tenantId),
+    markInvalid: async (credentialVersion, nowMs) => {
+      await markProviderCredentialInvalid(db, { tenantId, credentialVersion, nowMs });
+    },
+  };
 }
 
 export function hostedProviderSelection(env: {

@@ -51,7 +51,7 @@ describe("resolveTenantOpenAIKey", () => {
       nowMs: NOW_MS,
       validatedAtMs: NOW_MS,
     });
-    expect(await resolveTenantOpenAIKey(db, env, USER)).toBe("sk-tenant-resolver-4242");
+    expect(await resolveTenantOpenAIKey(db, env, USER)).toEqual({ key: KEY, credentialVersion: stored.credentialVersion });
     await expect(resolveTenantOpenAIKey(db, env, OTHER)).rejects.toBeInstanceOf(TenantProviderKeyError);
     await markProviderCredentialInvalid(db, {
       tenantId: USER,

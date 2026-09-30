@@ -1,9 +1,10 @@
 # ADR 0004: Tenant provider credentials (BYOK) and archive export
 
 - **Status:** Accepted. The settings API (`reading-lite-gh341.3`), key
-  resolution at dispatch (`reading-lite-gh341.4`), and configuration snapshots
-  (`reading-lite-gh341.6`) are implemented. Error classification, spend
-  attribution, and the rollout are not (`reading-lite-gh341` remains open).
+  resolution at dispatch (`reading-lite-gh341.4`), provider error
+  classification (`reading-lite-gh341.5`), and configuration snapshots
+  (`reading-lite-gh341.6`) are implemented. Spend attribution and the rollout
+  are not (`reading-lite-gh341` remains open).
   Written before [ADR 0005](0005-postgresql-storage.md). Credential storage is
   PostgreSQL. Processing checkpoints live on `reading_attempts.checkpoint`.
 - **Date:** 2026-09-10
@@ -140,7 +141,8 @@ operator-funded requests.
 | --- | --- |
 | Key missing or removed at dispatch | Fail the attempt now with a "connect a key, then retry" error; no deferral |
 | Decryption failure | Fail the attempt now; log for the operator; no fallback |
-| Provider 401 or 403 | Fail the attempt now and mark the stored key `invalid`; settings shows "replace your key" |
+| Provider 401 | Fail the attempt now and mark the stored key `invalid`; settings shows "replace your key" |
+| Provider 403 | Fail the attempt now with a model-access error; the key stays `active`, since a valid key without model or project access is not fixed by replacing it (amended 2026-09-30, gh341.5) |
 | Provider 429 with `insufficient_quota` | Fail the attempt now with a billing message; no retry. Checked before the generic 429 path |
 | Provider 429 rate limit | Existing `RateLimitedError` queue retry, then deferral |
 | Provider 5xx or timeout | Existing HTTP retries within the spend and lease protections |

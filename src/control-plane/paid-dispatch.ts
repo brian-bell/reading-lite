@@ -22,12 +22,41 @@ export class SpendAdmissionError extends DeferPaidWorkError {
   }
 }
 
+// A provider verdict about the account rather than the request: retrying the
+// same request cannot succeed until the reader replaces the key, grants it
+// model access, or adds credit, so neither HTTP nor queue retry applies
+// (ADR 0004). A rate-limit 429 stays RateLimitedError and a 5xx stays an
+// adapter error.
+export type ProviderAccountErrorCode =
+  | "provider_key_invalid"
+  | "provider_model_access"
+  | "provider_insufficient_quota";
+
+const ACCOUNT_ERROR_MESSAGES: Record<ProviderAccountErrorCode, string> = {
+  provider_key_invalid: "the provider rejected the key; replace it, then retry",
+  provider_model_access: "the key cannot use the model; grant its project access, then retry",
+  provider_insufficient_quota: "the provider account is out of quota; check its billing, then retry",
+};
+
+export class ProviderAccountError extends Error {
+  constructor(readonly code: ProviderAccountErrorCode, readonly status: number) {
+    super(ACCOUNT_ERROR_MESSAGES[code]);
+    this.name = code;
+  }
+}
+
 type RpcDecision = { ok: boolean; state?: string; fresh?: boolean; reason?: string };
 export type SpendRpc = (body: Record<string, unknown>) => Promise<RpcDecision>;
 
 export type PaidAuthorization =
   | { mode: "deployment" }
-  | { mode: "tenant"; resolve: () => Promise<string> };
+  | {
+    mode: "tenant";
+    resolve: () => Promise<{ key: string; credentialVersion: number }>;
+    // Fenced by the version that was sent, so a key replaced while the
+    // rejected request was in flight stays active.
+    markInvalid: (credentialVersion: number, nowMs: number) => Promise<void>;
+  };
 
 export interface PaidFetchDeps {
   tenantId: string;
@@ -128,10 +157,13 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       report("blocked", {reason: permission.reason ?? "dispatch_uncertain"});
       throw new SpendAdmissionError(permission.reason ?? "dispatch_uncertain");
     }
+    let sentCredentialVersion: number | null = null;
     const attachTenantKey = async () => {
       if (deps.authorization?.mode !== "tenant") return;
       try {
-        init = withBearer(init, await deps.authorization.resolve());
+        const resolved = await deps.authorization.resolve();
+        init = withBearer(init, resolved.key);
+        sentCredentialVersion = resolved.credentialVersion;
       } catch (error) {
         const canceled = await call({ ...identity, kind: "settle_spend", actualMicrodollars: 0 });
         report(canceled.ok ? "settled" : "unresolved", {actual_microdollars: 0, reason: "credential_unavailable"});
@@ -170,8 +202,58 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       else report("unresolved", {reason: "settlement_unavailable"});
       if (!result.ok) console.warn(JSON.stringify({ event: "paid_spend_settlement_held", op_id: opId, reason: result.reason }));
     } else report("unresolved", {reason: "missing_valid_usage"});
+    await throwIfAccountFailure(response, deps, sentCredentialVersion);
     return response;
   };
+}
+
+// Checked before fetchWithRetry sees the status, so insufficient_quota never
+// becomes RateLimitedError. A 401 or 403 is about the tenant's key only when
+// one was sent; on deployment keys it stays the adapter's error. Only a 401
+// invalidates the key: a 403 means a valid key lacks model or project access,
+// which replacing the same key would not fix (provider-key-check agrees).
+async function throwIfAccountFailure(
+  response: Response,
+  deps: PaidFetchDeps,
+  credentialVersion: number | null,
+): Promise<void> {
+  const tenantKeySent = deps.authorization?.mode === "tenant" && credentialVersion !== null;
+  if (response.status === 403 && tenantKeySent) {
+    response.body?.cancel().catch(() => {});
+    throw new ProviderAccountError("provider_model_access", 403);
+  }
+  if (response.status === 401 && deps.authorization?.mode === "tenant" && credentialVersion !== null) {
+    response.body?.cancel().catch(() => {});
+    try {
+      await deps.authorization.markInvalid(credentialVersion, deps.now());
+    } catch (error) {
+      // The attempt still fails as key-invalid; the next dispatch meets the
+      // provider's 401 again and retries the mark.
+      console.error(JSON.stringify({
+        event: "provider_key_mark_invalid_failed",
+        tenant_id: deps.tenantId,
+        credential_version: credentialVersion,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }
+    throw new ProviderAccountError("provider_key_invalid", response.status);
+  }
+  if (response.status === 429 && await isInsufficientQuota(response)) {
+    response.body?.cancel().catch(() => {});
+    throw new ProviderAccountError("provider_insufficient_quota", 429);
+  }
+}
+
+async function isInsufficientQuota(response: Response): Promise<boolean> {
+  try {
+    const body: unknown = await response.clone().json();
+    const error = body && typeof body === "object" && "error" in body ? body.error : null;
+    if (!error || typeof error !== "object") return false;
+    const { code, type } = error as { code?: unknown; type?: unknown };
+    return code === "insufficient_quota" || type === "insufficient_quota";
+  } catch {
+    return false;
+  }
 }
 
 function withBearer(init: RequestInit | undefined, key: string): RequestInit {
