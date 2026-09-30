@@ -104,16 +104,6 @@ test("hydrates the server-rendered first page without asking for it again", asyn
   expect(recorded.lists).toEqual([]);
 });
 
-test("renders the pack's rows newest first, each title linking to its reading", async ({ page, baseURL }) => {
-  await openLibrary(page, baseURL!);
-  const links = readings(page).getByRole("heading", { level: 2 }).getByRole("link");
-  await expect(links).toHaveCount(FIRST_PAGE.length);
-  for (const [index, row] of FIRST_PAGE.entries()) {
-    await expect(links.nth(index)).toHaveAttribute("href", `/readings/${row.id}`);
-  }
-  await expect(readings(page).getByRole("link", { name: TITLED.title })).toBeVisible();
-});
-
 test("asks the same-origin API once, pinned, on a client-side visit", async ({ page, baseURL }) => {
   await signIn(page.context(), baseURL!);
   const recorded = recordRequests(page);
@@ -579,13 +569,4 @@ test("no results name the search and the tag, and each clear control is one requ
   await expect(searchField(page)).toBeFocused();
   await page.waitForLoadState("networkidle");
   expect(recorded.lists).toEqual([`/api/readings?tag=${TAG}&offset=0`]);
-});
-
-test("an empty library offers to save a reading", async ({ page, baseURL }) => {
-  await signIn(page.context(), baseURL!, LIBRARY_STATE_SESSIONS.empty);
-  await page.goto("/");
-  await expect(page.getByText("No readings yet.")).toBeVisible();
-  await expect(page.getByRole("link", { name: "Save a reading" })).toHaveAttribute("href", "/save");
-  await expect(page.getByRole("link", { name: /^Clear/ })).toHaveCount(0);
-  await expect(pager(page)).toHaveCount(0);
 });

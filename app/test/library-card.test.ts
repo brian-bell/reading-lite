@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
-import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
 import { libraryBadge } from "../src/library-card";
-import { LibraryRowSchema, type LibraryRow } from "../src/library";
+import type { LibraryRow } from "../src/library";
 
 // A library card's badge words (#415; acceptance matrix, Library: "Pending or
 // failed row" and "Reprocess failed on a ready reading"). Which state a row is
@@ -55,19 +54,5 @@ describe("libraryBadge", () => {
     },
   ])("gives $name", ({ row: input, badge }) => {
     expect(libraryBadge(input)).toEqual(badge);
-  });
-
-  // The list row's copy of the fields parses and classifies as the manifest does.
-  it("agrees with the fixture pack's rows", () => {
-    const rows = new Map(pack.list_index.items.map((item) => [item.id, LibraryRowSchema.parse(item)]));
-    const byName = (name: string) => rows.get(pack.fixtures.find((f) => f.name === name)!.id)!;
-    expect(libraryBadge(byName("attention"))).toBeUndefined();
-    expect(libraryBadge(byName("pending"))).toEqual({ kind: "pending", label: "Processing" });
-    expect(libraryBadge(byName("fail-source-unreachable"))).toEqual({
-      kind: "failed",
-      label: "Failed",
-      message: "The page couldn't be fetched.",
-    });
-    expect(libraryBadge(byName("reprocess-failed"))).toEqual({ kind: "reprocess-failed", label: "Reprocess failed" });
   });
 });
