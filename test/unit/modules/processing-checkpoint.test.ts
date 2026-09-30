@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkpointUnder,
   ProcessingCheckpointSchema,
   type ProcessingCheckpoint,
+  type ProcessingConfig,
 } from "../../../src/modules/processing-checkpoint";
 import { EMBEDDING_DIM } from "../../../src/schemas/api";
 
@@ -43,5 +45,33 @@ describe("ProcessingCheckpointSchema", () => {
     if (parsed.success) {
       expect(parsed.data.summarize?.similar_context[0]?.url).toBe("");
     }
+  });
+});
+
+describe("checkpointUnder", () => {
+  const config: ProcessingConfig = {
+    provider: "openai",
+    summarization_model: "gpt-5.6-terra",
+    effort: "high",
+    embedding_model: "text-embedding-3-small",
+    catalog_version: 1,
+  };
+  const stored = { ...summarizeWithNeighbour("https://neighbour.example"), config };
+
+  it.each([
+    ["the same configuration", config, ["embed_source", "summarize"]],
+    ["a changed effort", { ...config, effort: "medium" }, ["embed_source"]],
+    ["a changed summarization model", { ...config, summarization_model: "gpt-other" }, ["embed_source"]],
+    ["a changed provider", { ...config, provider: "anthropic" as const }, ["embed_source"]],
+    ["a changed embedding model", { ...config, embedding_model: "text-embedding-other" }, []],
+    ["a changed price catalog", { ...config, catalog_version: 2 }, []],
+  ])("under %s keeps %j", (_label, next, kept) => {
+    const result = checkpointUnder(stored, next);
+    expect(result.config).toEqual(next);
+    expect(Object.keys(result).filter((key) => key !== "config").sort()).toEqual(kept);
+  });
+
+  it("reuses nothing from a checkpoint that recorded no configuration", () => {
+    expect(checkpointUnder(summarizeWithNeighbour(""), config)).toEqual({ config });
   });
 });

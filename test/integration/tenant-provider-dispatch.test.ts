@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
 import { deleteProviderCredentials, readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
+import { updateProviderPreferences } from "../../src/control-plane/provider-settings";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { RateLimitedError } from "../../src/modules/http-retry";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
@@ -319,6 +320,38 @@ describe("tenant provider key dispatch", () => {
     expect(JSON.stringify(message.body)).not.toContain(original);
     expect(JSON.stringify(message.body)).not.toContain(replaced);
     expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
+  });
+
+  it("summarizes a redelivered attempt again at the reader's changed effort", async () => {
+    const { tenantId } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
+    const tenant: TenantContext = { tenantId: parseTenantId(tenantId)! };
+    await storeKey(tenantId, "sk-tenant-snapshot-5555");
+    const job = await seed(tenant, "https://snapshot.example/article");
+    const sent: string[] = [];
+    let embeds = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+      if (String(input).includes("/embeddings")) {
+        embeds += 1;
+        // The summary embedding fails once, after the summary is checkpointed.
+        if (embeds === 2) return new Response("slow", { status: 429, headers: { "retry-after": "1" } });
+        return embeddingResponse();
+      }
+      sent.push(JSON.parse(String(init?.body)).reasoning.effort);
+      return summaryResponse();
+    });
+    await expect(processReading(job, runtime(), services(fetchFn), tenant)).rejects.toBeInstanceOf(RateLimitedError);
+    await updateProviderPreferences(testControlPlane(env), {
+      userId: tenantId,
+      nowMs: Date.parse(createdAt) + 1,
+      effort: "medium",
+    });
+    await processReading(job, runtime(), services(fetchFn), tenant);
+    expect(sent).toEqual(["high", "medium"]);
+    expect(embeds).toBe(3);
+    expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
+    await expect(
+      testReadingsFor(tenant).writer.readCheckpoint({ id: job.id, attemptId: job.attemptId }),
+    ).resolves.toMatchObject({ config: { provider: "openai", effort: "medium" } });
   });
 
   const QUOTA_BODY = JSON.stringify({ error: {
