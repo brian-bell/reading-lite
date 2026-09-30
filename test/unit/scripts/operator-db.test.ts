@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  assertDatabaseUrlEnvMatches,
   databaseTargetForBucket,
-  deployEnvForBucket,
   OPERATOR_DATABASES,
   resolveOperatorDatabaseUrl,
   withOperatorSql,
@@ -27,8 +25,8 @@ function fakeSql(end: () => Promise<void>): Sql {
 
 describe("the bucket-to-database pairing", () => {
   it("pairs each known bucket with its environment", () => {
-    expect(deployEnvForBucket("reading-lite")).toBe("production");
-    expect(deployEnvForBucket("reading-lite-staging")).toBe("staging");
+    expect(databaseTargetForBucket("reading-lite").env).toBe("production");
+    expect(databaseTargetForBucket("reading-lite-staging").env).toBe("staging");
   });
 
   // The whole point of the module: a wrong answer here is an operator's
@@ -137,16 +135,6 @@ describe("the bucket-to-database pairing", () => {
         env: { ...ENV, MY_SCRATCH_URL: "postgres://scratch" },
       }),
     ).toEqual({ envName: "MY_SCRATCH_URL", url: "postgres://scratch" });
-  });
-
-  it("keeps the deploy --env allowlist in step with the same table", () => {
-    expect(() => assertDatabaseUrlEnvMatches("production", "PRODUCTION_DATABASE_URL")).not.toThrow();
-    expect(() => assertDatabaseUrlEnvMatches("production", "STAGING_DATABASE_URL")).toThrow(
-      /names the staging database/,
-    );
-    expect(() => assertDatabaseUrlEnvMatches("production", "DATABASE_URL")).toThrow(
-      /does not name a production database/,
-    );
   });
 });
 

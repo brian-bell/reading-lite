@@ -104,9 +104,8 @@ item and promotes ("Add to library") or discards it (reading-lite-fy8t).
   offline batch, whose sidecars carry no attempt identity); attempt identity is
   never fabricated.
 - **List projection** — the `IndexItem` shape list, search and relationship
-  targets return, projected from rows by `PgReadingStore` (`manifestToIndexItem`
-  in `stores/list-items.ts` names the mapping). There is no stored list to keep
-  in step.
+  targets return, selected from `readings` rows by `PgReadingStore` and parsed
+  with `ListIndexItemSchema`. There is no stored list to keep in step.
 - **Publication** — `PgReadingWriter.publish` is the terminal write for a
   successful attempt: one transaction that takes the tenant lock, then the
   reading lock, checks attempt ownership, then writes URL ownership, revision,

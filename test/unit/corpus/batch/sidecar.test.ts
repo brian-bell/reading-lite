@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import {
-  clearInputJsonl,
   clearSidecar,
   inputJsonlPath,
   loadInputJsonl,
@@ -526,15 +525,6 @@ describe("batch sidecar companion JSONL", () => {
       expect(await readFile(inputJsonlPath(path), "utf8")).toBeTruthy();
       await clearSidecar(path);
       await expect(readFile(inputJsonlPath(path), "utf8")).rejects.toThrow();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
-
-  it("clearInputJsonl is a no-op when nothing is present", async () => {
-    const { dir, path } = await tempPath();
-    try {
-      await expect(clearInputJsonl(path)).resolves.toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

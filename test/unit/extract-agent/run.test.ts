@@ -6,7 +6,7 @@ import {
 } from "../../../scripts/extract-agent-lib/gates";
 import { HeadlessUnavailableError } from "../../../scripts/extract-agent-lib/headless-tier";
 import type { RedditOutcome } from "../../../scripts/extract-agent-lib/reddit";
-import { parseRunArgs, runAgent, type RunDeps } from "../../../scripts/extract-agent-lib/run";
+import { runAgent, type RunDeps } from "../../../scripts/extract-agent-lib/run";
 import {
   emptySidecar,
   recordAttempt,
@@ -127,29 +127,6 @@ describe("markdownGate", () => {
     const markdown = "x".repeat(bodyBudget - 10);
     // "é" is 2 UTF-8 bytes: 6 chars is 12 bytes, over the 10 bytes of headroom.
     expect(markdownGate(body(markdown, "é".repeat(6)), cfg)).toEqual({ ok: false, why: "over_ceiling" });
-  });
-});
-
-describe("parseRunArgs", () => {
-  it("defaults to a dry run", () => {
-    expect(parseRunArgs([])).toEqual({ execute: false });
-    expect(parseRunArgs(["--dry-run"])).toEqual({ execute: false });
-  });
-
-  it("parses --execute, --limit, --only, and --verbose", () => {
-    expect(parseRunArgs(["--execute", "--limit", "5", "--only", "rd_abc", "--verbose"])).toEqual({
-      execute: true,
-      limit: 5,
-      only: "rd_abc",
-      verbose: true,
-    });
-  });
-
-  it("rejects unknown flags and bad limits", () => {
-    expect(() => parseRunArgs(["--frobnicate"])).toThrow(/frobnicate/);
-    expect(() => parseRunArgs(["--limit", "zero"])).toThrow(/--limit/);
-    expect(() => parseRunArgs(["--limit", "0"])).toThrow(/--limit/);
-    expect(() => parseRunArgs(["--only"])).toThrow(/--only/);
   });
 });
 

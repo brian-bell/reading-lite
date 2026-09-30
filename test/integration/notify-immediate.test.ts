@@ -20,6 +20,7 @@ import { testReadingsFor } from "../helpers/test-readings";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
 import { toTimestamp } from "../../src/control-plane/pg-time";
+import { clearBucket } from "./readings-harness";
 
 const NOW = "2026-08-16T12:00:00.000Z";
 const NOW_MS = Date.parse(NOW);
@@ -147,13 +148,6 @@ async function restoreFounderSettings(): Promise<void> {
     now,
     now,
   );
-}
-
-async function clearBucket() {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) {
-    await env.READINGS_BUCKET.delete(obj.key);
-  }
 }
 
 function makeStubFetch(opts: { resendStatus?: number; resendBody?: unknown } = {}) {

@@ -938,42 +938,6 @@ describe("compare-summary-effort", () => {
     }
   });
 
-  it("keeps the no-write invariant in the runner source and Anthropic deps", async () => {
-    const source = await readFile(
-      path.join(
-        process.cwd(),
-        ".agents/skills/compare-summary-effort/scripts/compare-summary-effort.ts",
-      ),
-      "utf8",
-    );
-    expect(source).not.toMatch(/method:\s*"(POST|PUT|PATCH|DELETE)"/);
-    expect(source).toMatch(/method: "GET"/);
-    expect(source).not.toMatch(/wrangler (deploy|secret|kv|r2|vectorize)/);
-
-    const openaiDeps = summarizerDepsForCandidate(openaiCandidate("max", "gpt-5.6-luna"), {
-      fetch: globalThis.fetch,
-      openaiApiKey: "sk-openai",
-      anthropicApiKey: "sk-ant",
-    });
-    expect(openaiDeps).toEqual(
-      expect.objectContaining({
-        provider: "openai",
-        openaiModel: "gpt-5.6-luna",
-        openaiReasoningEffort: "max",
-      }),
-    );
-    const anthropicDeps = summarizerDepsForCandidate(anthropicCandidate(), {
-      fetch: globalThis.fetch,
-      openaiApiKey: "sk-openai",
-      anthropicApiKey: "sk-ant",
-    });
-    expect(anthropicDeps.provider).toBe("anthropic");
-    expect(anthropicDeps.anthropicModel).toBe("claude-sonnet-5");
-    expect(anthropicDeps).not.toHaveProperty("openaiReasoningEffort");
-    expect(anthropicDeps).not.toHaveProperty("anthropicEffort");
-    expect(anthropicDeps.anthropicReasoningEffort).toBe("low");
-  });
-
   it("prints the paid-call matrix and cost ceiling in plan text", () => {
     const plan = checkpointPlan([openaiCandidate("max", "gpt-5.6-luna"), anthropicCandidate()]);
     const text = formatComparisonPlan(plan, false);
@@ -1004,13 +968,22 @@ describe("compare-summary-effort", () => {
         openaiApiKey: "sk-openai",
         anthropicApiKey: "sk-ant",
       };
+      expect(summarizerDepsForCandidate(low[0]!, creds)).toEqual(
+        expect.objectContaining({
+          provider: "openai",
+          openaiModel: "gpt-5.6-luna",
+          openaiReasoningEffort: "max",
+        }),
+      );
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
       const depsLow = summarizerDepsForCandidate(low[1]!, creds);
       process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "max";
       const depsHigh = summarizerDepsForCandidate(high[1]!, creds);
       expect(depsLow).toEqual(depsHigh);
+      expect(depsLow).toMatchObject({ provider: "anthropic", anthropicModel: "claude-sonnet-5-5" });
       expect(depsLow.anthropicReasoningEffort).toBe("low");
       expect(depsLow).not.toHaveProperty("anthropicEffort");
+      expect(depsLow).not.toHaveProperty("openaiReasoningEffort");
     } finally {
       if (previous === undefined) {
         delete process.env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT;

@@ -25,6 +25,7 @@ import type { ListIndexItem } from "../../src/schemas/api";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
 import { toTimestamp } from "../../src/control-plane/pg-time";
+import { clearBucket } from "./readings-harness";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -527,11 +528,6 @@ function resendBodies(fetchFn: ReturnType<typeof vi.fn<typeof fetch>>): Array<{
     html: string;
     text: string;
   });
-}
-
-async function clearBucket(): Promise<void> {
-  const list = await env.READINGS_BUCKET.list();
-  for (const obj of list.objects) await env.READINGS_BUCKET.delete(obj.key);
 }
 
 async function seedList(

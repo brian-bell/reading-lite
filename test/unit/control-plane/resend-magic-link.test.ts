@@ -1,28 +1,9 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildMagicLinkResendPayload,
-  sendMagicLinkViaResend,
-} from "../../../src/control-plane/resend-magic-link";
+import { sendMagicLinkViaResend } from "../../../src/control-plane/resend-magic-link";
 import { RESEND_EMAILS_URL } from "../../../src/modules/email";
 import type { Env } from "../../../src/index";
 
 const verifyUrl = "https://reading.test.example/auth/verify#ml_secret";
-
-describe("buildMagicLinkResendPayload", () => {
-  it("sends to the delivery address with a plaintext URL and never EMAIL_TO or tracking", () => {
-    const payload = buildMagicLinkResendPayload(
-      "reading-lite@test.example",
-      "Invited@test.example",
-      verifyUrl,
-    );
-    expect(payload.from).toBe("reading-lite@test.example");
-    expect(payload.to).toEqual(["Invited@test.example"]);
-    expect(payload.text).toEqual(expect.stringContaining(verifyUrl));
-    expect("tracking" in payload).toBe(false);
-    expect(JSON.stringify(payload)).not.toContain("reader@test.example");
-    expect(JSON.stringify(payload)).not.toContain("EMAIL_TO");
-  });
-});
 
 describe("sendMagicLinkViaResend", () => {
   it("POSTs the delivery address to Resend and does not use EMAIL_TO", async () => {

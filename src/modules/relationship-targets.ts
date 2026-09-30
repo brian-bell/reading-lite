@@ -1,4 +1,4 @@
-import type { ListIndex, RelationshipTarget, RelationshipTargets } from "../schemas/api";
+import type { ListIndexItem, RelationshipTarget, RelationshipTargets } from "../schemas/api";
 import type { Manifest } from "../schemas/manifest";
 import { applyStaleness } from "./staleness";
 
@@ -23,13 +23,13 @@ export function relationshipTargetIds(
 // shows the status the library would show for it.
 export function projectRelationshipTargets(
   ids: readonly string[],
-  index: ListIndex | null,
+  items: readonly ListIndexItem[],
   ttlSeconds: number,
   nowIso: string,
 ): RelationshipTargets {
   const wanted = new Set(ids);
   const targets: RelationshipTargets = {};
-  for (const item of index?.items ?? []) {
+  for (const item of items) {
     if (!wanted.has(item.id)) continue;
     const row = applyStaleness(item, ttlSeconds, nowIso);
     const target: RelationshipTarget = { url: row.url, status: row.status };

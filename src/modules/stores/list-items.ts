@@ -1,8 +1,8 @@
-// The list-row shape a reading projects to, and the URL-ownership ranking that
+// The list query's parameters and result, and the URL-ownership ranking that
 // decides which of several readings for one URL owns it. PostgreSQL serves the
 // list (PgReadingStore); these are the shared, storage-free pieces.
 
-import type { Manifest, ManifestStatus } from "../../schemas/manifest";
+import type { ManifestStatus } from "../../schemas/manifest";
 import type { ListIndexItem } from "../../schemas/api";
 
 export interface ListManifestsResult {
@@ -37,30 +37,4 @@ export function compareUrlOwnership(
   const aTime = a.updated_at ?? a.created_at;
   const bTime = b.updated_at ?? b.created_at;
   return aTime < bTime ? 1 : aTime > bTime ? -1 : 0;
-}
-
-export function manifestToIndexItem(
-  m: Manifest,
-  keyPrefix: string,
-): ListIndexItem {
-  const item: ListIndexItem = {
-    id: m.id,
-    key_prefix: keyPrefix,
-    url: m.url,
-    status: m.status,
-    created_at: m.created_at,
-    updated_at: m.updated_at,
-  };
-  if (m.title !== undefined) item.title = m.title;
-  if (m.tldr !== undefined) item.tldr = m.tldr;
-  if (m.tags !== undefined) item.tags = m.tags;
-  if (m.keywords !== undefined) item.keywords = m.keywords;
-  if (m.novelty_verdict !== undefined) item.novelty_verdict = m.novelty_verdict;
-  if (m.similarity !== undefined) item.similarity = m.similarity;
-  if (m.source_date !== undefined) item.source_date = m.source_date;
-  if (m.error !== undefined) item.error = m.error;
-  if (m.active_attempt !== undefined) item.active_attempt = m.active_attempt;
-  if (m.last_attempt !== undefined) item.last_attempt = m.last_attempt;
-  if (m.enrichment_degradation !== undefined) item.enrichment_degradation = m.enrichment_degradation;
-  return item;
 }

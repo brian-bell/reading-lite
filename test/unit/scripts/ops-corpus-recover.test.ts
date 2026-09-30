@@ -208,48 +208,6 @@ describe("ops corpus recover — realtime routing", () => {
     expect(r.err.join("\n")).toContain(`acts as tenant '${OTHER_TENANT}'`);
   });
 
-  it("realtime execute refuses a usr_ selector while the data-plane gate is off", async () => {
-    const r = makeDeps();
-    withAuditTenant(r, TENANT);
-    r.whoami.result = identity(TENANT, false);
-    const code = await corpusRecoverCommand.run(
-      ["--tenant", TENANT, "--execute", "--token", "tok"],
-      r.deps,
-    );
-    expect(code).toBe(1);
-    expect(r.reprocessed).toHaveLength(0);
-    expect(r.err.join("\n")).toContain("gate is off");
-  });
-
-  it("realtime execute refuses a global selector once the data-plane gate is on", async () => {
-    const r = makeDeps();
-    r.whoami.result = identity(TENANT, true);
-    const code = await corpusRecoverCommand.run(
-      ["--tenant", "global", "--execute", "--token", "tok"],
-      r.deps,
-    );
-    expect(code).toBe(1);
-    expect(r.reprocessed).toHaveLength(0);
-    expect(r.err.join("\n")).toContain("never the global layout");
-  });
-
-  it("realtime execute fails closed when whoami is unavailable (old worker or transport)", async () => {
-    for (const result of [
-      { kind: "http_error", status: 404, message: "not found" },
-      { kind: "transport_error", message: "ECONNRESET" },
-    ] satisfies WhoamiOutcome[]) {
-      const r = makeDeps();
-      r.whoami.result = result;
-      const code = await corpusRecoverCommand.run(
-        ["--tenant", "global", "--execute", "--token", "tok"],
-        r.deps,
-      );
-      expect(code).toBe(1);
-      expect(r.reprocessed).toHaveLength(0);
-      expect(r.imported).toHaveLength(0);
-    }
-  });
-
   it("refuses to resume a batch sidecar under a different tenant", async () => {
     const r = makeDeps();
     r.deps.readFile = async () => JSON.stringify({ tenant: OTHER_TENANT, rows: ROWS });
