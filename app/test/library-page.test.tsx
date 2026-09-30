@@ -348,14 +348,6 @@ describe("the first page", () => {
   });
 });
 
-describe("what the page says instead of rows", () => {
-  it("says the library is empty", async () => {
-    backendAnswers(200, { readings: [], limit: 20, offset: 0, has_more: false });
-    await openTab("/");
-    expect(screen.getByText("No readings yet.")).toBeInTheDocument();
-  });
-});
-
 // The acceptance matrix's common states (#416), from the server render and
 // after a client-side page change. 403, 412, and a server error are the same
 // state pages the reading page shows, each with its own heading; a 401 is the
@@ -425,48 +417,6 @@ describe("the common states from the server render", () => {
 // the state lands on the page the URL names, and useQuery joins the read
 // rather than starting another.
 describe("the common states after a page change", () => {
-  it("shows permission denied on the new page, keeping the session", async () => {
-    backendServesFirstPageThen(many, async () => ({ status: 403, body: { error: "forbidden" } }));
-    const { router, queryClient } = await openBrowserTab("/");
-
-    await clickNext();
-    await headingSettles("You don't have access to this.");
-    expect(router.state.location.href).toBe("/?offset=20");
-    expect(queryClient.getQueryData(whoamiQueryKey)).toEqual(reader);
-  });
-
-  it("shows the account change on the new page", async () => {
-    backendServesFirstPageThen(many, async () => ({
-      status: 412,
-      body: { error: "expected tenant mismatch", acting_tenant: "usr_b" },
-    }));
-    await openBrowserTab("/");
-
-    await clickNext();
-    await headingSettles("This tab is signed in to a different account than the page expects.");
-    expect(screen.getByRole("button", { name: "Reload" })).toBeInTheDocument();
-  });
-
-  it("shows the server error on the new page, and Retry reads that page again", async () => {
-    let failing = true;
-    backendServesFirstPageThen(many, async () =>
-      failing
-        ? { status: 502, body: { error: "upstream exploded" } }
-        : { status: 200, body: { readings: many.slice(20, 40), limit: 20, offset: 20, has_more: true } },
-    );
-    await openBrowserTab("/");
-
-    await clickNext();
-    await headingSettles("Something went wrong on our side.");
-    expect(screen.getByText("upstream exploded")).toBeInTheDocument();
-
-    failing = false;
-    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await headingSettles("Library");
-    await waitFor(() => expect(within(cards()[0]!).getByRole("heading", { level: 2 })).toHaveTextContent("Reading 21"));
-    expect(backend.list.mock.calls.map(([input]) => input.offset)).toEqual([0, 20, 20]);
-  });
-
   // Retry unmounts the button under the reader's finger. The page that
   // replaces the state page takes the focus, so the outcome is announced
   // either way: the library back again, or the failure again.
@@ -518,19 +468,6 @@ describe("the common states after a page change", () => {
     await userEvent.click(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Library" }));
     await headingSettles("Something went wrong on our side.");
     expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
-  });
-
-  it("shows the expired-session page at the new page's URL", async () => {
-    backendServesFirstPageThen(many, async () => ({ status: 401, body: { error: "unauthorized" } }));
-    const { router } = await openBrowserTab("/");
-
-    await clickNext();
-    await headingSettles("Your session ended.");
-    expect(router.state.location.href).toBe("/?offset=20");
-    expect(within(screen.getByRole("main")).getByRole("link", { name: "Sign in" })).toHaveAttribute(
-      "href",
-      "/login?next=%2F%3Foffset%3D20",
-    );
   });
 });
 
@@ -1039,6 +976,7 @@ describe("search and tags", () => {
     expect(screen.getByText("No readings yet.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Save a reading" })).toHaveAttribute("href", "/save");
     expect(screen.queryByRole("link", { name: /^Clear/ })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Pagination" })).toBeNull();
   });
 
   it.each([

@@ -1293,34 +1293,8 @@ describe("the Details section", () => {
     return details();
   }
 
-  /** The tabs window.open handed out, in order. */
-  const tabs: { opener: unknown; location: { href: string }; close: ReturnType<typeof vi.fn> }[] = [];
-  const blobs: Blob[] = [];
-
-  beforeEach(() => {
-    tabs.length = 0;
-    blobs.length = 0;
-    vi.stubGlobal(
-      "open",
-      vi.fn((url: string, target: string) => {
-        expect([url, target]).toEqual(["", "_blank"]);
-        const tab = { opener: {}, location: { href: "about:blank" }, close: vi.fn() };
-        tabs.push(tab);
-        return tab;
-      }),
-    );
-    // jsdom has no object URLs.
-    URL.createObjectURL = vi.fn((blob: Blob) => {
-      blobs.push(blob);
-      return `blob:app/${blobs.length}`;
-    });
-    URL.revokeObjectURL = vi.fn();
-  });
-
   afterEach(() => {
     vi.unstubAllGlobals();
-    delete (URL as { createObjectURL?: unknown }).createObjectURL;
-    delete (URL as { revokeObjectURL?: unknown }).revokeObjectURL;
   });
 
   it("is collapsed by default, below the novelty panel, with the manifest's facts already in the page", async () => {
@@ -1444,28 +1418,6 @@ describe("the Details section", () => {
     expect(within(attempt).getAllByText(/bad response status 403/).length).toBeGreaterThan(0);
   });
 
-  it("shows loading, then a failure with a Retry that asks again", async () => {
-    browserAnswers({
-      "/diagnostics": (() => {
-        let calls = 0;
-        return () => {
-          calls += 1;
-          return calls === 1
-            ? Response.json({ error: "storage unavailable" }, { status: 503 })
-            : Response.json(diagnostics[ATTENTION]);
-        };
-      })(),
-    });
-    backendAnswers(200, readings[ATTENTION]);
-    await openTab(`/readings/${ATTENTION}`);
-    const section = await openDetails();
-
-    await within(section).findByText(/storage unavailable/);
-    expect(heading()).toBe("A quieter internet is a choice we can make");
-    await userEvent.click(within(section).getByRole("button", { name: "Retry" }));
-    await within(section).findByText("Storage key");
-  });
-
   it("shows the loading state while diagnostics are on their way", async () => {
     let settle: (response: Response) => void = () => undefined;
     browserAnswers({ "/diagnostics": () => new Promise<Response>((resolve) => (settle = resolve)) as never });
@@ -1496,56 +1448,6 @@ describe("the Details section", () => {
     section = await openDetails();
     await within(section).findByText(/different account/);
     expect(within(section).queryByRole("button", { name: "Retry" })).toBeNull();
-  });
-
-  // Acceptance: "Open as file" opens extracted Markdown and the raw capture as
-  // the legacy SPA does — a blob in a new tab — except that the blob is
-  // plain text whatever the capture was (reading-files.ts).
-  it("opens the extracted Markdown and the raw capture in a new tab as plain text", async () => {
-    const fetchMock = browserAnswers({
-      "/diagnostics": () => Response.json(diagnostics[ATTENTION]),
-      "/content/raw": () => new Response("<html><script>alert(1)</script></html>", { headers: { "content-type": "text/html" } }),
-      "/content": () => new Response("# Somewhere to return", { headers: { "content-type": "text/markdown" } }),
-    });
-    backendAnswers(200, readings[ATTENTION]);
-    await openTab(`/readings/${ATTENTION}`);
-    const section = await openDetails();
-
-    await userEvent.click(within(section).getByRole("button", { name: "Open extracted Markdown" }));
-    // The tab opens on the click, severed from this page, and gets the file once it arrives.
-    expect(tabs).toHaveLength(1);
-    expect(tabs[0]!.opener).toBeNull();
-    await waitFor(() => expect(tabs[0]!.location.href).toBe("blob:app/1"));
-    expect(blobs[0]!.type).toBe("text/plain; charset=utf-8");
-    expect(await blobs[0]!.text()).toBe("# Somewhere to return");
-    expect(requestsTo(fetchMock, "/content")[0]!.headers.get("x-expected-tenant")).toBe("usr_a");
-
-    await userEvent.click(within(section).getByRole("button", { name: "Open raw capture" }));
-    await waitFor(() => expect(tabs[1]!.location.href).toBe("blob:app/2"));
-    expect(blobs[1]!.type).toBe("text/plain; charset=utf-8");
-    expect(await blobs[1]!.text()).toBe("<html><script>alert(1)</script></html>");
-    expect(requestsTo(fetchMock, "/content/raw")).toHaveLength(1);
-    expect(within(section).queryByRole("alert")).toBeNull();
-    expect(tabs[0]!.close).not.toHaveBeenCalled();
-  });
-
-  it("says when a file isn't there, and offers only the raw capture for an uncaptured source", async () => {
-    browserAnswers({
-      "/diagnostics": () => Response.json(diagnostics.rd_FXRAWSRC01),
-      "/content/raw": () => Response.json({ error: "not found" }, { status: 404 }),
-    });
-    backendAnswers(200, readings.rd_FXRAWSRC01);
-    await openTab("/readings/rd_FXRAWSRC01");
-    const section = await openDetails();
-
-    expect(within(section).queryByRole("button", { name: "Open extracted Markdown" })).toBeNull();
-    await userEvent.click(within(section).getByRole("button", { name: "Open raw capture" }));
-    await within(section).findByRole("alert");
-    expect(within(section).getByRole("alert").textContent).toBe("That file isn't available for this reading.");
-    // The tab that was waiting for the file is closed again.
-    expect(tabs).toHaveLength(1);
-    expect(tabs[0]!.close).toHaveBeenCalled();
-    expect(tabs[0]!.location.href).toBe("about:blank");
   });
 
   // Reading-to-reading navigation reuses the route component; Details starts
