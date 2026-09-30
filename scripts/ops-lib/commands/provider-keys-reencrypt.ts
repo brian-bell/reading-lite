@@ -54,6 +54,11 @@ interface ClassifiedRow {
   state: RowState;
 }
 
+const UNPROVEN_SECRET =
+  "No row is on the current key_version yet, so nothing proves the supplied PROVIDER_KEY_SECRET is the Worker's. " +
+  "After deploying the rotated secrets, connect or replace any key in settings (the Worker seals it under the " +
+  "current version), then rerun.";
+
 const ENVS: readonly BootstrapEnvName[] = ["local", "staging", "production"];
 
 function parseReencryptArgs(argv: string[]): Args {
@@ -186,6 +191,7 @@ async function runProviderKeysReencrypt(argv: string[], deps: ProviderKeysReencr
           listUndecryptable(io, before);
         }
         const reseal = before.filter((c) => c.state === "reseal").length;
+        if (reseal > 0 && !before.some((c) => c.state === "current")) io.stderr(UNPROVEN_SECRET);
         if (reseal > 0) io.stderr(`PLAN — nothing changed. Rerun with --execute to reseal ${reseal} row(s) under key_version ${current.version}.`);
         io.stdout(JSON.stringify(summary, null, 2));
         return 0;
@@ -197,6 +203,16 @@ async function runProviderKeysReencrypt(argv: string[], deps: ProviderKeysReencr
           `✗ ${wrongSecret.length} row(s) already on key_version ${current.version} do not open under the supplied ` +
             "PROVIDER_KEY_SECRET, so it is not the secret the Worker seals with. Nothing was written.",
         );
+        io.stdout(JSON.stringify(summary, null, 2));
+        return 1;
+      }
+
+      // Resealing is only safe once a row the Worker sealed under the current
+      // version opens under the supplied secret. Without one, a mistyped local
+      // secret would reseal every row under a key the Worker does not have, and
+      // the final check (with that same secret) would still pass.
+      if (before.some((c) => c.state === "reseal") && !before.some((c) => c.state === "current")) {
+        io.stderr(`✗ ${UNPROVEN_SECRET} Nothing was written.`);
         io.stdout(JSON.stringify(summary, null, 2));
         return 1;
       }
@@ -242,8 +258,10 @@ row sealed under PROVIDER_KEY_PREVIOUS_SECRET with PROVIDER_KEY_SECRET, keeping
 each row's credential version. Plan mode trial-decrypts every row locally and
 prints counts per key_version; it writes nothing and never prints a key.
 
---execute refuses to write if any row already on the current version does not
-open under the supplied PROVIDER_KEY_SECRET (it is not the Worker's secret).
+--execute refuses to write unless at least one row is already on the current
+version (sealed by the Worker since the rotation deploy) and every such row opens
+under the supplied PROVIDER_KEY_SECRET: that is the only proof the local secret
+is the Worker's. Connect or replace any key in settings to create one.
 Otherwise it reseals one row per transaction under its row lock, lists again,
 and exits 1 unless every row is on the current version and opens under it.
 Rows neither secret opens are listed by tenant and left for their readers to

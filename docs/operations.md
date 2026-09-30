@@ -444,7 +444,10 @@ rotation moves every stored key onto a new secret without readers noticing:
    pair, and `PROVIDER_KEY_SECRET` and `PROVIDER_KEY_VERSION` to the new secret
    and the old version plus one. The Worker now seals new connects under the new
    version and still opens rows sealed under the old one.
-3. Put the same four values in `.stg.vars` / `.prd.vars` (or the environment)
+3. Replace your own key in settings (the same key is fine). The Worker seals it
+   under the new version, and that row is the command's proof that your local
+   secret matches the Worker's.
+4. Put the same four values in `.stg.vars` / `.prd.vars` (or the environment)
    and reseal the stored rows:
 
    ```sh
@@ -453,12 +456,13 @@ rotation moves every stored key onto a new secret without readers noticing:
    ```
 
    Plan mode trial-decrypts every row and changes nothing. `--execute` refuses
-   to write if a row already on the new version does not open under the
-   supplied `PROVIDER_KEY_SECRET` (a sign it differs from the Worker's), then
+   to write unless a row is already on the new version and every such row opens
+   under the supplied `PROVIDER_KEY_SECRET`. Without that proof, a mistyped
+   local secret would reseal every key under a secret the Worker lacks. It then
    reseals one row per transaction under its row lock and exits 0 only when
    every row is on the new version. Credential versions, status, and
    `updated_at` do not change. Rerunning is safe.
-4. Once it exits 0, delete `PROVIDER_KEY_PREVIOUS_SECRET` and
+5. Once it exits 0, delete `PROVIDER_KEY_PREVIOUS_SECRET` and
    `PROVIDER_KEY_PREVIOUS_VERSION` from the Worker and the local vars file.
 
 The versions must differ: a row records only its version, so equal versions
@@ -470,7 +474,7 @@ unrecoverable. Dispatch fails the reader's attempts with
 `provider_key_undecryptable` until they connect their key again in settings,
 which replaces the row under the current secret. Readings, content, and
 embeddings are unaffected. If the previous secret was removed from the Worker
-too early, restore it with its version and rerun step 3.
+too early, restore it with its version and rerun step 4.
 
 `founder-bootstrap` cannot read Wrangler secrets. Put the **same**
 `AUTH_ROOT_SECRET` plus `READER_API_TOKEN` (and `FOUNDER_EMAIL` unless you pass

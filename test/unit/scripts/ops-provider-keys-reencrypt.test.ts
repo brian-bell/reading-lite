@@ -140,6 +140,7 @@ describe("ops provider-keys reencrypt", () => {
   it("--execute leaves a row neither secret opens, names its tenant, and exits 1", async () => {
     const resealable = await seedKey(PREVIOUS, KEYS[0]!);
     const lost = await seedKey(root(STRANGER_HEX, 0), KEYS[1]!);
+    await seedKey(CURRENT, KEYS[2]!);
 
     const { io, code } = run(["--env", "staging", "--execute"]);
     expect(await code).toBe(1);
@@ -149,14 +150,25 @@ describe("ops provider-keys reencrypt", () => {
     expect(await openWith(resealable, CURRENT)).toBe(KEYS[0]);
   });
 
-  it("--execute writes nothing when a row on the current version does not open under the supplied secret", async () => {
+  it.each([
+    {
+      name: "a row on the current version does not open under the supplied secret",
+      seedCurrent: true,
+      message: "it is not the secret the Worker seals with. Nothing was written.",
+    },
+    {
+      name: "no row on the current version proves the supplied secret",
+      seedCurrent: false,
+      message: "nothing proves the supplied PROVIDER_KEY_SECRET is the Worker's",
+    },
+  ])("--execute writes nothing when $name", async ({ seedCurrent, message }) => {
     const resealable = await seedKey(PREVIOUS, KEYS[0]!);
-    await seedKey(CURRENT, KEYS[1]!);
+    if (seedCurrent) await seedKey(CURRENT, KEYS[1]!);
     const before = await stored(resealable);
 
     const { io, code } = run(["--env", "staging", "--execute"], { ...ROTATION_VARS, PROVIDER_KEY_SECRET: STRANGER_HEX });
     expect(await code).toBe(1);
-    expect(io.err.join("\n")).toContain("it is not the secret the Worker seals with. Nothing was written.");
+    expect(io.err.join("\n")).toContain(message);
     expect(await stored(resealable)).toEqual(before);
   });
 
