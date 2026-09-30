@@ -669,15 +669,20 @@ textarea {
 
 /* The expiry field and its Choose date button. Chromium's own picker button
    inside the field is a tab stop that no page style can give a focus ring,
-   so it is hidden and Choose date opens the same picker (showPicker). */
+   so it is hidden and Choose date opens the same picker (showPicker). The
+   field starts at its own width, so Choose date wraps under it once both no
+   longer fit on one line, rather than widening the form past a 320 px
+   viewport (reading-lite-7cpc). */
 .token-expiry {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   align-items: stretch;
 }
 
 .token-expiry .text-input {
   flex: 1 1 auto;
+  width: auto;
   min-width: 0;
 }
 

@@ -75,6 +75,12 @@ export interface EvidenceCase {
   stub?: (page: Page) => Promise<void>;
   /** Reaches the state under test after load: open a disclosure, follow a link. */
   prepare?: (page: Page) => Promise<void>;
+  /**
+   * `prepare` only waits for what the load renders and changes nothing, so
+   * the shell extras (reduced motion, zoom) cover the case as they do one
+   * with no `prepare` (reading-lite-7cpc).
+   */
+  waitsOnly?: true;
 }
 
 /** The save page's URL field. The tab beside it carries the same name. */
@@ -157,6 +163,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // wrapped title, and the clamped summaries in every viewport and theme.
   {
     name: "library-signed-in",
+    waitsOnly: true,
     essential: true,
     path: "/",
     state: "signed-in",
@@ -176,6 +183,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // the end. Each is a deep link, rendered on the server.
   {
     name: "library-page-2",
+    waitsOnly: true,
     path: "/?offset=20",
     state: "signed-in",
     heading: "Library",
@@ -185,6 +193,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-last-page",
+    waitsOnly: true,
     path: "/?offset=40",
     state: "signed-in",
     heading: "Library",
@@ -194,6 +203,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-offset-past-end",
+    waitsOnly: true,
     path: "/?offset=100",
     state: "signed-in",
     heading: "Library",
@@ -207,6 +217,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // needs a session with nothing saved.
   {
     name: "library-search",
+    waitsOnly: true,
     essential: true,
     path: "/?q=quiet",
     state: "signed-in",
@@ -219,6 +230,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-tag",
+    waitsOnly: true,
     path: "/?tag=design",
     state: "signed-in",
     heading: "Library",
@@ -229,6 +241,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-no-results-search",
+    waitsOnly: true,
     path: "/?q=zzzz",
     state: "signed-in",
     heading: "Library",
@@ -238,6 +251,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-no-results-tag",
+    waitsOnly: true,
     path: "/?tag=nothing",
     state: "signed-in",
     heading: "Library",
@@ -247,6 +261,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-no-results-both",
+    waitsOnly: true,
     path: "/?q=zzzz&tag=design",
     state: "signed-in",
     heading: "Library",
@@ -256,6 +271,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-empty",
+    waitsOnly: true,
     essential: true,
     path: "/",
     state: "signed-in",
@@ -306,6 +322,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "library-server-error",
+    waitsOnly: true,
     essential: true,
     path: "/",
     state: "signed-in",
@@ -517,6 +534,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   { name: "inbox-signed-out", anyHost: true, path: "/inbox", state: "signed-out", heading: "Sign in" },
   {
     name: "inbox",
+    waitsOnly: true,
     essential: true,
     path: "/inbox",
     state: "signed-in",
@@ -530,6 +548,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "inbox-empty",
+    waitsOnly: true,
     path: "/inbox",
     state: "signed-in",
     heading: "Inbox",
@@ -551,6 +570,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "inbox-item",
+    waitsOnly: true,
     essential: true,
     path: "/inbox/in_FXSLOW0001",
     state: "signed-in",
@@ -661,6 +681,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   { name: "sample-not-found", anyHost: true, path: "/samples/nowhere", state: "signed-out", heading: "This sample doesn't exist." },
   {
     name: "sample-reading-signed-in",
+    waitsOnly: true,
     path: "/samples/a-quieter-internet",
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
@@ -680,6 +701,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   {
     name: "account-sessions",
     essential: true,
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -727,6 +749,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-server-error",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Something went wrong on our side.",
@@ -783,6 +806,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-settings-server-error",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -901,6 +925,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-token-limit",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -925,6 +950,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // download link and the day's slot it holds.
   {
     name: "account-export-queued",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -941,6 +967,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-export-building",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -957,6 +984,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-export-ready",
+    waitsOnly: true,
     essential: true,
     path: "/account/security",
     state: "signed-in",
@@ -976,6 +1004,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-export-failed",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -992,6 +1021,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "account-export-expired",
+    waitsOnly: true,
     path: "/account/security",
     state: "signed-in",
     heading: "Account",
@@ -1077,6 +1107,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   { name: "provider-signed-out", anyHost: true, path: "/account/provider", state: "signed-out", heading: "Sign in" },
   {
     name: "provider-missing",
+    waitsOnly: true,
     essential: true,
     path: "/account/provider",
     state: "signed-in",
@@ -1093,6 +1124,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "provider-connected",
+    waitsOnly: true,
     essential: true,
     path: "/account/provider",
     state: "signed-in",
@@ -1108,6 +1140,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "provider-invalid",
+    waitsOnly: true,
     path: "/account/provider",
     state: "signed-in",
     heading: "Provider",
@@ -1189,6 +1222,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   },
   {
     name: "provider-usage-unavailable",
+    waitsOnly: true,
     path: "/account/provider",
     state: "signed-in",
     heading: "Provider",

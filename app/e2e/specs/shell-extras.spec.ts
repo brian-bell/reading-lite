@@ -8,7 +8,9 @@ import { expectNoHorizontalScroll, expectReducedMotionHonoured } from "../checks
 import { captureEvidence } from "../screenshots";
 import { openCase, test } from "../test";
 
-const SHELL = EVIDENCE_CASES.filter((evidence) => evidence.prepare === undefined);
+// Cases that reach their state by loading alone: no `prepare`, or one that
+// only waits for the load's content (`waitsOnly`).
+const SHELL = EVIDENCE_CASES.filter((evidence) => evidence.prepare === undefined || evidence.waitsOnly);
 
 test.describe("reduced motion", () => {
   // reducedMotion is a context option in this Playwright version.
