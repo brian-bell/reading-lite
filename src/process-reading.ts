@@ -4,7 +4,12 @@ import { SIMILAR_TOP_K, SIMILARITY_FLOOR, aboveFloor, excludeSelf, summarizeSimi
 import { attemptIoFor, type AttemptIo } from "./attempt-io";
 import { sqlSessionFor, type Sql } from "./modules/db/sql";
 import { fromSql } from "./control-plane/db";
-import { hostedProviderSelection, paidAuthorizationFor, tenantProviderKeysEnabled } from "./control-plane/tenant-provider-keys";
+import {
+  hostedProviderSelection,
+  paidAuthorizationFor,
+  resolveProcessingConfig,
+  tenantProviderKeysEnabled,
+} from "./control-plane/tenant-provider-keys";
 import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
 import {
   extractFromUrl,
@@ -19,6 +24,8 @@ import {
   validateProcessingCredentials,
 } from "./modules/summarizer";
 import {
+  checkpointUnder,
+  sameProcessingConfig,
   summarizeCheckpoint,
 } from "./modules/processing-checkpoint";
 import { sendReadingEmail } from "./modules/email";
@@ -193,7 +200,8 @@ async function runAttempt(
     stopHeartbeat = startProcessingLeaseHeartbeat(env, acquired, clock);
     await presentLeaseBeforePaidDispatch(env, acquired, clock);
 
-    const authorization = paidAuthorizationFor(env, fromSql(sql), tenantId);
+    const controlPlane = fromSql(sql);
+    const authorization = paidAuthorizationFor(env, controlPlane, tenantId);
     const providerSelection = hostedProviderSelection(env);
     const paidFetch = (stage: "embed_source" | "summarize" | "embed_summary") => createPaidFetch({
       tenantId, attemptId: opId, stage, fetch: services.fetch,
@@ -212,7 +220,12 @@ async function runAttempt(
         readingSlotConsumed = true;
       },
     });
-    let checkpoint = (await io.readCheckpoint()) ?? {};
+    // Record the configuration on the attempt and drop any stage it no longer
+    // matches: settings changed since a stage ran make the stage run again.
+    const config = await resolveProcessingConfig(env, controlPlane, tenantId);
+    const stored = await io.readCheckpoint();
+    let checkpoint = checkpointUnder(stored, config);
+    if (!sameProcessingConfig(stored?.config, config)) await io.writeCheckpoint(checkpoint);
 
     // Embed the extracted text to get top-K similar.
     const queryEmbed = await runStage(attempt, io, services, "embed_source", async () => {
@@ -283,12 +296,13 @@ async function runAttempt(
           {
             fetch: paidFetch("summarize"),
             ...providerSelection,
-            openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
-            openaiReasoningEffort:
-              env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
-            anthropicModel: env.ANTHROPIC_MODEL,
-            anthropicReasoningEffort:
-              env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
+            ...(config.provider === "anthropic"
+              ? { anthropicModel: config.summarization_model, anthropicReasoningEffort: config.effort }
+              : {
+                  openaiModel: config.summarization_model,
+                  openaiReasoningEffort: config.effort,
+                  anthropicModel: env.ANTHROPIC_MODEL,
+                }),
             retry,
           },
         );

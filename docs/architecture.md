@@ -31,7 +31,10 @@ HTTP-free `IntakeOutcome` to a response. `src/intake/` owns `submit`,
    captured content under `{key_prefix}/revisions/{attemptId}/`.
 4. Acquire tenant/global processing leases. Embed the source, query related
    readings, summarize, then embed the TL;DR. The paid checkpoint on the
-   attempt row avoids repeating completed provider stages on recovery.
+   attempt row avoids repeating completed provider stages on recovery. It
+   records the configuration the stages ran under (provider, summarization
+   model, effort, embedding model, price catalog version; never a key), and a
+   stage whose configuration changed runs again.
 5. Publish in one transaction (see below). Tenant eligibility is part of it:
    the transaction locks the tenant's `users` row FOR SHARE and reads `status`
    there, so `DELETE /api/account` waits behind an in-flight publish and there

@@ -1,4 +1,15 @@
 import type { ControlPlaneDb } from "./db";
+import type { SummarizationEffort } from "../schemas/api";
+import { OPENAI_EMBEDDING_MODEL } from "../modules/embeddings";
+import { PAID_PRICE_CATALOG_VERSION } from "../modules/paid-pricing";
+import type { ProcessingConfig } from "../modules/processing-checkpoint";
+import {
+  DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+  parseAnthropicEffort,
+  parseReasoningEffort,
+  parseSummarizerProvider,
+} from "../modules/summarizer";
+import { readSummarizationEffort } from "./provider-settings";
 import { decryptProviderKey, readProviderKeyRoots } from "./provider-key-crypto";
 import { readProviderCredential } from "./provider-credentials";
 import type { PaidAuthorization } from "./paid-dispatch";
@@ -75,4 +86,51 @@ export function hostedProviderSelection(env: {
     openaiApiKey: env.OPENAI_API_KEY,
     anthropicApiKey: env.ANTHROPIC_API_KEY,
   };
+}
+
+type ProcessingConfigEnv = {
+  TENANT_PROVIDER_KEYS?: string;
+  SUMMARIZER_PROVIDER?: string;
+  OPENAI_SUMMARIZATION_MODEL?: string;
+  OPENAI_SUMMARIZATION_REASONING_EFFORT?: string;
+  ANTHROPIC_MODEL: string;
+  ANTHROPIC_SUMMARIZATION_REASONING_EFFORT?: string;
+};
+
+/**
+ * The configuration an attempt's paid stages run under (ADR 0004). With tenant
+ * keys on, summaries use OpenAI at the reader's effort; otherwise the
+ * deployment's provider, model and effort. It names no key: which key pays
+ * does not change the outputs.
+ */
+export function processingConfigFor(env: ProcessingConfigEnv, tenantEffort?: SummarizationEffort): ProcessingConfig {
+  const tenantKeys = tenantProviderKeysEnabled(env);
+  const provider = tenantKeys ? "openai" : parseSummarizerProvider(env.SUMMARIZER_PROVIDER);
+  const common = { embedding_model: OPENAI_EMBEDDING_MODEL, catalog_version: PAID_PRICE_CATALOG_VERSION };
+  if (provider === "anthropic") {
+    return {
+      provider,
+      summarization_model: env.ANTHROPIC_MODEL,
+      effort: parseAnthropicEffort(env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT, env.ANTHROPIC_MODEL),
+      ...common,
+    };
+  }
+  return {
+    provider,
+    summarization_model: env.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL,
+    effort: parseReasoningEffort(tenantKeys ? tenantEffort : env.OPENAI_SUMMARIZATION_REASONING_EFFORT),
+    ...common,
+  };
+}
+
+export async function resolveProcessingConfig(
+  env: ProcessingConfigEnv,
+  db: ControlPlaneDb,
+  tenantId: string,
+): Promise<ProcessingConfig> {
+  if (!tenantProviderKeysEnabled(env)) return processingConfigFor(env);
+  // Fail closed: a reader without a settings row has no effort to run at.
+  const effort = await readSummarizationEffort(db, tenantId);
+  if (effort === null) throw new Error("tenant has no summarization effort setting");
+  return processingConfigFor(env, effort);
 }

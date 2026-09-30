@@ -5,7 +5,9 @@ import {
   markProviderCredentialInvalid,
   upsertProviderCredential,
 } from "../../../src/control-plane/provider-credentials";
+import { updateProviderPreferences } from "../../../src/control-plane/provider-settings";
 import {
+  resolveProcessingConfig,
   resolveTenantOpenAIKey,
   TenantProviderKeyError,
 } from "../../../src/control-plane/tenant-provider-keys";
@@ -81,5 +83,51 @@ describe("resolveTenantOpenAIKey", () => {
     });
     expect(logged.join("\n")).toContain("provider_key_undecryptable");
     expect(logged.join("\n")).not.toContain(KEY);
+  });
+});
+
+describe("resolveProcessingConfig", () => {
+  const deployment = {
+    OPENAI_API_KEY: "sk-deployment-openai",
+    ANTHROPIC_API_KEY: "sk-deployment-anthropic",
+    PROVIDER_KEY_SECRET: SECRET,
+    SUMMARIZER_PROVIDER: "anthropic",
+    ANTHROPIC_MODEL: "claude-sonnet-5-5",
+    ANTHROPIC_SUMMARIZATION_REASONING_EFFORT: "medium",
+    OPENAI_SUMMARIZATION_MODEL: "gpt-5.6-terra",
+    OPENAI_SUMMARIZATION_REASONING_EFFORT: "low",
+  };
+  const common = { embedding_model: "text-embedding-3-small", catalog_version: 1 };
+
+  it("uses the deployment's provider, model and effort when tenant keys are off", async () => {
+    const db = await seeded();
+    await updateProviderPreferences(db, { userId: USER, nowMs: NOW_MS, effort: "low" });
+    expect(await resolveProcessingConfig(deployment, db, USER)).toEqual({
+      provider: "anthropic",
+      summarization_model: "claude-sonnet-5-5",
+      effort: "medium",
+      ...common,
+    });
+  });
+
+  it("uses OpenAI at the reader's effort when tenant keys are on, and records no key", async () => {
+    const db = await seeded();
+    await upsertProviderCredential(db, {
+      tenantId: USER,
+      plaintext: KEY,
+      root: { secret: parseProviderKeySecret(SECRET), version: 1 },
+      nowMs: NOW_MS,
+      validatedAtMs: NOW_MS,
+    });
+    const env = { ...deployment, TENANT_PROVIDER_KEYS: "1" };
+    const initial = await resolveProcessingConfig(env, db, USER);
+    expect(initial).toEqual({ provider: "openai", summarization_model: "gpt-5.6-terra", effort: "high", ...common });
+    await updateProviderPreferences(db, { userId: USER, nowMs: NOW_MS, effort: "medium" });
+    expect(await resolveProcessingConfig(env, db, USER)).toMatchObject({ effort: "medium" });
+    const text = JSON.stringify(initial);
+    for (const secret of [KEY, SECRET, deployment.OPENAI_API_KEY, deployment.ANTHROPIC_API_KEY]) {
+      expect(text).not.toContain(secret);
+    }
+    await expect(resolveProcessingConfig(env, db, OTHER)).rejects.toThrow("tenant has no summarization effort setting");
   });
 });

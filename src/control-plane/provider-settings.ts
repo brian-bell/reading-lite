@@ -63,6 +63,12 @@ export async function loadSpendCaps(db: ControlPlaneDb, userId: string): Promise
   };
 }
 
+/** The reader's summarization effort, or null when the user has no settings row. */
+export async function readSummarizationEffort(db: ControlPlaneDb, userId: string): Promise<SummarizationEffort | null> {
+  const row = await db.first("SELECT summarization_effort FROM user_settings WHERE user_id = ?", userId);
+  return row === null ? null : SettingsRowSchema.pick({ summarization_effort: true }).parse(row).summarization_effort;
+}
+
 export async function loadProviderSettings(db: ControlPlaneDb, userId: string): Promise<ProviderSettingsLoad> {
   const caps = await loadSpendCaps(db, userId);
   if (typeof caps === "string") return caps;
