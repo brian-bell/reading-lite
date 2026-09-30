@@ -2712,3 +2712,33 @@ textarea {
     font-size: 30px;
   }
 }
+
+/* ---- Samples ---------------------------------------------------------- */
+
+/* The public sample library (reading-lite-gh341.10). The call to action says
+   what a sample is and offers sign-in, on the novelty panel's accent rule so
+   it reads as a note about the page rather than part of a reading. */
+.sample-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  max-width: var(--measure);
+  margin: 0 0 var(--space-5);
+  padding: 14px 18px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--soft);
+}
+
+.sample-banner p {
+  flex: 1 1 16rem;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+/* A sample's tags are labels, not links: no hover shift. */
+.tag-static:hover {
+  color: var(--muted);
+}

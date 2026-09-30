@@ -42,10 +42,12 @@ return path is per origin.
   `Content-Security-Policy: img-src 'self' https: data:`
   (`src/server/request-policy.ts`): the page's own images, the remote `https:`
   images a reader loads in the Source view, and the `data:` grain in
-  `tokens.css`, nothing broader. Public legal pages (`/terms`, `/privacy`,
-  `/dmca`) skip identity during the server render and are left off
-  `private, no-store`, so they may be prerendered (ADR 0003). Only `/assets/*`
-  (content-hashed) is publicly cacheable by design, via `public/_headers`.
+  `tokens.css`, nothing broader. Public pages (`src/public-paths.ts`: the
+  legal pages `/terms`, `/privacy`, and `/dmca`, and the sample library under
+  `/samples`) skip identity during the server render and are left off
+  `private, no-store`, so they may be prerendered or cached (ADR 0003). Only
+  `/assets/*` (content-hashed) is publicly cacheable by design, via
+  `public/_headers`.
 - **Service bindings.** Each environment's `BACKEND` binding in
   `wrangler.jsonc` names the backend Worker of the same environment and its
   `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
@@ -401,6 +403,20 @@ return path is per origin.
   cached list and marks the inbox stale without refetching the item on screen,
   which would answer 404 under a page that is leaving. A promote never sends
   `email`.
+- **Sample library.** `/samples` and `/samples/:id` (reading-lite-gh341.10)
+  show a few readings to anyone, signed in or not, before they have a key.
+  The readings are bundled: `src/samples/sample-library.json` is generated
+  from the fixture pack by the repo root's `npm run fixtures:app` (curated in
+  `test/fixtures/app-sample-library.ts`), addressed by slug, with
+  connections and tensions kept only between samples, and parsed through the
+  reading projection (`src/samples.ts`). No backend read serves them. A
+  sample page is built from the reading page's parts — the Summary view, the
+  novelty panel, Connections & tensions and the return trail, whose links stay
+  under `/samples` — without Reprocess, the Source view, or Details, and its
+  tags are labels, not library links. A call to action says the readings are
+  samples and offers sign-in; it follows the shell's browser-only identity
+  read and offers a signed-in reader their library instead. A slug that names
+  no sample is "This sample doesn't exist."
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -449,7 +465,8 @@ cases marked `essential` in `e2e/coverage.ts` — the major states of each route
 the library signed out, signed in, searched, empty, session-ended, and failed;
 sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
 Source; open Details; the account sessions list; account deletion's typed
-confirmation and closing page; and the public legal pages — in the
+confirmation and closing page; the public legal pages; and the sample library
+and a sample — in the
 `phone-dark` and `desktop-light` projects, so both viewports and both themes
 are still covered, plus the behaviour specs and `checks`. Reduced motion and
 zoom, the other matrix projects, and the remaining states run only in the full
@@ -475,14 +492,15 @@ Extending it:
   one-time notice a reload drops (#432).
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
-  `e2e/fixtures/fixture-pack.json`. `test/unit/fixtures/app-fixture-pack.test.ts`
-  fails while it is stale.
+  `e2e/fixtures/fixture-pack.json` and `src/samples/sample-library.json`.
+  `test/unit/fixtures/app-fixture-pack.test.ts` fails while either is stale.
 - **A viewport or theme:** add a project in `playwright.config.ts`.
 - **Another host:** `E2E_BASE_URL=https://host npm run test:browser` points
   the suite at a running host instead of starting the harness. Nothing there
   answers from the stub or the fixture pack, so it runs only the matrix and
   shell-extras projects over the cases marked `anyHost` in `e2e/coverage.ts`:
-  the signed-out shell and sign-in, the legal pages, `/save`, and a missing
+  the signed-out shell and sign-in, the legal pages, the sample library,
+  `/save`, and a missing
   reading's 404 (#392). That is the deployed shell's rendering, axe, and
   keyboard evidence, not reading content, and no case writes. Set
   `E2E_SESSION_COOKIE` (a real session) with `E2E_SESSION_EMAIL` (its

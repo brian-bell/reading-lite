@@ -131,7 +131,9 @@ bearer material enters browser storage.
 - Authenticated HTML is sent with `Cache-Control: private, no-store`. It is
   never prerendered, never written to the Cache API or KV, and never served from
   a shared cache. Only hashed static assets are publicly cacheable.
-- Public legal pages may be prerendered because they contain no identity.
+- Public legal pages may be prerendered because they contain no identity. The
+  sample library (`/samples`, reading-lite-gh341.10) follows the same rule: its
+  readings are bundled in the frontend, not read from any tenant.
 
 ### Hosts and rollout
 

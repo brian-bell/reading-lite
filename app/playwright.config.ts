@@ -146,6 +146,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // The sample library (reading-lite-gh341.10): no backend read but the
+    // browser's identity, followed samples navigate in place, and no control
+    // writes. The matrix screenshots its states in every project.
+    name: "samples",
+    testMatch: /samples\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,

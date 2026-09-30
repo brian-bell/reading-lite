@@ -15,11 +15,13 @@ import { Route as AuthedRouteImport } from './routes/_authed'
 import { Route as DmcaRouteImport } from './routes/dmca'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as SamplesRouteImport } from './routes/samples'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as AuthedInboxRouteImport } from './routes/_authed/inbox'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
+import { Route as SamplesIdRouteImport } from './routes/samples_.$id'
 import { Route as AuthedAccountProviderRouteImport } from './routes/_authed/account.provider'
 import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
 import { Route as AuthedInboxIdRouteImport } from './routes/_authed/inbox_.$id'
@@ -54,6 +56,11 @@ const PrivacyRoute = PrivacyRouteImport.update({
   path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SamplesRoute = SamplesRouteImport.update({
+  id: '/samples',
+  path: '/samples',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TermsRoute = TermsRouteImport.update({
   id: '/terms',
   path: '/terms',
@@ -77,6 +84,11 @@ const AuthVerifyRoute = AuthVerifyRouteImport.update({
 const LoginVerifyRoute = LoginVerifyRouteImport.update({
   id: '/login_/verify',
   path: '/login/verify',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SamplesIdRoute = SamplesIdRouteImport.update({
+  id: '/samples_/$id',
+  path: '/samples/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AuthedAccountProviderRoute = AuthedAccountProviderRouteImport.update({
@@ -106,11 +118,13 @@ export interface FileRoutesByFullPath {
   '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
+  '/samples/$id': typeof SamplesIdRoute
   '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
   '/inbox/$id': typeof AuthedInboxIdRoute
@@ -122,11 +136,13 @@ export interface FileRoutesByTo {
   '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
+  '/samples/$id': typeof SamplesIdRoute
   '/account/provider': typeof AuthedAccountProviderRoute
   '/account/security': typeof AuthedAccountSecurityRoute
   '/inbox/$id': typeof AuthedInboxIdRoute
@@ -140,11 +156,13 @@ export interface FileRoutesById {
   '/dmca': typeof DmcaRoute
   '/login': typeof LoginRoute
   '/privacy': typeof PrivacyRoute
+  '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/_authed/inbox': typeof AuthedInboxRoute
   '/_authed/save': typeof AuthedSaveRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
+  '/samples_/$id': typeof SamplesIdRoute
   '/_authed/account/provider': typeof AuthedAccountProviderRoute
   '/_authed/account/security': typeof AuthedAccountSecurityRoute
   '/_authed/inbox_/$id': typeof AuthedInboxIdRoute
@@ -158,11 +176,13 @@ export interface FileRouteTypes {
     | '/dmca'
     | '/login'
     | '/privacy'
+    | '/samples'
     | '/terms'
     | '/inbox'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
+    | '/samples/$id'
     | '/account/provider'
     | '/account/security'
     | '/inbox/$id'
@@ -174,11 +194,13 @@ export interface FileRouteTypes {
     | '/dmca'
     | '/login'
     | '/privacy'
+    | '/samples'
     | '/terms'
     | '/inbox'
     | '/save'
     | '/auth/verify'
     | '/login/verify'
+    | '/samples/$id'
     | '/account/provider'
     | '/account/security'
     | '/inbox/$id'
@@ -191,11 +213,13 @@ export interface FileRouteTypes {
     | '/dmca'
     | '/login'
     | '/privacy'
+    | '/samples'
     | '/terms'
     | '/_authed/inbox'
     | '/_authed/save'
     | '/auth/verify'
     | '/login_/verify'
+    | '/samples_/$id'
     | '/_authed/account/provider'
     | '/_authed/account/security'
     | '/_authed/inbox_/$id'
@@ -209,9 +233,11 @@ export interface RootRouteChildren {
   DmcaRoute: typeof DmcaRoute
   LoginRoute: typeof LoginRoute
   PrivacyRoute: typeof PrivacyRoute
+  SamplesRoute: typeof SamplesRoute
   TermsRoute: typeof TermsRoute
   AuthVerifyRoute: typeof AuthVerifyRoute
   LoginVerifyRoute: typeof LoginVerifyRoute
+  SamplesIdRoute: typeof SamplesIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -258,6 +284,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/samples': {
+      id: '/samples'
+      path: '/samples'
+      fullPath: '/samples'
+      preLoaderRoute: typeof SamplesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/terms': {
       id: '/terms'
       path: '/terms'
@@ -291,6 +324,13 @@ declare module '@tanstack/react-router' {
       path: '/login/verify'
       fullPath: '/login/verify'
       preLoaderRoute: typeof LoginVerifyRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/samples_/$id': {
+      id: '/samples_/$id'
+      path: '/samples/$id'
+      fullPath: '/samples/$id'
+      preLoaderRoute: typeof SamplesIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_authed/account/provider': {
@@ -352,9 +392,11 @@ const rootRouteChildren: RootRouteChildren = {
   DmcaRoute: DmcaRoute,
   LoginRoute: LoginRoute,
   PrivacyRoute: PrivacyRoute,
+  SamplesRoute: SamplesRoute,
   TermsRoute: TermsRoute,
   AuthVerifyRoute: AuthVerifyRoute,
   LoginVerifyRoute: LoginVerifyRoute,
+  SamplesIdRoute: SamplesIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

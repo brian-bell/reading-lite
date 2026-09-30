@@ -3,7 +3,7 @@ import { useRouter } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { signOut, useAccountClosingAt, useSessionEndedAt } from "../auth/session";
 import { whoamiQueryOptions } from "../identity-query";
-import { isPublicLegalPath } from "../legal";
+import { isPublicPath } from "../public-paths";
 import type { ThemePreference } from "../theme";
 import { AccountClosing } from "./AccountClosing";
 import { AppShell, type AccountState } from "./AppShell";
@@ -31,12 +31,12 @@ export function AppFrame({
   // refetches.
   const href = useRenderedLocation((location) => location.href);
   const pathname = useRenderedLocation((location) => location.pathname);
-  const publicLegal = isPublicLegalPath(pathname);
-  // Legal pages skip identity during the server render so the HTML can be
+  const publicPage = isPublicPath(pathname);
+  // Public pages skip identity during the server render so the HTML can be
   // cached or prerendered. The browser still reads whoami after hydration.
   const { data: identity } = useQuery({
     ...whoamiQueryOptions(),
-    enabled: !publicLegal || typeof document !== "undefined",
+    enabled: !publicPage || typeof document !== "undefined",
   });
   const sessionEndedAt = useSessionEndedAt();
   const accountClosingAt = useAccountClosingAt();
@@ -44,7 +44,7 @@ export function AppFrame({
 
   const account: AccountState =
     identity === undefined
-      ? publicLegal
+      ? publicPage
         ? { status: "signed-out" }
         : { status: "unknown" }
       : identity === null

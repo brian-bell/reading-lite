@@ -19,7 +19,11 @@ the pack without R2: `npm run fixtures:app` projects it into
 assembles them from rows (`diagnostics`), and each ready fixture's
 raw capture with its stored content type (`raws`) — and
 `test/unit/fixtures/app-fixture-pack.test.ts` fails while that file is stale, so
-a new state is one edit here plus a regenerate.
+a new state is one edit here plus a regenerate. The same command writes
+`app/src/samples/sample-library.json`, the public sample library the frontend
+bundles (reading-lite-gh341.10): `attention`, `friction`, `gardens`,
+`reprocess-failed`, `imported-markdown`, and `sparse-archive`, addressed by
+their URL's last path segment, with relationships kept only between them.
 
 The names and ids are stable: they live in `test/fixtures/local-seed.ts`, and
 `test/unit/fixtures/local-seed.test.ts` pins every state below.

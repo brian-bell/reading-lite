@@ -6,7 +6,7 @@ import {
   targetStatusBadge,
   type RelationshipCard,
 } from "../reading-relationships";
-import { trailAfterFollowing, type TrailHop } from "../reading-trail";
+import { trailAfterFollowing, type ReadingRoute, type TrailHop } from "../reading-trail";
 import type { Reading } from "../reading";
 import { jumpTo } from "./jump-to";
 import { useTrail } from "./ReturnTrail";
@@ -36,7 +36,11 @@ export function ContextJump() {
   );
 }
 
-export function ReadingContext({ reading }: { reading: Reading }) {
+/**
+ * `route` is where a relationship card leads: another reading in the library,
+ * or, on the sample library's pages, another sample.
+ */
+export function ReadingContext({ reading, route = "/readings/$id" }: { reading: Reading; route?: ReadingRoute }) {
   const { connections, tensions } = relationshipCards(reading);
   const computed = connectionsComputedOn(reading);
   const from = { id: reading.id, title: reading.title ?? reading.url };
@@ -46,9 +50,9 @@ export function ReadingContext({ reading }: { reading: Reading }) {
         Connections &amp; tensions
       </h2>
       {connections.length > 0 ? (
-        <RelationshipGroup heading="Connections" note={computed} cards={connections} from={from} />
+        <RelationshipGroup heading="Connections" note={computed} cards={connections} from={from} route={route} />
       ) : null}
-      {tensions.length > 0 ? <RelationshipGroup heading="Tensions" cards={tensions} from={from} /> : null}
+      {tensions.length > 0 ? <RelationshipGroup heading="Tensions" cards={tensions} from={from} route={route} /> : null}
       <a className="context-return" href={`#${CONTEXT_JUMP_ID}`} onClick={(event) => jumpTo(event, CONTEXT_JUMP_ID)}>
         Back to the reading
       </a>
@@ -61,11 +65,13 @@ function RelationshipGroup({
   note,
   cards,
   from,
+  route,
 }: {
   heading: string;
   note?: string;
   cards: RelationshipCard[];
   from: { id: string; title: string };
+  route: ReadingRoute;
 }) {
   const headingId = useId();
   return (
@@ -73,7 +79,7 @@ function RelationshipGroup({
       <h3 id={headingId}>{heading}</h3>
       {note ? <p className="relationship-note">{note}</p> : null}
       {cards.map((card) => (
-        <RelationshipCardView key={`${card.kind}:${card.id}`} card={card} from={from} />
+        <RelationshipCardView key={`${card.kind}:${card.id}`} card={card} from={from} route={route} />
       ))}
     </section>
   );
@@ -85,7 +91,15 @@ function RelationshipGroup({
  * no title to show and nowhere to go; its reason stays, dashed, because the
  * explanation is still true of this reading.
  */
-function RelationshipCardView({ card, from }: { card: RelationshipCard; from: { id: string; title: string } }) {
+function RelationshipCardView({
+  card,
+  from,
+  route,
+}: {
+  card: RelationshipCard;
+  from: { id: string; title: string };
+  route: ReadingRoute;
+}) {
   const tension = card.kind === "tension";
   const removed = card.target === undefined;
   const className = ["relationship-card", tension ? "relationship-card-tension" : "", removed ? "relationship-card-removed" : ""]
@@ -97,7 +111,7 @@ function RelationshipCardView({ card, from }: { card: RelationshipCard; from: { 
       {kindLabel ? <p className="relationship-kind">{kindLabel}</p> : null}
       {card.target ? (
         <p className="relationship-title">
-          <FollowLink card={card} from={from} />
+          <FollowLink card={card} from={from} route={route} />
           {targetStatusBadge(card.target.status) ? (
             <span className={`status-badge status-badge-${card.target.status}`}>
               {targetStatusBadge(card.target.status)}
@@ -116,12 +130,20 @@ function RelationshipCardView({ card, from }: { card: RelationshipCard; from: { 
  * The way back to the library (library-return.ts) is carried on as it is, and
  * nothing else: a save notice belongs to the reading it was left on.
  */
-function FollowLink({ card, from }: { card: RelationshipCard; from: { id: string; title: string } }) {
+function FollowLink({
+  card,
+  from,
+  route,
+}: {
+  card: RelationshipCard;
+  from: { id: string; title: string };
+  route: ReadingRoute;
+}) {
   const current = useTrail();
   const hop: TrailHop = { id: from.id, title: from.title, kind: card.kind, reason: card.reason };
   return (
     <Link
-      to="/readings/$id"
+      to={route}
       params={{ id: card.id }}
       state={(prev) => ({ libraryReturn: prev?.libraryReturn, trail: trailAfterFollowing(current, hop) })}
     >

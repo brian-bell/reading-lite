@@ -8,6 +8,12 @@ import {
   serializeAppFixturePack,
 } from "../../fixtures/app-fixture-pack";
 import {
+  APP_SAMPLE_FIXTURES,
+  APP_SAMPLE_LIBRARY_PATH,
+  buildAppSampleLibrary,
+  serializeAppSampleLibrary,
+} from "../../fixtures/app-sample-library";
+import {
   GetReadingDiagnosticsResponseSchema,
   GetReadingResponseSchema,
   ListIndexItemSchema,
@@ -118,5 +124,41 @@ describe("app browser-evidence fixture pack", () => {
     const body = pack.readings[attention!.id];
     expect(body.connections?.some((c) => c.id === pack.removed_target_id)).toBe(true);
     expect(body.relationship_targets[pack.removed_target_id]).toBeUndefined();
+  });
+});
+
+// The public sample library app/ bundles (reading-lite-gh341.10), projected
+// from the same pack. Its relationships must stay inside the set, since a
+// sample page can only lead to another sample.
+describe("app sample library", () => {
+  it("matches the projection of the local fixture pack", () => {
+    const committedSamples = readFileSync(path.join(repoRoot, APP_SAMPLE_LIBRARY_PATH), "utf8");
+    expect(committedSamples, `stale ${APP_SAMPLE_LIBRARY_PATH}; run \`${APP_FIXTURE_PACK_COMMAND}\``).toBe(
+      serializeAppSampleLibrary(buildAppSampleLibrary()),
+    );
+  });
+
+  it("addresses every chosen fixture by a distinct slug, and relates only to other samples", () => {
+    const { readings } = buildAppSampleLibrary();
+    expect(readings).toHaveLength(APP_SAMPLE_FIXTURES.length);
+    const slugs = new Set(readings.map((reading) => reading.id));
+    expect(slugs.size).toBe(readings.length);
+    for (const reading of readings) {
+      expect(reading.id).toMatch(/^[a-z0-9-]+$/);
+      const related = [...(reading.connections ?? []), ...(reading.tensions ?? [])].map((r) => r.id);
+      for (const id of related) expect(slugs.has(id), `${reading.id} -> ${id}`).toBe(true);
+      expect(Object.keys(reading.relationship_targets).sort()).toEqual([...new Set(related)].sort());
+    }
+  });
+
+  it("shows at least one connection and one tension, and carries nothing an operator reads", () => {
+    const { readings } = buildAppSampleLibrary();
+    expect(readings.some((reading) => (reading.connections?.length ?? 0) > 0)).toBe(true);
+    expect(readings.some((reading) => (reading.tensions?.length ?? 0) > 0)).toBe(true);
+    for (const reading of readings) {
+      for (const key of ["usage", "last_attempt", "active_attempt", "url_hash", "content_sha256", "created_at"]) {
+        expect(reading, `${reading.id}.${key}`).not.toHaveProperty(key);
+      }
+    }
   });
 });

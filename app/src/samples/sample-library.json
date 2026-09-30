@@ -1,0 +1,246 @@
+{
+  "regenerate_with": "npm run fixtures:app",
+  "readings": [
+    {
+      "id": "a-quieter-internet",
+      "url": "https://fieldnotes.example/2026/a-quieter-internet",
+      "status": "ready",
+      "title": "A quieter internet is a choice we can make",
+      "tldr": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.",
+      "summary_markdown": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.\n\nSaving is only the beginning. A library earns its place when it helps you return to an idea at the right moment — an old idea meeting a new question, or two writers whose disagreement you can finally name.\n\nSmall, intentional interruptions can be useful: a connection to an older reading may matter more than another recommendation, as long as the reader stays in control of whether to follow it.\n\nThe essay closes with a design criterion: measure a reading tool by the quality of its endings. A session that ends because you understood something is a success, not a failure to re-engage.",
+      "tags": [
+        "attention",
+        "design"
+      ],
+      "keywords": [
+        "attention",
+        "deliberate reading",
+        "personal library",
+        "return visit",
+        "tools for thought"
+      ],
+      "people": [
+        "Mara Ellis"
+      ],
+      "orgs": [],
+      "source_type": "url",
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2
+      },
+      "connections": [
+        {
+          "id": "libraries-are-gardens",
+          "reason": "Both treat revisiting as the work. Ellis adds a concrete test: does the tool help an old idea meet a new question?"
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "tensions": [
+        {
+          "id": "the-case-for-a-little-friction",
+          "kind": "contradicts",
+          "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit."
+        }
+      ],
+      "relationship_targets": {
+        "libraries-are-gardens": {
+          "url": "https://commonplace.example/libraries-are-gardens",
+          "title": "Libraries are gardens, not warehouses",
+          "status": "ready"
+        },
+        "the-case-for-a-little-friction": {
+          "url": "https://adjacent.example/the-case-for-a-little-friction",
+          "title": "The case for a little friction",
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "id": "the-case-for-a-little-friction",
+      "url": "https://adjacent.example/the-case-for-a-little-friction",
+      "status": "ready",
+      "title": "The case for a little friction",
+      "tldr": "Not every interruption is a distraction. A deliberate pause or well-placed question can help a reader notice assumptions that a seamless interface would let pass.",
+      "summary_markdown": "Not every interruption is a distraction. A deliberate pause or well-placed question can help a reader notice assumptions that a seamless interface would let pass.\n\nUseful interruption has a shape: it is relevant, optional, and easy to return from. Friction is useful when the reader understands its purpose.\n\nLeave the starting point visible and let the reader choose — that is the difference between a deepening tangent and a lost thread.",
+      "tags": [
+        "design"
+      ],
+      "keywords": [
+        "friction",
+        "interruption",
+        "reading interfaces",
+        "user control"
+      ],
+      "people": [
+        "Leah Chen"
+      ],
+      "orgs": [],
+      "source_type": "url",
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2
+      },
+      "tensions": [
+        {
+          "id": "a-quieter-internet",
+          "kind": "contradicts",
+          "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit."
+        }
+      ],
+      "relationship_targets": {
+        "a-quieter-internet": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "title": "A quieter internet is a choice we can make",
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "id": "libraries-are-gardens",
+      "url": "https://commonplace.example/libraries-are-gardens",
+      "status": "ready",
+      "title": "Libraries are gardens, not warehouses",
+      "tldr": "An archive grows more useful through care, not accumulation. Revisiting and connecting a small set of readings can do more for understanding than collecting a much larger set.",
+      "summary_markdown": "An archive grows more useful through care, not accumulation. Revisiting and connecting a small set of readings can do more for understanding than collecting a much larger set.\n\nTags work as paths back into a question rather than a perfect classification system; an imperfect collection you visit teaches more than a perfect one you maintain.\n\nThe maintenance itself is thinking: letting older readings change meaning as your interests change is the work the garden metaphor names.",
+      "tags": [
+        "knowledge",
+        "attention"
+      ],
+      "keywords": [
+        "digital gardens",
+        "archives",
+        "revisiting",
+        "tags",
+        "note-taking"
+      ],
+      "people": [
+        "Julian Park"
+      ],
+      "orgs": [],
+      "source_type": "url",
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2
+      },
+      "connections": [
+        {
+          "id": "a-quieter-internet",
+          "reason": "Ellis turns the garden metaphor into a design principle: optimize for a useful return visit."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "relationship_targets": {
+        "a-quieter-internet": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "title": "A quieter internet is a choice we can make",
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "id": "the-tab-that-never-closes",
+      "url": "https://fieldnotes.example/the-tab-that-never-closes",
+      "status": "ready",
+      "title": "The tab that never closes",
+      "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+      "summary_markdown": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.\n\nThe essay separates saving from deferring: a saved reading has a place to be, while an open tab is an unpaid debt in the corner of the screen.",
+      "tags": [
+        "attention"
+      ],
+      "keywords": [
+        "browser tabs",
+        "saving",
+        "deferral",
+        "reading later"
+      ],
+      "people": [
+        "Mara Ellis"
+      ],
+      "orgs": [],
+      "source_type": "url",
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1
+      },
+      "connections": [
+        {
+          "id": "a-quieter-internet",
+          "reason": "Both essays treat saving as a way to end a session well rather than to defer it."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "relationship_targets": {
+        "a-quieter-internet": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "title": "A quieter internet is a choice we can make",
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "id": "slow-reading-week",
+      "url": "https://notes.example/slow-reading-week",
+      "status": "ready",
+      "title": "Slow reading week",
+      "tldr": "A one-week experiment in reading three long pieces instead of thirty short ones, kept as a single log with one standing question.",
+      "summary_markdown": "A one-week experiment in reading three long pieces instead of thirty short ones, kept as a single log with one standing question.\n\nStarting was easier with the question already open; rereading replaced new tabs; and the Friday summary proved more useful than anything saved that week.",
+      "tags": [
+        "notes",
+        "reading"
+      ],
+      "keywords": [
+        "slow reading",
+        "reading log",
+        "single question",
+        "note-taking"
+      ],
+      "people": [],
+      "orgs": [],
+      "source_type": "markdown",
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 1
+      },
+      "connections": [
+        {
+          "id": "a-quieter-internet",
+          "reason": "The week's standing question came from Ellis's argument for deliberate reading."
+        }
+      ],
+      "relationship_targets": {
+        "a-quieter-internet": {
+          "url": "https://fieldnotes.example/2026/a-quieter-internet",
+          "title": "A quieter internet is a choice we can make",
+          "status": "ready"
+        }
+      }
+    },
+    {
+      "id": "against-the-endless-queue",
+      "url": "https://small-hours.example/against-the-endless-queue",
+      "status": "ready",
+      "title": "Against the endless queue",
+      "tldr": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.",
+      "summary_markdown": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.\n\nAn unread item does not have to be an unfinished task; a saved article can be available without being a commitment.",
+      "tags": [
+        "attention"
+      ],
+      "keywords": [
+        "reading queue",
+        "unread articles",
+        "archives",
+        "obligation"
+      ],
+      "people": [
+        "Alex Rivera"
+      ],
+      "orgs": [],
+      "source_type": "url",
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 0
+      },
+      "relationship_targets": {}
+    }
+  ]
+}
