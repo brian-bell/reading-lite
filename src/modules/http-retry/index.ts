@@ -103,6 +103,7 @@ const NOT_RETRIED_ERROR_NAMES = new Set([
   "provider_key_required",
   "provider_key_undecryptable",
   "provider_key_invalid",
+  "provider_model_access",
   "provider_insufficient_quota",
 ]);
 

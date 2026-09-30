@@ -23,16 +23,24 @@ export class SpendAdmissionError extends DeferPaidWorkError {
 }
 
 // A provider verdict about the account rather than the request: retrying the
-// same request cannot succeed until the reader replaces the key or adds
-// credit, so neither HTTP nor queue retry applies (ADR 0004). A rate-limit 429
-// stays RateLimitedError and a 5xx stays an adapter error.
-export type ProviderAccountErrorCode = "provider_key_invalid" | "provider_insufficient_quota";
+// same request cannot succeed until the reader replaces the key, grants it
+// model access, or adds credit, so neither HTTP nor queue retry applies
+// (ADR 0004). A rate-limit 429 stays RateLimitedError and a 5xx stays an
+// adapter error.
+export type ProviderAccountErrorCode =
+  | "provider_key_invalid"
+  | "provider_model_access"
+  | "provider_insufficient_quota";
+
+const ACCOUNT_ERROR_MESSAGES: Record<ProviderAccountErrorCode, string> = {
+  provider_key_invalid: "the provider rejected the key; replace it, then retry",
+  provider_model_access: "the key cannot use the model; grant its project access, then retry",
+  provider_insufficient_quota: "the provider account is out of quota; check its billing, then retry",
+};
 
 export class ProviderAccountError extends Error {
   constructor(readonly code: ProviderAccountErrorCode, readonly status: number) {
-    super(code === "provider_key_invalid"
-      ? "the provider rejected the key; replace it, then retry"
-      : "the provider account is out of quota; check its billing, then retry");
+    super(ACCOUNT_ERROR_MESSAGES[code]);
     this.name = code;
   }
 }
@@ -201,14 +209,20 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
 
 // Checked before fetchWithRetry sees the status, so insufficient_quota never
 // becomes RateLimitedError. A 401 or 403 is about the tenant's key only when
-// one was sent; on deployment keys it stays the adapter's error.
+// one was sent; on deployment keys it stays the adapter's error. Only a 401
+// invalidates the key: a 403 means a valid key lacks model or project access,
+// which replacing the same key would not fix (provider-key-check agrees).
 async function throwIfAccountFailure(
   response: Response,
   deps: PaidFetchDeps,
   credentialVersion: number | null,
 ): Promise<void> {
-  if ((response.status === 401 || response.status === 403) &&
-      deps.authorization?.mode === "tenant" && credentialVersion !== null) {
+  const tenantKeySent = deps.authorization?.mode === "tenant" && credentialVersion !== null;
+  if (response.status === 403 && tenantKeySent) {
+    response.body?.cancel().catch(() => {});
+    throw new ProviderAccountError("provider_model_access", 403);
+  }
+  if (response.status === 401 && deps.authorization?.mode === "tenant" && credentialVersion !== null) {
     response.body?.cancel().catch(() => {});
     try {
       await deps.authorization.markInvalid(credentialVersion, deps.now());

@@ -328,8 +328,8 @@ describe("tenant provider key dispatch", () => {
   it.each([
     { label: "401", status: 401, body: '{"error":{"message":"Incorrect API key provided: sk-proj-****zzzz","code":"invalid_api_key"}}',
       code: "provider_key_invalid", retryable: false, credential: "invalid", calls: 1 },
-    { label: "403", status: 403, body: '{"error":{"message":"forbidden"}}',
-      code: "provider_key_invalid", retryable: false, credential: "invalid", calls: 1 },
+    { label: "403", status: 403, body: '{"error":{"message":"You have not been granted access to this model"}}',
+      code: "provider_model_access", retryable: false, credential: "active", calls: 1 },
     { label: "429 insufficient_quota", status: 429, body: QUOTA_BODY,
       code: "provider_insufficient_quota", retryable: false, credential: "active", calls: 1 },
     { label: "429 rate limit", status: 429, body: '{"error":{"message":"Rate limit reached","code":"rate_limit_exceeded"}}',
