@@ -5,112 +5,36 @@ import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { describe, expect, it } from "vitest";
 import yaml from "yaml";
+import { cookieCsrfRequired } from "../../../src/control-plane/csrf";
+import { createApp } from "../../../src/router";
 
 /**
  * Keeps `docs/openapi.yaml` honest against the REST surface in `src/router.ts`.
- * MCP (`POST /mcp`, `POST /api/mcp`) is intentionally omitted — Streamable HTTP
- * MCP is not part of this OpenAPI document.
+ * Operations are read from the Hono route table. `app.use` middleware and
+ * `app.all` catch-alls register as method ALL and are not operations; that
+ * also drops MCP (`/mcp`, `/api/mcp`), which Streamable HTTP serves outside
+ * this document. `/api/dev/*` is loopback-only tooling.
  */
-const ROUTER_REST_PATHS = [
-  "/health",
-  "/api/whoami",
-  "/api/account",
-  "/api/exports",
-  "/api/exports/latest",
-  "/api/exports/{id}/download",
-  "/api/auth/login-options",
-  "/api/auth/challenge",
-  "/api/auth/redeem",
-  "/api/auth/logout",
-  "/api/auth/sessions",
-  "/api/auth/sessions/revoke-all",
-  "/api/auth/sessions/{id}",
-  "/api/auth/tokens",
-  "/api/auth/tokens/{id}",
-  "/api/auth/email-change",
-  "/api/auth/settings",
-  "/api/auth/provider",
-  "/api/auth/provider/preferences",
-  "/api/auth/provider/usage",
-  "/api/inbox",
-  "/api/inbox/{id}",
-  "/api/inbox/{id}/promote",
-  "/api/readings",
-  "/api/readings/import-markdown",
-  "/api/readings/lookup",
-  "/api/readings/similar",
-  "/api/readings/{id}",
-  "/api/readings/{id}/diagnostics",
-  "/api/readings/{id}/reprocess",
-  "/api/readings/{id}/content",
-  "/api/readings/{id}/content/raw",
-] as const;
+function routerRestOperations(): Array<{ path: string; method: string }> {
+  const seen = new Map<string, { path: string; method: string }>();
+  for (const route of createApp().routes) {
+    if (route.method === "ALL" || route.path.startsWith("/api/dev/")) continue;
+    const path = route.path.replace(/:(\w+)/g, "{$1}");
+    const method = route.method.toLowerCase();
+    seen.set(`${method} ${path}`, { path, method });
+  }
+  return [...seen.values()];
+}
 
-const ROUTER_REST_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = [
-  { path: "/health", method: "get" },
-  { path: "/api/whoami", method: "get" },
-  { path: "/api/account", method: "delete" },
-  { path: "/api/exports", method: "post" },
-  { path: "/api/exports/latest", method: "get" },
-  { path: "/api/exports/{id}/download", method: "get" },
-  { path: "/api/auth/login-options", method: "get" },
-  { path: "/api/auth/challenge", method: "post" },
-  { path: "/api/auth/redeem", method: "post" },
-  { path: "/api/auth/logout", method: "post" },
-  { path: "/api/auth/sessions", method: "get" },
-  { path: "/api/auth/sessions/revoke-all", method: "post" },
-  { path: "/api/auth/sessions/{id}", method: "delete" },
-  { path: "/api/auth/tokens", method: "get" },
-  { path: "/api/auth/tokens", method: "post" },
-  { path: "/api/auth/tokens/{id}", method: "delete" },
-  { path: "/api/auth/email-change", method: "post" },
-  { path: "/api/auth/settings", method: "get" },
-  { path: "/api/auth/settings", method: "post" },
-  { path: "/api/auth/provider", method: "get" },
-  { path: "/api/auth/provider", method: "post" },
-  { path: "/api/auth/provider", method: "delete" },
-  { path: "/api/auth/provider/preferences", method: "post" },
-  { path: "/api/auth/provider/usage", method: "get" },
-  { path: "/api/inbox", method: "get" },
-  { path: "/api/inbox", method: "post" },
-  { path: "/api/inbox/{id}", method: "get" },
-  { path: "/api/inbox/{id}", method: "delete" },
-  { path: "/api/inbox/{id}/promote", method: "post" },
-  { path: "/api/readings", method: "get" },
-  { path: "/api/readings", method: "post" },
-  { path: "/api/readings/import-markdown", method: "post" },
-  { path: "/api/readings/lookup", method: "get" },
-  { path: "/api/readings/similar", method: "post" },
-  { path: "/api/readings/{id}", method: "get" },
-  { path: "/api/readings/{id}", method: "delete" },
-  { path: "/api/readings/{id}/diagnostics", method: "get" },
-  { path: "/api/readings/{id}/reprocess", method: "post" },
-  { path: "/api/readings/{id}/content", method: "get" },
-  { path: "/api/readings/{id}/content/raw", method: "get" },
-];
+// Unauthenticated sign-in steps: there is no session yet to bind a token to.
+const PRE_SESSION_OPERATIONS = new Set(["post /api/auth/challenge", "post /api/auth/redeem"]);
 
-const COOKIE_CSRF_OPERATIONS: ReadonlyArray<{ path: string; method: string }> = [
-  { path: "/api/auth/logout", method: "post" },
-  { path: "/api/auth/sessions/revoke-all", method: "post" },
-  { path: "/api/auth/sessions/{id}", method: "delete" },
-  { path: "/api/auth/tokens", method: "post" },
-  { path: "/api/auth/tokens/{id}", method: "delete" },
-  { path: "/api/auth/email-change", method: "post" },
-  { path: "/api/auth/settings", method: "post" },
-  { path: "/api/auth/provider", method: "post" },
-  { path: "/api/auth/provider", method: "delete" },
-  { path: "/api/auth/provider/preferences", method: "post" },
-  { path: "/api/account", method: "delete" },
-  { path: "/api/exports", method: "post" },
-  { path: "/api/inbox", method: "post" },
-  { path: "/api/inbox/{id}", method: "delete" },
-  { path: "/api/inbox/{id}/promote", method: "post" },
-  { path: "/api/readings", method: "post" },
-  { path: "/api/readings/import-markdown", method: "post" },
-  { path: "/api/readings/similar", method: "post" },
-  { path: "/api/readings/{id}", method: "delete" },
-  { path: "/api/readings/{id}/reprocess", method: "post" },
-];
+// Every cookie-authenticated write the router CSRF-checks.
+function cookieCsrfOperations(): Array<{ path: string; method: string }> {
+  return routerRestOperations().filter(
+    ({ path, method }) => cookieCsrfRequired(method) && !PRE_SESSION_OPERATIONS.has(`${method} ${path}`),
+  );
+}
 
 const REQUIRED_SCHEMAS = [
   "WhoamiResponse",
@@ -206,9 +130,10 @@ describe("docs/openapi.yaml", () => {
     expect(doc.openapi).toMatch(/^3\.1\./);
 
     const paths = doc.paths ?? {};
-    expect(Object.keys(paths).sort()).toEqual([...ROUTER_REST_PATHS].sort());
+    const operations = routerRestOperations();
+    expect(Object.keys(paths).sort()).toEqual([...new Set(operations.map((op) => op.path))].sort());
 
-    for (const { path, method } of ROUTER_REST_OPERATIONS) {
+    for (const { path, method } of operations) {
       const item = paths[path];
       expect(item, `missing path ${path}`).toBeDefined();
       expect(item?.[method], `missing ${method.toUpperCase()} ${path}`).toBeDefined();
@@ -307,7 +232,7 @@ describe("docs/openapi.yaml", () => {
     expect(whoami?.properties?.csrf_token).toBeDefined();
 
     const csrfRef = "#/components/parameters/CsrfToken";
-    for (const { path, method } of COOKIE_CSRF_OPERATIONS) {
+    for (const { path, method } of cookieCsrfOperations()) {
       const op = doc.paths?.[path]?.[method] as { parameters?: Array<{ $ref?: string }> } | undefined;
       expect(op, `missing ${method.toUpperCase()} ${path}`).toBeDefined();
       const refs = (op?.parameters ?? []).map((p) => p.$ref);
