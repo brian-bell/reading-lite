@@ -136,7 +136,8 @@ operator-funded requests.
 | --- | --- |
 | Key missing or removed at dispatch | Fail the attempt now with a "connect a key, then retry" error; no deferral |
 | Decryption failure | Fail the attempt now; log for the operator; no fallback |
-| Provider 401 or 403 | Fail the attempt now and mark the stored key `invalid`; settings shows "replace your key" |
+| Provider 401 | Fail the attempt now and mark the stored key `invalid`; settings shows "replace your key" |
+| Provider 403 | Fail the attempt now with a model-access error; the key stays `active`, since a valid key without model or project access is not fixed by replacing it (amended 2026-09-30, gh341.5) |
 | Provider 429 with `insufficient_quota` | Fail the attempt now with a billing message; no retry. Checked before the generic 429 path |
 | Provider 429 rate limit | Existing `RateLimitedError` queue retry, then deferral |
 | Provider 5xx or timeout | Existing HTTP retries within the spend and lease protections |
