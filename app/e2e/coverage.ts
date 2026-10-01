@@ -1575,8 +1575,13 @@ export async function openDetails(page: Page): Promise<void> {
   await expect(page.locator("details.reading-details[open]")).toBeVisible();
 }
 
-/** Selects the Source tab and waits for the source to render. */
+/**
+ * Selects the Source tab and waits for the source to render. The tab is a
+ * button that only works once hydration attaches onClick, so a click before
+ * then does nothing; network idle is the signal saveUrl uses too.
+ */
 export async function selectSourceView(page: Page): Promise<void> {
+  await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Source" }).click();
   await expect(page.getByRole("tabpanel", { name: "Source" }).locator(".reading-source")).toBeVisible();
 }
