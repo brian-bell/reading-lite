@@ -374,6 +374,27 @@ describe("pending and failed readings", () => {
     expect(screen.getByText("Stopped at: Fetching.")).toBeInTheDocument();
   });
 
+  // Key and billing failures are fixed in provider settings (gh341.9): the card
+  // links there first and keeps Retry for once the fix is made. The backend's
+  // message for these is its own fixed sentence, which the next step replaces.
+  it.each([
+    ["rd_FXERR00009", "No OpenAI key is connected.", "Connect key"],
+    ["rd_FXERR00005", "Your OpenAI key needs replacing.", "Replace key"],
+    ["rd_FXERR00010", "Your OpenAI account is out of credit.", "Provider settings"],
+  ])("links %s to provider settings, then Retry", async (id, headline, label) => {
+    const failed = readings[id]!;
+    backendAnswers(200, failed);
+    await openTab(`/readings/${id}`);
+
+    const region = screen.getByLabelText("Processing status");
+    const card = within(region);
+    expect(card.getByText(headline)).toBeInTheDocument();
+    expect(card.queryByText(failed.error!.message)).toBeNull();
+    const actions = [...region.querySelectorAll("a, button")].map((control) => control.textContent);
+    expect(actions.slice(0, 2)).toEqual([label, "Retry"]);
+    expect(card.getByRole("link", { name: label })).toHaveAttribute("href", "/account/provider");
+  });
+
   it("shows an unknown failure's message once, as its own headline", async () => {
     const failed = readings.rd_FXERR00008;
     backendAnswers(200, failed);

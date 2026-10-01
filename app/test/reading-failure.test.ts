@@ -16,7 +16,9 @@ const EXPECTED: Record<string, FailureCategory> = {
   "fail-source-incomplete": "source-incomplete",
   "fail-provider-limit": "provider-limit",
   "fail-provider-error": "provider-error",
-  "fail-key-problem": "key-problem",
+  "fail-key-invalid": "key-invalid",
+  "fail-key-missing": "key-missing",
+  "fail-billing": "billing",
   "fail-hosting-limit": "hosting-limit",
   "fail-stopped": "stopped",
   "fail-unknown": "unknown",
@@ -52,24 +54,56 @@ describe("failure categories", () => {
     expect(unknown.headline).toBe(unknown.message);
   });
 
-  // The provider classes carry the provider's own message, so the status that
-  // separates a key problem from any other provider error is a field. A 403 at
-  // fetch_source is the site refusing us, whatever its status.
+  // The provider classes carry the provider's own message, so the status is a
+  // field. A 403 at fetch_source is the site refusing us, whatever its status.
+  // A 401 or 403 that reaches an adapter was sent with the hosted key (the
+  // reader's own key fails with an account code first), so the reader has no
+  // key to fix and it stays a provider error.
   it.each<[string, ReadingError, FailureCategory]>([
     ["a site 403", { code: "BadStatusError", message: "bad response status 403: https://x.example/a", stage: "fetch_source", http_status: 403 }, "source-unreachable"],
-    ["a provider 401", { code: "OpenAIError", message: "Incorrect API key provided", stage: "summarize", http_status: 401 }, "key-problem"],
-    ["a provider 403", { code: "AnthropicError", message: "permission denied", stage: "embed_source", http_status: 403 }, "key-problem"],
+    ["a hosted-key 401", { code: "OpenAIError", message: "Incorrect API key provided", stage: "summarize", http_status: 401 }, "provider-error"],
+    ["a hosted-key 403", { code: "AnthropicError", message: "permission denied", stage: "embed_source", http_status: 403 }, "provider-error"],
     ["a provider 429", { code: "AnthropicError", message: "slow down", stage: "summarize", http_status: 429 }, "provider-limit"],
     ["a provider 500", { code: "OpenAIError", message: "The server had an error", stage: "embed_summary", http_status: 500 }, "provider-error"],
   ])("categorizes %s by stage and HTTP status", (_label, error, category) => {
     expect(categorize(error).category).toBe(category);
   });
 
+  // The provider-account codes (docs/openapi.yaml, ManifestError.code) decide
+  // whatever the stage, and each names its own next step. Key and billing
+  // failures are fixed in provider settings, so they carry the link's label;
+  // their messages are the backend's fixed recovery sentences, which `next`
+  // replaces, so they are not repeated as detail.
+  it.each<[string, FailureCategory, string, string | undefined]>([
+    ["provider_key_required", "key-missing", "No OpenAI key is connected.", "Connect key"],
+    ["provider_key_invalid", "key-invalid", "Your OpenAI key needs replacing.", "Replace key"],
+    ["provider_key_undecryptable", "key-invalid", "Your OpenAI key needs replacing.", "Replace key"],
+    ["provider_model_access", "model-access", "Your OpenAI key can't use the models Reading Lite needs.", "Provider settings"],
+    ["provider_insufficient_quota", "billing", "Your OpenAI account is out of credit.", "Provider settings"],
+  ])("maps %s to %s with its own copy and a link to provider settings", (code, category, headline, settings) => {
+    const failure = categorize({ code, message: "connect a key, then retry", stage: "summarize" });
+    expect(failure).toMatchObject({ category, headline, settings });
+    expect(failure.next).toMatch(/then retry\.$/);
+    expect(failure.detail).toBeUndefined();
+  });
+
+  // The limits clear on their own, so their next step is to wait, and the
+  // backend's message stays as detail: it names which limit.
+  it.each<[string, ReadingError, FailureCategory, string]>([
+    ["a provider rate limit", { code: "RateLimitedError", message: "rate limited (status 429)", stage: "summarize" }, "provider-limit", "Wait a few minutes, then retry."],
+    ["a hosting limit", { code: "SpendAdmissionError", message: "paid spend admission: daily_spend", stage: "summarize" }, "hosting-limit", "Retry once the limit resets."],
+    ["the hosted key's quota", { code: "hosted_provider_quota", message: "the hosted provider account is out of quota; retry later", stage: "summarize", http_status: 429 }, "hosting-limit", "Retry once the limit resets."],
+  ])("tells %s to wait, with no settings link", (_label, error, category, next) => {
+    expect(categorize(error)).toMatchObject({ category, next, detail: error.message });
+    expect(categorize(error).settings).toBeUndefined();
+  });
+
   // Failures recorded before the backend kept the status have none. The
   // message is the provider's prose, not a contract, and is never parsed.
   it("never reads a key problem out of the message text", () => {
-    const prose: ReadingError = { code: "OpenAIError", message: "upstream said status 401", stage: "summarize" };
-    expect(categorize(prose).category).toBe("provider-error");
+    const prose: ReadingError = { code: "OpenAIError", message: "upstream said your API key status 401", stage: "summarize" };
+    expect(categorize(prose)).toMatchObject({ category: "provider-error" });
+    expect(categorize(prose).settings).toBeUndefined();
   });
 
   // stale_pending and stale_active_attempt are markers the backend writes

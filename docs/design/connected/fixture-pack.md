@@ -54,10 +54,12 @@ states locally.
 | `fail-source-incomplete` | `rd_FXERR00002` | failed | `SourceRejectedError` at `summarize` — source incomplete category; also `gardens`' failed connection target |
 | `fail-provider-limit` | `rd_FXERR00003` | failed | `RateLimitedError` at `summarize` — provider limit category |
 | `fail-provider-error` | `rd_FXERR00004` | failed | `OpenAIError` (`http_status` 500) at `embed_source` — provider error category |
-| `fail-key-problem` | `rd_FXERR00005` | failed | `OpenAIError` (`http_status` 401) at `summarize` — key problem category (provisional until Phase 6) |
+| `fail-key-invalid` | `rd_FXERR00005` | failed | `provider_key_invalid` (`http_status` 401) at `summarize` — key invalid category |
 | `fail-hosting-limit` | `rd_FXERR00006` | failed | `SpendAdmissionError` at `summarize` — hosting limit category |
 | `fail-stopped` | `rd_FXERR00007` | failed | `QueueRetriesExhaustedError` — stopped category; dead-letter attempt log holds only the queued `started` event |
 | `fail-unknown` | `rd_FXERR00008` | failed | `TypeError` at `query_similar` — unknown category fallback |
+| `fail-key-missing` | `rd_FXERR00009` | failed | `provider_key_required` at `embed_source` — key missing category |
+| `fail-billing` | `rd_FXERR00010` | failed | `provider_insufficient_quota` (`http_status` 429) at `summarize` — billing category |
 
 The removed relationship target is `rd_FXVANSHD01`: referenced by
 `attention`'s connections but never written anywhere, so any target-enrichment
@@ -90,9 +92,9 @@ and the detail route 404s ("arrived from a removed target").
 - The seeder replaces the local founder's reading rows with the pack's. Any
   other local reading drops out, though its R2 objects stay; see
   [resetting](../../operations.md#seeding-local-data) for a pristine store.
-- The library lists the pack's 19 rows, newest first: `pending`, the eight
-  failures, then the ready baselines — matching the store's `created_at`
-  sort.
+- The library lists the pack's 21 rows newest first, matching the store's
+  `created_at` sort: a first page of 20 and `old-manifest` alone on the
+  second.
 
 ## What the pack deliberately does not cover
 

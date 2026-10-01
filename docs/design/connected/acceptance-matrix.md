@@ -166,14 +166,22 @@ test that fails when the backend adds or renames a class.
 | --- | --- | --- | --- |
 | Source unreachable | `fetch_source` stage: `BadStatusError` (4xx), `BlockedHostError`, `FetchTimeoutError`, `TooManyRedirectsError`, `DestinationResolutionError` | The page couldn't be fetched | Retry; Import a copy |
 | Source incomplete | `SourceRejectedError`, `OpenAISourceRejectedError`; X and Reddit import errors | The page didn't contain the full article | Import a copy |
-| Provider limit | Provider 429, `RateLimitedError` | The AI provider is rate limiting requests | Retry later |
-| Provider error | Other provider errors at `summarize` or `embed_*` | The AI provider returned an error | Retry |
-| Key problem | Provider 401 or 403 | Provisional until Phase 6 (hosted keys are the operator's today) | Phase 6 |
-| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError`, `ReadingReservationExpiredError` | Reading Lite's processing limit was reached | Retry later |
+| Provider limit | Provider 429, `RateLimitedError` | The AI provider is rate limiting requests; wait a few minutes, then retry | Retry later |
+| Provider error | Other provider errors at `summarize` or `embed_*`, including a 401 or 403 to the hosted key, which the reader cannot fix | The AI provider returned an error | Retry |
+| Key missing | `provider_key_required` | No OpenAI key is connected; connect your key, then retry | Connect key (provider settings); Retry |
+| Key invalid | `provider_key_invalid` (the provider's 401 to the reader's key), `provider_key_undecryptable` | Your OpenAI key needs replacing; replace it, then retry | Replace key (provider settings); Retry |
+| Model access | `provider_model_access` (a 403 to the reader's key) | The key can't use the models Reading Lite needs; allow them for its project in OpenAI, or connect another key | Provider settings; Retry |
+| Billing | `provider_insufficient_quota` | Your OpenAI account is out of credit; add credit in OpenAI, then retry | Provider settings; Retry |
+| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError`, `ReadingReservationExpiredError`, `hosted_provider_quota` (the deployment key's `insufficient_quota`) | Reading Lite's processing limit was reached; retry once it resets | Retry later |
 | Stopped | `stale_pending`, `stale_active_attempt`, `QueueRetriesExhaustedError` | Processing stopped before finishing | Retry |
 | Unknown | Anything else | The error message, unchanged | Retry; Details |
 
 Retry on a failed reading is a reprocess; it never repeats automatically.
+The provider-account codes ([ADR 0004](../../decisions/0004-tenant-provider-credentials.md),
+Queued work and provider errors) decide before the stage does, and their
+messages are the backend's own recovery sentences, so the card shows the
+category's next step instead. Their provider settings link comes before Retry,
+and they offer no Import a copy: a copy is summarized with the same key.
 
 ### Archive export
 
