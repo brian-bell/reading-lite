@@ -417,6 +417,18 @@ return path is per origin.
   samples and offers sign-in; it follows the shell's browser-only identity
   read and offers a signed-in reader their library instead. A slug that names
   no sample is "This sample doesn't exist."
+- **Onboarding.** (reading-lite-gh341.11) The signed-out `/` is the front
+  door: beside the sign-in form, a sentence says what the service does and
+  links the sample library. When tenant provider keys are on and the reader
+  has no active key, `GET /api/whoami` says `needs_provider_key: true`; the
+  empty library then offers "Connect a key" (with the samples) instead of a
+  save, and `/save` asks for a key above its form. A save, import, reprocess,
+  or inbox promote the backend refuses with 409 `provider_key_required` is
+  the capture refusal `key-required` (`src/capture-refusal.ts`): one sentence
+  with a link to the provider page and no Try again. Connecting a key there
+  clears the flag in the cached identity and offers "Save a reading"; a
+  removal reads identity again, since only the backend knows whether a key is
+  required.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -465,8 +477,8 @@ cases marked `essential` in `e2e/coverage.ts` — the major states of each route
 the library signed out, signed in, searched, empty, session-ended, and failed;
 sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
 Source; open Details; the account sessions list; account deletion's typed
-confirmation and closing page; the public legal pages; and the sample library
-and a sample — in the
+confirmation and closing page; a new reader's library before they connect a
+key; the public legal pages; and the sample library and a sample — in the
 `phone-dark` and `desktop-light` projects, so both viewports and both themes
 are still covered, plus the behaviour specs and `checks`. Reduced motion and
 zoom, the other matrix projects, and the remaining states run only in the full

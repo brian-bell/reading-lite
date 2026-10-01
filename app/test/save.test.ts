@@ -239,6 +239,13 @@ describe("submitFromResponse", () => {
     );
   });
 
+  // Readings run on the reader's own key and they have none (reading-lite-gh341.11).
+  it("reads a provider_key_required 409 as the key-required refusal", () => {
+    expect(
+      submitFromResponse(409, { error: "connect a key, then retry", code: "provider_key_required" }),
+    ).toEqual({ kind: "key-required" });
+  });
+
   // The usage guard's own 429 names no limit at all.
   it("reports the usage guard's 429 as the state of its own", () => {
     expect(submitFromResponse(429, { error: "usage guard unavailable" })).toEqual({ kind: "guard-unavailable" });

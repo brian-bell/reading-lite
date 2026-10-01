@@ -45,7 +45,7 @@ describe("legal pages", () => {
     await renderLegal(path);
     expect(screen.getByRole("heading", { level: 1, name: title })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: section })).toBeInTheDocument();
-    expect(screen.getByText(/Last updated: September 5, 2026/)).toBeInTheDocument();
+    expect(screen.getByText(/Last updated: October 1, 2026/)).toBeInTheDocument();
   });
 
   it("turns the operator address into a mailto link", async () => {

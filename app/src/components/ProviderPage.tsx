@@ -1,10 +1,11 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useId, useRef, useState } from "react";
 import { accountViewOf, readRefusedBy, type AccountRefusal, type AccountView } from "../account-state";
 import { connectProviderKey, removeProviderKey, saveProviderPreferences } from "../api/provider";
 import { isUnauthorized } from "../api/errors";
 import { ACCOUNT_PROVIDER_PATH, stepUpLoginHref } from "../auth/return-path";
-import { whoamiQueryKey, type Identity } from "../identity";
+import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
 import {
   capFromDollars,
   dollarsOf,
@@ -258,6 +259,8 @@ function KeySection({
   const [apiKey, setApiKey] = useState("");
   const [checkError, setCheckError] = useState<"empty" | "malformed" | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  /** A key connected here by a reader who could not save without one: the next step is their first save. */
+  const [firstKey, setFirstKey] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const removeRef = useRef<HTMLButtonElement>(null);
   // The key on its way to the backend. Handed over here rather than as the
@@ -280,6 +283,14 @@ function KeySection({
       }
       if (outcome.kind !== "saved") return;
       setApiKey("");
+      // An active key is what saving was waiting for (reading-lite-gh341.11),
+      // whatever the deployment's switch says, so identity can say so now.
+      if (needsProviderKey(queryClient.getQueryData<Identity | null>(whoamiQueryKey))) {
+        setFirstKey(true);
+        queryClient.setQueryData<Identity | null>(whoamiQueryKey, (current) =>
+          current ? { ...current, needs_provider_key: false } : current,
+        );
+      }
       onSaved(outcome.settings, false);
     },
   });
@@ -293,7 +304,11 @@ function KeySection({
         onRefused(outcome);
         return;
       }
-      if (outcome.kind === "saved") onSaved(outcome.settings, true);
+      if (outcome.kind !== "saved") return;
+      setFirstKey(false);
+      // Whether saving now needs a key again is the deployment's to say.
+      void queryClient.invalidateQueries({ queryKey: whoamiQueryKey });
+      onSaved(outcome.settings, true);
     },
   });
 
@@ -352,6 +367,14 @@ function KeySection({
         </div>
       </dl>
       <KeyStateText state={state} />
+      {firstKey && state.kind === "connected" ? (
+        <aside className="callout callout-enter" aria-label="Next step">
+          <p>Your key is connected. You can save readings now.</p>
+          <Link to="/save" className="button button-primary">
+            Save a reading
+          </Link>
+        </aside>
+      ) : null}
       {connectFailure ? (
         <InlineNotice
           message={

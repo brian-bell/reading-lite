@@ -126,7 +126,7 @@ describe("public legal pages", () => {
     const html = await response.text();
     expect(html).toContain(heading(title));
     expect(html).toContain(section);
-    expect(html).toContain("Last updated: September 5, 2026");
+    expect(html).toContain("Last updated: October 1, 2026");
     expect(html).toContain('href="mailto:operator@readinglite.app"');
     // Reachable with a session cookie, but the HTML carries no identity.
     expect(html).not.toContain("Account menu");

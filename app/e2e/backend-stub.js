@@ -25,8 +25,13 @@ const READER_A = {
   csrf_token: "csrf-token-for-a",
 };
 
+// A new reader (reading-lite-gh341.11): readings need their own provider key
+// and they have none yet, and their library is empty.
+const NEW_READER = { ...READER_A, needs_provider_key: true };
+
 const SESSIONS = {
   "reader-a": READER_A,
+  "reader-new": NEW_READER,
 };
 
 // Reader A again, but the library's list answers with one of the acceptance
@@ -40,6 +45,7 @@ const SCENARIO_SESSIONS = {
   "reader-forbidden": LIST_SCENARIOS.forbidden,
   "reader-mismatch": LIST_SCENARIOS.mismatch,
   "reader-outage": LIST_SCENARIOS.outage,
+  "reader-new": LIST_SCENARIOS.empty,
 };
 
 function sessionKeyOf(cookie) {

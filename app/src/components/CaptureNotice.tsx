@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { captureRefusalSentence, type CaptureRefusal } from "../capture-refusal";
+import { ConnectKeyLink } from "./ConnectKey";
 import { InlineNotice } from "./ReadingStates";
 
 // The notice a capture write leaves when the backend refused it for a reason
@@ -11,7 +12,9 @@ import { InlineNotice } from "./ReadingStates";
 // "Try again" is live from the moment the notice appears rather than counting
 // down to the reset: the limit is the backend's to enforce, and a reader who
 // asks again a moment early gets the same sentence back, which is a smaller
-// cost than a control they cannot use.
+// cost than a control they cannot use. A missing key is the exception: asking
+// again changes nothing until the reader connects one, so the way on is the
+// provider page instead.
 //
 // Not a live region of its own (`live={false}`): every surface has a standing
 // polite region that was on the page before there was anything to say, and it
@@ -31,6 +34,13 @@ export function CaptureRefusalNotice({
   /** Anything the surface adds, such as the reading a 503 names. */
   children?: ReactNode;
 }) {
+  if (refusal.kind === "key-required") {
+    return (
+      <InlineNotice message={captureRefusalSentence(refusal, unavailable)} live={false}>
+        <ConnectKeyLink primary />
+      </InlineNotice>
+    );
+  }
   return (
     <InlineNotice
       message={captureRefusalSentence(refusal, unavailable)}

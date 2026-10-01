@@ -1,7 +1,12 @@
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
-import { deleteProviderCredentials, readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
+import {
+  deleteProviderCredentials,
+  markProviderCredentialInvalid,
+  readProviderCredential,
+  upsertProviderCredential,
+} from "../../src/control-plane/provider-credentials";
 import { updateProviderPreferences } from "../../src/control-plane/provider-settings";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import { RateLimitedError } from "../../src/modules/http-retry";
@@ -13,6 +18,8 @@ import { testControlPlane } from "../helpers/control-plane-db";
 import { testReadingsFor } from "../helpers/test-readings";
 import { insertQuotaTenant, PUBLIC_LOOKUP, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { parseTenantId, type TenantContext } from "../../src/control-plane/ids";
+import { createApp } from "../../src/router";
+import { installQueueStub } from "./readings-harness";
 
 const SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const DEPLOYMENT = "sk-deployment-do-not-send";
@@ -410,5 +417,44 @@ describe("tenant provider key dispatch", () => {
     expect((await testReadingsFor(tenant).manifest(job.id))?.error?.code).toBe("provider_key_invalid");
     const credential = await readProviderCredential(testControlPlane(env), tenantId);
     expect(credential).toMatchObject({ status: "active", credentialVersion: 2, lastFour: "6666" });
+  });
+});
+
+// Intake refuses up front, before claiming the URL, when the switch is on and
+// the tenant has no active key; dispatch's own failure (above) still covers a
+// key removed after intake.
+describe("intake with tenant provider keys", () => {
+  it.each([
+    { name: "switch off, no key", switch: undefined, key: "none", status: 202 },
+    { name: "switch on, no key", switch: "1", key: "none", status: 409 },
+    { name: "switch on, invalid key", switch: "1", key: "invalid", status: 409 },
+    { name: "switch on, active key", switch: "1", key: "active", status: 202 },
+  ] as const)("answers a save with $status ($name)", async (row) => {
+    const queued = installQueueStub();
+    const { tenantId, token } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
+    if (row.key !== "none") await storeKey(tenantId, "sk-tenant-intake-7777");
+    if (row.key === "invalid") {
+      await markProviderCredentialInvalid(testControlPlane(env), { tenantId, credentialVersion: 1, nowMs: Date.parse(createdAt) });
+    }
+    const url = "https://intake-gate.example/article";
+    const res = await createApp({ services: services(vi.fn<typeof fetch>()) }).request(
+      "/api/readings",
+      {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ url, email: false }),
+      },
+      { ...runtime(), TENANT_PROVIDER_KEYS: row.switch } as Env,
+    );
+
+    expect(res.status).toBe(row.status);
+    const tenant: TenantContext = { tenantId: parseTenantId(tenantId)! };
+    if (row.status === 409) {
+      expect(await res.json()).toEqual({ error: "connect a key, then retry", code: "provider_key_required" });
+      expect(queued).toHaveLength(0);
+      await expect(testReadingsFor(tenant).urlOwnerId(url)).resolves.toBeNull();
+    } else {
+      expect(queued).toHaveLength(1);
+    }
   });
 });

@@ -8,8 +8,8 @@ import { dateTimeOn } from "./reading-presentation";
 // quota", "Usage guard unavailable"). A 503's sentence names what could not be
 // done, so each surface words that one itself. CaptureNotice.tsx renders them.
 //
-// Each is a value rather than a throw: a refusal the reader can wait out
-// leaves the page as it was, with a way to ask again.
+// Each is a value rather than a throw: a refusal the reader can wait out, or
+// fix on the provider page, leaves the page as it was, with a way on.
 
 export type CaptureRefusal =
   /** 429: a limit the tenant reached. `limit` is the window the backend named. */
@@ -17,7 +17,13 @@ export type CaptureRefusal =
   /** 429 from the usage guard itself: the limits could not be checked. */
   | { kind: "guard-unavailable" }
   /** 503: the write could not be queued; `id` is the reading it got as far as. */
-  | { kind: "unavailable"; id?: string };
+  | { kind: "unavailable"; id?: string }
+  /**
+   * 409 `provider_key_required`: readings run on the reader's own key and
+   * they have none active (reading-lite-gh341.11). Nothing was written, and
+   * asking again gets the same answer until they connect one.
+   */
+  | { kind: "key-required" };
 
 /**
  * The 429 quota body (src/router.ts `quotaHttp`). `limit` is the window the
@@ -60,8 +66,17 @@ const GUARD_UNAVAILABLE = "usage guard unavailable";
  */
 export const ACTIVE_ATTEMPT = "reading already has an active attempt";
 
-/** The refusal a 429 or 503 is, or undefined for any answer that is not one. */
+/** The `code` src/router.ts's `toHttp` gives an intake `provider_key_required`. */
+const KEY_REQUIRED_CODE = "provider_key_required";
+
+const CodedSchema = z.looseObject({ code: z.string() });
+
+/** The refusal a 429, a 503, or a key-required 409 is, or undefined for any answer that is not one. */
 export function captureRefusalOf(status: number, body: unknown): CaptureRefusal | undefined {
+  if (status === 409) {
+    const coded = CodedSchema.safeParse(body);
+    return coded.success && coded.data.code === KEY_REQUIRED_CODE ? { kind: "key-required" } : undefined;
+  }
   if (status === 429) {
     if (messageOf(body) === GUARD_UNAVAILABLE) return { kind: "guard-unavailable" };
     const parsed = LimitedSchema.safeParse(body);
@@ -104,5 +119,10 @@ export function captureRefusalSentence(refusal: CaptureRefusal, unavailable: str
     }
     case "unavailable":
       return unavailable;
+    case "key-required":
+      return KEY_REQUIRED_SENTENCE;
   }
 }
+
+/** What a key-required refusal says, and what /save says before the reader has tried. */
+export const KEY_REQUIRED_SENTENCE = "Connect your OpenAI key first. Reading Lite summarizes each reading with your own key.";

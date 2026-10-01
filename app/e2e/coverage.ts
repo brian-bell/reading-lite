@@ -7,8 +7,9 @@
 // missing reading, a reading failed on its key, sign-in, save, one trail hop,
 // Source, Details, the inbox and an inbox item, account sessions, a ready
 // archive export, account deletion's confirmation and closing page, a missing
-// and a connected provider key, public legal pages, the sample library and a
-// sample): CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from the
+// and a connected provider key, a new reader's library before they connect a
+// key, public legal pages, the sample library and a sample): CI runs those
+// alone (e2e/scope.ts) and the rest locally. `fixture` names a state from the
 // fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from
 // e2e/fixtures/fixture-pack.json, so a new fixture state is one edit in
@@ -21,7 +22,7 @@ import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { externalBaseUrl } from "./harness";
 import { MARKDOWN_IMPORT_BUDGET_BYTES } from "../src/markdown-import-limit";
 import { EVIDENCE_SCOPE } from "./scope";
-import { hostSession, LIBRARY_STATE_SESSIONS, SESSION_COOKIE_VALUE } from "./sessions";
+import { hostSession, LIBRARY_STATE_SESSIONS, NEW_READER_SESSION, SESSION_COOKIE_VALUE } from "./sessions";
 import {
   serveDiagnosticsInBrowser,
   serveLibraryInBrowser,
@@ -156,7 +157,19 @@ async function openImportCopy(page: Page) {
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
   // Signed out, the library renders the sign-in form in place (#369), so its
   // heading is the form's.
-  { name: "library-signed-out", anyHost: true, essential: true, path: "/", state: "signed-out", heading: "Sign in" },
+  {
+    name: "library-signed-out",
+    anyHost: true,
+    essential: true,
+    path: "/",
+    state: "signed-out",
+    heading: "Sign in",
+    // The front door (reading-lite-gh341.11): what the service is, and the samples.
+    prepare: async (page) => {
+      const about = page.getByRole("complementary", { name: "About Reading Lite" });
+      await expect(about.getByRole("link", { name: "Browse samples" })).toBeVisible();
+    },
+  },
   // Signed in, the first page of the pack's list index, rendered on the server
   // (#413). The pack's pending, failed, reprocess-failed, and long-title rows
   // are all on it (#415), so this one page is the evidence for the badges, the
@@ -280,6 +293,20 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     prepare: async (page) => {
       await expect(page.getByText("No readings yet.")).toBeVisible();
       await expect(page.getByRole("link", { name: "Save a reading" })).toBeVisible();
+    },
+  },
+  // A new reader who has not connected the key saving needs (reading-lite-gh341.11).
+  {
+    name: "library-no-key",
+    essential: true,
+    path: "/",
+    state: "signed-in",
+    session: NEW_READER_SESSION,
+    heading: "Library",
+    prepare: async (page) => {
+      await expect(page.getByText("No readings yet. Connect your OpenAI key, then save your first reading.")).toBeVisible();
+      await expect(page.getByRole("link", { name: "Connect a key" })).toBeVisible();
+      await expect(page.getByRole("link", { name: "Browse samples" })).toBeVisible();
     },
   },
   {
@@ -475,6 +502,36 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     // The attempt exists even though nothing was enqueued, so it is worth opening.
     prepare: saveAndExpect("Saving is unavailable right now.", async (page) => {
       await expect(page.getByRole("link", { name: "Open the reading" })).toBeVisible();
+    }),
+  },
+  // Onboarding (reading-lite-gh341.11): a reader with no key is asked for one
+  // before saving, and a save tried anyway is refused with the same sentence.
+  {
+    name: "save-no-key",
+    path: "/save",
+    state: "signed-in",
+    session: NEW_READER_SESSION,
+    heading: "Save reading",
+    prepare: async (page) => {
+      const prompt = page.getByRole("complementary", { name: "Connect a key" });
+      await expect(prompt.getByRole("link", { name: "Connect a key" })).toBeVisible();
+    },
+  },
+  {
+    name: "save-key-required",
+    path: "/save",
+    state: "signed-in",
+    session: NEW_READER_SESSION,
+    heading: "Save reading",
+    stub: async (page) => {
+      await serveSaveInBrowser(page, {
+        status: 409,
+        json: { error: "connect a key, then retry", code: "provider_key_required" },
+      });
+    },
+    prepare: saveAndExpect("Connect your OpenAI key first.", async (page) => {
+      await expect(page.getByRole("link", { name: "Connect a key" })).toHaveCount(1);
+      await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
     }),
   },
   // Importing Markdown (#408): the second tab of the save page. The tab is
@@ -1136,6 +1193,29 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       const key = page.getByRole("region", { name: "OpenAI" });
       await expect(key.getByText("Key ending in", { exact: false })).toContainText("c0de");
       await expect(key.getByRole("button", { name: "Remove key…" })).toBeVisible();
+    },
+  },
+  // Onboarding (reading-lite-gh341.11): the key a new reader connects is
+  // what saving waited for, so the next step is their first save.
+  {
+    name: "provider-first-key",
+    path: "/account/provider",
+    state: "signed-in",
+    session: NEW_READER_SESSION,
+    heading: "Provider",
+    stub: async (page) => {
+      await serveProviderInBrowser(page);
+    },
+    prepare: async (page) => {
+      await page.waitForLoadState("networkidle");
+      const key = page.getByRole("region", { name: "OpenAI" });
+      await key.getByLabel("API key").fill(E2E_PROVIDER_API_KEY);
+      await key.getByRole("button", { name: "Connect key" }).click();
+      const next = page.getByRole("complementary", { name: "Next step" });
+      await expect(next.getByRole("link", { name: "Save a reading" })).toBeVisible();
+      // The callout fades in: axe and the screenshot read it once it has.
+      await next.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
+      await page.locator("#main h1").focus();
     },
   },
   {

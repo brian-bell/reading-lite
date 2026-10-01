@@ -231,6 +231,27 @@ describe("the provider page", () => {
     await waitFor(() => expect(requestsOf(fetchMock, "GET", "/api/auth/provider/usage")).toHaveLength(2));
   });
 
+  // Onboarding (reading-lite-gh341.11): the key was what saving waited for.
+  it("offers a first save once a reader who needed a key connects one", async () => {
+    mockApi();
+    const { queryClient } = await openProvider({ ...reader, needs_provider_key: true });
+    expect(screen.queryByRole("link", { name: "Save a reading" })).toBeNull();
+    await connectWith(KEY);
+
+    const next = await screen.findByRole("complementary", { name: "Next step" });
+    expect(within(next).getByRole("link", { name: "Save a reading" })).toHaveAttribute("href", "/save");
+    expect(queryClient.getQueryData<Identity>(whoamiQueryKey)?.needs_provider_key).toBe(false);
+  });
+
+  it("offers no first save to a reader who could already save", async () => {
+    mockApi();
+    await openProvider();
+    await connectWith(KEY);
+
+    expect(await within(keySection()).findByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Save a reading" })).toBeNull();
+  });
+
   it.each([
     ["an empty field", "", "Enter your OpenAI API key."],
     ["a key with a space", "sk-proj abc", "Paste the whole key, with no spaces."],
