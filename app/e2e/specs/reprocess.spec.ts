@@ -36,6 +36,8 @@ async function openWithReprocess(page: Page, baseURL: string, reading: { id: str
   );
   await page.goto(`/readings/${reading.id}`);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  // A key pressed before hydration reaches no handler, so no dialog opens.
+  await page.waitForLoadState("networkidle");
   return reprocesses;
 }
 

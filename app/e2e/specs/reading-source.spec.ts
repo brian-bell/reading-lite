@@ -86,6 +86,8 @@ test("the server render carries no source and the page carries the image policy"
 test("tabs answer to the arrow keys, Home, and End", async ({ page, baseURL }) => {
   await openCase(page, baseURL!, ATTENTION);
   await serveSourceInBrowser(page);
+  // Arrow keys before hydration reach no handler.
+  await page.waitForLoadState("networkidle");
   await page.getByRole("tab", { name: "Summary" }).focus();
 
   await page.keyboard.press("ArrowRight");
