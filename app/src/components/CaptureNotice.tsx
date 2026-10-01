@@ -37,7 +37,7 @@ export function CaptureRefusalNotice({
   if (refusal.kind === "key-required") {
     return (
       <InlineNotice message={captureRefusalSentence(refusal, unavailable)} live={false}>
-        <ConnectKeyLink />
+        <ConnectKeyLink primary />
       </InlineNotice>
     );
   }

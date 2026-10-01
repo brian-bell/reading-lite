@@ -2720,6 +2720,9 @@ textarea {
    it reads as a note about the page rather than part of a reading. */
 /* A sample's banner and the connect-a-key prompt (reading-lite-gh341.11):
    a sentence with the one way on beside it. */
+/* The button sits 10 px from the edges it shares with the callout, so the
+   rounded corners are concentric with its 6 px: 6 + 10. The text takes 4 px
+   more, keeping its own 14 px inset. */
 .sample-banner,
 .callout {
   display: flex;
@@ -2728,9 +2731,9 @@ textarea {
   gap: var(--space-3);
   max-width: var(--measure);
   margin: 0 0 var(--space-5);
-  padding: 14px 18px;
+  padding: 10px 10px 10px 18px;
   border-left: 2px solid var(--accent);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 16px 16px 0;
   background: var(--soft);
 }
 
@@ -2738,8 +2741,30 @@ textarea {
 .callout p {
   flex: 1 1 16rem;
   margin: 0;
+  padding-block: 4px;
   font-size: 14px;
   line-height: 1.6;
+}
+
+/* A success that follows the reader's own action (connecting a first key):
+   the sentence, then its button, 100 ms apart. Never on page load, since
+   nothing renders it there, and only under no-preference. */
+@media (prefers-reduced-motion: no-preference) {
+  .callout-enter > * {
+    animation: callout-enter 400ms ease-out both;
+  }
+
+  .callout-enter > :nth-child(2) {
+    animation-delay: 100ms;
+  }
+}
+
+@keyframes callout-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+    filter: blur(4px);
+  }
 }
 
 /* A sample's tags are labels, not links: no hover shift. */

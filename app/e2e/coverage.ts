@@ -1181,6 +1181,8 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await key.getByRole("button", { name: "Connect key" }).click();
       const next = page.getByRole("complementary", { name: "Next step" });
       await expect(next.getByRole("link", { name: "Save a reading" })).toBeVisible();
+      // The callout fades in: axe and the screenshot read it once it has.
+      await next.evaluate((el) => Promise.all(el.getAnimations({ subtree: true }).map((a) => a.finished)));
       await page.locator("#main h1").focus();
     },
   },

@@ -368,7 +368,7 @@ function KeySection({
       </dl>
       <KeyStateText state={state} />
       {firstKey && state.kind === "connected" ? (
-        <aside className="callout" aria-label="Next step">
+        <aside className="callout callout-enter" aria-label="Next step">
           <p>Your key is connected. You can save readings now.</p>
           <Link to="/save" className="button button-primary">
             Save a reading
