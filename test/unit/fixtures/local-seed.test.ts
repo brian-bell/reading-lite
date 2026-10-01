@@ -62,7 +62,9 @@ describe("local seed fixture pack", () => {
         "fail-source-incomplete",
         "fail-provider-limit",
         "fail-provider-error",
-        "fail-key-problem",
+        "fail-key-invalid",
+        "fail-key-missing",
+        "fail-billing",
         "fail-hosting-limit",
         "fail-stopped",
         "fail-unknown",
@@ -71,13 +73,15 @@ describe("local seed fixture pack", () => {
     // One failed fixture per acceptance-matrix failure category, each with a
     // distinct code+stage signature the frontend mapping can pin.
     const failed = plan.fixtures.filter((f) => f.manifest.status === "failed");
-    expect(failed).toHaveLength(8);
+    expect(failed).toHaveLength(10);
     expect(failed.map((f) => f.name)).toEqual([
       "fail-source-unreachable",
       "fail-source-incomplete",
       "fail-provider-limit",
       "fail-provider-error",
-      "fail-key-problem",
+      "fail-key-invalid",
+      "fail-key-missing",
+      "fail-billing",
       "fail-hosting-limit",
       "fail-stopped",
       "fail-unknown",
@@ -89,7 +93,9 @@ describe("local seed fixture pack", () => {
       "SourceRejectedError@summarize",
       "RateLimitedError@summarize",
       "OpenAIError@embed_source",
-      "OpenAIError@summarize",
+      "provider_key_invalid@summarize",
+      "provider_key_required@embed_source",
+      "provider_insufficient_quota@summarize",
       "SpendAdmissionError@summarize",
       "QueueRetriesExhaustedError@summarize",
       "TypeError@query_similar",

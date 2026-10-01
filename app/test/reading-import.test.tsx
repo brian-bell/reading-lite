@@ -105,21 +105,24 @@ afterEach(() => {
 });
 
 describe("where Import a copy is offered", () => {
+  /** Key and billing failures: a copy would be summarized with the same key. */
+  const FIXED_IN_SETTINGS = new Set(["fail-key-invalid", "fail-key-missing", "fail-billing"]);
   // A failed reading has no Source view: `?view=source` is its Summary, with the card.
-  const offeredIn = (reading: Reading, view: "summary" | "source"): boolean =>
-    reading.status === "failed" || (reading.id === UNAVAILABLE_SOURCE.id && view === "source");
+  const offeredIn = (name: string, reading: Reading, view: "summary" | "source"): boolean =>
+    (reading.status === "failed" && !FIXED_IN_SETTINGS.has(name)) ||
+    (reading.id === UNAVAILABLE_SOURCE.id && view === "source");
 
-  // Every fixture in both views: a failed reading beside Retry, and the
-  // unavailable source's Source view — and nowhere else, not on a ready
-  // reading whose source was captured.
+  // Every fixture in both views: a failed reading beside Retry, unless its fix
+  // is in provider settings, and the unavailable source's Source view — and
+  // nowhere else, not on a ready reading whose source was captured.
   it.each(
     pack.fixtures.flatMap((fixture) =>
       (["summary", "source"] as const).map((view) => ({ name: fixture.name, view, reading: readings[fixture.id]! })),
     ),
-  )("$name, $view view", async ({ reading, view }) => {
+  )("$name, $view view", async ({ name, reading, view }) => {
     await openReading(reading, view === "source" ? "source" : undefined);
     await settle();
-    expect(screen.queryAllByRole("button", { name: "Import a copy" })).toHaveLength(offeredIn(reading, view) ? 1 : 0);
+    expect(screen.queryAllByRole("button", { name: "Import a copy" })).toHaveLength(offeredIn(name, reading, view) ? 1 : 0);
   });
 
   it("sits beside Retry on a failed reading", async () => {

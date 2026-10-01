@@ -1,6 +1,7 @@
+import { Link } from "@tanstack/react-router";
 import type { Ref } from "react";
-import { categorize } from "../reading-failure";
-import type { ProcessingStage, Reading, ReadingError } from "../reading";
+import { categorize, type Failure } from "../reading-failure";
+import type { ProcessingStage, Reading } from "../reading";
 import { readingState } from "../reading-state";
 import type { WatchStatus } from "./use-status-watch";
 
@@ -20,6 +21,11 @@ import type { WatchStatus } from "./use-status-watch";
 // whose reprocess failed keeps its prior material below a card that says so;
 // its way on is the confirmed Reprocess in the heading row, never an
 // unconfirmed Retry.
+//
+// A key or billing failure is fixed in provider settings, not by retrying, so
+// the card leads with a link there and Retry follows it for once the fix is
+// made. Import a copy is not offered for one: a copy is summarized with the
+// same key.
 
 type StageLabel = "Fetching" | "Analyzing" | "Publishing";
 
@@ -88,6 +94,7 @@ export function ReadingStatusCard({
   const state = readingState(reading);
   if (state.kind === "ready") return null;
   const failed = state.kind !== "processing";
+  const failure = state.kind !== "processing" && state.error ? categorize(state.error) : undefined;
 
   // One section and, when there is one, one action button, in the same place
   // whatever the state: a Retry that turns the card into "being processed"
@@ -108,26 +115,36 @@ export function ReadingStatusCard({
         {state.kind === "processing" ? (
           <PendingText reading={reading} text={checkText(watch, checkFailed)} />
         ) : state.kind === "failed" ? (
-          <FailureText error={state.error} />
+          <FailureText failure={failure} />
         ) : (
-          <FailureText lead="Reprocess failed. The previous version is still here." error={state.error} />
+          <FailureText lead="Reprocess failed. The previous version is still here." failure={failure} />
         )}
       </div>
-      {action ? (
+      {action || failure?.settings ? (
         <div className="status-card-actions">
+          {/* Before the button, and kept in place by the empty slot when
+              absent, so the button stays the same element from Retry to
+              Check status. */}
+          {failure?.settings ? (
+            <Link to="/account/provider" className="button button-primary">
+              {failure.settings}
+            </Link>
+          ) : null}
           {/* aria-disabled, not disabled, while a request is in flight: a
               disabled button drops the reader's focus (SavePage.tsx). The
               second press is refused in use-reprocess.ts either way. */}
-          <button
-            type="button"
-            className="button"
-            ref={actionRef}
-            aria-disabled={action.busy || undefined}
-            onClick={action.onClick}
-          >
-            {action.label}
-          </button>
-          {state.kind === "failed" ? (
+          {action ? (
+            <button
+              type="button"
+              className="button"
+              ref={actionRef}
+              aria-disabled={action.busy || undefined}
+              onClick={action.onClick}
+            >
+              {action.label}
+            </button>
+          ) : null}
+          {state.kind === "failed" && !failure?.settings ? (
             <button type="button" className="button" aria-disabled={sending || undefined} onClick={onImportCopy}>
               Import a copy
             </button>
@@ -154,17 +171,17 @@ function PendingText({ reading, text }: { reading: Reading; text: string | undef
 }
 
 /**
- * The failure category, message, and stage (acceptance matrix, Failure
- * categories). `lead`, when given, is the headline and the category follows it.
+ * The failure category, message, next step, and stage (acceptance matrix,
+ * Failure categories). `lead`, when given, is the headline and the category
+ * follows it.
  */
-function FailureText({ lead, error }: { lead?: string; error: ReadingError | undefined }) {
-  const failure = error ? categorize(error) : undefined;
+function FailureText({ lead, failure }: { lead?: string; failure: Failure | undefined }) {
   return (
     <>
       <p className="status-card-headline">{lead ?? failure?.headline ?? "Processing failed."}</p>
       {lead && failure ? <p className="status-card-detail">{failure.headline}</p> : null}
-      {/* For an unknown failure the backend's message is the headline already. */}
-      {failure && failure.headline !== failure.message ? <p className="status-card-detail">{failure.message}</p> : null}
+      {failure?.detail ? <p className="status-card-detail">{failure.detail}</p> : null}
+      {failure?.next ? <p className="status-card-detail">{failure.next}</p> : null}
       {failure?.stage ? <p className="form-hint">Stopped at: {stageLabel(failure.stage)}.</p> : null}
     </>
   );

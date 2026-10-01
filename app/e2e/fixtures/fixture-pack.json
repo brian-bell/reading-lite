@@ -33,10 +33,22 @@
       "state": "Failed, provider error: OpenAIError 500 at embed_source"
     },
     {
-      "name": "fail-key-problem",
+      "name": "fail-key-invalid",
       "id": "rd_FXERR00005",
       "status": "failed",
-      "state": "Failed, key problem: OpenAIError 401 at summarize"
+      "state": "Failed, key invalid: provider_key_invalid (the provider's 401 to the reader's key) at summarize"
+    },
+    {
+      "name": "fail-key-missing",
+      "id": "rd_FXERR00009",
+      "status": "failed",
+      "state": "Failed, key missing: provider_key_required (no active key at dispatch) at embed_source"
+    },
+    {
+      "name": "fail-billing",
+      "id": "rd_FXERR00010",
+      "status": "failed",
+      "state": "Failed, billing: provider_insufficient_quota (the provider's insufficient_quota 429) at summarize"
     },
     {
       "name": "attention",
@@ -296,8 +308,8 @@
       "source_type": "url",
       "status": "failed",
       "error": {
-        "code": "OpenAIError",
-        "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+        "code": "provider_key_invalid",
+        "message": "the provider rejected the key; replace it, then retry",
         "stage": "summarize",
         "failed_at": "2026-09-08T11:55:37.000Z",
         "retryable": false,
@@ -311,8 +323,8 @@
         "started_at": "2026-09-08T11:55:03.000Z",
         "finished_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "OpenAIError",
-          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "code": "provider_key_invalid",
+          "message": "the provider rejected the key; replace it, then retry",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -325,6 +337,80 @@
       "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "created_at": "2026-09-08T11:55:00.000Z",
       "updated_at": "2026-09-08T11:55:37.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00009": {
+      "id": "rd_FXERR00009",
+      "url": "https://fieldnotes.example/before-the-key-essay",
+      "url_hash": "2f0c77cff43500d36a632939e9667173f5d6f8c1cf5f83ff221b0c312e1e8d44",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "provider_key_required",
+        "message": "connect a key, then retry",
+        "stage": "embed_source",
+        "failed_at": "2026-09-08T10:20:21.000Z",
+        "retryable": false
+      },
+      "last_attempt": {
+        "id": "at_FXERR00001",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "embed_source",
+        "started_at": "2026-09-08T10:20:03.000Z",
+        "finished_at": "2026-09-08T10:20:21.000Z",
+        "error": {
+          "code": "provider_key_required",
+          "message": "connect a key, then retry",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T10:20:21.000Z",
+          "retryable": false
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-08T10:20:00.000Z",
+      "updated_at": "2026-09-08T10:20:21.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXERR00010": {
+      "id": "rd_FXERR00010",
+      "url": "https://margin.example/out-of-credit-essay",
+      "url_hash": "f20b85b7b56d9cf170de97b6da9bf820ba07c2aaf2368dafd10ab5faa3c8569f",
+      "source_type": "url",
+      "status": "failed",
+      "error": {
+        "code": "provider_insufficient_quota",
+        "message": "the provider account is out of quota; check its billing, then retry",
+        "stage": "summarize",
+        "failed_at": "2026-09-07T18:40:37.000Z",
+        "retryable": false,
+        "http_status": 429
+      },
+      "last_attempt": {
+        "id": "at_FXERR00011",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "summarize",
+        "started_at": "2026-09-07T18:40:03.000Z",
+        "finished_at": "2026-09-07T18:40:37.000Z",
+        "error": {
+          "code": "provider_insufficient_quota",
+          "message": "the provider account is out of quota; check its billing, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-07T18:40:37.000Z",
+          "retryable": false,
+          "http_status": 429
+        }
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "failed",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-07T18:40:00.000Z",
+      "updated_at": "2026-09-07T18:40:37.000Z",
       "relationship_targets": {}
     },
     "rd_FXATTENT01": {
@@ -1963,8 +2049,8 @@
         "source_type": "url",
         "status": "failed",
         "error": {
-          "code": "OpenAIError",
-          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "code": "provider_key_invalid",
+          "message": "the provider rejected the key; replace it, then retry",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -1978,8 +2064,8 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "OpenAIError",
-            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "code": "provider_key_invalid",
+            "message": "the provider rejected the key; replace it, then retry",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2001,8 +2087,8 @@
         "created_at": "2026-09-08T11:55:00.000Z",
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "OpenAIError",
-          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "code": "provider_key_invalid",
+          "message": "the provider rejected the key; replace it, then retry",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -2016,8 +2102,8 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "OpenAIError",
-            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "code": "provider_key_invalid",
+            "message": "the provider rejected the key; replace it, then retry",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2053,8 +2139,8 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "OpenAIError",
-            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "code": "provider_key_invalid",
+            "message": "the provider rejected the key; replace it, then retry",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
@@ -2120,12 +2206,364 @@
               "at": "2026-09-08T11:55:37.000Z",
               "duration_ms": 20000,
               "error": {
-                "code": "OpenAIError",
-                "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+                "code": "provider_key_invalid",
+                "message": "the provider rejected the key; replace it, then retry",
                 "stage": "summarize",
                 "failed_at": "2026-09-08T11:55:37.000Z",
                 "retryable": false,
                 "http_status": 401
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXERR00009": {
+      "id": "rd_FXERR00009",
+      "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009",
+      "manifest": {
+        "id": "rd_FXERR00009",
+        "url": "https://fieldnotes.example/before-the-key-essay",
+        "url_hash": "2f0c77cff43500d36a632939e9667173f5d6f8c1cf5f83ff221b0c312e1e8d44",
+        "source_type": "url",
+        "status": "failed",
+        "error": {
+          "code": "provider_key_required",
+          "message": "connect a key, then retry",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T10:20:21.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T10:20:03.000Z",
+          "finished_at": "2026-09-08T10:20:21.000Z",
+          "error": {
+            "code": "provider_key_required",
+            "message": "connect a key, then retry",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T10:20:21.000Z",
+            "retryable": false
+          }
+        },
+        "content_type": "application/octet-stream",
+        "content_status": "failed",
+        "content_bytes": 0,
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "created_at": "2026-09-08T10:20:00.000Z",
+        "updated_at": "2026-09-08T10:20:21.000Z"
+      },
+      "index_item": {
+        "id": "rd_FXERR00009",
+        "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009",
+        "url": "https://fieldnotes.example/before-the-key-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T10:20:00.000Z",
+        "updated_at": "2026-09-08T10:20:21.000Z",
+        "error": {
+          "code": "provider_key_required",
+          "message": "connect a key, then retry",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T10:20:21.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T10:20:03.000Z",
+          "finished_at": "2026-09-08T10:20:21.000Z",
+          "error": {
+            "code": "provider_key_required",
+            "message": "connect a key, then retry",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T10:20:21.000Z",
+            "retryable": false
+          }
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXERR00009",
+            "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXERR00009",
+            "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [],
+      "attempts": [
+        {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T10:20:03.000Z",
+          "finished_at": "2026-09-08T10:20:21.000Z",
+          "error": {
+            "code": "provider_key_required",
+            "message": "connect a key, then retry",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T10:20:21.000Z",
+            "retryable": false
+          },
+          "reading_id": "rd_FXERR00009",
+          "url": "https://fieldnotes.example/before-the-key-essay",
+          "url_hash": "2f0c77cff43500d36a632939e9667173f5d6f8c1cf5f83ff221b0c312e1e8d44",
+          "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-08T10:20:03.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-08T10:20:05.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-08T10:20:05.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-09-08T10:20:13.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-09-08T10:20:13.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-09-08T10:20:15.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-09-08T10:20:15.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-09-08T10:20:17.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-09-08T10:20:17.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "failed",
+              "at": "2026-09-08T10:20:21.000Z",
+              "duration_ms": 4000,
+              "error": {
+                "code": "provider_key_required",
+                "message": "connect a key, then retry",
+                "stage": "embed_source",
+                "failed_at": "2026-09-08T10:20:21.000Z",
+                "retryable": false
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXERR00010": {
+      "id": "rd_FXERR00010",
+      "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010",
+      "manifest": {
+        "id": "rd_FXERR00010",
+        "url": "https://margin.example/out-of-credit-essay",
+        "url_hash": "f20b85b7b56d9cf170de97b6da9bf820ba07c2aaf2368dafd10ab5faa3c8569f",
+        "source_type": "url",
+        "status": "failed",
+        "error": {
+          "code": "provider_insufficient_quota",
+          "message": "the provider account is out of quota; check its billing, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-07T18:40:37.000Z",
+          "retryable": false,
+          "http_status": 429
+        },
+        "last_attempt": {
+          "id": "at_FXERR00011",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-07T18:40:03.000Z",
+          "finished_at": "2026-09-07T18:40:37.000Z",
+          "error": {
+            "code": "provider_insufficient_quota",
+            "message": "the provider account is out of quota; check its billing, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-07T18:40:37.000Z",
+            "retryable": false,
+            "http_status": 429
+          }
+        },
+        "content_type": "application/octet-stream",
+        "content_status": "failed",
+        "content_bytes": 0,
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "created_at": "2026-09-07T18:40:00.000Z",
+        "updated_at": "2026-09-07T18:40:37.000Z"
+      },
+      "index_item": {
+        "id": "rd_FXERR00010",
+        "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010",
+        "url": "https://margin.example/out-of-credit-essay",
+        "status": "failed",
+        "created_at": "2026-09-07T18:40:00.000Z",
+        "updated_at": "2026-09-07T18:40:37.000Z",
+        "error": {
+          "code": "provider_insufficient_quota",
+          "message": "the provider account is out of quota; check its billing, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-07T18:40:37.000Z",
+          "retryable": false,
+          "http_status": 429
+        },
+        "last_attempt": {
+          "id": "at_FXERR00011",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-07T18:40:03.000Z",
+          "finished_at": "2026-09-07T18:40:37.000Z",
+          "error": {
+            "code": "provider_insufficient_quota",
+            "message": "the provider account is out of quota; check its billing, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-07T18:40:37.000Z",
+            "retryable": false,
+            "http_status": 429
+          }
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXERR00010",
+            "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXERR00010",
+            "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [],
+      "attempts": [
+        {
+          "id": "at_FXERR00011",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-07T18:40:03.000Z",
+          "finished_at": "2026-09-07T18:40:37.000Z",
+          "error": {
+            "code": "provider_insufficient_quota",
+            "message": "the provider account is out of quota; check its billing, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-07T18:40:37.000Z",
+            "retryable": false,
+            "http_status": 429
+          },
+          "reading_id": "rd_FXERR00010",
+          "url": "https://margin.example/out-of-credit-essay",
+          "url_hash": "f20b85b7b56d9cf170de97b6da9bf820ba07c2aaf2368dafd10ab5faa3c8569f",
+          "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-07T18:40:03.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-07T18:40:05.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-07T18:40:05.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-09-07T18:40:13.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-09-07T18:40:13.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-09-07T18:40:15.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-09-07T18:40:15.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-09-07T18:40:17.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-09-07T18:40:17.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "failed",
+              "at": "2026-09-07T18:40:37.000Z",
+              "duration_ms": 20000,
+              "error": {
+                "code": "provider_insufficient_quota",
+                "message": "the provider account is out of quota; check its billing, then retry",
+                "stage": "summarize",
+                "failed_at": "2026-09-07T18:40:37.000Z",
+                "retryable": false,
+                "http_status": 429
               }
             }
           ]
@@ -5673,8 +6111,8 @@
         "created_at": "2026-09-08T11:55:00.000Z",
         "updated_at": "2026-09-08T11:55:37.000Z",
         "error": {
-          "code": "OpenAIError",
-          "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+          "code": "provider_key_invalid",
+          "message": "the provider rejected the key; replace it, then retry",
           "stage": "summarize",
           "failed_at": "2026-09-08T11:55:37.000Z",
           "retryable": false,
@@ -5688,12 +6126,74 @@
           "started_at": "2026-09-08T11:55:03.000Z",
           "finished_at": "2026-09-08T11:55:37.000Z",
           "error": {
-            "code": "OpenAIError",
-            "message": "Incorrect API key provided: [redacted key]. You can find your API key at https://platform.openai.com/account/api-keys.",
+            "code": "provider_key_invalid",
+            "message": "the provider rejected the key; replace it, then retry",
             "stage": "summarize",
             "failed_at": "2026-09-08T11:55:37.000Z",
             "retryable": false,
             "http_status": 401
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00009",
+        "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009",
+        "url": "https://fieldnotes.example/before-the-key-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T10:20:00.000Z",
+        "updated_at": "2026-09-08T10:20:21.000Z",
+        "error": {
+          "code": "provider_key_required",
+          "message": "connect a key, then retry",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T10:20:21.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T10:20:03.000Z",
+          "finished_at": "2026-09-08T10:20:21.000Z",
+          "error": {
+            "code": "provider_key_required",
+            "message": "connect a key, then retry",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T10:20:21.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00010",
+        "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010",
+        "url": "https://margin.example/out-of-credit-essay",
+        "status": "failed",
+        "created_at": "2026-09-07T18:40:00.000Z",
+        "updated_at": "2026-09-07T18:40:37.000Z",
+        "error": {
+          "code": "provider_insufficient_quota",
+          "message": "the provider account is out of quota; check its billing, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-07T18:40:37.000Z",
+          "retryable": false,
+          "http_status": 429
+        },
+        "last_attempt": {
+          "id": "at_FXERR00011",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-07T18:40:03.000Z",
+          "finished_at": "2026-09-07T18:40:37.000Z",
+          "error": {
+            "code": "provider_insufficient_quota",
+            "message": "the provider account is out of quota; check its billing, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-07T18:40:37.000Z",
+            "retryable": false,
+            "http_status": 429
           }
         }
       },

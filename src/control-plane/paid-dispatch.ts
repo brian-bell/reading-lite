@@ -30,12 +30,14 @@ export class SpendAdmissionError extends DeferPaidWorkError {
 export type ProviderAccountErrorCode =
   | "provider_key_invalid"
   | "provider_model_access"
-  | "provider_insufficient_quota";
+  | "provider_insufficient_quota"
+  | "hosted_provider_quota";
 
 const ACCOUNT_ERROR_MESSAGES: Record<ProviderAccountErrorCode, string> = {
   provider_key_invalid: "the provider rejected the key; replace it, then retry",
   provider_model_access: "the key cannot use the model; grant its project access, then retry",
   provider_insufficient_quota: "the provider account is out of quota; check its billing, then retry",
+  hosted_provider_quota: "the hosted provider account is out of quota; retry later",
 };
 
 export class ProviderAccountError extends Error {
@@ -238,9 +240,11 @@ async function throwIfAccountFailure(
     }
     throw new ProviderAccountError("provider_key_invalid", response.status);
   }
+  // Exhausted quota fails now on either key, but only the tenant's own is the
+  // reader's billing to fix; on deployment keys it is the operator's.
   if (response.status === 429 && await isInsufficientQuota(response)) {
     response.body?.cancel().catch(() => {});
-    throw new ProviderAccountError("provider_insufficient_quota", 429);
+    throw new ProviderAccountError(tenantKeySent ? "provider_insufficient_quota" : "hosted_provider_quota", 429);
   }
 }
 

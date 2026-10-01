@@ -105,6 +105,7 @@ const NOT_RETRIED_ERROR_NAMES = new Set([
   "provider_key_invalid",
   "provider_model_access",
   "provider_insufficient_quota",
+  "hosted_provider_quota",
 ]);
 
 function urlToString(input: URL | string): string {

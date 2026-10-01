@@ -4,11 +4,11 @@
 // playwright.config.ts — 390 px and 1440 px, light and dark — then runs axe,
 // the keyboard pass, and a screenshot against it. Mark it `essential` only if
 // it is a major state of a route (the library, a ready, pending, failed, and
-// missing reading, sign-in, save, one trail hop, Source, Details, the inbox
-// and an inbox item, account sessions, a ready archive export, account
-// deletion's confirmation and closing page, a missing and a connected provider
-// key, public legal pages, the sample library and a sample): CI runs those
-// alone (e2e/scope.ts) and the rest locally. `fixture` names a state from the
+// missing reading, a reading failed on its key, sign-in, save, one trail hop,
+// Source, Details, the inbox and an inbox item, account sessions, a ready
+// archive export, account deletion's confirmation and closing page, a missing
+// and a connected provider key, public legal pages, the sample library and a
+// sample): CI runs those alone (e2e/scope.ts) and the rest locally. `fixture` names a state from the
 // fixture pack (docs/design/connected/fixture-pack.md); e2e/backend-stub.js
 // serves it from
 // e2e/fixtures/fixture-pack.json, so a new fixture state is one edit in
@@ -171,7 +171,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(list.getByRole("link", { name: /^What we lose when every tool/ })).toBeVisible();
     },
   },
-  // Pages (#414): with the generated rows past the pack's 19 there are 43 rows,
+  // Pages (#414): with the generated rows past the pack's 21 there are 43 rows,
   // so page 2 is a middle page, page 3 the last (no Next), and page 6 is past
   // the end. Each is a deep link, rendered on the server.
   {
@@ -1268,6 +1268,39 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "https://registration-wall.example/members-only-report",
     fixture: "fail-source-unreachable",
+  },
+  // Key and billing failures lead to provider settings, then Retry, and
+  // hosting limits say to wait (gh341.9; acceptance matrix, Failure
+  // categories). The rejected key is the major state of the three, so it is in
+  // CI's scope.
+  {
+    name: "reading-failed-key-invalid",
+    essential: true,
+    path: "/readings/rd_FXERR00005",
+    state: "signed-in",
+    heading: "https://adjacent.example/expired-key-essay",
+    fixture: "fail-key-invalid",
+  },
+  {
+    name: "reading-failed-key-missing",
+    path: "/readings/rd_FXERR00009",
+    state: "signed-in",
+    heading: "https://fieldnotes.example/before-the-key-essay",
+    fixture: "fail-key-missing",
+  },
+  {
+    name: "reading-failed-billing",
+    path: "/readings/rd_FXERR00010",
+    state: "signed-in",
+    heading: "https://margin.example/out-of-credit-essay",
+    fixture: "fail-billing",
+  },
+  {
+    name: "reading-failed-hosting-limit",
+    path: "/readings/rd_FXERR00006",
+    state: "signed-in",
+    heading: "https://margin.example/spend-capped-essay",
+    fixture: "fail-hosting-limit",
   },
   // Retry and Reprocess (#410). The confirmation is a major state of a paid
   // action, so it is in CI's scope; its keyboard walk stays inside the modal.

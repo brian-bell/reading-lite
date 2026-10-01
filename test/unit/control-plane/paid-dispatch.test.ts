@@ -271,12 +271,14 @@ describe("paid dispatch", () => {
     expect(sent.at(-1)).toBe("Bearer sk-deployment-key");
   });
 
-  it("fails an insufficient_quota 429 now on deployment keys too, and leaves a deployment-key 401 to the adapter", async () => {
+  // The operator's account, not the reader's: its own code, so the reader is
+  // not told to fix billing they do not hold.
+  it("fails an insufficient_quota 429 now on deployment keys too, as the hosted quota, and leaves a deployment-key 401 to the adapter", async () => {
     const provider = vi.fn(async () => Response.json({ error: { type: "insufficient_quota", code: "insufficient_quota" } }, { status: 429 }));
     const quota = fixture({ fetch: provider as typeof fetch });
     const sleep = vi.fn(async () => {});
     await expect(fetchWithRetry(quota.wrapped, url, init, { maxAttempts: 3, baseDelayMs: 0, maxDelayMs: 0, sleep })).rejects.toMatchObject({
-      name: "provider_insufficient_quota", status: 429,
+      name: "hosted_provider_quota", status: 429,
     });
     expect(provider).toHaveBeenCalledOnce();
     expect(sleep).not.toHaveBeenCalled();
