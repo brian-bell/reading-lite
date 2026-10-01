@@ -154,6 +154,14 @@ const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> =
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
   },
   {
+    // Onboarding end to end (reading-lite-gh341.11): the signed-out front
+    // door, the samples, sign-in, connecting a key, and the first save. The
+    // matrix screenshots each state on the way in every project.
+    name: "onboarding",
+    testMatch: /onboarding\.spec\.ts/,
+    use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
+  },
+  {
     // Reduced motion and zoom for the shell: local verification only.
     name: "shell-extras",
     testMatch: /shell-extras\.spec\.ts/,

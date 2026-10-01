@@ -32,6 +32,12 @@ export const LIBRARY_STATE_SESSIONS = {
 } as const;
 
 /**
+ * A new reader (reading-lite-gh341.11): no provider key yet, which saving
+ * needs, and nothing in the library. Only e2e/backend-stub.js knows it.
+ */
+export const NEW_READER_SESSION = "reader-new";
+
+/**
  * `__Host-` cookies must be Secure, and a browser refuses a Secure cookie on
  * an http origin, so the local harness uses the plain name the stub also
  * accepts. Against an https host the real name is set, unchanged.
