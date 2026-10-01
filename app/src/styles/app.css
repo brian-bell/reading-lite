@@ -2718,7 +2718,10 @@ textarea {
 /* The public sample library (reading-lite-gh341.10). The call to action says
    what a sample is and offers sign-in, on the novelty panel's accent rule so
    it reads as a note about the page rather than part of a reading. */
-.sample-banner {
+/* A sample's banner and the connect-a-key prompt (reading-lite-gh341.11):
+   a sentence with the one way on beside it. */
+.sample-banner,
+.callout {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -2731,7 +2734,8 @@ textarea {
   background: var(--soft);
 }
 
-.sample-banner p {
+.sample-banner p,
+.callout p {
   flex: 1 1 16rem;
   margin: 0;
   font-size: 14px;

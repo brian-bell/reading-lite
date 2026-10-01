@@ -12,7 +12,7 @@ import {
   type RefObject,
 } from "react";
 import { NetworkError } from "../api/errors";
-import { whoamiQueryKey, type Identity } from "../identity";
+import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryResult, LibraryRow } from "../library";
 import { libraryBadge } from "../library-card";
@@ -33,6 +33,7 @@ import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
 import { librarySchedule } from "../status-refresh";
+import { ConnectKeyLink } from "./ConnectKey";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
@@ -79,7 +80,7 @@ export function LibraryHome({ search }: { search: LibrarySearch }) {
   // itself: without it the library's filters are lost on return, and the
   // request wipes a path stored earlier in this tab (#384 review).
   const href = useLocation({ select: (location) => location.href });
-  if (identity === null) return <SignInPage next={href} />;
+  if (identity === null) return <SignInPage next={href} landing />;
   // Identity could not be determined: the shell shows neither account state,
   // and there is no account to read a library for.
   if (identity === undefined) {
@@ -392,6 +393,23 @@ function ClearFilter({ search, filter }: { search: LibrarySearch; filter: "q" | 
  * first page and the same clear controls.
  */
 function EmptyLibrary({ empty, search }: { empty: LibraryEmpty; search: LibrarySearch }) {
+  const { data: identity } = useQuery({ ...whoamiQueryOptions(), enabled: false });
+  // A new reader with no key yet (reading-lite-gh341.11): a save would be
+  // refused, so the way on is connecting one, with the samples to look at
+  // meanwhile.
+  if (empty.kind === "no-readings" && needsProviderKey(identity)) {
+    return (
+      <div className="library-message">
+        <p className="auth-lede">{NO_READINGS_NO_KEY}</p>
+        <div className="form-actions">
+          <ConnectKeyLink primary />
+          <Link to="/samples" className="button">
+            Browse samples
+          </Link>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="library-message">
       <p className="auth-lede">{libraryEmptyCopy(empty)}</p>
@@ -412,6 +430,8 @@ function EmptyLibrary({ empty, search }: { empty: LibraryEmpty; search: LibraryS
     </div>
   );
 }
+
+const NO_READINGS_NO_KEY = "No readings yet. Connect your OpenAI key, then save your first reading.";
 
 // Another page's link is never the current page. By default the router counts
 // `/` as active on every page of the library, since no search is a subset of

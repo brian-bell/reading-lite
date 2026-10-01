@@ -28,6 +28,12 @@ describe("reprocessFromResponse", () => {
       outcome: { kind: "markdown-missing" },
     },
     {
+      name: "a 409 for a missing provider key as the key-required refusal",
+      status: 409,
+      body: { error: "connect a key, then retry", code: "provider_key_required" },
+      outcome: { kind: "key-required" },
+    },
+    {
       name: "a 400 in the backend's words",
       status: 400,
       body: { error: "url rejected: host is not allowed", code: "unsupported_url" },

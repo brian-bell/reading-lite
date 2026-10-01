@@ -1,10 +1,11 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useHydrated, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { NetworkError } from "../api/errors";
 import { importMarkdown, submitReading } from "../api/save";
-import { whoamiQueryKey, type Identity } from "../identity";
+import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
+import { whoamiQueryOptions } from "../identity-query";
 import {
   firstProblemField,
   markdownImportBody,
@@ -18,6 +19,7 @@ import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-
 import { saveUrlProblem, type SubmitOutcome } from "../save";
 import { saveNoticeState } from "../save-notice";
 import { CaptureRefusalNotice } from "./CaptureNotice";
+import { ConnectKeyPrompt } from "./ConnectKey";
 import { Icon } from "./Icon";
 import { MarkdownImportForm, type MarkdownImportFormHandle } from "./MarkdownImportForm";
 import { PageHeading, PageStateFocus } from "./PageHeading";
@@ -122,6 +124,10 @@ export function SavePage() {
   const navigate = useNavigate();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
   const expectedTenant = expectedLayoutOf(identity);
+  // Subscribed rather than read once, so identity read again after a key is
+  // connected (ProviderPage) drops the prompt.
+  const { data: watchedIdentity } = useQuery({ ...whoamiQueryOptions(), enabled: false });
+  const keyNeeded = needsProviderKey(watchedIdentity);
   // The server renders the URL tab, and while hydrating this render must
   // agree with it, so there the remembered tab is read after hydration.
   // Mounted in a page that is already running (a client-side navigation),
@@ -322,6 +328,9 @@ export function SavePage() {
         return (
           <div className="page save-page">
             <PageHeading>Save reading</PageHeading>
+            {/* A reader with no key is told first; a save they try anyway is
+                refused with the same sentence, which then stands alone. */}
+            {keyNeeded && current.notice.kind !== "key-required" ? <ConnectKeyPrompt /> : null}
             <SaveNoticeBanner notice={current.notice} action={refusedFor} onRetry={() => trySubmit(tab)} />
             {/* The form is a card (design spec, Forms/status cards), with the
                 tabs inside it as in the accepted prototype. */}
@@ -413,6 +422,7 @@ function noticeSentence(notice: SaveNotice | Refusal, action: SaveTab): string |
     case "limited":
     case "guard-unavailable":
     case "unavailable":
+    case "key-required":
       return captureRefusalSentence(notice, unavailableSentence(action));
     case "already-processing":
       return ALREADY_PROCESSING_SENTENCE;
