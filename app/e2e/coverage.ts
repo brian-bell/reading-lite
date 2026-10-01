@@ -171,7 +171,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(list.getByRole("link", { name: /^What we lose when every tool/ })).toBeVisible();
     },
   },
-  // Pages (#414): with the generated rows past the pack's 19 there are 43 rows,
+  // Pages (#414): with the generated rows past the pack's 21 there are 43 rows,
   // so page 2 is a middle page, page 3 the last (no Next), and page 6 is past
   // the end. Each is a deep link, rendered on the server.
   {

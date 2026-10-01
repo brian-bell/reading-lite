@@ -170,7 +170,7 @@ test that fails when the backend adds or renames a class.
 | Key invalid | `provider_key_invalid` (the provider's 401 to the reader's key), `provider_key_undecryptable` | Your OpenAI key needs replacing; replace it, then retry | Replace key (provider settings); Retry |
 | Model access | `provider_model_access` (a 403 to the reader's key) | The key can't use the models Reading Lite needs; allow them for its project in OpenAI, or connect another key | Provider settings; Retry |
 | Billing | `provider_insufficient_quota` | Your OpenAI account is out of credit; add credit in OpenAI, then retry | Provider settings; Retry |
-| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError`, `ReadingReservationExpiredError` | Reading Lite's processing limit was reached; retry once it resets | Retry later |
+| Hosting limit | `SpendAdmissionError`, `ProcessingDeferExpiredError`, `ReadingReservationExpiredError`, `hosted_provider_quota` (the deployment key's `insufficient_quota`) | Reading Lite's processing limit was reached; retry once it resets | Retry later |
 | Stopped | `stale_pending`, `stale_active_attempt`, `QueueRetriesExhaustedError` | Processing stopped before finishing | Retry |
 | Unknown | Anything else | The error message, unchanged | Retry; Details |
 

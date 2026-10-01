@@ -127,6 +127,9 @@ const STOPPED_CODES: ReadonlySet<string> = new Set([
 ]);
 
 const HOSTING_LIMIT_CODES: ReadonlySet<string> = new Set([
+  // The provider's insufficient_quota 429 to the deployment's own key: the
+  // operator's account, so not the reader's billing to fix.
+  "hosted_provider_quota",
   "SpendAdmissionError",
   "ProcessingDeferExpiredError",
   "DeferPaidWorkError",

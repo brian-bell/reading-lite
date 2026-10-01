@@ -92,6 +92,7 @@ describe("failure categories", () => {
   it.each<[string, ReadingError, FailureCategory, string]>([
     ["a provider rate limit", { code: "RateLimitedError", message: "rate limited (status 429)", stage: "summarize" }, "provider-limit", "Wait a few minutes, then retry."],
     ["a hosting limit", { code: "SpendAdmissionError", message: "paid spend admission: daily_spend", stage: "summarize" }, "hosting-limit", "Retry once the limit resets."],
+    ["the hosted key's quota", { code: "hosted_provider_quota", message: "the hosted provider account is out of quota; retry later", stage: "summarize", http_status: 429 }, "hosting-limit", "Retry once the limit resets."],
   ])("tells %s to wait, with no settings link", (_label, error, category, next) => {
     expect(categorize(error)).toMatchObject({ category, next, detail: error.message });
     expect(categorize(error).settings).toBeUndefined();

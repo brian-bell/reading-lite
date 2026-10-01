@@ -118,7 +118,8 @@ is paid for and checkpointed and the reading is still owned by the attempt.
 An upstream 429 raises `RateLimitedError`; queue retry leaves the attempt
 pending. `createPaidFetch` sees a provider response first and fails the
 attempt now, with no HTTP or queue retry, when the account is the problem: an
-OpenAI `insufficient_quota` 429 (`provider_insufficient_quota`), a 403 to the
+OpenAI `insufficient_quota` 429 (`provider_insufficient_quota`, or
+`hosted_provider_quota` on a deployment key), a 403 to the
 tenant's own key (`provider_model_access`), or a 401 to it
 (`provider_key_invalid`), which also marks that credential version invalid. Paid-work denial or stale processing leases defer the same attempt,
 with checkpoints and the configured defer-age bound. Other processing failures
