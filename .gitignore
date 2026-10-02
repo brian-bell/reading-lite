@@ -5,6 +5,10 @@ dist/
 app/e2e/screenshots/
 app/e2e/test-results/
 app/e2e/report/
+# The design study's build (app/prototypes, `npm run prototype:build`).
+app/dist-prototypes/
+# The desktop app's local dev-server launch config.
+.claude/launch.json
 # Playwright's default output when it is run from the repo root by mistake.
 /test-results/
 .wrangler/
