@@ -345,6 +345,7 @@ describe("GetWhoamiResponseSchema", () => {
     user_id: "usr_550e8400-e29b-41d4-a716-446655440000",
     principal: "api_token",
     tenant_data_plane: true,
+    needs_provider_key: false,
     email: "founder@test.example",
   };
 

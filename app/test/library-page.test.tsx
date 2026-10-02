@@ -735,6 +735,17 @@ describe("pages", () => {
     expect(screen.getByText("No readings yet.")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "First page" })).toBeNull();
   });
+
+  // A new reader with no key (reading-lite-gh341.11): a save would be refused.
+  it("asks a reader with no key to connect one instead of offering a save", async () => {
+    backendServesPages([]);
+    await openTab("/", { ...reader, needs_provider_key: true });
+
+    expect(screen.getByText("No readings yet. Connect your OpenAI key, then save your first reading.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Connect a key" })).toHaveAttribute("href", "/account/provider");
+    expect(screen.getByRole("link", { name: "Browse samples" })).toHaveAttribute("href", "/samples");
+    expect(screen.queryByRole("link", { name: "Save a reading" })).toBeNull();
+  });
 });
 
 describe("signed out", () => {
@@ -746,6 +757,10 @@ describe("signed out", () => {
     const { router } = await openTab("/", null);
 
     expect(screen.getByRole("heading", { level: 1, name: "Sign in" })).toBeInTheDocument();
+    // The front door says what the service is, beside the samples to look at.
+    const about = screen.getByRole("complementary", { name: "About Reading Lite" });
+    expect(about).toHaveTextContent("summarizes each one");
+    expect(within(about).getByRole("link", { name: "Browse samples" })).toHaveAttribute("href", "/samples");
     expect(router.state.location.href).toBe("/");
     expect(backend.list).not.toHaveBeenCalled();
   });

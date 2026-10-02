@@ -10,6 +10,12 @@ export interface Identity {
   user_id: string;
   principal: "session" | "token";
   tenant_data_plane: boolean;
+  /**
+   * True when reading work needs the reader's own provider key and they have
+   * no active one: saves are refused until they connect it. Optional so an
+   * older backend's body still reads as an identity.
+   */
+  needs_provider_key?: boolean;
   email: string;
   csrf_token?: string;
 }
@@ -54,7 +60,13 @@ function isIdentity(body: unknown): body is Identity {
     typeof value.user_id === "string" &&
     (value.principal === "session" || value.principal === "token") &&
     typeof value.tenant_data_plane === "boolean" &&
+    (value.needs_provider_key === undefined || typeof value.needs_provider_key === "boolean") &&
     typeof value.email === "string" &&
     (value.csrf_token === undefined || typeof value.csrf_token === "string")
   );
+}
+
+/** Whether the reader has to connect a provider key before they can save (reading-lite-gh341.11). */
+export function needsProviderKey(identity: Identity | null | undefined): boolean {
+  return identity?.needs_provider_key === true;
 }

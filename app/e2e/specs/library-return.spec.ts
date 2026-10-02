@@ -67,6 +67,9 @@ async function openFilteredPage(page: Page, baseURL: string, delayMs = 0): Promi
     }),
   }));
 
+  // A click before hydration follows the link natively, and the server's
+  // fixture-pack library answers instead of the browser stub.
+  await page.waitForLoadState("networkidle");
   await page.getByRole("list", { name: "Tags" }).getByRole("link", { name: "attention" }).click();
   await expect(readings(page).getByRole("listitem")).toHaveCount(20);
   await page.getByRole("searchbox", { name: "Search" }).fill("essay");

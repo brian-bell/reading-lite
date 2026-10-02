@@ -76,6 +76,9 @@ const RETRY: unique symbol = Symbol("retry");
  *                     failed after the rollback ran.
  * - `rate_limited` / `quota_exhausted` — tenant ingress ceilings (→ 429).
  * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
+ * - `provider_key_required` — tenant provider keys are on and the tenant has no
+ *                     active key, so nothing is claimed (→ 409). Checked after
+ *                     the request-rate admission, like every refusal.
  * - `tenant_inactive` — the account stopped being active between admission and
  *                     the claim transaction, which committed nothing (→ 403).
  * - `too_large`     — importMarkdown only, when the caller passed `fitsMessage`:
@@ -92,6 +95,7 @@ export type IntakeOutcome =
   | { kind: "rate_limited"; limit: "request_rate"; resetAtMs: number }
   | { kind: "quota_exhausted"; limit: "hourly" | "monthly"; resetAtMs: number }
   | { kind: "guard_unavailable" }
+  | { kind: "provider_key_required" }
   | { kind: "tenant_inactive" }
   | { kind: "too_large" };
 
@@ -127,6 +131,11 @@ export interface ReadingIntakeDeps {
   principal: AuthenticatedPrincipal;
   /** Tenant-keyed ingress quotas. Missing/deny fails closed. */
   usage: TenantUsage;
+  /**
+   * False when the tenant's work has no key to run under (tenant provider
+   * keys on, no active key); see providerKeyReady.
+   */
+  providerKeyReady: () => Promise<boolean>;
 }
 
 export function readingIntakeFor(deps: ReadingIntakeDeps): ReadingIntake {
@@ -212,7 +221,10 @@ export class ReadingIntake {
   }
 
   private async gateRequest(): Promise<IntakeOutcome | null> {
-    return this.usageOutcome(await this.deps.usage.admitRequest(nowMs(this.deps.services)));
+    const denied = this.usageOutcome(await this.deps.usage.admitRequest(nowMs(this.deps.services)));
+    if (denied) return denied;
+    if (!(await this.deps.providerKeyReady())) return { kind: "provider_key_required" };
+    return null;
   }
 
   private usageOutcome(decision: UsageDecision): IntakeOutcome | null {

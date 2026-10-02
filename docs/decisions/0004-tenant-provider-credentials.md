@@ -139,6 +139,7 @@ operator-funded requests.
 
 | Condition | Behavior |
 | --- | --- |
+| No active key at intake (save, import, reprocess, inbox promote) | Refuse up front with 409 `provider_key_required`; nothing is claimed or reserved (decided 2026-09-24, gh341.11). Returning an existing reading is refused too |
 | Key missing or removed at dispatch | Fail the attempt now with a "connect a key, then retry" error; no deferral |
 | Decryption failure | Fail the attempt now; log for the operator; no fallback |
 | Provider 401 | Fail the attempt now and mark the stored key `invalid`; settings shows "replace your key" |

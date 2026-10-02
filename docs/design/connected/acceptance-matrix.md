@@ -114,6 +114,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | State | Signal | Presentation | Actions |
 | --- | --- | --- | --- |
 | No readings | Empty result, no `q` or `tag` | "No readings yet." | Save a reading |
+| No readings, no key | As no readings, with whoami `needs_provider_key: true` | "No readings yet. Connect your OpenAI key, then save your first reading." | Connect a key; browse samples |
 | No results | Empty result with filters | "No readings match “q”" and/or "tagged T" | Clear search, clear tag |
 | Offset past end | Empty result, `offset > 0` | As no results, with page number | First page; clear search, clear tag when filtered |
 | Pending or failed row | `status`, `active_attempt`, `last_attempt` | Status badge with text; failed shows the error message | Open reading |
@@ -150,6 +151,7 @@ Each row names the backend signal, what the reader sees, and the actions offered
 | Request rate or quota | 429 `rate_limited` or `quota_exhausted`, `limit`, `reset_at` | Names the limit (request rate, hourly, monthly) and when it resets | Try again after reset |
 | Usage guard unavailable | 429 `usage guard unavailable` | "Limits can't be checked right now." | Try again |
 | Saving unavailable | 503; optional `id` | "Saving is unavailable right now." ("Importing …" for a Markdown import). Includes a link when `id` is present | Try again |
+| Key required | whoami `needs_provider_key: true` before a save; 409 `provider_key_required` from save, import, reprocess, or promote | "Connect your OpenAI key first. Reading Lite summarizes each reading with your own key." Above /save's form before a save; the refusal notice after one | Connect a key (no Try again) |
 | Markdown too large | Client check of the serialized request against the 128 KB queue limit, before sending; the backend's own 503 is indistinguishable from "Saving unavailable" | Field-level error on the Markdown naming the 128 KB limit; the text stays | Shorten |
 
 ### Failure categories

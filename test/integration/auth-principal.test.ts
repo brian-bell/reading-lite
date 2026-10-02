@@ -2,12 +2,13 @@ import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:
 import { describe, expect, it } from "vitest";
 import { authenticateBearer } from "../../src/control-plane/authenticate";
 import { bootstrapFounder } from "../../src/control-plane/bootstrap";
-import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
+import { deriveHmacKey, hmacHex, parseAuthRootSecret, parseProviderKeySecret } from "../../src/control-plane/crypto";
 import type { ApiScope } from "../../src/control-plane/principal";
 import { createApp } from "../../src/router";
 import type { Env } from "../../src/index";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { toTimestamp } from "../../src/control-plane/pg-time";
+import { upsertProviderCredential } from "../../src/control-plane/provider-credentials";
 
 const TOKEN = "test-token";
 
@@ -279,6 +280,25 @@ describe("GET /api/whoami", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.tenant_data_plane).toBe(false);
+  });
+
+  it.each([
+    { name: "switch off, no key", switch: undefined, key: false, needs: false },
+    { name: "switch on, no key", switch: "1", key: false, needs: true },
+    { name: "switch on, active key", switch: "1", key: true, needs: false },
+  ] as const)("reports needs_provider_key $needs ($name)", async (row) => {
+    if (row.key) {
+      await upsertProviderCredential(testControlPlane(env), {
+        tenantId: await founderUserId(),
+        plaintext: "sk-whoami-key-1234",
+        root: { secret: parseProviderKeySecret("ab".repeat(32)), version: 1 },
+        nowMs: Date.parse("2026-08-16T12:00:00.000Z"),
+        validatedAtMs: null,
+      });
+    }
+    const res = await whoami(`Bearer ${TOKEN}`, { TENANT_PROVIDER_KEYS: row.switch });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>).needs_provider_key).toBe(row.needs);
   });
 
   it("answers any authenticated principal regardless of scopes", async () => {

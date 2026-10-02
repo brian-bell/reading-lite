@@ -32,6 +32,7 @@ export function reprocessNoticeSentence(notice: ReprocessNotice, request: Reproc
     case "limited":
     case "guard-unavailable":
     case "unavailable":
+    case "key-required":
       return captureRefusalSentence(notice, UNAVAILABLE[request]);
     case "offline":
       return "You're offline. Check your connection and try again.";
@@ -82,6 +83,7 @@ export function ReprocessNoticeBanner({
     case "limited":
     case "guard-unavailable":
     case "unavailable":
+    case "key-required":
       return <CaptureRefusalNotice refusal={notice} unavailable={UNAVAILABLE[request]} onTryAgain={onTryAgain} />;
     case "offline":
     case "server-error":

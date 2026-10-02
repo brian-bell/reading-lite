@@ -20,7 +20,7 @@ const p = (text: string): LegalBlock => ({ type: "p", text });
 const ul = (items: string[]): LegalBlock => ({ type: "ul", items });
 const section = (id: string, title: string, ...blocks: LegalBlock[]): LegalSection => ({ id, title, blocks });
 // Update this date when substantive legal copy changes; do not derive it at render time.
-const updated = p("Last updated: September 5, 2026. Effective when published.");
+const updated = p("Last updated: October 1, 2026. Effective when published.");
 
 export const TERMS_DOCUMENT: LegalDocument = {
   path: LEGAL_PATHS.terms,
@@ -39,6 +39,9 @@ export const TERMS_DOCUMENT: LegalDocument = {
       p("You retain any rights you hold in the material you submit. Third-party material remains the property of its respective rights holders. Saving or summarizing a work does not give you ownership of it or permission to redistribute it."),
       p("You grant us a nonexclusive, worldwide, royalty-free permission to retrieve, copy, store, process, and display your submissions, and to create summaries and search representations, solely to operate and maintain the service for you. This permission extends to service providers performing those tasks for us and lasts only as needed for those purposes, including the retention and deletion process described in Privacy."),
       p("You must have the rights or other lawful authority needed for that processing. Do not submit material that infringes copyright or privacy rights, bypass access restrictions, compromise another account, interfere with the service, or evade usage limits. Private storage does not by itself make copying lawful.")),
+    section("provider-key", "Your own AI provider key",
+      p("Some accounts process readings with an OpenAI API key you connect on the Provider page. When yours does, the requests that summarize and index your readings are made with your key and charged to your OpenAI account under your own agreement with OpenAI. We do not pay for those requests or refund them, and we never fall back to another key when yours is missing or refused."),
+      p("You are responsible for keeping your key valid and funded and for the charges made through it, including requests already sent when you remove or replace it, which may still finish and be charged. We use your key only to process your own readings. The daily spending limit on the Provider page is our own estimate, checked before we send requests; it is not a limit OpenAI enforces, and you can set limits in your OpenAI account as well. Usage limits we set for hosting apply whoever pays.")),
     section("suspension", "Suspension and ending use",
       p("You may stop using the service at any time and request deletion as described in Privacy. We may restrict access or remove material to address violations of these terms, security risks, unlawful activity, or legal requirements. We terminate accounts of repeat copyright infringers in appropriate circumstances."),
       p("We may change or discontinue this beta service. Where reasonably practicable, we will give advance notice of a discontinuation or a material restriction on your account; urgent security or legal concerns may require immediate action.")),
@@ -61,6 +64,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
     section("collection", "Information we collect",
       ul([
         "Account information: your email address, account settings, authentication records, sessions, API-token records, and device or browser labels used to help you recognize sessions.",
+        "Provider key: if you connect your own OpenAI API key, we store it encrypted, with its last four characters, whether OpenAI accepts it, and when it was checked. We also record estimated charges against your daily spending limit.",
         "Saved material: submitted URLs and documents, downloaded source content, extracted text, summaries, tags, search representations, and connections between readings.",
         "Operational information: processing and error records, usage-limit records, email-delivery records, and information you send us when requesting support. Our infrastructure providers also process connection information, such as IP addresses, to deliver and protect the service."
       ])),
@@ -71,6 +75,7 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       ul([
         "Cloudflare hosts the website, application, account database, saved content, search index, and background processing. Its Turnstile service may help protect sign-in from abuse.",
         "OpenAI receives text from processed readings to create search representations. The configured summarization provider, OpenAI or Anthropic, receives reading text and relevant material from earlier readings in your archive to generate summaries. The service does not silently switch summarization providers after a failure.",
+        "When your account uses your own OpenAI key, those requests are made with your key, OpenAI handles them under the terms and policies of your OpenAI account, and OpenAI bills you for them. Checking a key when you connect it asks OpenAI which models the key can use, which is not charged.",
         "Resend receives email addresses and message content to deliver sign-in links, security messages, and reading notifications. Reading notifications can contain information from your archive.",
         "When you submit a URL, the source website receives a request for that page. Some imports also contact platform APIs, including YouTube or X, with the URL or identifiers needed to retrieve the material."
       ]),
@@ -81,13 +86,15 @@ export const PRIVACY_DOCUMENT: LegalDocument = {
       p("Sign-in and security emails are part of operating your account. Notifications when a reading is ready are enabled by default; you can turn them off and choose daily, weekly, or no digest on the Security page.")),
     section("security", "Security and location",
       p("Accounts are separated using access controls, and your readings are not made available as public pages or shared with other users through the service. Your archive is not end-to-end encrypted: the application and its providers must process readable content to deliver its features. No online service can guarantee complete security."),
+      p("A provider key you connect is encrypted with AES-256-GCM under a server secret kept apart from sign-in secrets, and bound to your account so it cannot be used for another. It is decrypted only in memory while a request to OpenAI is made. We never show it again in full: the service, its emails and exports, and our logs show at most its last four characters. Sign-in sessions can manage the key; API tokens cannot read or change it."),
       p("Our providers may process information in the United States and other countries, which may have different privacy protections from your country. Where applicable law requires safeguards for international transfers, those requirements apply to our processing. Contact us for information about the arrangements relevant to your account.")),
     section("retention", "How long information stays",
       p("Saved readings do not expire automatically. We generally retain them while your account remains open unless you delete them or we remove them under the Terms. Failed imports and processing records may also remain with your archive. Email-digest delivery records remain after a message is sent, skipped, or fails, and are removed during account teardown."),
       p("A limited account-deletion audit record, including the account identifier, deletion dates, and cleanup status, remains after account teardown so we can track deletion attempts and investigate incomplete cleanup. It does not contain your saved article text or email address. That record currently has no automatic expiry.")),
     section("deletion", "Deleting readings or your account",
       p(`You can request help deleting a reading or your account at ${OPERATOR_CONTACT_EMAIL}. Deletion is also available through the authenticated API. The web app does not yet have deletion buttons. We may need to verify your identity before acting.`),
-      p("Starting account deletion immediately disables sign-in and revokes sessions and API tokens. Cleanup of saved content and search data normally starts after about seven days, unless we start it sooner. This delay is not a promise that the account can be recovered."),
+      p("Removing your provider key on the Provider page deletes the stored key at once. Readings already saved stay readable and searchable without it."),
+      p("Starting account deletion immediately disables sign-in, deletes any stored provider key, and revokes sessions and API tokens. Cleanup of saved content and search data normally starts after about seven days, unless we start it sooner. This delay is not a promise that the account can be recovered."),
       p("Cleanup runs in the background. Search data can take additional time to disappear, and incomplete cleanup can leave stored copies or search data requiring operator attention. We cannot currently give a guaranteed completion date or promise that every residual copy has been removed. Contact us to ask about the status of your request."),
       p("Deleting an individual reading removes it from your library and initiates removal of its stored content and search data. Deletion may need to wait while that reading is being processed. Earlier summaries or connections in your other readings can still contain references to it; those are not automatically rewritten. Deleting from this service does not remove the original source website.")),
     section("rights", "Your choices and requests",

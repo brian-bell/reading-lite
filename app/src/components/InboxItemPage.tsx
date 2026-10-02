@@ -384,6 +384,7 @@ function noticeSentence(notice: WriteRefusal): string | undefined {
     case "limited":
     case "guard-unavailable":
     case "unavailable":
+    case "key-required":
       return captureRefusalSentence(notice, UNAVAILABLE);
     case "already-processing":
       return ALREADY_PROCESSING_SENTENCE;

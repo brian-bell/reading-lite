@@ -64,6 +64,10 @@ export const GetWhoamiResponseSchema = z.object({
   user_id: z.string(),
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
+  // True when tenant provider keys are on and the tenant has no active key:
+  // save, import and reprocess answer 409 provider_key_required until one is
+  // connected. The frontend reads it to ask for a key before the first save.
+  needs_provider_key: z.boolean(),
   email: z.string(),
   // Session principals only. Bearer whoami must omit this field.
   csrf_token: z

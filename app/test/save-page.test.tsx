@@ -7,7 +7,7 @@ import {
   createRoute,
   createRouter,
 } from "@tanstack/react-router";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import pack from "../e2e/fixtures/fixture-pack.json" with { type: "json" };
@@ -643,6 +643,32 @@ describe("the save page", () => {
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
     expect(urlField()).toHaveValue("https://example.com/a");
     expect(router.state.location.href).toBe("/save");
+  });
+
+  // A reader with no key yet (reading-lite-gh341.11) is told what to do
+  // before they try; a save they try anyway leaves one notice, with the
+  // provider page as the way on rather than a retry that cannot succeed.
+  it("asks a reader with no key to connect one, before and after a refused save", async () => {
+    stubFetch(() => Response.json({ error: "connect a key, then retry", code: "provider_key_required" }, { status: 409 }));
+    await openSave({ ...reader, needs_provider_key: true });
+
+    const prompt = screen.getByRole("complementary", { name: "Connect a key" });
+    expect(prompt).toHaveTextContent("Connect your OpenAI key first.");
+    expect(within(prompt).getByRole("link", { name: "Connect a key" })).toHaveAttribute("href", "/account/provider");
+
+    await userEvent.type(urlField(), "https://example.com/a");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(noticeText()).toHaveTextContent("Connect your OpenAI key first."));
+    expect(screen.queryByRole("complementary", { name: "Connect a key" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: "Connect a key" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument();
+    expect(urlField()).toHaveValue("https://example.com/a");
+  });
+
+  it("does not ask a reader who needs no key", async () => {
+    await openSave();
+    expect(screen.queryByRole("link", { name: "Connect a key" })).not.toBeInTheDocument();
   });
 
   // A second refusal replaces the first rather than stacking beside it, and
