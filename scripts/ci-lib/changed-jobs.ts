@@ -49,6 +49,9 @@ const RULES: Rule[] = [
   // against the pack it is projected from, and pins the Markdown import limit
   // to the operator gates' (markdown-import-limit.ts).
   [/^app\/.*\.md$|^app\/(Dockerfile|\.dockerignore)$/, NONE],
+  // The design study (app/prototypes): its own Vite entry and Vitest config,
+  // outside the app's tsconfig, tests, build, and browser evidence.
+  [/^app\/prototypes\/|^app\/(vite|vitest)\.prototypes\.config\.ts$|^app\/tsconfig\.prototypes\.json$/, NONE],
   [/^app\/(e2e\/fixtures\/|e2e\/[^/]+\.js$|src\/samples\/|src\/(library-search|markdown-import-limit)\.ts$)/, ["worker", "app", "appBrowser"]],
   // Unit tests, the smoke suite, and Worker config. wrangler.jsonc is mostly
   // routes and bindings; its compatibility and assets settings shape the built
