@@ -67,6 +67,8 @@ const PATHS: Record<string, string> = {
   mail: "M3 6h18v12H3z M3 7l9 6 9-6",
   index: "M4 5h16 M4 10h10 M4 15h16 M4 20h10",
   close: "M6 6l12 12 M18 6L6 18",
+  chevron: "M9 6l6 6-6 6",
+  "chevron-down": "M6 9l6 6 6-6",
   download: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
   book: "M12 5C9 3 5 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1z M12 5v15",
 };

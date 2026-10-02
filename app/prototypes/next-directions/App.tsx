@@ -83,6 +83,14 @@ export function App() {
     document.title = `${current} · Reading Lite`;
   }, [route.view, route.id]);
 
+  /** Flip the theme with every transition suppressed for the frame it lands on, so the swap snaps instead of smearing. */
+  function chooseTheme(next: "light" | "dark") {
+    const style = document.createElement("style");
+    style.textContent = "*,*::before,*::after{transition:none!important}";
+    document.head.appendChild(style);
+    setTheme(next);
+    requestAnimationFrame(() => requestAnimationFrame(() => style.remove()));
+  }
   function navigate(next: Route) {
     setRoute(next);
     window.location.hash = routeHash(next);
@@ -289,8 +297,8 @@ export function App() {
                 <button type="button" aria-label="Phone layout" aria-pressed={device === "phone"} onClick={() => setDevice("phone")}><Icon name="phone" /></button>
               </div>
               <div className="toggle-pair">
-                <button type="button" aria-label="Light theme" aria-pressed={theme === "light"} onClick={() => setTheme("light")}><Icon name="sun" /></button>
-                <button type="button" aria-label="Dark theme" aria-pressed={theme === "dark"} onClick={() => setTheme("dark")}><Icon name="moon" /></button>
+                <button type="button" aria-label="Light theme" aria-pressed={theme === "light"} onClick={() => chooseTheme("light")}><Icon name="sun" /></button>
+                <button type="button" aria-label="Dark theme" aria-pressed={theme === "dark"} onClick={() => chooseTheme("dark")}><Icon name="moon" /></button>
               </div>
             </div>
           </div>

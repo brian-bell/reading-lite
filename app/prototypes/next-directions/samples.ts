@@ -459,6 +459,11 @@ export function dateOn(iso: string): string {
   return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(iso));
 }
 
+/** "Thursday 1 October": the desk's date line and its "ready since" heading. */
+export function dayOn(iso: string): string {
+  return new Intl.DateTimeFormat("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" }).format(new Date(iso));
+}
+
 /** "about 7 months ago", "3 days ago", "today": for revisit prompts and the desk. */
 export function agoLabel(iso: string, now = STUDY_NOW): string {
   const days = Math.floor((Date.parse(now) - Date.parse(iso)) / 86_400_000);

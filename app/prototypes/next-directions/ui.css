@@ -303,6 +303,13 @@
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;
+  transition: background-color 150ms, border-color 150ms, color 150ms, scale 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .button:active:not(:disabled, [aria-disabled="true"]) {
+    scale: 0.96;
+  }
 }
 
 .button-primary {
@@ -327,6 +334,20 @@
   background: var(--accent-soft);
 }
 
+/* A quiet control that removes something: muted until the pointer reaches it. */
+.button-quiet-muted {
+  color: var(--muted);
+}
+
+/* An icon-only control, 32px square, in the muted tone until hovered. */
+.button-icon {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--muted);
+}
+
 .button:disabled,
 .button[aria-disabled="true"] {
   cursor: not-allowed;
@@ -341,6 +362,14 @@
   .button-primary:hover:not(:disabled, [aria-disabled="true"]) {
     border-color: var(--accent-hover);
     background: var(--accent-hover);
+  }
+
+  .button-quiet-muted:hover:not(:disabled) {
+    color: var(--danger);
+  }
+
+  .button-icon:hover:not(:disabled) {
+    color: var(--ink);
   }
 }
 
@@ -1653,72 +1682,212 @@
 
 /* ---- B. Desk ------------------------------------------------------------ */
 
+/* The desk is a few surfaces, one per section, each a list of hairline rows
+   rather than a stack of cards. Needs you carries a danger rule down its
+   left edge; On your desk is the page's centre and sits a little higher
+   than the rest. Row radii are concentric with the surface's. */
+
 .desk .page-head {
   max-width: 56rem;
+  margin-bottom: var(--space-6);
+}
+
+.desk-date {
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
 }
 
 .desk-section {
   max-width: 56rem;
-  margin: 0 0 var(--space-7);
+  margin: 0 0 var(--space-9);
+}
+
+.desk-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.desk-section-head .section-title {
+  margin: 0;
+  font-size: 20px;
+}
+
+.desk-section-count {
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-section-aside {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
 }
 
 .desk-section-note {
-  margin: calc(-1 * var(--space-2)) 0 var(--space-3);
+  flex-basis: 100%;
+  margin: 0;
 }
 
 .desk-rows {
-  display: grid;
-  gap: var(--space-2);
+  --row-radius: 9px;
+  --row-radius-left: var(--row-radius);
+  --row-x: 18px;
+  --row-y: 14px;
+
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-.desk-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: var(--space-4);
-  align-items: center;
-  padding: var(--space-3) var(--space-4);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 0 7px 7px 0;
+  border-radius: calc(var(--row-radius) + 1px);
   background: var(--surface);
   box-shadow: var(--card-shadow);
 }
 
-.desk-row-danger {
-  border-left-color: var(--danger);
+.desk-section-danger .desk-rows {
+  --row-radius-left: 0px;
+
+  border-left: 3px solid var(--danger);
+  border-radius: 0 calc(var(--row-radius) + 1px) calc(var(--row-radius) + 1px) 0;
+}
+
+.desk-section-focus .desk-rows {
+  --row-x: 20px;
+  --row-y: 18px;
+
+  border-color: color-mix(in oklab, var(--border), var(--accent) 40%);
+  box-shadow: var(--card-shadow-hover);
+}
+
+/* An empty desk is an outline, as Connected draws every empty state. */
+.desk-section-focus .desk-rows:has(.desk-row-empty) {
+  border: 1px dashed var(--control-border);
+  background: transparent;
+  box-shadow: none;
+}
+
+.desk-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  padding: var(--row-y) var(--row-x);
+  transition: background-color 150ms;
+}
+
+.desk-row-marked {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.desk-row + .desk-row {
+  border-top: 1px solid var(--border);
+}
+
+.desk-row:first-child {
+  border-top-left-radius: var(--row-radius-left);
+  border-top-right-radius: var(--row-radius);
+}
+
+.desk-row:last-child {
+  border-bottom-left-radius: var(--row-radius-left);
+  border-bottom-right-radius: var(--row-radius);
+}
+
+.desk-row-linked:hover {
+  background: color-mix(in oklab, var(--ink) 4%, var(--surface));
 }
 
 .desk-row-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 13px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A running attempt: a dot with a ring that breathes outward. */
+.desk-row-live {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  margin: 0 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.desk-row-live::after {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: desk-pulse 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
+  content: "";
+}
+
+@keyframes desk-pulse {
+  0% {
+    scale: 0.6;
+    opacity: 0.7;
+  }
+
+  70%,
+  100% {
+    scale: 1.25;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-row-live::after {
+    animation: none;
+  }
 }
 
 .desk-row-text {
   min-width: 0;
-  grid-column: span 1;
-}
-
-.desk-row:not(:has(.desk-row-index)) .desk-row-text {
-  grid-column: 1 / 3;
 }
 
 .desk-row-title {
   margin: 0;
   font-family: var(--font-reading);
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.3;
   overflow-wrap: anywhere;
+}
+
+.desk-section-focus .desk-row-title {
+  font-size: 19px;
+}
+
+.desk-row-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The title's link is the row's target: it covers the row, under the controls. */
+.desk-row-title a::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.desk-row-linked:hover .desk-row-title a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 
 .desk-row-note {
@@ -1726,28 +1895,73 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  margin: 2px 0 0;
+  margin: 3px 0 0;
   overflow: hidden;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
 }
 
+.desk-row-empty {
+  justify-content: center;
+}
+
+.desk-row-empty .desk-row-note {
+  margin: 0;
+  font-size: 14px;
+  text-align: center;
+}
+
 .desk-row-actions {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: var(--space-2);
+  pointer-events: none;
+}
+
+.desk-row-actions > * {
+  pointer-events: auto;
 }
 
 .desk-row-actions .button {
-  min-height: 34px;
+  min-height: 32px;
   padding: 0 var(--space-3);
   font-size: 13px;
 }
 
 .desk-row-actions .button-primary {
   min-height: 34px;
+  padding: 0 var(--space-4);
+}
+
+.desk-row-actions .button-icon {
+  padding: 0;
+}
+
+.desk-row-toggle svg {
+  transition: rotate 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.desk-row-toggle[aria-expanded="true"] svg {
+  rotate: 180deg;
+}
+
+/* A linked row with nothing else to show ends in a chevron that leans toward the pointer. */
+.desk-row-chevron {
+  display: inline-flex;
+  color: var(--muted);
+  opacity: 0.7;
+  transition: translate 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms, opacity 150ms;
+}
+
+.desk-row-linked:hover .desk-row-chevron {
+  color: var(--accent);
+  opacity: 1;
+  translate: 2px 0;
 }
 
 /* An untitled inbox item is named by its URL, in the UI face so a long
@@ -1757,11 +1971,37 @@
   font-size: 15px;
 }
 
-/* A row's preview, under the text and actions at the row's full width. */
+/* A row's preview bleeds to the surface's edges under the text and actions. */
 .desk-row-detail {
   grid-column: 1 / -1;
-  padding-top: var(--space-3);
+  margin: var(--space-2) calc(-1 * var(--row-x)) calc(-1 * var(--row-y));
+  padding: var(--space-4) var(--row-x);
   border-top: 1px solid var(--border);
+  background: color-mix(in oklab, var(--soft) 60%, var(--surface));
+  animation: desk-detail-in 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.desk-row:last-child .desk-row-detail {
+  border-bottom-left-radius: var(--row-radius-left);
+  border-bottom-right-radius: var(--row-radius);
+}
+
+@keyframes desk-detail-in {
+  from {
+    opacity: 0;
+    translate: 0 -2px;
+  }
+
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-row-detail {
+    animation: none;
+  }
 }
 
 /* Room to read a staged item where it is; a long one scrolls inside the row. */
@@ -1770,11 +2010,120 @@
   margin: 0;
 }
 
-.desk-footer {
+/* The desk's slots beside its heading, filled left to right. */
+.desk-slots {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.desk-slot {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--control-border);
+  border-radius: 50%;
+  transition: background-color 150ms, border-color 150ms;
+}
+
+.desk-slot-filled {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+/* The desk's ambient tiles: the week so far and the provider. */
+.desk-tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-  gap: 0 var(--space-6);
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: var(--space-4);
   max-width: 56rem;
+}
+
+.desk-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 18px 20px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.desk-tile-eyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.desk-tile-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--space-2);
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 19px;
+  line-height: 1.3;
+}
+
+.desk-tile-title-meta {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.desk-tile-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.desk-tile-actions {
+  margin-top: auto;
+  padding-top: var(--space-3);
+}
+
+.desk-tile-actions .button {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--positive);
+  translate: 0 -2px;
+}
+
+.status-dot-danger {
+  background: var(--danger);
+}
+
+.status-dot-muted {
+  background: var(--control-border);
+}
+
+/* Today's spend against its cap, as a thin bar under the status. */
+.spend-meter {
+  height: 4px;
+  margin: var(--space-1) 0 0;
+  border-radius: 2px;
+  background: var(--soft);
+}
+
+.spend-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
 }
 
 .onboarding {
@@ -2437,21 +2786,36 @@
     font-size: 19px;
   }
 
-  .desk-row {
+  .desk-rows {
+    --row-x: 14px;
+  }
+
+  .desk-section-focus .desk-rows {
+    --row-x: 16px;
+    --row-y: 14px;
+  }
+
+  /* A row with a text control stacks its controls under the text, indented
+     past any mark; a row whose only control is an icon keeps it inline. */
+  .desk-row:has(.desk-row-actions .button:not(.button-icon)) {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .desk-row:not(:has(.desk-row-index)) .desk-row-text,
-  .desk-row-text {
-    grid-column: auto;
+  .desk-row-marked:has(.desk-row-actions .button:not(.button-icon)) {
+    grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .desk-row-index {
-    display: none;
-  }
-
-  .desk-row-actions {
+  .desk-row:has(.desk-row-actions .button:not(.button-icon)) .desk-row-actions {
+    grid-column: 1 / -1;
     justify-content: flex-start;
+  }
+
+  .desk-row-marked:has(.desk-row-actions .button:not(.button-icon)) .desk-row-actions {
+    grid-column: 2 / -1;
+  }
+
+  .desk-tile {
+    padding: 16px;
   }
 
   .find-row {
