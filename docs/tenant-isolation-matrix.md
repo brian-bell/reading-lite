@@ -37,7 +37,7 @@ SSRF and cost-control coverage inventory is outside this work item.
 ## MCP
 
 `test/integration/mcp.test.ts` exercises the HTTP MCP dispatch boundary. The
-`MCP adversarial tenant matrix` covers all eleven registered tools:
+`MCP adversarial tenant matrix` covers all twelve registered tools:
 
 | Tools | Contract |
 | --- | --- |
@@ -45,9 +45,10 @@ SSRF and cost-control coverage inventory is outside this work item.
 | `reprocess_reading` | Same checks with a forced reprocess, followed by a successful owner activation. A Markdown source is refused before dispatch. |
 | `list_readings`, `search_readings` | Two populated corpora, matching query, page size one, empty second page and no foreign-only search result; no writes. |
 | `submit_url` | Owner deduplicates; other principal gets its own id for the same URL, becomes ready, and leaves the owner's diagnostics intact. |
+| `delete_reading` | Foreign id matches an unknown id and the owner's reading survives. |
 | `import_markdown`, `list_inbox` | The owner's ready reading answers the owner; the other principal stages in its own inbox, which only it lists, with no reading, R2 write or job. |
 | `get_inbox_item`, `discard_inbox_item` | Foreign item ids match unknown ids, and the owner's item survives. |
-| All three write tools | Read-only tokens for both tenants get identical 403 results for known/foreign and unknown inputs, with no R2 changes or jobs. |
+| `submit_url`, `import_markdown`, `reprocess_reading`, `delete_reading` | Read-only tokens for both tenants get identical 403 results for known/foreign and unknown inputs, with no R2 changes or jobs. |
 
 The existing suite also checks authentication, tool registration, origin checks,
 `/api/mcp` alias dispatch and stateless unsupported methods. The adversarial

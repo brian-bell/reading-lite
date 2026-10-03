@@ -18,6 +18,7 @@ export const MCP_TOOL_NAMES = [
   "submit_url",
   "import_markdown",
   "reprocess_reading",
+  "delete_reading",
   "get_diagnostics",
   "list_inbox",
   "get_inbox_item",
@@ -303,6 +304,26 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       );
       if (!out.ok) return apiErrorResult(out);
       return ingestResult(ctx, out.status, out.json);
+    },
+  );
+
+  server.registerTool(
+    "delete_reading",
+    {
+      title: "Delete reading",
+      description:
+        "DELETES one reading by id for the signed-in tenant, via DELETE /api/readings/:id. Requires readings:delete. Returns the purge report. An unknown id is an error; a non-stale running attempt conflicts and leaves the reading intact.",
+      inputSchema: {
+        id: z.string().min(1).describe("Reading id (rd_…)"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const out = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(args.id)}`, {
+        method: "DELETE",
+      });
+      if (!out.ok) return apiErrorResult(out);
+      return jsonToolResult(out.json);
     },
   );
 

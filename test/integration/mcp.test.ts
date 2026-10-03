@@ -347,6 +347,7 @@ describe("POST /mcp", () => {
     const names = (listed.rpc.result?.tools ?? []).map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        "delete_reading",
         "discard_inbox_item",
         "get_diagnostics",
         "get_inbox_item",
@@ -377,6 +378,11 @@ describe("POST /mcp", () => {
     expect((tools.get("import_markdown") as { annotations?: unknown } | undefined)?.annotations).toMatchObject({
       destructiveHint: true,
       idempotentHint: false,
+    });
+    expect(tools.get("delete_reading")?.description).toMatch(/DELETE \/api\/readings\/:id/);
+    expect((tools.get("delete_reading") as { annotations?: unknown } | undefined)?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: true,
     });
   });
 
@@ -634,6 +640,45 @@ describe("POST /mcp", () => {
     expect(diag.payload.id).toBe("rd_REPROC001");
   });
 
+  it("delete_reading purges a ready reading and surfaces 404 and 409 from the API", async () => {
+    await seedReady({
+      id: "rd_DELETE001",
+      url: "https://example.com/delete-me",
+      title: "Delete me",
+      tldr: "t",
+      markdown: "# Delete me",
+    });
+    const app = createApp({ services: makeServices(makeStubFetch()) });
+
+    const deleted = await callTool(app, "delete_reading", { id: "rd_DELETE001" });
+    expect(deleted.rpc.result?.isError).not.toBe(true);
+    expect(deleted.payload).toEqual({
+      id: "rd_DELETE001",
+      vector_delete_requested: true,
+      list_row_removed: true,
+      by_url_released: true,
+      objects_deleted: expect.any(Number),
+    });
+    const gone = await callTool(app, "get_reading", { id: "rd_DELETE001" });
+    expect(gone.payload).toEqual({ http_status: 404, error: "unknown id" });
+
+    const missing = await callTool(app, "delete_reading", { id: "rd_NODELETE1" });
+    expect(missing.rpc.result?.isError).toBe(true);
+    expect(missing.payload).toEqual({ http_status: 404, error: "unknown id" });
+
+    const pending = await callTool(app, "submit_url", { url: "https://example.com/delete-pending" });
+    expect(pending.payload.status).toBe("pending");
+    const blocked = await callTool(app, "delete_reading", { id: pending.payload.id as string });
+    expect(blocked.rpc.result?.isError).toBe(true);
+    expect(blocked.payload).toEqual({
+      http_status: 409,
+      error: "reading already has an active attempt",
+    });
+    const stillThere = await callTool(app, "get_reading", { id: pending.payload.id as string });
+    expect(stillThere.rpc.result?.isError).not.toBe(true);
+    expect(stillThere.payload.status).toBe("pending");
+  });
+
   it("a read-only token can connect and list every tool", async () => {
     const secret = await insertScopedToken("scope-read-only-mcp", ["readings:read"]);
     const app = createApp({ services: makeServices(makeStubFetch()) });
@@ -643,7 +688,7 @@ describe("POST /mcp", () => {
       { token: secret },
     );
     expect(listed.res.status).toBe(200);
-    expect((listed.rpc.result?.tools ?? []).length).toBe(11);
+    expect((listed.rpc.result?.tools ?? []).length).toBe(12);
   });
 
 });
@@ -753,6 +798,16 @@ describe("MCP adversarial tenant matrix", () => {
     expect(queuedEnvelopes).toEqual([]);
   });
 
+  it("delete_reading hides another tenant's reading and leaves it in place", async () => {
+    const { app } = await fixture();
+    const foreign = await callTool(app, "delete_reading", { id }, { token: OTHER_TOKEN_SECRET });
+    const unknown = await callTool(app, "delete_reading", { id: unknownId }, { token: OTHER_TOKEN_SECRET });
+
+    expect(unknown.payload).toEqual({ http_status: 404, error: "unknown id" });
+    expect(foreign.rpc.result).toEqual(unknown.rpc.result);
+    expect((await callTool(app, "get_reading", { id })).payload.id).toBe(id);
+  });
+
   it.each(["get_inbox_item", "discard_inbox_item"])("%s hides another tenant's item", async (name) => {
     const { app } = await fixture();
     const staged = await callTool(app, "import_markdown", { source_url: "https://example.com/inbox-private", markdown: "# Mine" });
@@ -767,10 +822,11 @@ describe("MCP adversarial tenant matrix", () => {
   });
 
   it.each([
-    ["submit_url", { url }],
-    ["import_markdown", { source_url: url, markdown: "# forbidden" }],
-    ["reprocess_reading", { id, body: { force: true } }],
-  ])("read-only scopes deny %s before ownership lookup or mutation", async (name, args) => {
+    ["submit_url", { url }, { url: "https://example.com/unknown" }],
+    ["import_markdown", { source_url: url, markdown: "# forbidden" }, { source_url: "https://example.com/unknown", markdown: "# forbidden" }],
+    ["reprocess_reading", { id, body: { force: true } }, { id: unknownId, body: { force: true } }],
+    ["delete_reading", { id }, { id: unknownId }],
+  ])("read-only scopes deny %s before ownership lookup or mutation", async (name, args, unknownArgs) => {
     const { app } = await fixture();
     const secret = await insertScopedToken("mcp-matrix-read-only", ["readings:read"]);
     const before = await snapshot();
@@ -786,9 +842,6 @@ describe("MCP adversarial tenant matrix", () => {
       expect(denied.rpc.result?.isError).toBe(true);
       expect(denied.payload.error).toBe("bad or missing token");
       assertNoTokenLeak(denied.rpc);
-      const unknownArgs = name === "reprocess_reading" ? { ...args, id: unknownId }
-        : name === "submit_url" ? { url: "https://example.com/unknown" }
-        : { source_url: "https://example.com/unknown", markdown: "# forbidden" };
       expect((await callTool(app, name, unknownArgs, { token })).rpc.result).toEqual(denied.rpc.result);
     }
     expect(await snapshot()).toEqual(before);

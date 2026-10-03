@@ -13,9 +13,10 @@ import { registerMcpTools, type McpToolContext } from "./tools";
 import type { McpDispatch } from "./dispatch";
 
 export const MCP_SERVER_NAME = "reading-lite";
+// 2.1.0: delete_reading purges one reading through DELETE /api/readings/:id.
 // 2.0.0: import_markdown stages in the inbox instead of importing
 // (reading-lite-gh423), poll_until_ready is gone, and the inbox tools exist.
-export const MCP_SERVER_VERSION = "2.0.0";
+export const MCP_SERVER_VERSION = "2.1.0";
 
 export interface CreateMcpServerOptions extends McpToolContext {}
 
@@ -24,7 +25,7 @@ export function createMcpServer(opts: CreateMcpServerOptions): McpServer {
     { name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION },
     {
       instructions:
-        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url and reprocess_reading mutate the corpus. import_markdown STAGES markdown in the user's inbox: it is not in the library until a person promotes it, so never present an inbox item as saved or give it a public link. Review staged items with list_inbox and get_inbox_item, and remove one with discard_inbox_item. When a result has public_markdown_link, include it in your reply.",
+        "Search and retrieve the reading-lite corpus. list_readings/search_readings return metadata only; fetch bodies with get_reading_content by id. submit_url and reprocess_reading mutate the corpus. delete_reading deletes one reading for the signed-in tenant. import_markdown STAGES markdown in the user's inbox: it is not in the library until a person promotes it, so never present an inbox item as saved or give it a public link. Review staged items with list_inbox and get_inbox_item, and remove one with discard_inbox_item. When a result has public_markdown_link, include it in your reply.",
     },
   );
   registerMcpTools(server, opts);
