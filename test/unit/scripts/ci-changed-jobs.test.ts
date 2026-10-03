@@ -21,6 +21,7 @@ describe("CI job selection for pull requests", () => {
     ["a PostgreSQL migration", ["db/migrations/0002_x.sql"], only("worker")],
     ["a deploy workflow", [".github/workflows/deploy-app.yml"], only("worker")],
     ["a frontend route", ["app/src/routes/index.tsx"], only("app", "appBrowser")],
+    ["the design study", ["app/prototypes/next-directions/App.tsx", "app/vite.prototypes.config.ts", "app/tsconfig.prototypes.json"], only()],
     ["a frontend unit test", ["app/test/reading-state.test.ts"], only("app")],
     ["the browser fixture pack", ["app/e2e/fixtures/fixture-pack.json"], only("worker", "app", "appBrowser")],
     ["the bundled sample library", ["app/src/samples/sample-library.json"], only("worker", "app", "appBrowser")],

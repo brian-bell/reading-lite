@@ -32,6 +32,15 @@ that link from `WEB_BASE_URL`, which `wrangler.toml` points at this dev server
 (`http://127.0.0.1:5174`). The session cookie ignores the port, but the stored
 return path is per origin.
 
+## Design study
+
+`prototypes/next-directions/` holds a clickable prototype of the interface
+that follows Connected (reading-lite-4tvj): the desk as home with the inbox
+on it, threads with their tensions, and a catalog with Find inside it, on
+this package's toolchain but outside its tsconfig, tests, build, and
+deployment. `npm run prototype:dev` serves it on :5175; see its
+[README](prototypes/next-directions/README.md).
+
 ## Rules this package enforces
 
 - **Backend paths.** `/api`, `/api/*`, `/health`, and `/mcp*` return 404 from
