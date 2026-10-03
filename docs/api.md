@@ -133,6 +133,7 @@ no OAuth and no network re-fetch of the public host.
 | `get_reading`, `get_reading_content` | Manifest or opt-in extracted Markdown by ID |
 | `get_diagnostics` | URL-ownership/content/attempt diagnostics |
 | `submit_url`, `reprocess_reading` | Corpus writes subject to the caller's scopes. `reprocess_reading` refuses a Markdown source without dispatching |
+| `delete_reading` | Deletes one reading through `DELETE /api/readings/:id` (requires `readings:delete`) and returns the purge report. A 404 or 409 from that route is a tool error with `http_status` and `error` |
 | `import_markdown` | Stages Markdown through `POST /api/inbox`: `{ inbox_item_id, replaced, corpus_reading? }`, never a `public_url`. A ready or pending owner returns `{ existing: true, reading, public_url }` and stages nothing |
 | `list_inbox`, `get_inbox_item`, `discard_inbox_item` | The caller's inbox: metadata, one item's Markdown (chunked like `get_reading_content`), or a discard |
 
