@@ -70,6 +70,12 @@ operator-funded requests.
   Anthropic key marked `invalid` leaves the selection alone, so the reader sees
   `needs_provider_key` and intake refuses until the key is replaced, rather
   than silently switching providers.
+- Whoami names the key that needs attention: beside the boolean
+  `needs_provider_key`, `provider_key_provider` is `openai`, `anthropic`, or
+  null. A missing or invalid OpenAI key wins, because embeddings need it
+  whichever provider summarizes. The intake 409 `provider_key_required` body
+  carries the same `provider`, so capture and the library can name the
+  provider without loading provider settings.
 - Each provider has **one fixed, catalog-verified model**: OpenAI
   `gpt-5.6-terra`, Anthropic `ANTHROPIC_MODEL` (`claude-sonnet-5-5`).
   Tenants choose only the reasoning effort: low, medium, or high, default high.
@@ -200,7 +206,8 @@ codes (amended 2026-10-03):
 | 401 `authentication_error` | `provider_key_invalid`; mark the Anthropic row `invalid` |
 | 403 `permission_error`, 404 `not_found_error` | `provider_model_access`; the key stays `active` |
 | 402 `billing_error`, or 400 `invalid_request_error` whose message names the credit balance | `provider_insufficient_quota` (`hosted_provider_quota` on deployment keys); no retry. The credit-balance shape is confirmed on staging with a real key (`reading-lite-gh341.15.8`) |
-| 429 | `RateLimitedError` queue retry, then deferral |
+| 429 whose message names the organization's spend limit (a usage-tier monthly cap, which keeps failing until access resumes and may carry no `retry-after`) | `provider_insufficient_quota`; no retry. Checked before the generic 429 path, as OpenAI's `insufficient_quota` is. The shape is confirmed on staging with the credit-balance one (`reading-lite-gh341.15.8`) |
+| Any other 429 | `RateLimitedError` queue retry, then deferral |
 | 529 or other 5xx | Existing HTTP retries |
 
 With Anthropic selected, a missing Anthropic key fails `summarize` and the

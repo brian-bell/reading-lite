@@ -213,8 +213,10 @@ them; each key connects, replaces, and removes on its own.
 | No OpenAI key | `credential: null` | The OpenAI card's existing state. The Anthropic card stays usable, but saving still needs the OpenAI key, which pays for embeddings | Connect OpenAI key |
 
 Capture and the library use the same whoami `needs_provider_key` signal for
-either provider. When it is set because the selected Anthropic key is missing
-or invalid, the key-required copy names Anthropic and links to this page.
+either provider, and name the provider from whoami `provider_key_provider`
+before a save, or from the 409 `provider_key_required` body's `provider` after
+one. When it is `anthropic`, the key-required copy names Anthropic and links to
+this page. Without the field (an older backend), the copy names OpenAI.
 
 ### Archive export
 
