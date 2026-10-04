@@ -242,11 +242,16 @@ tools, OAuth integrations, and an Obsidian plugin. Existing MCP and local recove
 workflows remain supported. Add deferred work only when use shows a need and
 Brian agrees to expand the scope.
 
+Launch providers are decided: a required OpenAI key (embeddings and, by default,
+summaries) and an optional Anthropic key the reader can select for summaries,
+each with one fixed model and a shared effort setting
+([ADR 0004](../decisions/0004-tenant-provider-credentials.md), amended
+2026-10-03).
+
 These choices are still open:
 
 | Choice | When needed |
 |---|---|
-| Launch provider/model choices; whether Anthropic is included alongside OpenAI embeddings | Before finalizing onboarding and provider contracts |
 | Configuration snapshot, key rotation/revocation, and retry/checkpoint semantics | Before B implementation |
 | Hosting budget, archive limits, throughput, and customer spend controls | Before beta; adjust from measurements before public signup |
 | Beta invitation size, support expectations, source publication timing | Before inviting readers and preparing launch |
