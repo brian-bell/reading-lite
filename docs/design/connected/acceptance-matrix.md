@@ -46,7 +46,7 @@ Evidence: routes in `web/src/App.tsx` on current main.
 | `/account/security` | Sessions, email change, immediate email, digest schedule, API tokens | Same sections, plus archive export and account deletion | Preserve; export and deletion are New, approved |
 | `/terms`, `/privacy`, `/dmca` | Public legal pages, footer links | Unchanged, public, no SSR identity | Preserve |
 | Any other path | `Navigate` to `/` with replace | Same | Preserve |
-| Provider settings | Not present | Route and contract decided in Phase 6 | Deferred |
+| `/account/provider` | Not present | OpenAI key, effort, and daily cap (reading-lite-gh341.8); Anthropic key and summarization provider added by reading-lite-gh341.15.5. See [provider settings](#provider-settings) | New, approved |
 
 ### Return paths
 
@@ -86,7 +86,7 @@ tests are this defect; the new tests must cover it.
 | Export your archive | `POST /api/exports`, `GET /api/exports/latest`, `GET /api/exports/:id/download` | None | Account page, between API tokens and deletion; see [archive export](#archive-export) | New, approved (reading-lite-mxwx) |
 | Delete account | `DELETE /api/account` | None | Account page; see [account deletion](#account-deletion) | New, approved (#335 story 5) |
 | Theme | — | None | System, Light, Dark in navigation | New, approved (#335 scope) |
-| Provider key lifecycle, sample library | Not built | — | Phase 6 | Deferred |
+| Provider keys: connect, replace, remove each key; select the summarization provider | `GET`/`POST`/`DELETE /api/auth/provider`, `POST`/`DELETE /api/auth/provider/anthropic`, `POST /api/auth/provider/preferences` | None | `/account/provider`; see [provider settings](#provider-settings) | New, approved (reading-lite-gh341.8, gh341.15) |
 
 Keep the current boot-time removal of the legacy
 `reading-lite.bearerToken` localStorage entry until the old SPA is retired.
@@ -182,6 +182,39 @@ Queued work and provider errors) decide before the stage does, and their
 messages are the backend's own recovery sentences, so the card shows the
 category's next step instead. Their provider settings link comes before Retry,
 and they offer no Import a copy: a copy is summarized with the same key.
+
+The reader copy above names OpenAI. When `error.provider` is `anthropic`, the
+four provider-account categories name Anthropic instead (for example "Your
+Anthropic key needs replacing"), and Model access says the key can't use
+Claude Sonnet 5.5. A failure with no `provider` (older manifests) keeps the
+OpenAI copy. The codes are the same for both providers
+([ADR 0004](../../decisions/0004-tenant-provider-credentials.md), amended
+2026-10-03).
+
+### Provider settings
+
+Placement: `/account/provider`. Contract:
+[ADR 0004](../../decisions/0004-tenant-provider-credentials.md) ("Settings
+API" and "Anthropic tenant keys"). The OpenAI key card, effort, and daily cap
+are unchanged. The Anthropic card and the provider selector are added beside
+them; each key connects, replaces, and removes on its own.
+
+| State | Signal | Presentation | Actions |
+| --- | --- | --- | --- |
+| No Anthropic key | `anthropic_credential: null` | Optional: "Summarize with Claude Sonnet 5.5 using your own Anthropic key. Embeddings still use your OpenAI key." | Connect Anthropic key |
+| Anthropic key connected | `anthropic_credential.status = active` | Last four and validated time | Replace; Remove |
+| Anthropic key invalid | `anthropic_credential.status = invalid` | "Anthropic rejected this key. Replace it to keep summarizing." When Anthropic is selected, also "Saving is paused until the key is replaced" | Replace; Remove |
+| Anthropic key rejected on connect | `POST` 400 `invalid_key` or `model_access` | Field error: the key was refused, or it can't use Claude Sonnet 5.5. Nothing was stored | Correct and retry |
+| Anthropic unavailable on connect | `POST` 503 `provider_unavailable` | "Anthropic didn't answer. Your key wasn't saved." | Try again |
+| Removing with Anthropic selected | `DELETE /api/auth/provider/anthropic` 200 | Confirm first: removing the key switches summaries back to OpenAI. After it, the selector shows OpenAI | — |
+| Provider selector | `summarization_provider` | Radio group: OpenAI `gpt-5.6-terra` (default) or Anthropic Claude Sonnet 5.5. States that effort applies to whichever is selected and that the judges follow it | Select |
+| Anthropic not selectable | No `active` Anthropic key | The Anthropic option is disabled with "Connect an Anthropic key first"; a 400 from preferences shows the same text | Connect Anthropic key |
+| Step-up | 403 recent authentication on connect, replace, or remove | The existing step-up message and link | Sign in again |
+| No OpenAI key | `credential: null` | The OpenAI card's existing state. The Anthropic card stays usable, but saving still needs the OpenAI key, which pays for embeddings | Connect OpenAI key |
+
+Capture and the library use the same whoami `needs_provider_key` signal for
+either provider. When it is set because the selected Anthropic key is missing
+or invalid, the key-required copy names Anthropic and links to this page.
 
 ### Archive export
 
