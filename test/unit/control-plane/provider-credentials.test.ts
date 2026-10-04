@@ -8,6 +8,7 @@ import {
   type ProviderKeyRoot,
 } from "../../../src/control-plane/provider-key-crypto";
 import {
+  deleteProviderCredential,
   markProviderCredentialInvalid,
   readProviderCredential,
   upsertProviderCredential,
@@ -277,5 +278,41 @@ describe("provider credential store", () => {
     expect(invalid?.status).toBe("invalid");
     expect(invalid?.updatedAtMs).toBe(NOW_MS + 2);
     expect(invalid?.credentialVersion).toBe(1);
+  });
+
+  it("keeps an Anthropic row independent of the same tenant's OpenAI row", async () => {
+    const { db } = await seeded();
+    const providerKeyRoot = root(ROOT_HEX, 1);
+    const store = (plaintext: string, provider: "openai" | "anthropic", nowMs: number) =>
+      upsertProviderCredential(db, { tenantId: USER, plaintext, root: providerKeyRoot, nowMs, validatedAtMs: nowMs, provider });
+    await store(KEY, "openai", NOW_MS);
+    await store("sk-ant-first-0001", "anthropic", NOW_MS + 1);
+    const replaced = await store("sk-ant-second-0002", "anthropic", NOW_MS + 2);
+    expect(replaced).toMatchObject({ provider: "anthropic", credentialVersion: 2, lastFour: "0002" });
+    expect(
+      await decryptProviderKey({
+        roots: { providerKeyRoot },
+        tenantId: USER,
+        credentialVersion: replaced.credentialVersion,
+        keyVersion: replaced.keyVersion,
+        ciphertext: replaced.ciphertext,
+        iv: replaced.iv,
+      }),
+    ).toBe("sk-ant-second-0002");
+    expect(await readProviderCredential(db, USER, "openai")).toMatchObject({ credentialVersion: 1, lastFour: "1234" });
+
+    // The OpenAI row is at version 1 too: the fence names the provider.
+    expect(
+      await markProviderCredentialInvalid(db, { tenantId: USER, provider: "anthropic", credentialVersion: 1, nowMs: NOW_MS + 3 }),
+    ).toBe(false);
+    expect(
+      await markProviderCredentialInvalid(db, { tenantId: USER, provider: "anthropic", credentialVersion: 2, nowMs: NOW_MS + 3 }),
+    ).toBe(true);
+    expect((await readProviderCredential(db, USER, "anthropic"))?.status).toBe("invalid");
+    expect((await readProviderCredential(db, USER, "openai"))?.status).toBe("active");
+
+    await deleteProviderCredential(db, { tenantId: USER, provider: "anthropic" });
+    expect(await readProviderCredential(db, USER, "anthropic")).toBeNull();
+    expect(await readProviderCredential(db, USER, "openai")).toMatchObject({ status: "active", lastFour: "1234" });
   });
 });

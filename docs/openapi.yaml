@@ -814,7 +814,8 @@ paths:
       description: |
         Session cookie only (bearer 403, including API and MCP tokens). CSRF
         is not required (GET). Recent-auth is not required. Returns the
-        masked credential (or null), summarization effort, the reader's daily
+        masked OpenAI credential and the masked Anthropic credential (each or
+        null), the summarization provider, summarization effort, the reader's daily
         spend cap, the effective cap, and the operator default from
         `tenant_limits.daily_spend_microdollars`. Never returns the key.
         Optional `X-Expected-Tenant` mismatch returns 412.
@@ -901,8 +902,9 @@ paths:
       summary: Remove the stored OpenAI key
       description: |
         Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
-        Deletes the credential row. Idempotent when no key is stored.
-        Returns the masked settings view with a null credential.
+        Deletes the OpenAI credential row only; an Anthropic key stays.
+        Idempotent when no key is stored. Returns the masked settings view
+        with a null credential.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
         - $ref: "#/components/parameters/ExpectedTenant"
@@ -934,13 +936,15 @@ paths:
         - sessionCookie: []
       tags: [identity]
       operationId: updateProviderPreferences
-      summary: Change summarization effort or the daily spend cap
+      summary: Change the summarization provider, effort, or the daily spend cap
       description: |
         Session cookie plus `X-CSRF-Token`. Recent-auth is not required, the
         same gate as `POST /api/auth/settings`. Bearer 403. Effort is
         `low`, `medium`, or `high`. The daily cap may be lowered or cleared
         (null) and may not be set above
-        `tenant_limits.daily_spend_microdollars`. A refused cap changes
+        `tenant_limits.daily_spend_microdollars`. Selecting `anthropic` as
+        the summarization provider requires an active Anthropic key, otherwise
+        400 `anthropic_key_required`. A refused cap or selection changes
         nothing. Returns the masked settings view.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
@@ -959,7 +963,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProviderSettingsResponse"
         "400":
-          description: Invalid body, or a cap above the operator default
+          description: Invalid body, a cap above the operator default, or Anthropic selected without an active Anthropic key
           content:
             application/json:
               schema:
@@ -2533,14 +2537,18 @@ components:
       type: string
       enum: [low, medium, high]
 
+    SummarizationProvider:
+      type: string
+      enum: [openai, anthropic]
+      description: Which key summarizes and runs the relationship judges. Embeddings always use OpenAI.
+
     ProviderCredentialView:
       type: object
       additionalProperties: false
       required: [provider, last_four, status, validated_at_ms]
       properties:
         provider:
-          type: string
-          const: openai
+          $ref: "#/components/schemas/SummarizationProvider"
         last_four:
           type: string
           minLength: 4
@@ -2558,15 +2566,25 @@ components:
       additionalProperties: false
       required:
         - credential
+        - anthropic_credential
+        - summarization_provider
         - effort
         - daily_spend_cap_microdollars
         - effective_daily_spend_microdollars
         - operator_daily_spend_microdollars
       properties:
         credential:
+          description: The OpenAI key (`provider` is `openai`). It always pays for embeddings.
           oneOf:
             - $ref: "#/components/schemas/ProviderCredentialView"
             - type: "null"
+        anthropic_credential:
+          description: The optional Anthropic key (`provider` is `anthropic`).
+          oneOf:
+            - $ref: "#/components/schemas/ProviderCredentialView"
+            - type: "null"
+        summarization_provider:
+          $ref: "#/components/schemas/SummarizationProvider"
         effort:
           $ref: "#/components/schemas/SummarizationEffort"
         daily_spend_cap_microdollars:
@@ -2643,6 +2661,8 @@ components:
             - type: integer
               minimum: 1
             - type: "null"
+        summarization_provider:
+          $ref: "#/components/schemas/SummarizationProvider"
 
     ProviderSettingsError:
       type: object
@@ -2653,7 +2673,7 @@ components:
           type: string
         code:
           type: string
-          enum: [invalid_key, model_access, provider_unavailable, cap_above_operator_default]
+          enum: [invalid_key, model_access, provider_unavailable, cap_above_operator_default, anthropic_key_required]
 
     HttpUrl:
       type: string

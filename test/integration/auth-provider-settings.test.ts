@@ -5,7 +5,7 @@ import { utcSpendDay, utcSpendDayResetAt } from "../../src/control-plane/spend-l
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
 import { toTimestamp } from "../../src/control-plane/pg-time";
 import { decryptProviderKey } from "../../src/control-plane/provider-key-crypto";
-import { readProviderCredential } from "../../src/control-plane/provider-credentials";
+import { readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
 import type { MagicLinkMail } from "../../src/control-plane/magic-link-mail";
 import { CSRF_HEADER, EXPECTED_TENANT_HEADER } from "../../src/schemas/api";
 import type { Env } from "../../src/index";
@@ -134,6 +134,8 @@ function masked(lastFour: string, patch: Record<string, unknown> = {}) {
       status: "active",
       validated_at_ms: NOW_MS,
     },
+    anthropic_credential: null,
+    summarization_provider: "openai",
     effort: "high",
     daily_spend_cap_microdollars: null,
     effective_daily_spend_microdollars: OPERATOR,
@@ -195,6 +197,8 @@ describe("/api/auth/provider", () => {
     expect(read.res.status).toBe(200);
     expect(await read.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -424,6 +428,8 @@ describe("/api/auth/provider", () => {
     expect(removed.res.status).toBe(200);
     expect(await removed.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -439,10 +445,61 @@ describe("/api/auth/provider", () => {
     expect(again.res.status).toBe(200);
     expect(await again.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
       operator_daily_spend_microdollars: OPERATOR,
+    });
+  });
+
+  it("removes only the OpenAI key, and selects Anthropic only while its key is stored", async () => {
+    const session = await redeem("founder@test.example", "clm_provider_anthropic");
+    const preferences = (summarization_provider: string) =>
+      request("/api/auth/provider/preferences", {
+        method: "POST",
+        cookie: session.cookie,
+        csrf: session.csrf,
+        body: { summarization_provider },
+      });
+    const refused = await preferences("anthropic");
+    expect(refused.res.status).toBe(400);
+    expect(await refused.res.json()).toEqual({ error: "anthropic key required", code: "anthropic_key_required" });
+
+    await request("/api/auth/provider", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { api_key: KEY },
+      fetchImpl: catalog(BOTH).fetchImpl,
+    });
+    await upsertProviderCredential(testControlPlane(env), {
+      tenantId: session.userId,
+      plaintext: "sk-ant-key-9999",
+      root: { secret: parseProviderKeySecret(SECRET), version: 1 },
+      nowMs: NOW_MS,
+      validatedAtMs: NOW_MS,
+      provider: "anthropic",
+    });
+    const selected = await preferences("anthropic");
+    expect(selected.res.status).toBe(200);
+    expect(await selected.res.json()).toMatchObject({
+      credential: { provider: "openai", last_four: "1234" },
+      anthropic_credential: { provider: "anthropic", last_four: "9999", status: "active", validated_at_ms: NOW_MS },
+      summarization_provider: "anthropic",
+    });
+
+    const removed = await request("/api/auth/provider", {
+      method: "DELETE",
+      cookie: session.cookie,
+      csrf: session.csrf,
+    });
+    expect(removed.res.status).toBe(200);
+    expect(await removed.res.json()).toMatchObject({
+      credential: null,
+      anthropic_credential: { last_four: "9999" },
+      summarization_provider: "anthropic",
     });
   });
 
@@ -462,6 +519,8 @@ describe("/api/auth/provider", () => {
     const unchanged = await request("/api/auth/provider", { cookie: session.cookie });
     expect(await unchanged.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -477,6 +536,8 @@ describe("/api/auth/provider", () => {
     expect(lowered.res.status).toBe(200);
     expect(await lowered.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "high",
       daily_spend_cap_microdollars: 250_000,
       effective_daily_spend_microdollars: 250_000,
@@ -492,6 +553,8 @@ describe("/api/auth/provider", () => {
     expect(tightened.res.status).toBe(200);
     expect(await tightened.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "high",
       daily_spend_cap_microdollars: 250_000,
       effective_daily_spend_microdollars: 100_000,
@@ -512,6 +575,8 @@ describe("/api/auth/provider", () => {
     expect(ceiling.res.status).toBe(200);
     expect(await ceiling.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "low",
       daily_spend_cap_microdollars: OPERATOR,
       effective_daily_spend_microdollars: OPERATOR,
@@ -527,6 +592,8 @@ describe("/api/auth/provider", () => {
     expect(cleared.res.status).toBe(200);
     expect(await cleared.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "low",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OPERATOR,
@@ -552,6 +619,8 @@ describe("/api/auth/provider", () => {
     expect(otherRead.res.status).toBe(200);
     expect(await otherRead.res.json()).toEqual({
       credential: null,
+      anthropic_credential: null,
+      summarization_provider: "openai",
       effort: "high",
       daily_spend_cap_microdollars: null,
       effective_daily_spend_microdollars: OTHER_OPERATOR,

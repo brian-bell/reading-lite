@@ -9,7 +9,7 @@ import {
   parseReasoningEffort,
   parseSummarizerProvider,
 } from "../modules/summarizer";
-import { readSummarizationEffort } from "./provider-settings";
+import { readSummarizationSettings } from "./provider-settings";
 import { decryptProviderKey, readProviderKeyRoots } from "./provider-key-crypto";
 import { markProviderCredentialInvalid, readProviderCredential } from "./provider-credentials";
 import type { PaidAuthorization } from "./paid-dispatch";
@@ -155,7 +155,7 @@ export async function resolveProcessingConfig(
 ): Promise<ProcessingConfig> {
   if (!tenantProviderKeysEnabled(env)) return processingConfigFor(env);
   // Fail closed: a reader without a settings row has no effort to run at.
-  const effort = await readSummarizationEffort(db, tenantId);
-  if (effort === null) throw new Error("tenant has no summarization effort setting");
-  return processingConfigFor(env, effort);
+  const settings = await readSummarizationSettings(db, tenantId);
+  if (settings === null) throw new Error("tenant has no summarization effort setting");
+  return processingConfigFor(env, settings.effort);
 }

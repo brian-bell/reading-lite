@@ -165,20 +165,24 @@ describe("beginAccountDeletion", () => {
     },
   );
 
-  it("removes the provider credential on start and again when already deleting", async () => {
+  it("removes every provider credential on start and again when already deleting", async () => {
     const { raw, db } = await seeded();
-    const insert = () =>
-      raw.run(
-        `INSERT INTO tenant_provider_credentials (
-           tenant_id, provider, ciphertext, iv, key_version, credential_version,
-           last_four, status, created_at, updated_at
-         ) VALUES (?, 'openai', ?, ?, 1, 1, '9876', 'active', ?, ?)`,
-        USER,
-        Buffer.from("sealed"),
-        Buffer.from("0123456789ab"),
-        toTimestamp(NOW_MS),
-        toTimestamp(NOW_MS),
-      );
+    const insert = async () => {
+      for (const provider of ["openai", "anthropic"]) {
+        await raw.run(
+          `INSERT INTO tenant_provider_credentials (
+             tenant_id, provider, ciphertext, iv, key_version, credential_version,
+             last_four, status, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, 1, 1, '9876', 'active', ?, ?)`,
+          USER,
+          provider,
+          Buffer.from("sealed"),
+          Buffer.from("0123456789ab"),
+          toTimestamp(NOW_MS),
+          toTimestamp(NOW_MS),
+        );
+      }
+    };
     await insert();
 
     await expect(beginAccountDeletion(db, { userId: USER, nowMs: NOW_MS + 5 })).resolves.toEqual({
