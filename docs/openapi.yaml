@@ -2574,14 +2574,24 @@ components:
         - operator_daily_spend_microdollars
       properties:
         credential:
-          description: The OpenAI key (`provider` is `openai`). It always pays for embeddings.
+          description: The OpenAI key. It always pays for embeddings.
           oneOf:
-            - $ref: "#/components/schemas/ProviderCredentialView"
+            - allOf:
+                - $ref: "#/components/schemas/ProviderCredentialView"
+                - type: object
+                  properties:
+                    provider:
+                      const: openai
             - type: "null"
         anthropic_credential:
-          description: The optional Anthropic key (`provider` is `anthropic`).
+          description: The optional Anthropic key.
           oneOf:
-            - $ref: "#/components/schemas/ProviderCredentialView"
+            - allOf:
+                - $ref: "#/components/schemas/ProviderCredentialView"
+                - type: object
+                  properties:
+                    provider:
+                      const: anthropic
             - type: "null"
         summarization_provider:
           $ref: "#/components/schemas/SummarizationProvider"
