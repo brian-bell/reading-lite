@@ -53,7 +53,10 @@ export function AppShell({
                 <li>
                   <Link to="/save" className="nav-item">
                     <Icon name="plus" size={22} />
-                    <span>Save reading</span>
+                    {/* The column shows "Save"; the bar has room for the rest. */}
+                    <span>
+                      Save <span className="nav-item-rest">reading</span>
+                    </span>
                   </Link>
                 </li>
                 <li>

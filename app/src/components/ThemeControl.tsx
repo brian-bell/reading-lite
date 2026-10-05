@@ -20,7 +20,7 @@ export function ThemeControl({
         Theme
       </span>
       {options.map((option) => (
-        <label key={option.value} className="theme-option">
+        <label key={option.value} className="theme-option" title={option.label}>
           <input
             type="radio"
             name="theme"
