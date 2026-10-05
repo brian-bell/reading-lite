@@ -226,8 +226,11 @@ export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
 export const SummarizationEffortSchema = z.enum(["low", "medium", "high"]);
 export type SummarizationEffort = z.infer<typeof SummarizationEffortSchema>;
 
+export const SummarizationProviderSchema = z.enum(["openai", "anthropic"]);
+export type SummarizationProvider = z.infer<typeof SummarizationProviderSchema>;
+
 export const ProviderCredentialViewSchema = z.object({
-  provider: z.literal("openai"),
+  provider: SummarizationProviderSchema,
   last_four: z.string().length(4),
   status: z.enum(["active", "invalid"]),
   validated_at_ms: z.number().int().nullable(),
@@ -238,10 +241,14 @@ export type ProviderCredentialView = z.infer<typeof ProviderCredentialViewSchema
  * GET /api/auth/provider and the write responses. `daily_spend_cap_microdollars`
  * is the reader's own cap (null when they have not lowered it). Effective spend
  * is that cap when it is set and still under the operator default, otherwise
- * the operator default.
+ * the operator default. `credential` is the OpenAI key and `anthropic_credential`
+ * the optional Anthropic key; `summarization_provider` picks which one
+ * summarizes (embeddings always use OpenAI).
  */
 export const ProviderSettingsResponseSchema = z.object({
-  credential: ProviderCredentialViewSchema.nullable(),
+  credential: ProviderCredentialViewSchema.extend({ provider: z.literal("openai") }).nullable(),
+  anthropic_credential: ProviderCredentialViewSchema.extend({ provider: z.literal("anthropic") }).nullable(),
+  summarization_provider: SummarizationProviderSchema,
   effort: SummarizationEffortSchema,
   daily_spend_cap_microdollars: z.number().int().positive().nullable(),
   effective_daily_spend_microdollars: z.number().int().positive(),
@@ -269,18 +276,33 @@ export const PostProviderKeyBodySchema = z.object({
 });
 export type PostProviderKeyBody = z.infer<typeof PostProviderKeyBodySchema>;
 
-/** A null cap clears the reader's override. */
+/**
+ * A null cap clears the reader's override. Selecting `anthropic` is refused
+ * with `anthropic_key_required` unless the Anthropic key is active.
+ */
 export const PostProviderPreferencesBodySchema = z
   .object({
     effort: SummarizationEffortSchema.optional(),
     daily_spend_cap_microdollars: z.number().int().positive().nullable().optional(),
+    summarization_provider: SummarizationProviderSchema.optional(),
   })
-  .refine((body) => body.effort !== undefined || body.daily_spend_cap_microdollars !== undefined);
+  .refine(
+    (body) =>
+      body.effort !== undefined ||
+      body.daily_spend_cap_microdollars !== undefined ||
+      body.summarization_provider !== undefined,
+  );
 export type PostProviderPreferencesBody = z.infer<typeof PostProviderPreferencesBodySchema>;
 
 export const ProviderSettingsErrorSchema = z.object({
   error: z.string().min(1),
-  code: z.enum(["invalid_key", "model_access", "provider_unavailable", "cap_above_operator_default"]),
+  code: z.enum([
+    "invalid_key",
+    "model_access",
+    "provider_unavailable",
+    "cap_above_operator_default",
+    "anthropic_key_required",
+  ]),
 });
 export type ProviderSettingsError = z.infer<typeof ProviderSettingsErrorSchema>;
 

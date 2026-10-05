@@ -11,7 +11,7 @@ import type { AppBindings } from "../middleware";
 import { jsonAuth } from "./auth-handlers";
 import { fromSql } from "./db";
 import { checkOpenAIProviderKey, type ProviderKeyRejection } from "./provider-key-check";
-import { deleteProviderCredentials, upsertProviderCredential } from "./provider-credentials";
+import { deleteProviderCredential, PROVIDER_OPENAI, upsertProviderCredential } from "./provider-credentials";
 import { readProviderKeyRoots } from "./provider-key-crypto";
 import { loadProviderSettings, loadSpendCaps, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
 import { fetchTenantSpendStatus } from "./spend-status";
@@ -104,7 +104,7 @@ export async function handleConnectProviderKey(
 export async function handleDeleteProviderKey(c: Context<AppBindings>): Promise<Response> {
   const userId = String(c.get("principal").userId);
   const db = fromSql(c.get("sql"));
-  await deleteProviderCredentials(db, userId);
+  await deleteProviderCredential(db, { tenantId: userId, provider: PROVIDER_OPENAI });
   return settingsResponse(await loadProviderSettings(db, userId));
 }
 
@@ -122,9 +122,16 @@ export async function handleUpdateProviderPreferences(c: Context<AppBindings>, n
     ...(parsed.data.daily_spend_cap_microdollars !== undefined
       ? { dailySpendCapMicrodollars: parsed.data.daily_spend_cap_microdollars }
       : {}),
+    ...(parsed.data.summarization_provider !== undefined
+      ? { summarizationProvider: parsed.data.summarization_provider }
+      : {}),
   });
   if (updated === "cap_above_operator_default") {
     return jsonAuth({ error: "cap above operator default", code: "cap_above_operator_default" }, 400);
+  }
+  if (updated === "anthropic_key_required") {
+    const body: ProviderSettingsError = { error: "anthropic key required", code: "anthropic_key_required" };
+    return jsonAuth(body, 400);
   }
   if (updated === "not_found") return jsonAuth({ error: "not found" }, 404);
   if (updated === "limits_missing") return jsonAuth({ error: "internal" }, 500);
