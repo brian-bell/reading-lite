@@ -56,8 +56,9 @@ export interface SummarizerDeps {
   openaiApiKey?: string;
   openaiModel?: string;
   openaiReasoningEffort?: string;
+  // Absent with tenant keys on: the paid fetch attaches the tenant's key.
   anthropicApiKey?: string;
-  anthropicModel: string;
+  anthropicModel?: string;
   anthropicReasoningEffort?: string;
   retry?: RetryDeps;
 }
@@ -76,10 +77,9 @@ export function validateProcessingCredentials(config: {
   anthropicReasoningEffort?: string;
   anthropicModel?: string;
 }): void {
-  if (config.tenantProviderKeys) {
-    parseReasoningEffort(config.openaiReasoningEffort);
-    return;
-  }
+  // Tenant mode validates the reader's provider and effort when it resolves
+  // the attempt's ProcessingConfig, and the paid fetch supplies each key.
+  if (config.tenantProviderKeys) return;
   const provider = parseSummarizerProvider(config.provider);
   if (!config.openaiApiKey) {
     throw new SummarizerConfigError(
@@ -105,19 +105,17 @@ export async function summarizeReading(
 ): Promise<SummarizeReadingResult> {
   const provider = parseSummarizerProvider(deps.provider);
   if (provider === "anthropic") {
-    if (!deps.anthropicApiKey) {
+    if (deps.anthropicApiKey !== undefined && !deps.anthropicApiKey) {
       throw new SummarizerConfigError(
         "missing ANTHROPIC_API_KEY for SUMMARIZER_PROVIDER=anthropic",
       );
     }
-    const effort = parseAnthropicEffort(
-      deps.anthropicReasoningEffort,
-      deps.anthropicModel,
-    );
+    const model = deps.anthropicModel ?? DEFAULT_ANTHROPIC_MODEL;
+    const effort = parseAnthropicEffort(deps.anthropicReasoningEffort, model);
     const result = await summarizeWithAnthropic(input, {
       fetch: deps.fetch,
       apiKey: deps.anthropicApiKey,
-      model: deps.anthropicModel,
+      model,
       effort,
       retry: deps.retry,
     });
@@ -125,7 +123,7 @@ export async function summarizeReading(
       reading: result.reading,
       usage: {
         provider: "anthropic",
-        model: deps.anthropicModel,
+        model,
         input_tokens: result.usage.input_tokens,
         output_tokens: result.usage.output_tokens,
         cache_creation_input_tokens:

@@ -160,6 +160,23 @@ describe("summarizeReading provider selection", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
+  // Tenant mode: the paid fetch attaches the reader's key for the request.
+  it("runs Sonnet 5.5 with no Anthropic key and sends no x-api-key of its own", async () => {
+    const fetchFn = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify(anthropicResponse()), { status: 200 }),
+    );
+    const result = await summarizeReading(input, {
+      fetch: fetchFn,
+      provider: "anthropic",
+      anthropicModel: "claude-sonnet-5-5",
+      anthropicReasoningEffort: "medium",
+    });
+    const headers = new Headers(fetchFn.mock.calls[0]![1]!.headers);
+    expect(headers.has("x-api-key")).toBe(false);
+    expect(headers.get("anthropic-version")).toBe("2023-06-01");
+    expect(result.usage).toMatchObject({ provider: "anthropic", model: "claude-sonnet-5-5" });
+  });
+
   it("does not require or validate OpenAI-only settings when Anthropic is selected", async () => {
     const fetchFn = vi.fn<typeof fetch>(async () =>
       new Response(JSON.stringify(anthropicResponse()), { status: 200 }),
@@ -368,20 +385,16 @@ describe("validateProcessingCredentials", () => {
       }),
     ).not.toThrow();
   });
-  it("does not require deployment keys when tenant keys are on, and still rejects a bad OpenAI effort", () => {
+  // The reader's provider and effort are validated when the attempt's
+  // ProcessingConfig resolves (tenant-provider-keys.test.ts).
+  it("requires no deployment key or deployment effort when tenant keys are on", () => {
     expect(() =>
       validateProcessingCredentials({
         tenantProviderKeys: true,
         provider: "anthropic",
-        openaiReasoningEffort: "high",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      validateProcessingCredentials({
-        tenantProviderKeys: true,
         openaiReasoningEffort: "extreme",
       }),
-    ).toThrow(/invalid OPENAI_SUMMARIZATION_REASONING_EFFORT: extreme/);
+    ).not.toThrow();
   });
   it("ignores Anthropic-only effort when OpenAI is selected", () => {
     expect(() =>

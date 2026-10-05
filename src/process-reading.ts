@@ -5,9 +5,11 @@ import { attemptIoFor, type AttemptIo } from "./attempt-io";
 import { sqlSessionFor, type Sql } from "./modules/db/sql";
 import { fromSql } from "./control-plane/db";
 import {
-  hostedProviderSelection,
+  deploymentProviderKeys,
   paidAuthorizationFor,
   resolveProcessingConfig,
+  summarizerSelectionFor,
+  TenantProviderKeyError,
   tenantProviderKeysEnabled,
 } from "./control-plane/tenant-provider-keys";
 import { PublishCommitError } from "./modules/stores/postgres/reading-writer";
@@ -61,7 +63,7 @@ import {
   type ProcessingLeaseHold,
 } from "./control-plane/processing-leases";
 import { recoverProcessingLeases } from "./control-plane/processing-lease-recovery";
-import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
+import { createPaidFetch, ProviderAccountError, spendRpcFor } from "./control-plane/paid-dispatch";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import type { TenantContext } from "./control-plane/ids";
 import type { Env } from "./index";
@@ -202,7 +204,6 @@ async function runAttempt(
 
     const controlPlane = fromSql(sql);
     const authorization = paidAuthorizationFor(env, controlPlane, tenantId);
-    const providerSelection = hostedProviderSelection(env);
     const paidFetch = (stage: "embed_source" | "summarize" | "embed_summary") => createPaidFetch({
       tenantId, attemptId: opId, stage, fetch: services.fetch,
       // Spend admission uses wall time even when artifact timestamps are injected.
@@ -295,14 +296,8 @@ async function runAttempt(
           },
           {
             fetch: paidFetch("summarize"),
-            ...providerSelection,
-            ...(config.provider === "anthropic"
-              ? { anthropicModel: config.summarization_model, anthropicReasoningEffort: config.effort }
-              : {
-                  openaiModel: config.summarization_model,
-                  openaiReasoningEffort: config.effort,
-                  anthropicModel: env.ANTHROPIC_MODEL,
-                }),
+            ...deploymentProviderKeys(env),
+            ...summarizerSelectionFor(config),
             retry,
           },
         );
@@ -1079,6 +1074,7 @@ function errorFromUnknown(
   failedAt: string,
 ): ManifestError {
   const httpStatus = HttpStatusSchema.safeParse(e instanceof Error ? (e as { status?: unknown }).status : undefined);
+  const provider = e instanceof ProviderAccountError || e instanceof TenantProviderKeyError ? e.provider : undefined;
   // The adapters redact their own messages; this covers any other error whose
   // text carries a key before it becomes a durable, returned reading error.
   return {
@@ -1088,6 +1084,7 @@ function errorFromUnknown(
     failed_at: failedAt,
     retryable: retryableError(e),
     ...(httpStatus.success ? { http_status: httpStatus.data } : {}),
+    ...(provider === undefined ? {} : { provider }),
   };
 }
 

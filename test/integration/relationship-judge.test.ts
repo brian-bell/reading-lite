@@ -15,6 +15,7 @@ import { purgeReading } from "../../src/reading-purge";
 import type { Services } from "../../src/services";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
 import { readProviderCredential, upsertProviderCredential } from "../../src/control-plane/provider-credentials";
+import { updateProviderPreferences } from "../../src/control-plane/provider-settings";
 import { testControlPlane } from "../helpers/control-plane-db";
 import { interceptSql } from "../helpers/sql-faults";
 
@@ -510,6 +511,37 @@ describe("hosted relationship judge", () => {
     );
     expect(checkpoint?.result_json ?? "").not.toContain(founderKey);
     expect(checkpoint?.result_json ?? "").not.toContain("sk-deployment-not-used");
+  });
+
+  it("judges with the reader's Anthropic key, model and effort when the reader selects Anthropic", async () => {
+    runtime.TENANT_PROVIDER_KEYS = "1";
+    runtime.SUMMARIZER_PROVIDER = "openai";
+    runtime.ANTHROPIC_API_KEY = "sk-ant-deployment-not-used";
+    runtime.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "low";
+    runtime.PROVIDER_KEY_SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+    await upsertProviderCredential(testControlPlane(env), {
+      tenantId: FOUNDER_TENANT_ID,
+      plaintext: "sk-ant-founder-4242",
+      root: { secret: parseProviderKeySecret(runtime.PROVIDER_KEY_SECRET), version: 1 },
+      nowMs: Date.parse(runAt),
+      validatedAtMs: Date.parse(runAt),
+      provider: "anthropic",
+    });
+    await updateProviderPreferences(testControlPlane(env), {
+      userId: FOUNDER_TENANT_ID, nowMs: Date.parse(runAt), effort: "high", summarizationProvider: "anthropic",
+    });
+    provider.mockImplementationOnce(async () => Response.json({
+      model: "claude-sonnet-5-5",
+      content: [{ type: "tool_use", name: "judge_relationships", input: { novelty_verdict: "familiar", connections: [{ id: other, reason: "Related evidence" }] } }],
+      usage: { input_tokens: 100, output_tokens: 30, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    }));
+    await processRelationshipJudge(job, runtime, services);
+    const [target, init] = provider.mock.calls[0]!;
+    const headers = new Headers(init?.headers);
+    expect(target).toBe("https://api.anthropic.com/v1/messages");
+    expect([headers.get("x-api-key"), headers.get("authorization")]).toEqual(["sk-ant-founder-4242", null]);
+    expect(JSON.parse(String(init?.body))).toMatchObject({ model: "claude-sonnet-5-5", output_config: { effort: "high" } });
+    expect((await testStore().readManifest(keyPrefix))!.novelty_verdict).toBe("familiar");
   });
 
   it("acks a founder key the provider rejects and marks it invalid", async () => {

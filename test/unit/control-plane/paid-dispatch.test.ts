@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createPaidFetch, SpendAdmissionError, type SpendRpc } from "../../../src/control-plane/paid-dispatch";
 import { TenantProviderKeyError } from "../../../src/control-plane/tenant-provider-keys";
+import { buildSummarizeRequestBody as buildAnthropicBody } from "../../../src/modules/anthropic";
 import { buildSummarizeRequestBody } from "../../../src/modules/openai-summarizer";
 import { fetchWithRetry } from "../../../src/modules/http-retry";
 
@@ -12,6 +13,25 @@ const tenantKey = (resolve: () => Promise<string>) => ({
   resolve: async () => ({ key: await resolve(), credentialVersion: 1 }),
   markInvalid: async () => {},
 });
+const anthropicUrl = "https://api.anthropic.com/v1/messages";
+const anthropicInit = (headers: Record<string, string> = {}) => ({
+  method: "POST",
+  headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...headers },
+  body: JSON.stringify(buildAnthropicBody(
+    { url: "https://example.com", extractedText: "article", similarReadings: [] }, "claude-sonnet-5-5", "low")),
+});
+// A tenant holding both keys, at different credential versions.
+const twoKeys = (resolved: string[] = []) => ({
+  mode: "tenant" as const,
+  resolve: async (provider: "openai" | "anthropic") => {
+    resolved.push(provider);
+    return provider === "anthropic"
+      ? { key: "sk-ant-tenant-7777", credentialVersion: 7 }
+      : { key: "sk-openai-tenant-3333", credentialVersion: 3 };
+  },
+  markInvalid: vi.fn(async (_provider: "openai" | "anthropic", _version: number, _nowMs: number) => {}),
+});
+const anthropicError = (type: string, message: string) => JSON.stringify({ type: "error", error: { type, message } });
 function fixture(overrides: Partial<Parameters<typeof createPaidFetch>[0]> = {}) {
   const calls: Array<{ body: Record<string, unknown> }> = [];
   const rpc: SpendRpc = async (body) => {
@@ -284,5 +304,61 @@ describe("paid dispatch", () => {
     expect(sleep).not.toHaveBeenCalled();
     const rejected = fixture({ fetch: async () => new Response("bad key", { status: 401 }) });
     expect((await rejected.wrapped(url, init)).status).toBe(401);
+  });
+
+  it("resolves the key for the quoted provider and sends only that provider's header", async () => {
+    const resolved: string[] = [];
+    const sent: Array<[string | null, string | null]> = [];
+    const f = fixture({
+      authorization: twoKeys(resolved),
+      fetch: async (_url, request) => {
+        const headers = new Headers(request?.headers);
+        sent.push([headers.get("authorization"), headers.get("x-api-key")]);
+        return Response.json({});
+      },
+    });
+    const stale = { authorization: "Bearer sk-deployment-openai", "x-api-key": "sk-deployment-anthropic" };
+    await f.wrapped(url, { ...init, headers: { ...init.headers, ...stale } });
+    await f.wrapped(anthropicUrl, anthropicInit(stale));
+    expect(resolved).toEqual(["openai", "openai", "anthropic", "anthropic"]);
+    expect(sent).toEqual([["Bearer sk-openai-tenant-3333", null], [null, "sk-ant-tenant-7777"]]);
+  });
+
+  // ADR 0004's Anthropic table. The credit-balance and spend-limit messages
+  // are provisional until a real key confirms them (reading-lite-gh341.15.8).
+  it.each([
+    { status: 401, type: "authentication_error", message: "invalid x-api-key",
+      tenant: "provider_key_invalid", deployment: null },
+    { status: 403, type: "permission_error", message: "Your API key does not have permission to use the specified resource.",
+      tenant: "provider_model_access", deployment: null },
+    { status: 404, type: "not_found_error", message: "model: claude-sonnet-5-5",
+      tenant: "provider_model_access", deployment: null },
+    { status: 402, type: "billing_error", message: "Your account has a billing issue.",
+      tenant: "provider_insufficient_quota", deployment: "hosted_provider_quota" },
+    { status: 400, type: "invalid_request_error",
+      message: "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+      tenant: "provider_insufficient_quota", deployment: "hosted_provider_quota" },
+    { status: 429, type: "rate_limit_error",
+      message: "You have reached your specified API usage limits. You will regain access on 2026-11-01 at 00:00 UTC.",
+      tenant: "provider_insufficient_quota", deployment: "hosted_provider_quota" },
+    { status: 429, type: "rate_limit_error",
+      message: "This request would exceed the rate limit for your organization of 50 requests per minute.",
+      tenant: null, deployment: null },
+    { status: 400, type: "invalid_request_error", message: "max_tokens: Field required",
+      tenant: null, deployment: null },
+    { status: 529, type: "overloaded_error", message: "Overloaded", tenant: null, deployment: null },
+  ])("classifies an Anthropic $status $type as $tenant on the tenant's key and $deployment on deployment keys", async (row) => {
+    const reply = async () => new Response(anthropicError(row.type, row.message), { status: row.status });
+    const authorization = twoKeys();
+    const tenant = fixture({ authorization, fetch: reply });
+    const deployment = fixture({ fetch: reply });
+    for (const [f, code] of [[tenant, row.tenant], [deployment, row.deployment]] as const) {
+      if (code === null) expect((await f.wrapped(anthropicUrl, anthropicInit())).status).toBe(row.status);
+      else await expect(f.wrapped(anthropicUrl, anthropicInit())).rejects.toMatchObject({
+        name: code, status: row.status, provider: "anthropic",
+      });
+    }
+    if (row.tenant === "provider_key_invalid") expect(authorization.markInvalid.mock.calls).toEqual([["anthropic", 7, 1000]]);
+    else expect(authorization.markInvalid).not.toHaveBeenCalled();
   });
 });

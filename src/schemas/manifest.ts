@@ -112,6 +112,9 @@ export const ManifestErrorSchema = z.object({
   // one (BadStatusError, XApiError, OpenAIError, AnthropicError, …). Provider
   // classes carry the provider's own message, which does not repeat it.
   http_status: HttpStatusSchema.optional(),
+  // Whose account a provider account or key failure is about, so failure copy
+  // can name it. Set only for those codes.
+  provider: z.enum(["openai", "anthropic"]).optional(),
 });
 export type ManifestError = z.infer<typeof ManifestErrorSchema>;
 

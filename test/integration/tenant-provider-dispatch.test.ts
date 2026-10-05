@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseProviderKeySecret } from "../../src/control-plane/crypto";
 import {
+  deleteProviderCredential,
   deleteProviderCredentials,
   markProviderCredentialInvalid,
   readProviderCredential,
@@ -33,6 +34,30 @@ function embeddingResponse(): Response {
   });
 }
 
+const SUMMARY = {
+  title: "Test Article",
+  tldr: "A short summary.",
+  tags: ["test"],
+  keywords: ["test", "article", "integration"],
+  people: [],
+  orgs: [],
+  novelty_verdict: "novel",
+  connections: [],
+  summary_markdown: "summary body",
+};
+
+function anthropicSummaryResponse(): Response {
+  return Response.json({
+    id: "msg_01",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-5-5",
+    stop_reason: "tool_use",
+    content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: SUMMARY }],
+    usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  });
+}
+
 function summaryResponse(): Response {
   return Response.json({
     id: "resp_01",
@@ -43,17 +68,7 @@ function summaryResponse(): Response {
       role: "assistant",
       content: [{
         type: "output_text",
-        text: JSON.stringify({
-          title: "Test Article",
-          tldr: "A short summary.",
-          tags: ["test"],
-          keywords: ["test", "article", "integration"],
-          people: [],
-          orgs: [],
-          novelty_verdict: "novel",
-          connections: [],
-          summary_markdown: "summary body",
-        }),
+        text: JSON.stringify(SUMMARY),
       }],
     }],
     usage: {
@@ -74,6 +89,7 @@ function runtime(): Env {
     OPENAI_API_KEY: DEPLOYMENT,
     ANTHROPIC_API_KEY: "sk-anthropic-deployment",
     SUMMARIZER_PROVIDER: "anthropic",
+    ANTHROPIC_MODEL: "claude-sonnet-5-5",
     OPENAI_SUMMARIZATION_MODEL: "gpt-5.6-terra",
     OPENAI_SUMMARIZATION_REASONING_EFFORT: "low",
     RETRY_MAX_ATTEMPTS: "2",
@@ -128,14 +144,34 @@ async function seed(tenant: TenantContext, url: string): Promise<ProcessReadingA
   return job;
 }
 
-async function storeKey(tenantId: string, plaintext: string): Promise<void> {
+async function storeKey(tenantId: string, plaintext: string, provider: "openai" | "anthropic" = "openai"): Promise<void> {
   await upsertProviderCredential(testControlPlane(env), {
     tenantId,
     plaintext,
     root: { secret: parseProviderKeySecret(SECRET), version: 1 },
     nowMs: Date.parse(createdAt),
     validatedAtMs: Date.parse(createdAt),
+    provider,
   });
+}
+
+// A reader holding both keys who summarizes with Anthropic.
+async function anthropicReader(): Promise<{ tenantId: string; tenant: TenantContext }> {
+  const { tenantId } = await insertQuotaTenant(env as unknown as Env, { submissions_per_hour: 100, monthly_readings: 100 });
+  await storeKey(tenantId, OPENAI_KEY);
+  await storeKey(tenantId, ANTHROPIC_KEY, "anthropic");
+  await expect(updateProviderPreferences(testControlPlane(env), {
+    userId: tenantId, nowMs: Date.parse(createdAt), effort: "medium", summarizationProvider: "anthropic",
+  })).resolves.toBe("ok");
+  return { tenantId, tenant: { tenantId: parseTenantId(tenantId)! } };
+}
+const OPENAI_KEY = "sk-tenant-openai-1212";
+const ANTHROPIC_KEY = "sk-ant-tenant-3434";
+
+// Which host each request went to and which key headers it carried.
+function sentFrom(input: RequestInfo | URL, init: RequestInit | undefined): string {
+  const headers = new Headers(init?.headers);
+  return `${new URL(String(input)).pathname} auth=${headers.get("authorization") ?? "-"} x-api-key=${headers.get("x-api-key") ?? "-"}`;
 }
 
 function authOf(init: RequestInit | undefined): string {
@@ -417,6 +453,90 @@ describe("tenant provider key dispatch", () => {
     expect((await testReadingsFor(tenant).manifest(job.id))?.error?.code).toBe("provider_key_invalid");
     const credential = await readProviderCredential(testControlPlane(env), tenantId);
     expect(credential).toMatchObject({ status: "active", credentialVersion: 2, lastFour: "6666" });
+  });
+});
+
+describe("tenant provider key dispatch with Anthropic selected", () => {
+  it("embeds with the OpenAI key and summarizes with the Anthropic key through an HTTP retry and a queue redelivery", async () => {
+    const { tenantId, tenant } = await anthropicReader();
+    const logged: string[] = [];
+    for (const method of ["info", "warn", "error"] as const) {
+      vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
+    }
+    const sent: string[] = [];
+    const efforts: string[] = [];
+    let messages = 0;
+    const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+      sent.push(sentFrom(input, init));
+      if (String(input).includes("/embeddings")) return embeddingResponse();
+      efforts.push(JSON.parse(String(init?.body)).output_config.effort);
+      messages += 1;
+      if (messages === 1) return new Response("overloaded", { status: 529 });
+      if (messages === 2) return new Response("slow", { status: 429, headers: { "retry-after": "1" } });
+      return anthropicSummaryResponse();
+    });
+    const job = await seed(tenant, "https://anthropic-reader.example/article");
+    await expect(processReading(job, runtime(), services(fetchFn), tenant)).rejects.toBeInstanceOf(RateLimitedError);
+    await processReading(job, runtime(), services(fetchFn), tenant);
+
+    const openai = `auth=Bearer ${OPENAI_KEY} x-api-key=-`;
+    const anthropic = `auth=- x-api-key=${ANTHROPIC_KEY}`;
+    expect(sent).toEqual([
+      `/v1/embeddings ${openai}`,
+      `/v1/messages ${anthropic}`,
+      `/v1/messages ${anthropic}`,
+      `/v1/messages ${anthropic}`,
+      `/v1/embeddings ${openai}`,
+    ]);
+    expect(efforts).toEqual(["medium", "medium", "medium"]);
+    expect((await testReadingsFor(tenant).manifest(job.id))?.status).toBe("ready");
+    await expect(
+      testReadingsFor(tenant).writer.readCheckpoint({ id: job.id, attemptId: job.attemptId }),
+    ).resolves.toMatchObject({ config: { provider: "anthropic", summarization_model: "claude-sonnet-5-5", effort: "medium" } });
+    const row = await testControlPlane(env).first<{ text: string }>(
+      `SELECT concat(checkpoint::text, error::text, events::text) AS text
+       FROM reading_attempts WHERE tenant_id = ? ORDER BY started_at DESC LIMIT 1`,
+      tenantId,
+    );
+    for (const secret of [OPENAI_KEY, ANTHROPIC_KEY, DEPLOYMENT, "sk-anthropic-deployment"]) {
+      expect(row?.text ?? "").not.toContain(secret);
+      expect(logged.join("\n")).not.toContain(secret);
+    }
+  });
+
+  it("marks only the Anthropic row invalid when Anthropic rejects the key", async () => {
+    const { tenantId, tenant } = await anthropicReader();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchFn = vi.fn<typeof fetch>(async (input) => String(input).includes("/embeddings")
+      ? embeddingResponse()
+      : new Response('{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', { status: 401 }));
+    const job = await seed(tenant, "https://anthropic-rejected.example/article");
+    await processReading(job, runtime(), services(fetchFn), tenant);
+
+    expect((await testReadingsFor(tenant).manifest(job.id))?.error).toMatchObject({
+      code: "provider_key_invalid", provider: "anthropic", stage: "summarize", http_status: 401, retryable: false,
+    });
+    const db = testControlPlane(env);
+    expect((await readProviderCredential(db, tenantId, "anthropic"))?.status).toBe("invalid");
+    expect((await readProviderCredential(db, tenantId, "openai"))?.status).toBe("active");
+  });
+
+  it("fails summarize with provider_key_required once the Anthropic key is removed, with no fallback, after embed_source ran", async () => {
+    const { tenantId, tenant } = await anthropicReader();
+    const sent: string[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+      sent.push(sentFrom(input, init));
+      if (!String(input).includes("/embeddings")) throw new Error("summarized after the Anthropic key was removed");
+      await deleteProviderCredential(testControlPlane(env), { tenantId, provider: "anthropic" });
+      return embeddingResponse();
+    });
+    const job = await seed(tenant, "https://anthropic-removed.example/article");
+    await processReading(job, runtime(), services(fetchFn), tenant);
+
+    expect(sent).toEqual([`/v1/embeddings auth=Bearer ${OPENAI_KEY} x-api-key=-`]);
+    expect((await testReadingsFor(tenant).manifest(job.id))?.error).toMatchObject({
+      code: "provider_key_required", provider: "anthropic", stage: "summarize", retryable: false,
+    });
   });
 });
 

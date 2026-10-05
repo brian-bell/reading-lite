@@ -1,5 +1,4 @@
 import type { ControlPlaneDb } from "./db";
-import type { SummarizationEffort } from "../schemas/api";
 import { OPENAI_EMBEDDING_MODEL } from "../modules/embeddings";
 import { PAID_PRICE_CATALOG_VERSION } from "../modules/paid-pricing";
 import type { ProcessingConfig } from "../modules/processing-checkpoint";
@@ -9,9 +8,9 @@ import {
   parseReasoningEffort,
   parseSummarizerProvider,
 } from "../modules/summarizer";
-import { readSummarizationSettings } from "./provider-settings";
+import { readSummarizationSettings, type SummarizationSettings } from "./provider-settings";
 import { decryptProviderKey, readProviderKeyRoots } from "./provider-key-crypto";
-import { markProviderCredentialInvalid, readProviderCredential } from "./provider-credentials";
+import { markProviderCredentialInvalid, readProviderCredential, type ProviderName } from "./provider-credentials";
 import type { PaidAuthorization } from "./paid-dispatch";
 
 export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }): boolean {
@@ -37,7 +36,10 @@ export async function providerKeyReady(
 }
 
 export class TenantProviderKeyError extends Error {
-  constructor(readonly code: "provider_key_required" | "provider_key_undecryptable") {
+  constructor(
+    readonly code: "provider_key_required" | "provider_key_undecryptable",
+    readonly provider: ProviderName = "openai",
+  ) {
     super(code === "provider_key_required"
       ? "connect a key, then retry"
       : "provider key could not be decrypted");
@@ -45,7 +47,7 @@ export class TenantProviderKeyError extends Error {
   }
 }
 
-export async function resolveTenantOpenAIKey(
+export async function resolveTenantProviderKey(
   db: ControlPlaneDb,
   env: {
     PROVIDER_KEY_SECRET?: string;
@@ -54,9 +56,10 @@ export async function resolveTenantOpenAIKey(
     PROVIDER_KEY_PREVIOUS_VERSION?: string;
   },
   tenantId: string,
+  provider: ProviderName,
 ): Promise<{ key: string; credentialVersion: number }> {
-  const row = await readProviderCredential(db, tenantId);
-  if (!row || row.status !== "active") throw new TenantProviderKeyError("provider_key_required");
+  const row = await readProviderCredential(db, tenantId, provider);
+  if (!row || row.status !== "active") throw new TenantProviderKeyError("provider_key_required", provider);
   try {
     const key = await decryptProviderKey({
       roots: readProviderKeyRoots(env),
@@ -72,9 +75,10 @@ export async function resolveTenantOpenAIKey(
     console.error(JSON.stringify({
       event: "provider_key_undecryptable",
       tenant_id: tenantId,
+      provider,
       credential_version: row.credentialVersion,
     }));
-    throw new TenantProviderKeyError("provider_key_undecryptable");
+    throw new TenantProviderKeyError("provider_key_undecryptable", provider);
   }
 }
 
@@ -92,25 +96,26 @@ export function paidAuthorizationFor(
   if (!tenantProviderKeysEnabled(env)) return { mode: "deployment" };
   return {
     mode: "tenant",
-    resolve: () => resolveTenantOpenAIKey(db, env, tenantId),
-    markInvalid: async (credentialVersion, nowMs) => {
-      await markProviderCredentialInvalid(db, { tenantId, credentialVersion, nowMs });
+    resolve: (provider) => resolveTenantProviderKey(db, env, tenantId, provider),
+    markInvalid: async (provider, credentialVersion, nowMs) => {
+      await markProviderCredentialInvalid(db, { tenantId, credentialVersion, nowMs, provider });
     },
   };
 }
 
-export function hostedProviderSelection(env: {
+/**
+ * The deployment's keys for the adapters to send, or none with tenant keys
+ * on, when the paid fetch attaches the tenant's key for each request. Which
+ * provider runs comes from the attempt's ProcessingConfig, not from here.
+ */
+export function deploymentProviderKeys(env: {
   TENANT_PROVIDER_KEYS?: string;
-  SUMMARIZER_PROVIDER?: string;
   OPENAI_API_KEY: string;
   ANTHROPIC_API_KEY?: string;
-}): { provider?: string; openaiApiKey?: string; anthropicApiKey?: string } {
-  if (tenantProviderKeysEnabled(env)) return { provider: "openai" };
-  return {
-    provider: env.SUMMARIZER_PROVIDER,
-    openaiApiKey: env.OPENAI_API_KEY,
-    anthropicApiKey: env.ANTHROPIC_API_KEY,
-  };
+}): { openaiApiKey?: string; anthropicApiKey?: string } {
+  if (tenantProviderKeysEnabled(env)) return {};
+  // An unset deployment key is "", which the adapters refuse before dispatch.
+  return { openaiApiKey: env.OPENAI_API_KEY ?? "", anthropicApiKey: env.ANTHROPIC_API_KEY ?? "" };
 }
 
 type ProcessingConfigEnv = {
@@ -123,29 +128,43 @@ type ProcessingConfigEnv = {
 };
 
 /**
- * The configuration an attempt's paid stages run under (ADR 0004). With tenant
- * keys on, summaries use OpenAI at the reader's effort; otherwise the
- * deployment's provider, model and effort. It names no key: which key pays
- * does not change the outputs.
+ * The configuration an attempt's paid stages and the judges run under (ADR
+ * 0004). With tenant keys on, the reader's provider at the reader's effort,
+ * on that provider's one fixed model; otherwise the deployment's provider,
+ * model and effort. It names no key: which key pays does not change the
+ * outputs.
  */
-export function processingConfigFor(env: ProcessingConfigEnv, tenantEffort?: SummarizationEffort): ProcessingConfig {
+export function processingConfigFor(env: ProcessingConfigEnv, tenant?: SummarizationSettings): ProcessingConfig {
   const tenantKeys = tenantProviderKeysEnabled(env);
-  const provider = tenantKeys ? "openai" : parseSummarizerProvider(env.SUMMARIZER_PROVIDER);
+  const provider = tenantKeys ? tenant?.provider ?? "openai" : parseSummarizerProvider(env.SUMMARIZER_PROVIDER);
   const common = { embedding_model: OPENAI_EMBEDDING_MODEL, catalog_version: PAID_PRICE_CATALOG_VERSION };
   if (provider === "anthropic") {
     return {
       provider,
       summarization_model: env.ANTHROPIC_MODEL,
-      effort: parseAnthropicEffort(env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT, env.ANTHROPIC_MODEL),
+      effort: parseAnthropicEffort(tenantKeys ? tenant?.effort : env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT, env.ANTHROPIC_MODEL),
       ...common,
     };
   }
   return {
     provider,
     summarization_model: env.OPENAI_SUMMARIZATION_MODEL ?? DEFAULT_OPENAI_SUMMARIZATION_MODEL,
-    effort: parseReasoningEffort(tenantKeys ? tenantEffort : env.OPENAI_SUMMARIZATION_REASONING_EFFORT),
+    effort: parseReasoningEffort(tenantKeys ? tenant?.effort : env.OPENAI_SUMMARIZATION_REASONING_EFFORT),
     ...common,
   };
+}
+
+/** The summarizer and judge deps that run `config`'s provider, model and effort. */
+export function summarizerSelectionFor(config: ProcessingConfig): {
+  provider: ProcessingConfig["provider"];
+  openaiModel?: string;
+  openaiReasoningEffort?: string;
+  anthropicModel?: string;
+  anthropicReasoningEffort?: string;
+} {
+  return config.provider === "anthropic"
+    ? { provider: "anthropic", anthropicModel: config.summarization_model, anthropicReasoningEffort: config.effort }
+    : { provider: "openai", openaiModel: config.summarization_model, openaiReasoningEffort: config.effort };
 }
 
 export async function resolveProcessingConfig(
@@ -157,5 +176,5 @@ export async function resolveProcessingConfig(
   // Fail closed: a reader without a settings row has no effort to run at.
   const settings = await readSummarizationSettings(db, tenantId);
   if (settings === null) throw new Error("tenant has no summarization effort setting");
-  return processingConfigFor(env, settings.effort);
+  return processingConfigFor(env, settings);
 }

@@ -55,7 +55,8 @@ export class SourceRejectedError extends Error {
 
 export interface AnthropicDeps {
   fetch: typeof fetch;
-  apiKey: string;
+  // Absent when the paid fetch attaches the tenant's key.
+  apiKey?: string;
   model: string;
   effort: AnthropicReasoningEffort;
   retry?: RetryDeps;
@@ -296,7 +297,7 @@ export async function summarizeReading(
   const init: RequestInit = {
     method: "POST",
     headers: {
-      "x-api-key": deps.apiKey,
+      ...(deps.apiKey ? { "x-api-key": deps.apiKey } : {}),
       "anthropic-version": ANTHROPIC_VERSION,
       "content-type": "application/json",
     },

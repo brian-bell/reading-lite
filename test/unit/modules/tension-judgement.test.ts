@@ -266,6 +266,7 @@ describe("judgeTension", () => {
         fetch: fetchFn,
         provider: "anthropic",
         openaiApiKey: "sk",
+        anthropicApiKey: "",
         anthropicModel: "claude-sonnet-5",
       }),
     ).rejects.toThrow(/ANTHROPIC_API_KEY/);

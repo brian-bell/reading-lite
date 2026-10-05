@@ -8,7 +8,7 @@ import {
 import { updateProviderPreferences } from "../../../src/control-plane/provider-settings";
 import {
   resolveProcessingConfig,
-  resolveTenantOpenAIKey,
+  resolveTenantProviderKey,
   TenantProviderKeyError,
 } from "../../../src/control-plane/tenant-provider-keys";
 import { useControlPlane } from "../../helpers/control-plane-pg";
@@ -36,11 +36,11 @@ async function seeded() {
   return db;
 }
 
-describe("resolveTenantOpenAIKey", () => {
+describe("resolveTenantProviderKey", () => {
   it("returns the active key and fails closed for a missing, invalid, or other tenant", async () => {
     const db = await seeded();
     const env = { PROVIDER_KEY_SECRET: SECRET };
-    await expect(resolveTenantOpenAIKey(db, env, USER)).rejects.toMatchObject({
+    await expect(resolveTenantProviderKey(db, env, USER, "openai")).rejects.toMatchObject({
       name: "provider_key_required",
       message: "connect a key, then retry",
     });
@@ -51,14 +51,31 @@ describe("resolveTenantOpenAIKey", () => {
       nowMs: NOW_MS,
       validatedAtMs: NOW_MS,
     });
-    expect(await resolveTenantOpenAIKey(db, env, USER)).toEqual({ key: KEY, credentialVersion: stored.credentialVersion });
-    await expect(resolveTenantOpenAIKey(db, env, OTHER)).rejects.toBeInstanceOf(TenantProviderKeyError);
+    expect(await resolveTenantProviderKey(db, env, USER, "openai")).toEqual({ key: KEY, credentialVersion: stored.credentialVersion });
+    await expect(resolveTenantProviderKey(db, env, OTHER, "openai")).rejects.toBeInstanceOf(TenantProviderKeyError);
     await markProviderCredentialInvalid(db, {
       tenantId: USER,
       credentialVersion: stored.credentialVersion,
       nowMs: NOW_MS + 1,
     });
-    await expect(resolveTenantOpenAIKey(db, env, USER)).rejects.toMatchObject({ name: "provider_key_required" });
+    await expect(resolveTenantProviderKey(db, env, USER, "openai")).rejects.toMatchObject({ name: "provider_key_required" });
+  });
+
+  it("resolves each provider's own row and names the provider when it is missing", async () => {
+    const db = await seeded();
+    const env = { PROVIDER_KEY_SECRET: SECRET };
+    const root = { secret: parseProviderKeySecret(SECRET), version: 1 };
+    await upsertProviderCredential(db, { tenantId: USER, plaintext: KEY, root, nowMs: NOW_MS, validatedAtMs: NOW_MS });
+    await expect(resolveTenantProviderKey(db, env, USER, "anthropic")).rejects.toMatchObject({
+      name: "provider_key_required", provider: "anthropic",
+    });
+    const anthropic = await upsertProviderCredential(db, {
+      tenantId: USER, plaintext: "sk-ant-tenant-9999", root, nowMs: NOW_MS, validatedAtMs: NOW_MS, provider: "anthropic",
+    });
+    expect(await resolveTenantProviderKey(db, env, USER, "anthropic")).toEqual({
+      key: "sk-ant-tenant-9999", credentialVersion: anthropic.credentialVersion,
+    });
+    expect((await resolveTenantProviderKey(db, env, USER, "openai")).key).toBe(KEY);
   });
 
   it("logs an operator event without the plaintext when the ciphertext will not open", async () => {
@@ -74,10 +91,10 @@ describe("resolveTenantOpenAIKey", () => {
     vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
       logged.push(args.map(String).join(" "));
     });
-    await expect(resolveTenantOpenAIKey(db, {
+    await expect(resolveTenantProviderKey(db, {
       PROVIDER_KEY_SECRET: OTHER_SECRET,
       PROVIDER_KEY_VERSION: "2",
-    }, USER)).rejects.toMatchObject({
+    }, USER, "openai")).rejects.toMatchObject({
       name: "provider_key_undecryptable",
       message: "provider key could not be decrypted",
     });
@@ -127,5 +144,25 @@ describe("resolveProcessingConfig", () => {
       expect(text).not.toContain(secret);
     }
     await expect(resolveProcessingConfig(env, db, OTHER)).rejects.toThrow("tenant has no summarization effort setting");
+  });
+
+  it("uses Anthropic's fixed model at the reader's effort when the reader selects it", async () => {
+    const db = await seeded();
+    await upsertProviderCredential(db, {
+      tenantId: USER,
+      plaintext: "sk-ant-tenant-9999",
+      root: { secret: parseProviderKeySecret(SECRET), version: 1 },
+      nowMs: NOW_MS,
+      validatedAtMs: NOW_MS,
+      provider: "anthropic",
+    });
+    await updateProviderPreferences(db, { userId: USER, nowMs: NOW_MS, effort: "low", summarizationProvider: "anthropic" });
+    const env = { ...deployment, TENANT_PROVIDER_KEYS: "1" };
+    expect(await resolveProcessingConfig(env, db, USER)).toEqual({
+      provider: "anthropic", summarization_model: "claude-sonnet-5-5", effort: "low", ...common,
+    });
+    // The deployment's model is checked against the tenant's effort, fail closed.
+    await expect(resolveProcessingConfig({ ...env, ANTHROPIC_MODEL: "claude-unknown" }, db, USER))
+      .rejects.toMatchObject({ name: "SummarizerConfigError" });
   });
 });
