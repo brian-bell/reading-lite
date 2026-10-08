@@ -1,7 +1,6 @@
-// The queue limit a Markdown import must fit (#408), kept free of imports so
-// the root Worker suite can pin it to the operator tooling's own constants
-// (test/unit/import-markdown/app-limit.test.ts): the browser and the operator
-// gates refuse the same pastes, and neither drifts from the other.
+// The queue limit a Markdown import must fit (#408), kept free of imports.
+// It must equal the operator tooling's own constant so the browser and the
+// operator gates refuse the same pastes; no test pins the two together.
 
 /** Cloudflare Queues' message limit, as the operator tooling spells it (scripts/import-markdown-lib/parse.ts). */
 export const MARKDOWN_IMPORT_MAX_BYTES = 128_000;

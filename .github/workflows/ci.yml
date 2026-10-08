@@ -132,7 +132,42 @@ jobs:
       - run: npx wrangler --version
       - run: npm run types:check
       - run: npm run typecheck
-      - run: npm run test:ci
+      - run: npm run test:workers:ci
+
+  # The Node pool is three small guard files, so it runs on a hosted runner
+  # rather than queueing behind the Worker suite on the single self-hosted one.
+  # control-plane-guards needs PostgreSQL; globalSetup migrates this database.
+  worker-node:
+    name: Worker (node pool)
+    needs: changes
+    if: needs.changes.outputs.worker == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg18
+        env:
+          POSTGRES_USER: reading_lite
+          POSTGRES_PASSWORD: reading_lite
+          POSTGRES_DB: reading_lite_test
+        ports:
+          - 5432:5432
+        options: >-
+          --init
+          --health-cmd "pg_isready -U reading_lite -d reading_lite_test"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgres://reading_lite:reading_lite@127.0.0.1:5432/reading_lite_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run test:node:ci
 
   ops:
     name: Ops CLI
@@ -150,7 +185,7 @@ jobs:
       - run: npm run ops -- --help
       - run: npm run ops -- deploy worker --help
       # This job has no Postgres service; no test it runs may need a database.
-      - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
+      - run: npx vitest run --project node test/unit/operator-guards.test.ts -t "launches wrangler"
         env:
           SKIP_TEST_POSTGRES: "1"
 

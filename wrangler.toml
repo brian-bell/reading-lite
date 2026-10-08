@@ -304,7 +304,7 @@ max_concurrency = 1
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
 # the loop the bound exists to avoid. Two spare retries cover the deferral and
-# one blip. test/unit/deploy/account-wipe-wrangler.test.ts pins the inequality.
+# one blip. Keep max_retries above the wipe's attempt bound; no test pins it.
 max_retries = 6
 dead_letter_queue = "reading-lite-staging-wipe-dlq"
 
@@ -575,7 +575,7 @@ max_concurrency = 1
 # So `>=` would leave zero headroom: one deferral plus four attempts exactly
 # exhausts a budget of 4, and such a wipe dead-letters before the bound trips —
 # the loop the bound exists to avoid. Two spare retries cover the deferral and
-# one blip. test/unit/deploy/account-wipe-wrangler.test.ts pins the inequality.
+# one blip. Keep max_retries above the wipe's attempt bound; no test pins it.
 max_retries = 6
 dead_letter_queue = "reading-lite-wipe-dlq"
 

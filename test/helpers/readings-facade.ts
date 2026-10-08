@@ -2,9 +2,8 @@
 // PostgreSQL rows (ADR 0005): seed a reading the way the importer would, and
 // read it back the way the API does.
 //
-// Pool-neutral: it takes the environment it should use. The workers pool builds
-// one from `cloudflare:test` (./test-readings.ts); the Node pool builds one
-// over a direct connection and a fake bucket (./node-readings.ts).
+// It takes the environment it should use; the workers pool builds one from
+// `cloudflare:test` (./test-readings.ts).
 //
 // Each entry point shares one session per test file and ends it after the file.
 import type { TenantContext } from "../../src/control-plane/ids";

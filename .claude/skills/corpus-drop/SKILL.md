@@ -97,13 +97,10 @@ Confirm the target set, then re-run with `--execute`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-drop.ts` (via `scripts/ops.ts`)
-- Pure resolver (tested): `scripts/corpus-lib/drop.ts`
+- Pure resolver: `scripts/corpus-lib/drop.ts`
 - Rows and content keys: `scripts/pg-lib/operator-corpus.ts`, over
   `PgReadingStore`
 - R2 delete (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
-- Tests: `test/unit/corpus/drop.test.ts` (resolver) and
-  `test/unit/scripts/ops-corpus-pg.test.ts` (end to end, one case per
-  content tier)
 
 ## Related
 - **`corpus-audit`** — find what's broken first (it surfaces the ids/URLs).

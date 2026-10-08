@@ -64,11 +64,13 @@ npm run test:browser:ci         # two matrix projects and onboarding, as CI runs
 There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; frontend verification is
 `typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
-runs the Worker job as `npm run test:ci`, the `app/` checks and its
+runs the Worker job as `npm run test:workers:ci` and the Worker node-pool job
+(hosted runner) as `npm run test:node:ci`, the `app/` checks and its
 browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
 locally before shipping a Worker, migration, or operator-command change.
-The local-only groups are the corpus batch catalogs, extract-agent, refresh
-simulations, relationship judge scenarios, and `test/integration/readings.test.ts`.
+The local-only files are the eight integration files `test/ci-scope.ts` omits,
+among them the relationship and tension judge scenarios and
+`test/integration/readings.test.ts`.
 The browser-evidence job runs `test:browser:ci`, the essential subset; run the
 full `test:browser` locally before shipping a frontend change. The `app/`
 suites hold only guards no other layer catches (see the
@@ -117,8 +119,8 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 
 ## Development constraints
 
-- Use TDD by default for behavior changes. Test public behavior and inject
-  `fetch`, `now`, and `newId` through `src/services.ts`.
+- Test public behavior and inject `fetch`, `now`, and `newId` through
+  `src/services.ts`.
 - Validate at seams with zod. Always parse rows read from PostgreSQL into the
   manifest and list shapes. Keep manifest and API schemas, tests, and
   `docs/openapi.yaml` synchronized.
@@ -193,7 +195,12 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 `vitest.workspace.ts` separates Workers and Node pools. Integration tests run
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
-`WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
+`WORKERS_RUNTIME_UNIT_TESTS`. The Node pool is three files of guards no
+integration test owns: `test/unit/operator-guards.test.ts` (operator, deploy
+and batch refusals, app fixture freshness), `control-plane-guards.test.ts`
+(account teardown, paid dispatch, provider-key binding) and
+`pipeline-guards.test.ts` (cached-prefix snapshots, provider config, SSRF
+hosts, R2 key spelling, content sweep). `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
 tests inject `installQueueStub()`. Similarity is pgvector.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
@@ -213,8 +220,7 @@ database: wrap control-plane ones in `useControlPlane()` / `useRolledBackSql()`
 (`test/helpers/control-plane-pg.ts`, `pg-rollback.ts`), which roll each test back
 and turn nested transactions into savepoints; that shares one client, so real
 concurrency belongs in a workers-pool test. Seed and inspect reading state
-through `test/helpers/test-readings.ts` (workers) or `node-readings.ts` (Node
-pool); migration-runner tests create scratch databases.
+through `test/helpers/test-readings.ts`.
 Do not drain a queue before asserting an active pending state.
 
 Give each behavior one test owner; don't re-assert the same case at unit and
