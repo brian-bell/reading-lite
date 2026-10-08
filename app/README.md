@@ -466,7 +466,8 @@ new reader from the signed-out front door through the samples, sign-in, and
 connecting a key to the first save, and checks on the way that the session
 cookie is out of page script's reach, the key never reaches browser storage,
 and each write carries the CSRF token and the tenant pin. Screenshots go to
-`e2e/screenshots/` and are uploaded by CI for review; they are not pixel-diff
+`e2e/screenshots/` and are attached to the HTML report, which CI uploads for
+three days of review; they are not pixel-diff
 baselines, because the design spec uses system fonts and wrapping differs by
 machine.
 

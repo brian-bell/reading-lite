@@ -239,12 +239,13 @@ jobs:
       # pixel gates. `npm run test:browser` is the full matrix, for local
       # verification.
       - run: npm run test:browser:ci
+      # The report already attaches every screenshot, so upload it alone; the
+      # e2e/screenshots copy would double the artifact. Three days covers a
+      # review: at 14 the artifacts outgrew the account's Actions storage.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: browser-evidence
-          path: |
-            app/e2e/screenshots
-            app/e2e/report
-          retention-days: 14
+          path: app/e2e/report
+          retention-days: 3
           if-no-files-found: warn
