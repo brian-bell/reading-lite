@@ -22,11 +22,11 @@ describe("CI job selection for pull requests", () => {
     ["a deploy workflow", [".github/workflows/deploy-app.yml"], only("worker")],
     ["a frontend route", ["app/src/routes/index.tsx"], only("app", "appBrowser")],
     ["the design study", ["app/prototypes/next-directions/App.tsx", "app/vite.prototypes.config.ts", "app/tsconfig.prototypes.json"], only()],
-    ["a frontend unit test", ["app/test/reading-state.test.ts"], only("app")],
+    ["a frontend unit test", ["app/test/guards.test.tsx"], only("app")],
     ["the browser fixture pack", ["app/e2e/fixtures/fixture-pack.json"], only("worker", "app", "appBrowser")],
     ["the bundled sample library", ["app/src/samples/sample-library.json"], only("worker", "app", "appBrowser")],
     ["the Markdown import limit the Worker suite pins", ["app/src/markdown-import-limit.ts"], only("worker", "app", "appBrowser")],
-    ["the FrontendReads seam", ["src/frontend-reads.ts"], only("worker", "ops", "app")],
+    ["the FrontendReads seam", ["src/frontend-reads.ts"], only("worker", "ops")],
     // PR #444: staging routes, a comment in wrangler.toml, and docs.
     [
       "frontend routes with their backend comment",

@@ -5,8 +5,10 @@
 // The magic link itself is mail, so the spec requests one and then holds the
 // session the link would have started: the stub's new reader, whose library is
 // empty and who has no key. Every write after that is answered in the browser.
-// Requests and the path through the pages, so one viewport and theme; the
-// matrix screenshots each state on the way in every project.
+// Requests and the path through the pages, so one viewport and theme. On the
+// way it checks what only a browser can: the session cookie is out of page
+// script's reach, the connected key never lands in browser storage, and every
+// write carries the CSRF token and the tenant pin.
 
 import { expect, test as base } from "@playwright/test";
 import { harnessBaseUrl } from "../harness";
@@ -74,6 +76,9 @@ test("goes from the front door through the samples and a key to the first save",
   await key.getByRole("button", { name: "Connect key" }).click();
   await expect(key.getByText("Connected", { exact: true })).toBeVisible();
   expect(provider.connects).toHaveLength(1);
+  expect(await page.evaluate(() => document.cookie), "the session cookie is HttpOnly").not.toMatch(/session=/);
+  const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }));
+  expect(stored, "the key is not in browser storage").not.toContain(E2E_PROVIDER_API_KEY);
 
   await page.getByRole("complementary", { name: "Next step" }).getByRole("link", { name: "Save a reading" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Save reading" })).toBeVisible();
@@ -85,4 +90,12 @@ test("goes from the front door through the samples and a key to the first save",
   await expect(page).toHaveURL(new RegExp(`/readings/${PENDING}$`));
   await expect(page.getByText("This reading is still being processed.")).toBeVisible();
   expect(saves.map((save) => save.postDataJSON())).toEqual([{ url: FIRST_URL }]);
+  for (const [name, write] of [
+    ["connect", provider.connects[0]!],
+    ["save", saves[0]!],
+  ] as const) {
+    const headers = await write.allHeaders();
+    expect(headers["x-csrf-token"], `${name} carries the CSRF token`).toBeTruthy();
+    expect(headers["x-expected-tenant"], `${name} carries the tenant pin`).toBeTruthy();
+  }
 });

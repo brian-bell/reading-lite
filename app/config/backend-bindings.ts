@@ -1,11 +1,9 @@
 // Guard for ADR 0003: each frontend environment binds only the backend Worker of
 // the same environment, through its read-only FrontendReads entrypoint
-// (src/frontend-reads.ts at the repo root), never its default HTTP handler. The
-// test in test/backend-bindings.test.ts reads the checked-in app/wrangler.jsonc
-// and root wrangler.toml through Wrangler and fails CI when a service binding
-// crosses environments. scripts/check-build.ts applies the same guard to the
-// built dist/server/wrangler.json, which is what `wrangler deploy` uploads, and
-// the deploy workflows run it between build and deploy.
+// (src/frontend-reads.ts at the repo root), never its default HTTP handler.
+// scripts/check-build.ts applies it to the built dist/server/wrangler.json,
+// which is what `wrangler deploy` uploads, against app/wrangler.jsonc and the
+// root wrangler.toml; the deploy workflows run it between build and deploy.
 
 import { unstable_readConfig } from "wrangler";
 

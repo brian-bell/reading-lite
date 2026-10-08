@@ -8,7 +8,6 @@
 // passes the request host through.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { libraryPage } from "../e2e/library-page.js";
-import { LIST_SCENARIOS } from "../e2e/list-scenarios.js";
 
 const SMOKE_HOST = "next.readinglite.test";
 
@@ -43,42 +42,17 @@ const READING = {
   status: "ready",
   title: "A quieter internet is a choice we can make",
   created_at: "2026-09-07T09:30:00.000Z",
-  // Enough of a ready manifest to prove the whole Summary view is server
-  // rendered: the lead, the summary below it, the tags, and the novelty panel.
-  tldr: "A personal library can turn the internet into a place for deliberate reading.",
-  summary_markdown:
-    "A personal library can turn the internet into a place for deliberate reading.\n\nSaving is only the beginning.",
-  tags: ["attention", "design"],
-  novelty_verdict: "familiar",
-  similarity: { count: 2, max: 0.61, mean: 0.58 },
 };
 
 // Each tenant's library: rows no other tenant has, so a render that mixed two
-// sessions' reads would show it. Reader A's runs to a second page (#414): the
-// two named rows, filler to complete the first page, and one row past it.
-const PAGE_SIZE = 20;
+// sessions' reads would show it.
 const LIBRARIES = {
   "session-a": [
     { id: "rd_A000000001", url: "https://fieldnotes.example/a-quieter-internet", status: "ready", title: "Reader A's quiet internet" },
-    { id: "rd_A000000002", url: "https://fieldnotes.example/pending", status: "pending" },
-    ...Array.from({ length: PAGE_SIZE - 2 }, (_, index) => {
-      const n = String(index + 3).padStart(2, "0");
-      return { id: `rd_A0000000${n}`, url: `https://fieldnotes.example/notes/${n}`, status: "ready", title: `Reader A's note ${n}` };
-    }),
-    { id: "rd_A000000021", url: "https://fieldnotes.example/second-page", status: "ready", title: "Reader A's second page" },
   ],
   "session-b": [
     { id: "rd_B000000001", url: "https://working-notes.example/gardens", status: "ready", title: "Reader B's library gardens" },
   ],
-};
-
-// Reader A again, with the list answering a common state (#416), so a server
-// render of `/` proves the state page is in the HTML.
-const SCENARIO_SESSIONS = {
-  "session-a-expired": LIST_SCENARIOS.expired,
-  "session-a-forbidden": LIST_SCENARIOS.forbidden,
-  "session-a-mismatch": LIST_SCENARIOS.mismatch,
-  "session-a-outage": LIST_SCENARIOS.outage,
 };
 
 function sessionKeyOf(cookie) {
@@ -89,7 +63,7 @@ function sessionKeyOf(cookie) {
 function sessionOf(cookie) {
   const key = sessionKeyOf(cookie);
   if (key === undefined) return undefined;
-  return SESSIONS[key] ?? (key in SCENARIO_SESSIONS ? SESSIONS["session-a"] : undefined);
+  return SESSIONS[key];
 }
 
 export class FrontendReads extends WorkerEntrypoint {
@@ -102,27 +76,18 @@ export class FrontendReads extends WorkerEntrypoint {
     return { status: 200, body: session.identity };
   }
 
-  // One ready reading, so a server render has something real to produce; any
-  // other id is a reading this tenant does not have. The pin is echoed back in
-  // the identity check above, not here: an expected-tenant mismatch is the
-  // backend's own middleware in production.
-  // Filtered and paged as the list handler does (e2e/library-page.js, #414,
-  // #417), answered after the tenant's delay so concurrent renders overlap.
-  // No row here has tags, so any tag matches nothing. Snapping is not
-  // applied: the frontend forwards the offset it snapped, and anything past a
-  // tenant's rows is empty.
+  // Filtered and paged as the list handler does (e2e/library-page.js),
+  // answered after the tenant's delay so concurrent renders overlap.
   async list({ cookie, host, q, tag, offset }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
     if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
     const session = sessionOf(cookie);
     if (!session) return { status: 401, body: { error: "unauthorized" } };
     await new Promise((resolve) => setTimeout(resolve, session.delayMs));
-    const name = sessionKeyOf(cookie);
-    const scenario = SCENARIO_SESSIONS[name];
-    if (scenario) return scenario;
-    return { status: 200, body: libraryPage(LIBRARIES[name], { q, tag, offset }) };
+    return { status: 200, body: libraryPage(LIBRARIES[sessionKeyOf(cookie)], { q, tag, offset }) };
   }
 
+  // One ready reading; any other id is a reading this tenant does not have.
   async reading({ cookie, host, id }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
     if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");

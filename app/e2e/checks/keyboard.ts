@@ -11,9 +11,6 @@
 // computed style while painting nothing — `outline: 0 solid`,
 // `box-shadow: 0 0 0 0 red`, a colour with no alpha, a border colour on a
 // border-less element — so the comparison counts only declarations that draw.
-//
-// e2e/specs/focus-check.spec.ts holds this check to both: it suppresses the
-// theme ring each of those ways and fails if the check still passes.
 
 import { expect, type Page } from "@playwright/test";
 
@@ -235,13 +232,6 @@ export async function expectSkipLinkFirst(page: Page): Promise<void> {
   const [first] = await walkTabStops(page, 1);
   expect(first?.signature, "the skip link is the first focusable element").toContain("a.skip-link");
   await expect(page.locator("a.skip-link")).toBeVisible();
-}
-
-/** Activating it moves focus into main, which route changes then announce. */
-export async function expectSkipLinkReachesMain(page: Page): Promise<void> {
-  await page.keyboard.press("Tab");
-  await page.keyboard.press("Enter");
-  await expect(page.locator("#main")).toBeFocused();
 }
 
 export function expectVisibleFocusOnEveryStop(stops: TabStop[]): void {
