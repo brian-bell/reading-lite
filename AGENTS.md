@@ -64,7 +64,8 @@ npm run test:browser:ci         # the essential subset CI runs
 There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; frontend verification is
 `typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
-runs the Worker job as `npm run test:ci`, the `app/` checks and its
+runs the Worker job as `npm run test:workers:ci` and the Worker node-pool job
+(hosted runner) as `npm run test:node:ci`, the `app/` checks and its
 browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
 locally before shipping a Worker, migration, or operator-command change.
 The local-only files are the eight integration files `test/ci-scope.ts` omits,

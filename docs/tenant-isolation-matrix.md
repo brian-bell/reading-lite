@@ -7,7 +7,8 @@ Scope denial precedes ownership lookup (403 for both foreign and unknown
 resources). Positive controls prove an authorized owner can still do the work.
 
 All test paths below run in `npm test` through `vitest.workspace.ts`. The
-Worker CI job runs `npm run test:ci`, the essential lists in `test/ci-scope.ts`.
+Worker CI jobs run `npm run test:workers:ci` and `npm run test:node:ci`, the
+essential lists in `test/ci-scope.ts`.
 A path outside those lists still runs in `npm test`. `npm run test:quiet` runs
 the same full suite as `npm test`, with filtered logs, and preserves failures. No live credentials, production
 writes, or paid provider calls are needed; integration tests use local
