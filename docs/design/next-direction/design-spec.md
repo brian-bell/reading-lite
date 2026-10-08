@@ -67,10 +67,10 @@ These facts set the contracts below. Paths are from `main` at `0507dc84`.
   tl;dr, URL, and keywords, and matches `tag` exactly, case-insensitively.
   List items carry `keywords` but not `people` or `orgs`.
 - `PgSimilarityStore.query(embedding, topK)` and `queryByVectorId(id, topK)`
-  run an exact cosine scan over the tenant's ready readings.
-  `SIMILARITY_FLOOR` is 0.55. `POST /api/readings/similar` takes a
-  caller-supplied 1536-dimension embedding and applies neither the floor nor
-  self-exclusion.
+  run an exact cosine scan over the tenant's ready readings, clamping `topK`
+  to `MAX_SIMILARITY_TOP_K` (100). `SIMILARITY_FLOOR` is 0.55.
+  `POST /api/readings/similar` takes a caller-supplied 1536-dimension
+  embedding and applies neither the floor nor self-exclusion.
 - The digest selects ready readings with a title and tl;dr whose
   `updated_at ?? created_at` falls in `(start, end]` of the last one or seven
   local days (`selectDigestReadings`, `digestWindow`). A reprocessed reading
@@ -110,12 +110,17 @@ side-effect-free read.
 - `relationships` holds every row in the tenant's `reading_relationships`
   whose source and target are both live readings. Rows with a dangling
   target are left out. Order is `source_id, kind, position`.
-- `readings` holds every reading that appears on either end, with staleness
-  applied. The frontend uses only the ready ones for threads.
-- Size: about five connection rows per reading, plus tensions. kl7y.3
-  measures the response over the extended fixture pack and records the bytes
-  per reading. If a library of 2,000 readings would pass 1 MB, the slice
-  proposes per-thread reads before shipping.
+- `readings` holds every ready reading in the tenant, including those with
+  no relationships, plus any reading of another status that appears on
+  either end of a listed relationship. Staleness is applied. The frontend
+  builds threads from the ready ones and lists the ready readings in no
+  thread as standing alone, so a library with no relationships still shows
+  every ready reading on `/threads`.
+- Size: one entry per ready reading, and about five connection rows per
+  reading, plus tensions. kl7y.3 measures the response over the extended
+  fixture pack and records the bytes per reading. If a library of 2,000
+  readings would pass 1 MB, the slice proposes per-thread reads before
+  shipping.
 - Server render: `/threads` and `/threads/$id` read it through a new
   `FrontendReads.relationships` method and `backend-reads.ts`. The reading
   page fetches it in the browser after hydration, as the Source view does, so
@@ -204,10 +209,13 @@ body is `{ "query": string }`, trimmed, 1–500 characters.
 `GET /api/readings/:id/similar`, scope `readings:read`. It makes no paid
 call, because it uses the stored embedding.
 
-- It calls `queryByVectorId(id, 5 + 1 + related)`, where `related` is the
-  number of the reading's own connection and tension targets. Then it removes
-  the reading itself and those targets, keeps scores at or above
-  `SIMILARITY_FLOOR`, and returns the first 5 as `{ items: SimilarItem[] }`.
+- It excludes the reading itself and its own connection and tension targets
+  inside the SQL query, before `LIMIT`, so no number of related readings can
+  push eligible neighbors past the store's `MAX_SIMILARITY_TOP_K` ceiling.
+  kl7y.5 adds an exclusion list to `queryByVectorId` (`r.id <> ALL($n)`)
+  rather than over-fetching and filtering afterwards. It asks for 5, keeps
+  scores at or above `SIMILARITY_FLOOR`, and returns them as
+  `{ items: SimilarItem[] }`.
 - A missing reading returns 404. A reading with no embedding (not ready)
   returns `{ items: [] }`.
 - The reading page fetches it in the browser after hydration and shows it as
