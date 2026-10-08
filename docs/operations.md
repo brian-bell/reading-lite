@@ -2696,7 +2696,7 @@ docker compose down -v                 # also deletes it
 | `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
 | `npm run seed:local` | `reading_lite` | After writing the content to R2 it migrates, then writes the fixture pack as rows (readings, attempts, deterministic vectors) for the local founder's tenant id. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
-| CI Worker jobs | `reading_lite_test` | A service container in each of the workers-pool and node-pool jobs; `TEST_DATABASE_URL` points the pool at it. |
+| CI Worker jobs | `reading_lite_test` | A service container in each of the two jobs (Workers pool, Node pool); `TEST_DATABASE_URL` points the job's pool at it. |
 
 To use your own server instead, set `READING_LITE_DATABASE_URL` (shell or
 `.dev.vars`) for `npm run dev` and `seed:local`, and `TEST_DATABASE_URL` for

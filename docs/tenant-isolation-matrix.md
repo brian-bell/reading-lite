@@ -26,59 +26,61 @@ pinned, by `test/unit/operator-guards.test.ts`.
 
 ## Hosted reading routes
 
+Evidence in this section and the next is `test/integration/tenant-guards.test.ts`
+unless a row says otherwise: `readings look unknown` is its first test (every
+HTTP, MCP and FrontendReads row compares a foreign id with an unknown one, then
+checks the owner's R2 objects, queue, reading, embedding and URL claim are
+unchanged), and `same URL` is its second. When the Workers pool was cut to four
+guard files, several finer cases were removed; rows name what is no longer
+pinned.
+
 | Route | Adversarial behavior and owner control | Canonical evidence |
 | --- | --- | --- |
-| `POST /api/readings` | Two principals save the same URL and finish with independent ids, URL claims, list rows and embeddings. | `test/integration/readings-contract.test.ts`: `two-tenant save-to-ready lifecycle` |
-| `POST /api/readings/import-markdown` | Same URL imports in B's slot; A's manifest and lookup remain unchanged. | Same file: `cross-tenant mutation matrix` |
-| `GET /api/readings` | List/search exclude A from B; owner search finds A. MCP additionally pages populated A/B corpora. | Same file: `cross-tenant read-path matrix`; MCP matrix below |
-| `GET /api/readings/lookup` | Owner URL resolves; foreign URL equals never-submitted URL. Separate lookup tests prohibit repair writes. | Same file: `cross-tenant read-path matrix` and lookup tests |
-| `GET /api/readings/:id` | Owner succeeds; foreign equals unknown, including stale pending attempt annotation. | Same file: `cross-tenant read-path matrix` |
-| `GET /api/readings/:id/content` and `/content/raw` | Owner succeeds; foreign equals unknown. | Same file: `cross-tenant read-path matrix` |
-| `GET /api/readings/:id/diagnostics` | Owner receives diagnostics; foreign equals unknown rather than exposing URL ownership, objects or attempts. | Same file: `cross-tenant read-path matrix` |
-| `POST /api/readings/similar` | Identical embeddings stored for populated A and B corpora return only each caller's id and metadata; the query changes neither embeddings nor queue. | Same file: `returns only the caller's neighbours when two tenants store identical vectors` |
-| `POST /api/readings/:id/reprocess` | Foreign equals unknown; owner remains ready and can activate its own retry. Queue-send rollback stays in the failing tenant's rows. | Same file: `cross-tenant mutation matrix` |
-| `DELETE /api/readings/:id` | Foreign equals unknown and purges nothing; owner delete removes the reading row, content, URL claim and embedding. | Same file: `DELETE /api/readings/:id (purge)` |
-| Connection/novelty output | Second A reading sees first A reading as a neighbour/connection; B sees neither. Model stub derives output from actual supplied context. | Same file: `keeps similarity, novelty, and connections private to the active tenant` |
-| Scope and expected-tenant headers | Read/write/import/delete scopes grant only their routes; mismatched layout pin refuses. MCP adds scope-denied foreign/unknown comparisons. | `test/integration/auth-principal.test.ts`: scope and expected-tenant matrices |
+| `POST /api/readings` | Two principals save the same URL and finish with independent ids, URL claims, list rows and embeddings. | `same URL` |
+| `POST /api/readings/import-markdown` | Same URL imports in B's slot; A's manifest and lookup remain unchanged. | _None._ Its integration test was removed. |
+| `GET /api/readings` | List/search exclude A from B; owner search finds A. | `readings look unknown` |
+| `GET /api/readings/lookup` | Owner URL resolves; foreign URL equals never-submitted URL. | `readings look unknown`. That lookup writes nothing is no longer pinned. |
+| `GET /api/readings/:id` | Owner succeeds; foreign equals unknown. | `readings look unknown`. The stale pending attempt annotation is no longer pinned. |
+| `GET /api/readings/:id/content` and `/content/raw` | Owner succeeds; foreign equals unknown. | `readings look unknown` |
+| `GET /api/readings/:id/diagnostics` | Owner receives diagnostics; foreign equals unknown rather than exposing URL ownership, objects or attempts. | `readings look unknown` |
+| `POST /api/readings/similar` | Each caller's similar results hold only its own ids. | `same URL` |
+| `POST /api/readings/:id/reprocess` | Foreign equals unknown; owner remains ready. | `readings look unknown`. The owner's later activation and queue-send rollback are no longer pinned. |
+| `DELETE /api/readings/:id` | Foreign equals unknown and purges nothing. Owner delete removes the reading row, content, URL claim and embedding. | `readings look unknown`; the purge itself is `test/integration/publication-guards.test.ts`, `a purged reading leaves no row and takes no late write` |
+| Connection/novelty output | A's second reading sees A's first as a neighbour/connection; B sees neither, and B's summarizer prompt names no reading. | `same URL` |
+| Scope and expected-tenant headers | Read-only tokens are denied every MCP write before ownership lookup; a mismatched `x-expected-tenant` on account deletion refuses. | `readings look unknown`, and the credentials test (third). The per-route HTTP scope matrix and the other routes' pins are no longer tested. |
 
 ## MCP
 
-`test/integration/mcp.test.ts` exercises the HTTP MCP dispatch boundary. The
-`MCP adversarial tenant matrix` covers all twelve registered tools:
+The first test in `test/integration/tenant-guards.test.ts` runs its MCP rows
+through `/mcp`:
 
 | Tools | Contract |
 | --- | --- |
-| `get_reading`, `get_reading_content`, `get_diagnostics` | Owner-positive, foreign/unknown equality, byte-for-byte R2 inventory unchanged and no enqueued job. |
-| `reprocess_reading` | Same checks with a forced reprocess, followed by a successful owner activation. A Markdown source is refused before dispatch. |
-| `list_readings`, `search_readings` | Two populated corpora, matching query, page size one, empty second page and no foreign-only search result; no writes. |
-| `submit_url` | Owner deduplicates; other principal gets its own id for the same URL, becomes ready, and leaves the owner's diagnostics intact. |
-| `delete_reading` | Foreign id matches an unknown id and the owner's reading survives. |
-| `import_markdown`, `list_inbox` | The owner's ready reading answers the owner; the other principal stages in its own inbox, which only it lists, with no reading, R2 write or job. |
-| `get_inbox_item`, `discard_inbox_item` | Foreign item ids match unknown ids, and the owner's item survives. |
-| `submit_url`, `import_markdown`, `reprocess_reading`, `delete_reading` | Read-only tokens for both tenants get identical 403 results for known/foreign and unknown inputs, with no R2 changes or jobs. |
+| `get_reading`, `get_reading_content`, `get_diagnostics` | Owner-positive, foreign/unknown equality, R2 inventory unchanged and no enqueued job. |
+| `reprocess_reading`, `delete_reading` | Foreign id matches an unknown id; the owner's reading survives ready. |
+| `submit_url`, `import_markdown`, `reprocess_reading`, `delete_reading` | A read-only token gets identical 403 results for known and unknown inputs, with no R2 changes or jobs. |
+| `list_readings`, `search_readings`, `list_inbox`, `get_inbox_item`, `discard_inbox_item`; per-tenant `submit_url` and `import_markdown` | _None._ Their integration tests were removed. |
 
-The existing suite also checks authentication, tool registration, origin checks,
-`/api/mcp` alias dispatch and stateless unsupported methods. The adversarial
-matrix runs through `/mcp`; alias correctness is a separate dispatch test.
+The fourth test refuses an MCP request from a foreign Origin.
 
 ## Auth, queues and operators
 
 | Surface | Evidence and boundary | Canonical tests |
 | --- | --- | --- |
-| Session/token list and revoke | Two authenticated sessions; foreign ids match unknown responses and remain usable until their owner revokes them. Lists omit the foreign resource. Mismatched `x-expected-tenant` returns 412 and revokes nothing. | `test/integration/auth-sessions.test.ts`, `auth-tokens.test.ts` |
-| Email-change redemption | A user cannot redeem another user's email-change credential; the owner can still redeem it, while the other user's session and API token remain usable. A request with a mismatched `x-expected-tenant` returns 412 and sends no link. | `test/integration/auth-email-change.test.ts` |
-| Revoke-all and logout | Cookie and bearer revoke-all clear every session only for their caller; another tenant's session and token survive. Logout clears one session while another session for that user and another tenant remain usable. | `test/integration/auth-sessions.test.ts` |
-| Settings and identity | Each principal sees its own identity/settings; changing A leaves B unchanged. Mismatched `x-expected-tenant` on settings returns 412 and changes nothing. | `test/integration/auth-settings.test.ts` |
-| Account deletion | B enters deleting; A stays active with a working session. Mismatched `x-expected-tenant` returns 412 and fences nothing. | `test/integration/auth-account-delete.test.ts` |
-| Reading queue admission | An envelope claiming A with B's credential is acknowledged before processing or mutation. | `test/integration/dead-letter.test.ts` |
-| Reading DLQ | Identical id/key in A and B: only the admitted tenant's reading becomes failed. | `test/integration/dead-letter.test.ts` |
-| Retry and concurrent publication | Admission precedes retry dispatch; concurrent A/B terminal commits preserve separate list rows and embeddings. | `test/unit/queue/dispatch.test.ts`, `test/integration/readings-contract.test.ts` |
-| Digest send and DLQ | Separate tenant recipients/content; digest DLQ changes its ledger, not reading state. | `test/integration/digest-pipeline.test.ts` |
-| Wipe and teardown replay | The target tenant's rows, embeddings, refresh checkpoints and prefix are removed while another tenant's rows, checkpoints and prefix survive; saved reading, wipe and digest jobs cannot recreate torn-down data. | `test/integration/account-wipe.test.ts`, `account-deletion-queue-limits.test.ts` |
+| Session/token list and revoke | Foreign ids match unknown responses and stay usable; lists omit the foreign resource. | `test/integration/tenant-guards.test.ts`: `one tenant's credentials cannot list, revoke or delete…`. The 412 on a mismatched `x-expected-tenant` is no longer pinned. |
+| Email-change redemption | A user cannot redeem another user's email-change credential, and neither address changes. | Same test. The owner's own redemption and the mismatched-pin 412 are no longer pinned. |
+| Revoke-all and logout | Cookie revoke-all clears only the caller's sessions; another tenant's session and token survive. | Same test. Bearer revoke-all and logout are no longer pinned. |
+| Settings and identity | Each principal sees its own identity/settings; changing A leaves B unchanged. Mismatched `x-expected-tenant` on settings returns 412 and changes nothing. | _None._ Its integration test was removed. |
+| Account deletion | B enters deleting; A stays active with a working session. Mismatched `x-expected-tenant` returns 412 and fences nothing. | Same test |
+| Reading queue admission | An envelope claiming A with B's credential is acknowledged before processing or mutation. | `test/integration/deletion-guards.test.ts`: `reading queue acks an envelope claiming the founder…` |
+| Reading DLQ | Identical id/key in A and B: only the admitted tenant's reading becomes failed and its job dead. | `test/integration/deletion-guards.test.ts`: `reading DLQ fails only the admitted tenant's reading of a shared id` |
+| Retry and concurrent publication | Concurrent A/B terminal commits preserve separate list rows and embeddings. | `test/integration/tenant-guards.test.ts`: `two tenants save the same URL…`. That admission precedes retry dispatch is not pinned. |
+| Digest send and DLQ | Each tenant's digest goes only to its own address with only its own readings, never to `EMAIL_TO`; digest DLQ changes its ledger, not reading state. | `test/integration/tenant-guards.test.ts`: `sends each tenant's digest only to that tenant…`; `test/integration/deletion-guards.test.ts`: `digest DLQ fails only its tenant's ledger row` |
+| Wipe and teardown replay | The target tenant's rows, embeddings, inbox items, refresh checkpoints and prefix are removed while another tenant's survive; saved reading, wipe and digest jobs cannot recreate torn-down data. | `test/integration/deletion-guards.test.ts`: `account wipe`, `saved jobs after hard teardown` |
 | Destructive corpus maintenance | Drop, sweep and purge-connections delete only the selected tenant's rows and R2 root. A full neighbour refresh rewrites no other tenant's rows; connection and tension refresh write only the selected tenant's relationships. | _None._ Its Node-pool tests were removed. |
 | Operator audit/recovery | Audit reads only the selected tenant's rows, never reports another tenant's corpus, and stamps provenance. Foreign audit refuses before API, annotation, sidecar or batch work. Bearer identity must match selected layout. | _None._ Its Node-pool tests were removed. |
 | Batch ingest/recover | Batch configuration carries the selected tenant into its R2 root, its tenant-scoped PostgreSQL claims and publication, and resumable sidecars. Foreign audit/sidecar provenance refuses before provider work. | _None._ Its Node-pool tests were removed. |
-| System policy and status | A tenant policy update leaves a second populated tenant unchanged. Status forwards the selected tenant to the private entrypoint, whose tenant details do not include a second tenant's guard reservations. | `test/integration/operator-status.test.ts` (status); policy: _None._ |
+| System policy and status | A tenant policy update leaves a second populated tenant unchanged. Status forwards the selected tenant to the private entrypoint, whose tenant details do not include a second tenant's guard reservations. | _None._ Its Node-pool and integration tests were removed. |
 | Staging context preparation | The command keeps explicit, distinct production source and staging destination tenants through its reader seam. The artifact rejects foreign content keys and occupied destination state before any remote write. | _None._ Its Node-pool tests were removed. |
 
 ### Operator command applicability
@@ -91,8 +93,8 @@ the behavioral tests named above.
 | --- | --- |
 | `system lease-clear` | Explicit `--tenant` and `--attempt` selector; it observes and clears only that attempt's tenant and global lease rows, compare-and-set on the observed expiry. No automated test. |
 | `system policy`, `system status` | Explicit tenant selector. The selected PostgreSQL row and private `OperatorStatus` request are covered by the populated two-tenant cases above. |
-| Paid execution of `corpus refresh-connections`, `refresh-tensions`, `ingest`, `recover --batch`; `eval summarizer`; the compare-summary-effort script | A payer selector separate from the storage selector: `--billing-tenant` (defaulting to a real `--tenant`, required for `--tenant global`, pinned by a batch sidecar) names the one tenant whose cap, with the global cap, admits each request through the private `OperatorSpend` entrypoint. The entrypoint forwards only the four spend verbs for a valid tenant id (`test/integration/operator-spend.test.ts`); payer resolution has no automated test. |
-| `corpus audit`, `drop`, `recover`, `ingest`, `sweep`, `refresh-neighbours`, `refresh-connections`, `refresh-tensions`, `purge-connections`, `redact-key-echoes` | Explicit corpus selector. Every query is scoped by `tenant_id` through the Worker's own stores (`scripts/pg-lib/operator-corpus.ts`), and the row-reading commands refuse `--tenant global`. The stores' tenant scoping is covered by `test/integration/postgres/reading-store.test.ts`; `test/unit/operator-guards.test.ts` pins that each of these commands refuses to run without `--tenant`. The commands themselves have no automated test. The commands retired in reading-lite-gh347.4.6 are listed in the [operator tooling inventory](operator-tooling.md). |
+| Paid execution of `corpus refresh-connections`, `refresh-tensions`, `ingest`, `recover --batch`; `eval summarizer`; the compare-summary-effort script | A payer selector separate from the storage selector: `--billing-tenant` (defaulting to a real `--tenant`, required for `--tenant global`, pinned by a batch sidecar) names the one tenant whose cap, with the global cap, admits each request through the private `OperatorSpend` entrypoint. The entrypoint forwards only the four spend verbs for a valid tenant id (`test/integration/spend-guards.test.ts`, which also denies one tenant at its cap while another with the same cap is admitted); payer resolution has no automated test. |
+| `corpus audit`, `drop`, `recover`, `ingest`, `sweep`, `refresh-neighbours`, `refresh-connections`, `refresh-tensions`, `purge-connections`, `redact-key-echoes` | Explicit corpus selector. Every query is scoped by `tenant_id` through the Worker's own stores (`scripts/pg-lib/operator-corpus.ts`), and the row-reading commands refuse `--tenant global`. The stores' tenant scoping is covered by `test/integration/publication-guards.test.ts` (`every store read is scoped to its tenant`); `test/unit/operator-guards.test.ts` pins that each of these commands refuses to run without `--tenant`. The commands themselves have no automated test. The commands retired in reading-lite-gh347.4.6 are listed in the [operator tooling inventory](operator-tooling.md). |
 | `reading submit`; `import markdown`, `bookmarks`, `reddit`, `youtube`; `reading-list process` | Thin API clients with no operator tenant selector or direct corpus store. The bearer principal selects the hosted tenant, so their tenant boundary is the authenticated API/MCP matrix and the shared `readingApiFor` contract; `corpus recover` additionally verifies its explicit selector against `/api/whoami` before it invokes the same API. |
 | `reading-list check` | Explicit `--tenant`; resolves each exported URL against that tenant's `reading_urls` rows, and refuses `--tenant global`. Its PostgreSQL path has no automated test. |
 | `deploy worker`, `deploy wipe-check`, `deploy release`; `db migrate`; `staging setup`; `founder bootstrap`; `extract probe`; `eval summarizer` | Environment configuration, deployment, bootstrap, local extraction, or fixture evaluation. These commands have no caller-selected live corpus tenant. |
