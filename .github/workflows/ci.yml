@@ -45,7 +45,7 @@ jobs:
     # Toggle PR checks with the DISABLE_PR_CI repository variable; main always
     # runs, and so does a manual dispatch.
     if: github.event_name != 'pull_request' || vars.DISABLE_PR_CI != 'true'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     outputs:
       worker: ${{ steps.changes.outputs.worker }}
       ops: ${{ steps.changes.outputs.ops }}
