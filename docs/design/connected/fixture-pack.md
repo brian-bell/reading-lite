@@ -26,8 +26,7 @@ bundles (reading-lite-gh341.10): `attention`, `friction`, `gardens`,
 their URL's last path segment, with relationships kept only between them.
 
 The names and ids are stable: they live in `test/fixtures/local-seed.ts`, and
-`test/integration/postgres/local-seed-rows.test.ts` (local only) seeds them
-into PostgreSQL.
+`npm run seed:local` writes them into PostgreSQL.
 
 The pack contains authored fiction from the
 [Connected prototype](design-spec.md#data-mapping): `.example` hosts, a

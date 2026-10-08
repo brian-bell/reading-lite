@@ -184,8 +184,8 @@ export async function dispatchQueueMessage(
       // nothing to notice it. Retry instead: nothing terminal landed, so
       // `active_attempt` is still live and the redelivery re-runs the whole
       // publish for real (the acceptance test in
-      // `test/integration/account-delete-visibility.test.ts` proves the
-      // republish, not just the throw). The processing checkpoint means it
+      // `test/integration/publication-guards.test.ts` proves the republish,
+      // not just the throw). The processing checkpoint means it
       // re-uses the cached summary, so it costs one transaction and nothing
       // else.
       msg.retry({ delaySeconds: PUBLISH_RETRY_DELAY_SECONDS });

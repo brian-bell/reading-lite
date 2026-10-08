@@ -88,11 +88,14 @@ jobs:
           }
           cat "$RUNNER_TEMP/jobs" >> "$GITHUB_OUTPUT"
 
+  # Hosted, like the node pool below: after the trim (reading-lite-rs1m) the
+  # Workers pool is four guard files, so neither job queues behind the others
+  # on the single self-hosted runner.
   worker:
     name: Worker (typecheck + test)
     needs: changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     # Matches Neon: PostgreSQL 18 with pgvector 0.8.x (ADR 0005). Tests never
     # connect to Neon. The workers pool reaches this through the HYPERDRIVE
     # binding's local connection string, which vitest.workspace.ts points at
@@ -135,7 +138,7 @@ jobs:
       - run: npm run test:workers:ci
 
   # The Node pool is three small guard files, so it runs on a hosted runner
-  # rather than queueing behind the Worker suite on the single self-hosted one.
+  # rather than queueing on the single self-hosted one.
   # control-plane-guards needs PostgreSQL; globalSetup migrates this database.
   worker-node:
     name: Worker (node pool)

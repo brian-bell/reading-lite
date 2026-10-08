@@ -65,12 +65,10 @@ There is no lint script. Full Worker verification is `npm test`,
 `npm run types:check`, and `npm run typecheck`; frontend verification is
 `typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
 runs the Worker job as `npm run test:workers:ci` and the Worker node-pool job
-(hosted runner) as `npm run test:node:ci`, the `app/` checks and its
+as `npm run test:node:ci`, both on hosted runners, the `app/` checks and its
 browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
 locally before shipping a Worker, migration, or operator-command change.
-The local-only files are the eight integration files `test/ci-scope.ts` omits,
-among them the relationship and tension judge scenarios and
-`test/integration/readings.test.ts`.
+Every Workers- and Node-pool test file runs in CI; none is local-only.
 The browser-evidence job runs `test:browser:ci`, the essential subset; run the
 full `test:browser` locally before shipping a frontend change. The `app/`
 suites hold only guards no other layer catches (see the
@@ -200,7 +198,15 @@ integration test owns: `test/unit/operator-guards.test.ts` (operator, deploy
 and batch refusals, app fixture freshness), `control-plane-guards.test.ts`
 (account teardown, paid dispatch, provider-key binding) and
 `pipeline-guards.test.ts` (cached-prefix snapshots, provider config, SSRF
-hosts, R2 key spelling, content sweep). `test/env.d.ts` supplies required
+hosts, R2 key spelling, content sweep). The Workers pool is four files of
+guards in `test/integration/`: `tenant-guards.test.ts` (foreign equals unknown
+over HTTP, MCP and FrontendReads, two-tenant save-to-ready,
+session/token/account isolation, cookie CSRF and Origin, digest recipients),
+`publication-guards.test.ts` (transaction order, ownership, rollback, the
+deletion fence, store scoping, publish requeue), `deletion-guards.test.ts`
+(wipe rows before objects, teardown replay, queue admission and DLQ routing)
+and `spend-guards.test.ts` (caps and ledger, `OperatorSpend`, tenant keys,
+leases, intake admission). `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
 tests inject `installQueueStub()`. Similarity is pgvector.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup

@@ -340,9 +340,10 @@ claim and publish transactions, and 1c.4 keeps the deletion-race work.
     deletes, children first. D1 had no locks, so its batch carried both checks
     as an EXISTS guard on every statement.
 
-  `test/integration/auth-concurrency.test.ts` runs these in parallel on real
-  connections. Without the advisory locks its issue tests fail. The redeem tests
-  still pass without the challenge lock, because the claim's compare-and-set,
+  `test/integration/auth-concurrency.test.ts` ran these in parallel on real
+  connections (it was removed in reading-lite-rs1m). Without the advisory
+  locks its issue tests failed. The redeem tests passed without the challenge
+  lock, because the claim's compare-and-set,
   the user-row lock in session issue and the `(user_id, claim)` unique index
   already yield one session; the challenge lock keeps completion serial as D1
   did.
@@ -566,15 +567,17 @@ several integration files mutate. Decision (1c.1, after a spike):
   proxy connects to whichever database the client names. Tests pass `env` to
   `worker.fetch`, `worker.queue` and the stores, so the redirect reaches them;
   `SELF` uses the runtime's own bindings and still sees the base database, and
-  only `operator-status.test.ts` uses it. globalSetup drops the clones when the
-  run ends, and before the next one in case a run was killed.
+  only `operator-status.test.ts` used it (removed in reading-lite-rs1m).
+  globalSetup drops the clones when the run ends, and before the next one in
+  case a run was killed.
 - **Node pool: one database, one rolled-back transaction per test**
   (`test/helpers/pg-rollback.ts`). Code under test that opens a transaction
   gets a `SAVEPOINT`. Two tests inserting the same unique key do not fail; the
   second waits for the first to roll back.
 - The schema-per-file fallback (`search_path`) was not needed.
 
-Proof: `test/integration/postgres/file-database-{a,b}.test.ts` each commit
+Proof (those two files were removed in reading-lite-rs1m):
+`test/integration/postgres/file-database-{a,b}.test.ts` each commit
 `system_policy` row 1. On a shared database the second insert fails on the
 primary key however the files are scheduled, and with the redirect disabled
 both files fail. Cost, measured locally on the workers project (single runs,
