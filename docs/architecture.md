@@ -107,8 +107,9 @@ the reading, its relationships, the embedding, and the attempt and job rows.
 Nothing is written before ownership is settled, and a reader never sees a
 summary without its content keys or a vector for a reading that is not ready.
 Only the URL's owner is searchable: a duplicate that does not own its URL is
-stored without an embedding. `test/integration/postgres/
-reading-writer.test.ts` pins lost ownership, rollback, and the fence.
+stored without an embedding. `test/integration/publication-guards.test.ts`
+pins the statement order, lost ownership, rollback, the fence, per-tenant URL
+ownership, and the requeue-and-republish retry.
 
 There is no cross-service sequence and no compensation path. A publish
 transaction that fails rolls back whole and throws `PublishCommitError`; the

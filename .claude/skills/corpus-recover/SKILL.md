@@ -128,7 +128,7 @@ Outcomes are written back into the `index.json` rows (`result` field). Prints a 
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-recover.ts` (via `scripts/ops.ts`)
-- Policy (tested): `scripts/corpus-lib/policy.ts`; API client: `scripts/corpus-lib/api.ts`
+- Policy: `scripts/corpus-lib/policy.ts`; API client: `scripts/corpus-lib/api.ts`
 - Reuses the worker's `extractFromUrl` (`src/modules/extractor`) for local extraction.
 - Bulk path: `scripts/corpus-lib/batch/` (clients, prepare/extract/similar/submit/poll/write phases, `run` orchestrator, `sidecar`); shared CF clients in `scripts/lib/cf-clients.ts`; batch config in `scripts/corpus-lib/config.ts` (`resolveBatchConfig`).
-- Tests: `test/unit/corpus/policy.test.ts`, `test/unit/corpus/batch/**`, `test/unit/lib/cf-clients.test.ts` (node project)
+- Tests: `test/unit/operator-guards.test.ts` pins the batch's spend → sidecar → create order and its refusal to create again over an ambiguous sidecar

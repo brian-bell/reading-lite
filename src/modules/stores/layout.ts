@@ -13,7 +13,7 @@
 // keys stay RELATIVE — the root is applied only when addressing the bucket.
 //
 // The exact spellings are a contract with objects already in R2; changing one
-// strands the live corpus. test/unit/stores/layout.test.ts pins them.
+// strands the live corpus. test/unit/pipeline-guards.test.ts pins them.
 
 export const READINGS_PREFIX = "readings/";
 // Immutable per-attempt content (ADR 0005). Each attempt writes its raw and

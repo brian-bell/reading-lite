@@ -20,6 +20,8 @@ body {
   color: var(--ink);
   font-family: var(--font-ui);
   font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 a {
@@ -65,14 +67,16 @@ textarea {
   padding: var(--space-3) var(--space-4);
   background: var(--surface);
   color: var(--accent);
-  border: 1px solid var(--control-border);
-  border-radius: 5px;
+  border-radius: 8px;
   font-size: 14px;
+  font-weight: 500;
   text-decoration: none;
   transform: translateY(calc(-100% - var(--space-4)));
 }
 
+/* The shadow only with the link, or it would reach the page from off screen. */
 .skip-link:focus {
+  box-shadow: var(--popover-shadow);
   transform: none;
 }
 
@@ -97,7 +101,7 @@ textarea {
   flex-direction: column;
   align-items: stretch;
   height: 100dvh;
-  padding: var(--space-5) 10px;
+  padding: var(--space-4) 10px var(--space-3);
   background: var(--surface);
   color: var(--muted);
   border-right: 1px solid var(--border);
@@ -108,6 +112,8 @@ textarea {
   justify-content: center;
   align-items: center;
   gap: var(--space-2);
+  height: 44px;
+  border-radius: 10px;
   color: var(--ink);
   font-family: var(--font-reading);
   font-size: 20px;
@@ -130,33 +136,43 @@ textarea {
   display: flex;
   flex: 1;
   flex-direction: column;
-  margin-top: var(--space-6);
+  margin-top: var(--space-4);
 }
 
 .nav-items {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  margin: 0;
+  gap: 6px;
+  margin: 0 0 var(--space-5);
   padding: 0;
   list-style: none;
 }
 
+/* One tile per destination: 60 px wide in the column, icon over a one-line
+   label, so every tile is the same height. */
 .nav-item {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) 2px;
-  border-radius: 5px;
+  justify-content: center;
+  gap: 5px;
+  min-height: 56px;
+  padding: var(--space-2) 2px;
+  border-radius: 10px;
   color: inherit;
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
   text-align: center;
   text-decoration: none;
 }
 
-.nav-item:hover {
-  color: var(--ink);
+@media (hover: hover) {
+  .nav-item:hover {
+    background: var(--hover-fill);
+    color: var(--ink);
+  }
 }
 
 /* Press feedback, only where motion is welcome. Only scale transitions, so
@@ -175,6 +191,11 @@ textarea {
   }
 }
 
+/* The ring stays inside the 6 px between tiles: 2 + 3. */
+.nav-item:focus-visible {
+  outline-offset: 2px;
+}
+
 .nav-item[aria-current="page"] {
   background: var(--accent-soft);
   color: var(--accent);
@@ -184,30 +205,51 @@ textarea {
   flex-shrink: 0;
 }
 
+/* The column has room for one word a tile; the bar spells the label out. Still
+   read out, so the link's name is "Save reading" at every width. */
+@container shell (width > 650px) {
+  .nav-item-rest {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* Theme: a segmented control of three icons, the checked one raised. Stacked
+   in the column, in a row in the bar. The names stay for screen readers and
+   as each option's tooltip. */
 .theme-control {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  align-self: center;
+  gap: 2px;
   margin-top: auto;
-  padding-top: var(--space-6);
+  padding: 3px;
+  background: var(--soft);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
-.theme-control-label {
-  font-size: 11px;
-  text-align: center;
+.theme-control-label,
+.theme-option > span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .theme-option {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  min-height: 24px;
-  padding: 6px 2px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  font-size: 11px;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 30px;
+  border-radius: 999px;
   cursor: pointer;
 }
 
@@ -219,19 +261,24 @@ textarea {
   cursor: pointer;
 }
 
-.theme-option:hover {
-  color: var(--ink);
+@media (hover: hover) {
+  .theme-option:hover {
+    color: var(--ink);
+  }
 }
 
 .theme-option:has(input:checked) {
-  background: var(--accent-soft);
-  border-color: var(--control-border);
+  background: var(--raised);
+  box-shadow:
+    0 0 0 1px var(--control-border),
+    0 1px 2px light-dark(rgba(84, 62, 36, 0.16), rgba(0, 0, 0, 0.4));
   color: var(--accent);
 }
 
+/* Inside the 3 px track, so the ring sits closer than the usual 4 px. */
 .theme-option:has(input:focus-visible) {
   outline: 3px solid var(--accent);
-  outline-offset: 4px;
+  outline-offset: 2px;
 }
 
 /* Account menu or sign-in link, after the theme control (src/components/AccountMenu.tsx). */
@@ -258,46 +305,80 @@ textarea {
   color: var(--accent);
 }
 
+/* The reader's initial, in place of a generic person. */
+.account-avatar {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
 .account-menu-panel {
   position: absolute;
   bottom: 0;
-  left: calc(100% + 12px);
+  /* 8 px clear of the column's edge. */
+  left: calc(100% + 18px);
   z-index: 10;
-  min-width: 200px;
+  width: max-content;
+  min-width: 220px;
   max-width: min(320px, 80vw);
-  /* Concentric with the 5 px items inside: 5 + 6 = 11. */
+  /* Concentric with the 6 px items inside: 6 + 6 = 12. */
   padding: 6px;
   background: var(--surface);
-  border-radius: 11px;
+  border-radius: 12px;
   box-shadow: var(--popover-shadow);
   color: var(--ink);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.35;
   text-align: left;
 }
 
+/* Rules run edge to edge; the text keeps the items' 10 px inset. */
 .account-menu-email {
-  margin: 0;
-  padding: 6px var(--space-2) var(--space-2);
-  color: var(--muted);
+  margin: 0 -6px 6px;
+  padding: 6px var(--space-4) 10px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
   overflow-wrap: anywhere;
+}
+
+.account-menu-eyebrow {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .account-menu-items {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.account-menu-items .account-menu-separated {
+  margin: 4px -6px 0;
+  padding: 6px 6px 0;
+  border-top: 1px solid var(--border);
 }
 
 .account-menu-items a,
 .account-menu-items button {
   display: block;
   width: 100%;
-  padding: 6px var(--space-2);
+  padding: 7px 10px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 6px;
   background: none;
   color: inherit;
   font: inherit;
@@ -305,18 +386,27 @@ textarea {
   text-decoration: none;
 }
 
-.account-menu-items a:hover {
-  background: var(--accent-soft);
+.account-menu-items button {
+  cursor: pointer;
+}
+
+@media (hover: hover) {
+  .account-menu-items a:hover,
+  .account-menu-items button:not(:disabled):hover {
+    background: var(--hover-fill);
+  }
 }
 
 .account-menu-items button:disabled {
   color: var(--muted);
+  cursor: default;
 }
 
 .account-menu-error {
   margin: var(--space-2) 0 0;
-  padding: 0 var(--space-2) 6px;
+  padding: 0 10px 6px;
   color: var(--danger);
+  font-size: 13px;
 }
 
 /* The account-changed state pairs a sentence with its Reload link. */
@@ -383,8 +473,7 @@ textarea {
 }
 
 .legal-page a,
-.login-legal-links a,
-.site-footer a {
+.login-legal-links a {
   color: var(--accent);
 }
 
@@ -396,10 +485,23 @@ textarea {
 }
 
 .site-footer {
-  padding: var(--space-4) var(--space-7);
-  background: var(--surface);
+  padding: var(--space-4) var(--space-7) var(--space-5);
   color: var(--muted);
   border-top: 1px solid var(--border);
+  font-size: 13px;
+}
+
+/* Quiet until pointed at: the footer is on every page. */
+.site-footer a {
+  display: inline-block;
+  padding-block: var(--space-1);
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  color: var(--ink);
+  text-decoration: underline;
 }
 
 .site-footer nav,
@@ -2610,49 +2712,78 @@ textarea {
     flex-direction: column;
   }
 
-  /* Positioned so the account menu can open across the bar's width. */
+  /* Two rows: the brand with the theme control and the account, then the
+     destinations. The nav spans the bar on the bar's own columns (a subgrid),
+     leaving its first row's start empty for the brand, so the brand gets the
+     width the theme control and the account leave and no more. Positioned so
+     the account menu can open against the bar's edge. */
   .shell-nav {
     position: relative;
-    flex-direction: row;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: var(--space-2);
     height: auto;
-    padding: var(--space-3) var(--space-4);
+    padding: var(--space-2) var(--space-4);
     border-right: 0;
     border-bottom: 1px solid var(--border);
+  }
+
+  /* Above the nav's empty cell, which would otherwise take its clicks. The
+     reading face is the system's, so the name's width varies by platform:
+     where it does not fit beside the mark it wraps to a second line, which
+     the 44 px height clips, rather than running under the theme control. */
+  .brand {
+    position: relative;
+    z-index: 1;
+    grid-area: 1 / 1;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-content: flex-start;
+    align-self: start;
+    justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .brand-mark,
+  .brand-name {
+    display: flex;
+    align-items: center;
+    height: 44px;
   }
 
   .brand-mark {
     font-size: 31px;
   }
 
-  .brand-name {
-    display: inline;
-  }
-
-  /* Wraps the theme control to its own line only at reflow widths (320 px). */
   .shell-nav nav {
-    flex: 1 1 100%;
-    flex-direction: row;
-    flex-wrap: wrap;
+    display: grid;
+    grid-area: 1 / 1 / auto / -1;
+    grid-template-columns: subgrid;
+    grid-template-areas:
+      ". theme account"
+      "items items items";
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
+    gap: var(--space-1) var(--space-2);
     margin: 0;
   }
 
   .nav-items {
+    grid-area: items;
     flex-direction: row;
     gap: var(--space-1);
+    margin: 0;
+  }
+
+  .nav-items li {
+    flex: 1 1 auto;
   }
 
   .nav-item {
     flex-direction: row;
     gap: 7px;
     min-height: 44px;
-    padding-inline: 6px var(--space-2);
+    padding-inline: var(--space-2);
     font-size: 13px;
     white-space: nowrap;
   }
@@ -2663,14 +2794,40 @@ textarea {
   }
 
   .theme-control {
+    grid-area: theme;
     flex-direction: row;
-    gap: 0;
     margin: 0;
+  }
+
+  .theme-option {
+    width: 36px;
+  }
+
+  /* The track is 36 px tall; each option still takes a 44 px touch. */
+  .theme-option input {
+    inset: -7px 0;
+  }
+
+  /* Out by the item's own inset, so the initial, or the link's last letter,
+     ends on the content edge. */
+  .account-menu,
+  .account-sign-in {
+    grid-area: account;
+    margin: 0 calc(-1 * var(--space-2)) 0 0;
+  }
+
+  /* Only the initial in the bar; the summary keeps its name. */
+  .account-menu summary {
+    width: 44px;
     padding: 0;
   }
 
-  .theme-control-label,
-  .theme-option > span {
+  .account-menu summary .account-avatar {
+    width: 28px;
+    height: 28px;
+  }
+
+  .account-menu-label {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -2679,29 +2836,18 @@ textarea {
     white-space: nowrap;
   }
 
-  .theme-option {
-    justify-content: center;
-    width: 44px;
-    min-height: 44px;
-    padding: 0;
-  }
-
-  .account-menu,
-  .account-sign-in {
-    margin-top: 0;
-  }
-
-  /* The Account item can wrap to either end of the bar, so the panel spans
-     the bar instead of hanging off the item, and never leaves the screen. */
+  /* A sheet under the bar, as wide as the content, so it never leaves the
+     screen and covers what is under it whole rather than in part. */
   .account-menu {
     position: static;
   }
 
   .account-menu-panel {
-    top: calc(100% - 6px);
+    top: calc(100% + 6px);
     right: var(--space-4);
     bottom: auto;
     left: var(--space-4);
+    width: auto;
     max-width: none;
   }
 
@@ -2715,6 +2861,13 @@ textarea {
 
   .page-title {
     font-size: 30px;
+  }
+}
+
+/* At the 320 px reflow floor the bar's first row has no room for the name. */
+@container shell (max-width: 359px) {
+  .brand-name {
+    display: none;
   }
 }
 

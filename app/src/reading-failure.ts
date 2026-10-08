@@ -6,11 +6,6 @@ import type { ProcessingStage, ReadingError } from "./reading";
 // lives here, in one module, with an unknown fallback that shows the backend's
 // message unchanged.
 //
-// test/reading-failure.test.ts pins every category against the fixture pack
-// (docs/design/connected/fixture-pack.md), which is generated from the real
-// error classes: renaming one at the backend fails that test rather than
-// silently demoting a reading to "Unknown".
-//
 // This module states the category, what happened, and the reader's next step;
 // the recovery actions themselves, Retry, Import a copy, and the link to
 // provider settings, are the status card's (ReadingStatusCard.tsx).

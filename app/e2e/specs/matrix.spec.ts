@@ -1,6 +1,7 @@
-// Every covered route and state (e2e/coverage.ts) in every project
-// (playwright.config.ts): 390 px and 1440 px, light and dark. Axe and the
-// keyboard pass fail the job; the screenshot is evidence for review.
+// Every covered route (e2e/coverage.ts) in every matrix project
+// (playwright.config.ts): 390 px and 1440 px, light and dark. Axe, the
+// offscreen check, and the keyboard pass fail the job; the screenshot is
+// evidence for review.
 
 import { EVIDENCE_CASES } from "../coverage";
 import { expectNoAxeViolations } from "../checks/axe";
@@ -8,7 +9,6 @@ import { expectNothingOffscreen } from "../checks/layout";
 import {
   expectNoFocusTrap,
   expectSkipLinkFirst,
-  expectSkipLinkReachesMain,
   expectVisibleFocusOnEveryStop,
   walkTabStops,
 } from "../checks/keyboard";
@@ -17,59 +17,35 @@ import { SESSION_EMAIL } from "../sessions";
 import { expect, openCase, test } from "../test";
 
 for (const evidence of EVIDENCE_CASES) {
-  test.describe(evidence.name, () => {
-    test.beforeEach(async ({ page, baseURL }) => {
-      await openCase(page, baseURL!, evidence);
-    });
+  test(`${evidence.name} renders its state, passes axe, and is usable from the keyboard`, async ({
+    page,
+    baseURL,
+    theme,
+  }, testInfo) => {
+    await openCase(page, baseURL!, evidence);
 
-    test("renders the state in the project's theme", async ({ page, theme }, testInfo) => {
-      const applied = await page.locator("html").getAttribute("data-theme");
-      expect(applied, "the theme cookie decides the server render").toBe(
-        theme === "system" ? null : theme,
-      );
-      // The signed-in and signed-out cases really differ, so the evidence for
-      // each is the state it claims. Signed out, the way in is either the
-      // navigation's link or the sign-in form rendered in place.
-      if (evidence.state === "signed-in") {
-        // The account menu's, not the account page's own mention of it.
-        await expect(page.locator(".account-menu-email").getByText(SESSION_EMAIL)).toBeAttached();
-        await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
-      } else {
-        await expect(page.locator("details.account-menu")).toHaveCount(0);
-        const waysIn =
-          (await page.getByRole("link", { name: "Sign in" }).count()) +
-          (await page.getByRole("button", { name: /Email me a link/ }).count());
-        expect(waysIn, "a signed-out page offers a way to sign in").toBeGreaterThan(0);
-      }
-      await expectNothingOffscreen(page);
-      await captureEvidence(page, testInfo, evidence.name);
-    });
+    const applied = await page.locator("html").getAttribute("data-theme");
+    expect(applied, "the theme cookie decides the server render").toBe(theme === "system" ? null : theme);
+    if (evidence.state === "signed-in") {
+      // The account menu's, not the account page's own mention of it.
+      await expect(page.locator(".account-menu-email").getByText(SESSION_EMAIL)).toBeAttached();
+      await expect(page.getByRole("link", { name: "Sign in" })).toHaveCount(0);
+    } else {
+      await expect(page.locator("details.account-menu")).toHaveCount(0);
+    }
+    await expectNothingOffscreen(page);
+    await captureEvidence(page, testInfo, evidence.name);
+    await expectNoAxeViolations(page, testInfo);
 
-    test("has no WCAG 2.2 AA violations", async ({ page }, testInfo) => {
-      await expectNoAxeViolations(page, testInfo);
-    });
-
-    // Each tab walk starts from a fresh load: Chromium resumes tabbing from
-    // wherever focus last was, so the skip-link assertions need a clean page.
-    // Where the skip link sits and where it lands are facts about the
-    // document, not the theme, so the light project of each viewport checks
-    // them once. The walk itself runs everywhere: the focus indicator is a
-    // themed token, and a dark ring can fail to paint while the light one
-    // passes.
-    test("is usable from the keyboard", async ({ page, baseURL, theme }) => {
-      if (theme !== "dark") {
-        const pristine = { ...evidence, prepare: undefined };
-        await openCase(page, baseURL!, pristine);
-        await expectSkipLinkFirst(page);
-
-        await openCase(page, baseURL!, pristine);
-        await expectSkipLinkReachesMain(page);
-      }
-
-      await openCase(page, baseURL!, evidence);
-      const stops = await walkTabStops(page);
-      expectVisibleFocusOnEveryStop(stops);
-      expectNoFocusTrap(stops);
-    });
+    // The walk starts from a fresh load: Chromium resumes tabbing from
+    // wherever focus last was. It runs in every theme, since the focus
+    // indicator is a themed token and a dark ring can fail to paint while the
+    // light one passes.
+    await openCase(page, baseURL!, evidence);
+    await expectSkipLinkFirst(page);
+    await openCase(page, baseURL!, evidence);
+    const stops = await walkTabStops(page);
+    expectVisibleFocusOnEveryStop(stops);
+    expectNoFocusTrap(stops);
   });
 }

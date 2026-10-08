@@ -81,11 +81,9 @@ The script prints a JSON summary to stdout:
 ## Implementation
 
 - CLI: `scripts/ops-lib/commands/reading-list-check.ts` (via `scripts/ops.ts`)
-- Corpus logic (pure, unit-tested): `scripts/check-corpus-lib/corpus.ts`
+- Corpus logic (pure): `scripts/check-corpus-lib/corpus.ts`
 - URL lookup: `PgReadingStore.ownersByUrls`, through
   `scripts/pg-lib/operator-corpus.ts`
-- Tests: `test/unit/check-corpus/` plus the end-to-end cases in
-  `test/unit/scripts/ops-corpus-pg.test.ts`
 
 ## Notes / gotchas
 

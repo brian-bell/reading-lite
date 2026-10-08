@@ -17,8 +17,7 @@
     "test:browser": "playwright test",
     "test:browser:ci": "BROWSER_EVIDENCE=essential playwright test",
     "prototype:dev": "vite --config vite.prototypes.config.ts --host 127.0.0.1",
-    "prototype:build": "tsc -p tsconfig.prototypes.json && vite build --config vite.prototypes.config.ts",
-    "prototype:test": "vitest run --config vitest.prototypes.config.ts"
+    "prototype:build": "tsc -p tsconfig.prototypes.json && vite build --config vite.prototypes.config.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "5.102.8",

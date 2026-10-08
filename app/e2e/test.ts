@@ -2,8 +2,8 @@
 // baseURL, the fixture pack's clock pinned in the browser, and one helper that
 // loads a coverage case in its signed-in or signed-out state.
 
-import { test as base, expect, type BrowserContext, type Page, type Request, type Route } from "@playwright/test";
-import type { EvidenceCase, SignedState } from "./coverage";
+import { test as base, expect, type BrowserContext, type Page, type Request } from "@playwright/test";
+import type { EvidenceCase } from "./coverage";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "./harness";
 import { libraryItems, libraryPage } from "./library-page.js";
@@ -40,27 +40,6 @@ export const test = base.extend<EvidenceOptions>({
 });
 
 export { expect };
-
-/**
- * Answers `GET /api/whoami` in the browser with the reader e2e/backend-stub.js
- * signs in. Public pages (the legal notices, the sample library) read identity
- * in the browser only (src/public-paths.ts), and the Worker under test
- * answers `/api/*` with 404, so a signed-in public page needs this.
- */
-export async function serveIdentityInBrowser(page: Page): Promise<void> {
-  await page.route("**/api/whoami", async (route) => {
-    await route.fulfill({
-      json: {
-        tenant_id: "usr_aaaaaaaa",
-        user_id: "usr_aaaaaaaa",
-        principal: "session",
-        tenant_data_plane: true,
-        email: "reader-a@example.com",
-        csrf_token: "csrf-token-for-a",
-      },
-    });
-  });
-}
 
 /**
  * Serves `GET /api/readings/:id` in the browser from the fixture pack, so a
@@ -154,113 +133,6 @@ export async function serveSaveInBrowser(
     await route.fulfill(answer);
   });
   return saves;
-}
-
-/**
- * Answers `POST /api/readings/import-markdown` in the browser with one canned
- * response, and records the imports made (#408), as serveSaveInBrowser does
- * for a URL. `serveReadingsInBrowser`'s `/api/readings/*` would answer this
- * path as a reading id, so call this after it: Playwright asks the route
- * registered last first.
- */
-export async function serveImportInBrowser(
-  page: Page,
-  answer: { status: number; json: unknown },
-): Promise<Request[]> {
-  const imports: Request[] = [];
-  await page.route("**/api/readings/import-markdown", async (route) => {
-    if (route.request().method() !== "POST") {
-      await route.fallback();
-      return;
-    }
-    imports.push(route.request());
-    await route.fulfill(answer);
-  });
-  return imports;
-}
-
-/**
- * Answers `POST /api/readings/:id/reprocess` in the browser (#410) and records
- * each one, so a spec can read the body the page sent — never `force`.
- * `answer` is called per request, so a spec can refuse the first and accept
- * the next.
- */
-export function serveReprocessInBrowser(
-  page: Page,
-  answer: (id: string) => { status: number; json: unknown },
-): Request[] {
-  const reprocesses: Request[] = [];
-  void page.route("**/api/readings/*/reprocess", async (route) => {
-    const segments = new URL(route.request().url()).pathname.split("/");
-    reprocesses.push(route.request());
-    await route.fulfill(answer(decodeURIComponent(segments.at(-2) ?? "")));
-  });
-  return reprocesses;
-}
-
-/**
- * Serves `GET /api/readings/:id/content` in the browser from the pack's
- * extracted Markdown (#372). The Source view fetches it on demand and never
- * through the server render, so the stub entrypoint has no part in it. An id
- * without content is a 404 — the `unavailable-source` fixture.
- */
-export async function serveSourceInBrowser(page: Page): Promise<void> {
-  await page.route("**/api/readings/*/content", async (route) => {
-    const segments = new URL(route.request().url()).pathname.split("/");
-    const id = decodeURIComponent(segments.at(-2) ?? "");
-    const markdown = pack.contents[id as keyof typeof pack.contents];
-    if (markdown === undefined) {
-      await route.fulfill({ status: 404, json: { error: "extracted markdown not available" } });
-      return;
-    }
-    await route.fulfill({ status: 200, contentType: "text/markdown; charset=utf-8", body: markdown });
-  });
-}
-
-/**
- * Serves `GET /api/readings/:id/diagnostics` in the browser from the pack
- * (#373). The Details section fetches it once opened, never through the
- * server render. `answer` replaces the fulfilment for the failure and
- * still-loading states.
- */
-export async function serveDiagnosticsInBrowser(
-  page: Page,
-  answer?: (route: Route) => Promise<void>,
-): Promise<void> {
-  await page.route("**/api/readings/*/diagnostics", async (route) => {
-    if (answer) {
-      await answer(route);
-      return;
-    }
-    const segments = new URL(route.request().url()).pathname.split("/");
-    const id = decodeURIComponent(segments.at(-2) ?? "");
-    const body = pack.diagnostics[id as keyof typeof pack.diagnostics];
-    if (!body) {
-      await route.fulfill({ status: 404, json: { error: "not found" } });
-      return;
-    }
-    await route.fulfill({ status: 200, json: body });
-  });
-}
-
-/**
- * Serves the two files "Open as file" fetches (#373): the extracted Markdown
- * as serveSourceInBrowser does, and `GET /api/readings/:id/content/raw` from
- * the pack's raw captures with their stored content type. An id without one
- * is a 404, as for a pending or failed reading.
- */
-export async function serveFilesInBrowser(page: Page): Promise<void> {
-  await serveSourceInBrowser(page);
-  await page.route("**/api/readings/*/content/raw", async (route) => {
-    const segments = new URL(route.request().url()).pathname.split("/");
-    const id = decodeURIComponent(segments.at(-3) ?? "");
-    const raw = pack.raws[id as keyof typeof pack.raws];
-    if (!raw) {
-      await route.fulfill({ status: 404, json: { error: "not found" } });
-      return;
-    }
-    await route.fulfill({ status: 200, contentType: raw.content_type, body: raw.body });
-  });
 }
 
 /**
@@ -682,147 +554,6 @@ export async function serveProviderInBrowser(
 }
 
 /**
- * Serves DELETE /api/account in the browser (#340.8). Nothing reaches the
- * backend stub: the answer is whatever the spec asks for, and each request is
- * recorded so a spec can prove the body, CSRF, and that cancel sent nothing.
- */
-export async function serveAccountDeleteInBrowser(
-  page: Page,
-  answer: { status?: number; json?: unknown } = {},
-): Promise<{ deletes: Request[] }> {
-  const deletes: Request[] = [];
-  await page.route("**/api/account", async (route) => {
-    const request = route.request();
-    if (request.method() !== "DELETE") {
-      await route.fallback();
-      return;
-    }
-    deletes.push(request);
-    await route.fulfill({ status: answer.status ?? 200, json: answer.json ?? { ok: true } });
-  });
-  return { deletes };
-}
-
-/**
- * The inbox the browser-evidence suite serves (reading-lite-fy8t): a titled
- * item with the Markdown a preview has to render (a list, a link to resolve
- * against the staged URL, a code block, and an image placeholder), and an
- * untitled one with a long URL for the title that wraps. Staged before the
- * pinned clock.
- */
-const INBOX_MARKDOWN = `# Slow reading week
-
-A week of reading one thing at a time, and writing down what stuck.
-
-## What changed
-
-- Fewer tabs, and each one finished.
-- Notes written the same day, while the argument was still fresh.
-- A [follow-up list](/follow-ups) for everything that could wait.
-
-\`\`\`text
-monday    one essay
-tuesday   one chapter
-\`\`\`
-
-![The reading desk](https://images.notes.example/desk.jpg)
-`;
-
-function inboxItem(id: string, url: string, title: string | null, markdown: string, stagedAt: string) {
-  return {
-    id,
-    url,
-    title,
-    markdown,
-    markdown_bytes: new TextEncoder().encode(markdown).byteLength,
-    created_at: stagedAt,
-    updated_at: stagedAt,
-  };
-}
-
-export const E2E_INBOX_ITEMS = [
-  inboxItem(
-    "in_FXSLOW0001",
-    "https://notes.example/slow-reading-week",
-    "Slow reading week",
-    INBOX_MARKDOWN,
-    "2026-09-10T16:30:00.000Z",
-  ),
-  inboxItem(
-    "in_FXDRAFT001",
-    "https://fieldnotes.example/2026/09/drafts/untitled-notes-on-attention-maintenance-and-the-upkeep-of-shared-spaces",
-    null,
-    "Notes on attention and upkeep, staged without a title.\n",
-    "2026-09-09T08:05:00.000Z",
-  ),
-];
-
-/**
- * Serves the inbox in the browser (reading-lite-fy8t): `GET /api/inbox`,
- * `GET /api/inbox/:id`, `POST /api/inbox/:id/promote`, and
- * `DELETE /api/inbox/:id`. The inbox is read in the browser only, so the stub
- * entrypoint has no part in it. `items` is what is staged; a promote that
- * lands or a discard removes its item from later reads, as the backend does.
- * `list` replaces the list's answer with a canned one (a state page), and
- * `promote` the promote's (202 by default, opening the pack's pending
- * reading). Each write is recorded so a spec can read what was sent.
- */
-export async function serveInboxInBrowser(
-  page: Page,
-  options: {
-    items?: typeof E2E_INBOX_ITEMS;
-    list?: { status: number; json: unknown };
-    promote?: { status: number; json: unknown };
-  } = {},
-): Promise<{ promotes: Request[]; discards: Request[] }> {
-  const items = options.items ?? E2E_INBOX_ITEMS;
-  const gone = new Set<string>();
-  const promotes: Request[] = [];
-  const discards: Request[] = [];
-  const promoted = options.promote ?? { status: 202, json: { id: "rd_FXPENDNG01", status: "pending" } };
-  // Await the route: the inbox fetches on mount, so a fire-and-forget install
-  // can miss the first request (Worker 404).
-  await page.route(/\/api\/inbox(\/.*)?$/, async (route) => {
-    const request = route.request();
-    const segments = new URL(request.url()).pathname.split("/").slice(3).map(decodeURIComponent);
-    const [id, verb] = segments;
-    const staged = items.find((item) => item.id === id && !gone.has(item.id));
-    if (request.method() === "GET" && id === undefined) {
-      if (options.list) {
-        await route.fulfill(options.list);
-        return;
-      }
-      const listed = items.filter((item) => !gone.has(item.id)).map(({ markdown: _markdown, ...meta }) => meta);
-      await route.fulfill({ status: 200, json: { items: listed } });
-      return;
-    }
-    if (!staged) {
-      await route.fulfill({ status: 404, json: { error: "not found" } });
-      return;
-    }
-    if (request.method() === "GET" && verb === undefined) {
-      await route.fulfill({ status: 200, json: staged });
-      return;
-    }
-    if (request.method() === "POST" && verb === "promote") {
-      promotes.push(request);
-      if (promoted.status === 200 || promoted.status === 202) gone.add(staged.id);
-      const body = { ...(promoted.json as object), inbox_item_id: staged.id };
-      await route.fulfill({ status: promoted.status, json: body });
-      return;
-    }
-    if (request.method() === "DELETE" && verb === undefined) {
-      discards.push(request);
-      gone.add(staged.id);
-      await route.fulfill({ status: 204, body: "" });
-      return;
-    }
-    await route.fallback();
-  });
-  return { promotes, discards };
-}
-
-/**
  * Sets the session cookie with the backend's attributes (HttpOnly,
  * SameSite=Lax; `url` supplies Path=/ and, on https, Secure), so a real
  * session an external run supplies is no more exposed to page script than in
@@ -835,29 +566,17 @@ export async function signIn(context: BrowserContext, baseURL: string, session =
 }
 
 /**
- * Applies the case's state, installs its `stub` routes, loads it, and waits
- * for its heading. A case's `prepare` may take the browser offline (#416);
- * the next load puts it back.
+ * Signs the context in if the case says so, installs its `stub` routes, loads
+ * it, and waits for its heading.
  */
 export async function openCase(
   page: Page,
   baseURL: string,
-  evidence: Pick<EvidenceCase, "path" | "state" | "heading" | "prepare" | "session" | "stub">,
+  evidence: Pick<EvidenceCase, "path" | "state" | "heading" | "prepare" | "stub">,
 ): Promise<void> {
-  await page.context().setOffline(false);
-  await applyState(page.context(), baseURL, evidence.state, evidence.session);
+  if (evidence.state === "signed-in") await signIn(page.context(), baseURL);
   await evidence.stub?.(page);
   await page.goto(evidence.path);
   await expect(page.getByRole("heading", { level: 1, name: evidence.heading })).toBeVisible();
   await evidence.prepare?.(page);
-}
-
-async function applyState(
-  context: BrowserContext,
-  baseURL: string,
-  state: SignedState,
-  session: string | undefined,
-): Promise<void> {
-  if (session !== undefined) await signIn(context, baseURL, session);
-  else if (state === "signed-in") await signIn(context, baseURL);
 }

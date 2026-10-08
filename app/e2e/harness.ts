@@ -7,15 +7,14 @@
 //
 // Set E2E_BASE_URL to point the suite at a running host instead. Nothing is
 // started in that mode, so nothing answers from the stub or the fixture pack:
-// the run keeps only the matrix and shell-extras projects (e2e/scope.ts), and
-// of the coverage cases only the `anyHost` ones (e2e/coverage.ts) — the
-// signed-out shell, sign-in, the legal pages, /save, and a missing reading's
-// 404 — so it checks the deployed shell's rendering, axe, and keyboard, never
-// reading content (#392). Signed-in cases run only with E2E_SESSION_COOKIE
-// (a real session) and E2E_SESSION_EMAIL (its account's address); without
-// the cookie the run is signed-out only, and the cookie alone, or either one
-// without E2E_BASE_URL, is refused below. No case writes: /save's are the
-// empty form and a URL the page refuses before it asks.
+// the run keeps only the matrix projects (e2e/scope.ts), and of the coverage
+// cases only the `anyHost` ones (e2e/coverage.ts) — the signed-out shell and
+// sign-in, and /save — so it checks the deployed shell's rendering, axe, and
+// keyboard, never reading content (#392). Signed-in cases run only with
+// E2E_SESSION_COOKIE (a real session) and E2E_SESSION_EMAIL (its account's
+// address); without the cookie the run is signed-out only, and the cookie
+// alone, or either one without E2E_BASE_URL, is refused below. No case
+// writes: /save's is the empty form.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";

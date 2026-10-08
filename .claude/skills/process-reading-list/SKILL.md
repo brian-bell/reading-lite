@@ -68,11 +68,10 @@ npm run ops -- reading-list check --file list.json --execute   # promote freshly
 ## Implementation
 
 - CLI: `scripts/ops-lib/commands/reading-list-process.ts` (via `scripts/ops.ts`)
-- Selection (pure, tested): `scripts/process-reading-list-lib/select.ts`
-- Write-back (pure, tested): `scripts/process-reading-list-lib/annotate.ts`
+- Selection (pure): `scripts/process-reading-list-lib/select.ts`
+- Write-back (pure): `scripts/process-reading-list-lib/annotate.ts`
 - Reuses `scripts/import-bookmarks-lib/submit.ts` (POST + retry + classification)
   and `confirm.ts` (the Y/n/q prompter).
-- Tests: `test/unit/process-reading-list/` (node project in `vitest.workspace.ts`)
 
 ## Notes / gotchas
 

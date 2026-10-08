@@ -90,10 +90,9 @@ Given a Reddit thread or comment URL (`reddit.com/...` or `redd.it/<id>`):
 
 ## Implementation
 
-- CLI: `scripts/ops-lib/commands/import-reddit.ts`; parser glue (tested):
+- CLI: `scripts/ops-lib/commands/import-reddit.ts`; parser glue:
   `scripts/reddit-import-lib/parse.ts` (`buildRedditImport`).
 - Markdown rendering: `redditListingToMarkdown` + `isRedditThreadUrl` in
   `src/modules/extractor/reddit.ts` (shared with the worker).
 - Import client: `scripts/corpus-lib/api.ts` (`importMarkdown`); target/token
   resolution: `scripts/corpus-lib/config.ts` (`resolveApiTarget`).
-- Tests: `test/unit/reddit-import/parse.test.ts` (node project).
