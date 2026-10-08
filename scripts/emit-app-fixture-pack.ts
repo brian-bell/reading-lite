@@ -4,7 +4,7 @@
 // and app/src/samples/sample-library.json, the public sample library the
 // frontend bundles (reading-lite-gh341.10). Run after changing
 // test/fixtures/local-seed.ts and commit the result;
-// test/unit/fixtures/app-fixture-pack.test.ts fails while either is stale.
+// test/unit/operator-guards.test.ts fails while either is stale.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";

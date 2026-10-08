@@ -88,11 +88,10 @@ Given a YouTube watch / `youtu.be` / `shorts` / `live` / `embed` URL:
 ## Implementation
 
 - CLI: `scripts/ops-lib/commands/import-youtube.ts` (fetches oEmbed + watch page, shells out to
-  yt-dlp for the transcript). Parser glue (tested):
+  yt-dlp for the transcript). Parser glue:
   `scripts/youtube-import-lib/parse.ts` (`buildYoutubeImport`).
 - Markdown rendering + URL parsing: `src/modules/extractor/youtube.ts`
   (`parseVideoId`, `parseOembed`, `parsePlayerResponse`, `timedtextToText`,
   `buildYoutubeMarkdown`) — shared with the worker.
 - Import client: `scripts/corpus-lib/api.ts` (`importMarkdown`); target/token
   resolution: `scripts/corpus-lib/config.ts` (`resolveApiTarget`).
-- Tests: `test/unit/youtube-import/parse.test.ts` (node project).

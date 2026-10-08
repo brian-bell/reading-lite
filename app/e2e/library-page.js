@@ -22,8 +22,7 @@ export const ARCHIVE_ROW_COUNT = 22;
  * The pack's list rows followed by plain ready rows dated a day apart before
  * the pack's oldest, so every pack row stays first, in its own order, and the
  * generated ones fill pages two and three. Each row is shaped as the backend's
- * ListIndexItemSchema requires (test/unit/fixtures/app-fixture-pack.test.ts
- * at the repo root parses them), with the key prefix the layout would give it.
+ * ListIndexItemSchema requires, with the key prefix the layout would give it.
  */
 export function libraryItems(items) {
   const oldest = Math.min(...items.map((item) => Date.parse(item.created_at)));

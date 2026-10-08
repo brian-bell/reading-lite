@@ -67,8 +67,9 @@ There is no lint script. Full Worker verification is `npm test`,
 runs the Worker job as `npm run test:ci`, the `app/` checks and its
 browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
 locally before shipping a Worker, migration, or operator-command change.
-The local-only groups are the corpus batch catalogs, extract-agent, refresh
-simulations, relationship judge scenarios, and `test/integration/readings.test.ts`.
+The local-only files are the eight integration files `test/ci-scope.ts` omits,
+among them the relationship and tension judge scenarios and
+`test/integration/readings.test.ts`.
 The browser-evidence job runs `test:browser:ci`, the essential subset; run the
 full `test:browser` locally before shipping a frontend change. On pull requests each job runs only
 for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
@@ -191,7 +192,12 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 `vitest.workspace.ts` separates Workers and Node pools. Integration tests run
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
-`WORKERS_RUNTIME_UNIT_TESTS`. `test/env.d.ts` supplies required
+`WORKERS_RUNTIME_UNIT_TESTS`. The Node pool is three files of guards no
+integration test owns: `test/unit/operator-guards.test.ts` (operator, deploy
+and batch refusals, app fixture freshness), `control-plane-guards.test.ts`
+(account teardown, paid dispatch, provider-key binding) and
+`pipeline-guards.test.ts` (cached-prefix snapshots, provider config, SSRF
+hosts, R2 key spelling, content sweep). `test/env.d.ts` supplies required
 `cloudflare:test` Env typing. `wrangler.test.toml` has no Queue; integration
 tests inject `installQueueStub()`. Similarity is pgvector.
 The suite needs [local Postgres](docs/operations.md#local-postgres): globalSetup
@@ -211,8 +217,7 @@ database: wrap control-plane ones in `useControlPlane()` / `useRolledBackSql()`
 (`test/helpers/control-plane-pg.ts`, `pg-rollback.ts`), which roll each test back
 and turn nested transactions into savepoints; that shares one client, so real
 concurrency belongs in a workers-pool test. Seed and inspect reading state
-through `test/helpers/test-readings.ts` (workers) or `node-readings.ts` (Node
-pool); migration-runner tests create scratch databases.
+through `test/helpers/test-readings.ts`.
 Do not drain a queue before asserting an active pending state.
 
 Give each behavior one test owner; don't re-assert the same case at unit and

@@ -11,7 +11,7 @@
 // changes; the Playwright suite pins the browser clock to the same instant, so
 // the `pending` fixture never crosses the pending TTL mid-run.
 //
-// test/unit/fixtures/app-fixture-pack.test.ts fails when the committed file
+// test/unit/operator-guards.test.ts fails when the committed file
 // and this projection disagree, so adding a fixture state stays one edit in
 // local-seed.ts plus `npm run fixtures:app`.
 

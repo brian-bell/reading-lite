@@ -150,7 +150,7 @@ jobs:
       - run: npm run ops -- --help
       - run: npm run ops -- deploy worker --help
       # This job has no Postgres service; no test it runs may need a database.
-      - run: npx vitest run --project node test/unit/lib/wrangler-cli.test.ts
+      - run: npx vitest run --project node test/unit/operator-guards.test.ts -t "launches wrangler"
         env:
           SKIP_TEST_POSTGRES: "1"
 

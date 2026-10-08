@@ -6,7 +6,7 @@
 // exists for them. This module projects the chosen fixtures out of the
 // browser-evidence snapshot (app-fixture-pack.ts) into
 // app/src/samples/sample-library.json, which `npm run fixtures:app` writes
-// alongside the pack and test/unit/fixtures/app-fixture-pack.test.ts keeps in
+// alongside the pack and test/unit/operator-guards.test.ts keeps in
 // step with it.
 //
 // The projection keeps what the reading page renders from a ready reading and

@@ -18,7 +18,7 @@ the pack without R2: `npm run fixtures:app` projects it into
 (`contents`), the `GET …/diagnostics` bodies assembled the way the router
 assembles them from rows (`diagnostics`), and each ready fixture's
 raw capture with its stored content type (`raws`) — and
-`test/unit/fixtures/app-fixture-pack.test.ts` fails while that file is stale, so
+`test/unit/operator-guards.test.ts` fails while that file is stale, so
 a new state is one edit here plus a regenerate. The same command writes
 `app/src/samples/sample-library.json`, the public sample library the frontend
 bundles (reading-lite-gh341.10): `attention`, `friction`, `gardens`,
@@ -26,7 +26,8 @@ bundles (reading-lite-gh341.10): `attention`, `friction`, `gardens`,
 their URL's last path segment, with relationships kept only between them.
 
 The names and ids are stable: they live in `test/fixtures/local-seed.ts`, and
-`test/unit/fixtures/local-seed.test.ts` pins every state below.
+`test/integration/postgres/local-seed-rows.test.ts` (local only) seeds them
+into PostgreSQL.
 
 The pack contains authored fiction from the
 [Connected prototype](design-spec.md#data-mapping): `.example` hosts, a
