@@ -2713,40 +2713,53 @@ textarea {
   }
 
   /* Two rows: the brand with the theme control and the account, then the
-     destinations. The brand and the nav share one grid cell, the nav leaving
-     its first row's start empty for the brand. Positioned so the account
-     menu can open against the bar's edge. */
+     destinations. The nav spans the bar on the bar's own columns (a subgrid),
+     leaving its first row's start empty for the brand, so the brand gets the
+     width the theme control and the account leave and no more. Positioned so
+     the account menu can open against the bar's edge. */
   .shell-nav {
     position: relative;
     display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    column-gap: var(--space-2);
     height: auto;
     padding: var(--space-2) var(--space-4);
     border-right: 0;
     border-bottom: 1px solid var(--border);
   }
 
-  /* Above the nav's empty cell, which would otherwise take its clicks. */
+  /* Above the nav's empty cell, which would otherwise take its clicks. The
+     reading face is the system's, so the name's width varies by platform:
+     where it does not fit beside the mark it wraps to a second line, which
+     the 44 px height clips, rather than running under the theme control. */
   .brand {
     position: relative;
     z-index: 1;
     grid-area: 1 / 1;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    align-content: flex-start;
     align-self: start;
     justify-self: start;
+    max-width: 100%;
+    overflow: hidden;
+  }
+
+  .brand-mark,
+  .brand-name {
+    display: flex;
+    align-items: center;
+    height: 44px;
   }
 
   .brand-mark {
     font-size: 31px;
   }
 
-  .brand-name {
-    display: inline;
-  }
-
   .shell-nav nav {
     display: grid;
-    grid-area: 1 / 1;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-area: 1 / 1 / auto / -1;
+    grid-template-columns: subgrid;
     grid-template-areas:
       ". theme account"
       "items items items";
