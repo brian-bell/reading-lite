@@ -81,11 +81,9 @@ report files; without it the command plans), `--help`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-audit.ts` (via `scripts/ops.ts`)
-- Pure logic (tested): `scripts/corpus-lib/{reason,classify,policy,audit,render}.ts`
+- Pure logic: `scripts/corpus-lib/{reason,classify,policy,audit,render}.ts`
 - Rows: `scripts/pg-lib/operator-corpus.ts`, over `PgReadingStore`
 - R2 reads for `--teasers` (injectable runner): `scripts/corpus-lib/wrangler-r2.ts`
-- Tests: `test/unit/corpus/` (classification) and
-  `test/unit/scripts/ops-corpus-pg.test.ts` (end to end)
 
 ## Next step
 Feed the resulting `index.json` to **`corpus-recover`** to act on it (reprocess / re-extract). That step writes and costs money; this one doesn't. For the **orphan dup** groups (failed or pending), there's nothing to recover — clean them with **`corpus-drop`** instead (it keeps the ready copy).

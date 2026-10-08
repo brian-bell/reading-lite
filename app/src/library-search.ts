@@ -17,7 +17,7 @@ import type { LibraryParams } from "./library";
 // search is not strict (src/router.tsx sets no `search.strict`), so the match
 // carries every other parameter the URL had as well. searchForPage and
 // searchForFilters spread them into the links they write, which is how an
-// unknown parameter survives a page or filter change (smoke/worker.test.ts).
+// unknown parameter survives a page or filter change.
 // The index signature says so to the type.
 
 /** Rows per page. The backend's default; the frontend never sends a limit. */

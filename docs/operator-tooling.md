@@ -358,4 +358,5 @@ evidence that told a wipe still running from records that predated #195 S2.
 That made it the gate before gh351 deleted the legacy stores: on 2026-09-26 it
 found `wipe/` already empty in both buckets (reading-lite-gh351.6), and
 reading-lite-gh351.7 deleted it. The bucket-to-database pairing test it carried
-moved to `test/unit/scripts/operator-db.test.ts`.
+moved to `test/unit/scripts/operator-db.test.ts`, which was later removed
+with the rest of the Node-pool unit suite.

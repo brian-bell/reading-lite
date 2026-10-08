@@ -164,12 +164,10 @@ then re-run with `--execute`.
 
 ## Implementation
 - CLI: `scripts/ops-lib/commands/corpus-sweep.ts` (via `scripts/ops.ts`)
-- Pure planner (tested): `scripts/corpus-lib/sweep.ts`
+- Pure planner: `scripts/corpus-lib/sweep.ts`
 - Rows and content keys: `scripts/pg-lib/operator-corpus.ts`, over
   `PgReadingStore`
 - R2 delete: `scripts/corpus-lib/wrangler-r2.ts`
-- Tests: `test/unit/corpus/sweep.test.ts` (ranking) and
-  `test/unit/scripts/ops-corpus-pg.test.ts` (end to end)
 
 ## Related
 - **`corpus-drop`** — drop a specific URL or id you already know is junk. Use it

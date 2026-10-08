@@ -9,13 +9,15 @@ import {
 } from "./provider-key-crypto";
 
 export const PROVIDER_OPENAI = "openai" as const;
-export type ProviderName = typeof PROVIDER_OPENAI;
+export const PROVIDER_ANTHROPIC = "anthropic" as const;
+export const ProviderNameSchema = z.enum([PROVIDER_OPENAI, PROVIDER_ANTHROPIC]);
+export type ProviderName = z.infer<typeof ProviderNameSchema>;
 
 const Bytes = z.custom<Uint8Array>((value) => value instanceof Uint8Array);
 
 const CredentialRowSchema = z.object({
   tenant_id: z.string(),
-  provider: z.literal(PROVIDER_OPENAI),
+  provider: ProviderNameSchema,
   ciphertext: Bytes,
   iv: Bytes,
   key_version: z.number().int().nonnegative(),
@@ -201,9 +203,38 @@ export async function reencryptProviderCredential(
   });
 }
 
+/** Every credential row the tenant has, for account deletion. */
 export async function deleteProviderCredentials(db: ControlPlaneDb, tenantId: string): Promise<void> {
   const id = requireTenant(tenantId);
   await db.run("DELETE FROM tenant_provider_credentials WHERE tenant_id = ?", id);
+}
+
+// One provider's key, for the settings page. Removing the key the reader
+// summarizes with puts the selection back on OpenAI in the same transaction
+// (ADR 0004, amended 2026-10-03). The settings row is locked first, as
+// updateProviderPreferences does, so a concurrent selection of Anthropic
+// either sees the row gone or is reset after it.
+export async function deleteProviderCredential(
+  db: ControlPlaneDb,
+  input: { tenantId: string; provider: ProviderName },
+): Promise<void> {
+  const tenantId = requireTenant(input.tenantId);
+  await db.transaction(async (tx) => {
+    await tx.first("SELECT user_id FROM user_settings WHERE user_id = ? FOR UPDATE", tenantId);
+    await lockKey(tx, `provider_credential:${tenantId}:${input.provider}`);
+    await tx.run(
+      "DELETE FROM tenant_provider_credentials WHERE tenant_id = ? AND provider = ?",
+      tenantId,
+      input.provider,
+    );
+    await tx.run(
+      `UPDATE user_settings SET summarization_provider = ?
+       WHERE user_id = ? AND summarization_provider = ?`,
+      PROVIDER_OPENAI,
+      tenantId,
+      input.provider,
+    );
+  });
 }
 
 export async function markProviderCredentialInvalid(

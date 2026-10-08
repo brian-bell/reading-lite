@@ -127,19 +127,15 @@ manifests.
 From `app/`:
 
 ```sh
-npm run prototype:test
 npm run prototype:build
 npm run typecheck && npm test
 ```
 
-The study has its own Vitest configuration (`vitest.prototypes.config.ts`)
-and TypeScript project (`tsconfig.prototypes.json`), so `npm test` and
-`npm run typecheck` never see it, and CI's path map runs no job for it
-(`scripts/ci-lib/changed-jobs.ts`). The build writes to the ignored
-`app/dist-prototypes/`. The tests cover the routes, filters, threads,
-tensions, revisit prompts, the catalog, meaning search, the desk and digest
-derivations, and the journeys above. They do not measure layout; the desktop
-and phone review in both themes is Brian's.
+The study has its own TypeScript project (`tsconfig.prototypes.json`), so
+`npm test` and `npm run typecheck` never see it, and CI's path map runs no
+job for it (`scripts/ci-lib/changed-jobs.ts`). The build writes to the
+ignored `app/dist-prototypes/`. It has no tests of its own; the desktop and
+phone review in both themes is Brian's.
 
 ## History
 

@@ -14,7 +14,7 @@ import {
   templateDatabaseName,
   withDatabase,
 } from "./helpers/file-database";
-import { hostEnv, testDatabaseUrl } from "./helpers/test-database";
+import { testDatabaseUrl } from "./helpers/test-database";
 
 async function withClient<T>(connectionString: string, work: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString, connectionTimeoutMillis: 5000 });
@@ -37,8 +37,6 @@ async function dropFileDatabases(admin: pg.Client, base: string): Promise<void> 
 }
 
 export default async function setup(): Promise<(() => Promise<void>) | void> {
-  // CI's ops job runs one database-free test file and has no Postgres service.
-  if (hostEnv().SKIP_TEST_POSTGRES === "1") return;
   const url = testDatabaseUrl();
   if (/neon\.tech/.test(url)) throw new Error("Tests never connect to Neon; point TEST_DATABASE_URL at a local Postgres.");
   const base = databaseOf(url);

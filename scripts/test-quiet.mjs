@@ -3,7 +3,7 @@
 //   - On success: prints only the summary block (file/test counts, duration).
 //   - On failure: prints the full output, minus known-harmless noise lines.
 // Vitest's exit code is always preserved. Extra args pass through, e.g.
-//   npm run test:quiet -- test/unit/http-retry
+//   npm run test:quiet -- test/unit/pipeline-guards.test.ts
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 

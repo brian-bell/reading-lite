@@ -19,7 +19,7 @@ permissions:
 jobs:
   deploy:
     name: Build and deploy frontend Worker (staging hosts)
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

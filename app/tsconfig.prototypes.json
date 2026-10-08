@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.json",
-  "include": ["prototypes/**/*.ts", "prototypes/**/*.tsx", "test/setup.ts", "vite.prototypes.config.ts", "vitest.prototypes.config.ts"]
+  "include": ["prototypes/**/*.ts", "prototypes/**/*.tsx", "vite.prototypes.config.ts"]
 }
