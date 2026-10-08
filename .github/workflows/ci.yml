@@ -160,7 +160,9 @@ jobs:
     # Skipped jobs satisfy required checks; each job runs only for the paths
     # its suite reads.
     if: needs.changes.outputs.app == 'true'
-    runs-on: [self-hosted, linux, x64]
+    # Hosted: after the trim (reading-lite-xido) the suite is a few seconds, so
+    # it need not queue behind the Worker job on the self-hosted runner.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: app
@@ -185,8 +187,8 @@ jobs:
     name: App (browser evidence)
     needs: changes
     if: needs.changes.outputs.app-browser == 'true'
-    # The only hosted job: `playwright install --with-deps` needs passwordless
-    # sudo for its system packages, which the self-hosted runner does not have.
+    # Hosted: `playwright install --with-deps` needs passwordless sudo for its
+    # system packages, which the self-hosted runner does not have.
     runs-on: ubuntu-latest
     defaults:
       run:
