@@ -18,10 +18,13 @@ import { OperatorSpend } from "../../src/control-plane/operator-spend";
 import { createPaidFetch, spendRpcFor, type SpendRpc } from "../../src/control-plane/paid-dispatch";
 import { DeferPaidWorkError } from "../../src/control-plane/processing-leases";
 import {
+  deleteProviderCredential,
   deleteProviderCredentials,
   markProviderCredentialInvalid,
+  readProviderCredential,
   upsertProviderCredential,
 } from "../../src/control-plane/provider-credentials";
+import { updateProviderPreferences } from "../../src/control-plane/provider-settings";
 import type { Env } from "../../src/index";
 import { actualPaidCost, quotePaidRequest } from "../../src/modules/paid-pricing";
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
@@ -87,23 +90,24 @@ function embeddingResponse(): Response {
   return Response.json({ data: [{ embedding: new Array(1536).fill(0.1) }], usage: { prompt_tokens: 10, total_tokens: 10 } });
 }
 
+const READING = {
+  title: "Test Article",
+  tldr: "A short summary.",
+  tags: ["test"],
+  keywords: ["test", "article", "integration"],
+  people: [],
+  orgs: [],
+  novelty_verdict: "novel",
+  connections: [],
+  summary_markdown: "summary body",
+};
+
 function summaryResponse(): Response {
-  const reading = {
-    title: "Test Article",
-    tldr: "A short summary.",
-    tags: ["test"],
-    keywords: ["test", "article", "integration"],
-    people: [],
-    orgs: [],
-    novelty_verdict: "novel",
-    connections: [],
-    summary_markdown: "summary body",
-  };
   return Response.json({
     id: "resp_01",
     object: "response",
     status: "completed",
-    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(reading) }] }],
+    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(READING) }] }],
     usage: {
       input_tokens: 100,
       output_tokens: 50,
@@ -111,6 +115,18 @@ function summaryResponse(): Response {
       output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: 150,
     },
+  });
+}
+
+function anthropicSummaryResponse(): Response {
+  return Response.json({
+    id: "msg_01",
+    type: "message",
+    role: "assistant",
+    model: "claude-sonnet-5-5",
+    stop_reason: "tool_use",
+    content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input: READING }],
+    usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
   });
 }
 
@@ -163,13 +179,14 @@ const isEmbed = (input: RequestInfo | URL) => String(input instanceof Request ? 
 const callsTo = (fetchFn: ReturnType<typeof vi.fn<typeof fetch>>, embed: boolean) =>
   fetchFn.mock.calls.filter(([input]) => isEmbed(input) === embed).length;
 
-async function storeKey(tenantId: string, plaintext: string): Promise<void> {
+async function storeKey(tenantId: string, plaintext: string, provider: "openai" | "anthropic" = "openai"): Promise<void> {
   await upsertProviderCredential(testControlPlane(env), {
     tenantId,
     plaintext,
     root: { secret: parseProviderKeySecret(KEY_SECRET), version: 1 },
     nowMs: Date.parse(CREATED_AT),
     validatedAtMs: Date.parse(CREATED_AT),
+    provider,
   });
 }
 
@@ -387,12 +404,17 @@ describe("spend guards", () => {
     for (const method of ["info", "warn", "error"] as const) {
       vi.spyOn(console, method).mockImplementation((...args: unknown[]) => void logged.push(args.map(String).join(" ")));
     }
+    const bearer = (key: string) => `authorization=Bearer ${key}`;
+    const xApiKey = (key: string) => `x-api-key=${key}`;
     const rows: Array<{
       name: string;
       key: string | null;
+      // Stored beside `key`, with Anthropic selected as the reader's provider.
+      anthropicKey?: string;
       provider: (input: RequestInfo | URL, tenantId: string, embeds: number) => Promise<Response>;
-      auths: string[];
-      error?: string;
+      sent: string[];
+      error?: Record<string, unknown>;
+      after?: (tenantId: string) => Promise<void>;
     }> = [];
     // Two tenants, each through an HTTP retry: the retry re-resolves the key
     // and never falls back to the deployment's.
@@ -402,7 +424,7 @@ describe("spend guards", () => {
         key,
         provider: async (input, _tenantId, embeds) =>
           !isEmbed(input) ? summaryResponse() : embeds === 1 ? new Response("unavailable", { status: 500 }) : embeddingResponse(),
-        auths: Array(4).fill(`Bearer ${key}`),
+        sent: Array(4).fill(bearer(key)),
       });
     }
     rows.push(
@@ -410,8 +432,8 @@ describe("spend guards", () => {
         name: "no key stored",
         key: null,
         provider: async () => embeddingResponse(),
-        auths: [],
-        error: "provider_key_required",
+        sent: [],
+        error: { code: "provider_key_required" },
       },
       {
         // Each dispatch resolves the key again, so removal stops the next one.
@@ -422,12 +444,48 @@ describe("spend guards", () => {
           await deleteProviderCredentials(testControlPlane(env), tenantId);
           return embeddingResponse();
         },
-        auths: ["Bearer sk-tenant-removed-1111"],
-        error: "provider_key_required",
+        sent: [bearer("sk-tenant-removed-1111")],
+        error: { code: "provider_key_required" },
+      },
+      {
+        // Each provider reads its own header; the other's never rides along.
+        name: "both keys, Anthropic selected",
+        key: "sk-tenant-openai-1212",
+        anthropicKey: "sk-ant-tenant-3434",
+        provider: async (input) => (isEmbed(input) ? embeddingResponse() : anthropicSummaryResponse()),
+        sent: [bearer("sk-tenant-openai-1212"), xApiKey("sk-ant-tenant-3434"), bearer("sk-tenant-openai-1212")],
+      },
+      {
+        name: "Anthropic rejects its key",
+        key: "sk-tenant-openai-5656",
+        anthropicKey: "sk-ant-tenant-rejected-7878",
+        provider: async (input) => isEmbed(input)
+          ? embeddingResponse()
+          : new Response('{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', { status: 401 }),
+        sent: [bearer("sk-tenant-openai-5656"), xApiKey("sk-ant-tenant-rejected-7878")],
+        error: { code: "provider_key_invalid", provider: "anthropic", stage: "summarize", http_status: 401 },
+        after: async (tenantId) => {
+          const db = testControlPlane(env);
+          expect((await readProviderCredential(db, tenantId, "anthropic"))?.status).toBe("invalid");
+          expect((await readProviderCredential(db, tenantId, "openai"))?.status).toBe("active");
+        },
+      },
+      {
+        // No deployment fallback, and no switch to OpenAI for the summary.
+        name: "Anthropic key removed after embed_source",
+        key: "sk-tenant-openai-9090",
+        anthropicKey: "sk-ant-tenant-removed-2323",
+        provider: async (input, tenantId) => {
+          if (!isEmbed(input)) throw new Error("summarized after the Anthropic key was removed");
+          await deleteProviderCredential(testControlPlane(env), { tenantId, provider: "anthropic" });
+          return embeddingResponse();
+        },
+        sent: [bearer("sk-tenant-openai-9090")],
+        error: { code: "provider_key_required", provider: "anthropic", stage: "summarize" },
       },
     );
 
-    const keys = [DEPLOYMENT_KEY];
+    const keys = [DEPLOYMENT_KEY, "sk-anthropic-deployment"];
     for (const row of rows) {
       const { tenantId } = await newTenant();
       const tenant = tenantOf(tenantId);
@@ -435,30 +493,45 @@ describe("spend guards", () => {
         keys.push(row.key);
         await storeKey(tenantId, row.key);
       }
-      const auths: string[] = [];
+      if (row.anthropicKey) {
+        keys.push(row.anthropicKey);
+        await storeKey(tenantId, row.anthropicKey, "anthropic");
+        await expect(updateProviderPreferences(testControlPlane(env), {
+          userId: tenantId, nowMs: Date.parse(CREATED_AT), effort: "medium", summarizationProvider: "anthropic",
+        })).resolves.toBe("ok");
+      }
+      const sent: string[] = [];
       let embeds = 0;
       const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
-        auths.push(new Headers(init?.headers).get("authorization") ?? "");
+        const headers = new Headers(init?.headers);
+        const auth = headers.get("authorization");
+        const apiKey = headers.get("x-api-key");
+        sent.push([auth && `authorization=${auth}`, apiKey && `x-api-key=${apiKey}`].filter(Boolean).join(" "));
         if (isEmbed(input)) embeds += 1;
         return row.provider(input, tenantId, embeds);
       });
       const job = await seedPending(tenant, `https://keys.example/${tenantId}`);
       await processReading(job, keysOn(), services(fetchFn), tenant);
 
-      expect(auths, row.name).toEqual(row.auths);
+      expect(sent, row.name).toEqual(row.sent);
       const manifest = await testReadingsFor(tenant).manifest(job.id);
       if (row.error) {
-        expect(manifest, row.name).toMatchObject({ status: "failed", error: { code: row.error, retryable: false } });
+        expect(manifest, row.name).toMatchObject({ status: "failed", error: { ...row.error, retryable: false } });
       } else {
         expect(manifest?.status, row.name).toBe("ready");
       }
-      const attempt = await testControlPlane(env).first<{ text: string }>(
-        `SELECT concat_ws(' ', checkpoint::text, error::text, events::text) AS text
+      await row.after?.(tenantId);
+      const attempt = await testControlPlane(env).first<{ text: string; provider: string | null }>(
+        `SELECT concat_ws(' ', checkpoint::text, error::text, events::text) AS text,
+                checkpoint->'config'->>'provider' AS provider
          FROM reading_attempts WHERE tenant_id = ? AND id = ?`,
         tenantId,
         job.attemptId,
       );
       expect(attempt, `${row.name}: attempt row`).not.toBeNull();
+      if (row.sent.length > 0) {
+        expect(attempt!.provider, `${row.name}: attempt config`).toBe(row.anthropicKey ? "anthropic" : "openai");
+      }
       const durable = `${attempt!.text} ${JSON.stringify(manifest)}`;
       for (const key of keys) expect(durable.includes(key), `${row.name}: attempt row holds ${key}`).toBe(false);
     }

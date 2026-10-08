@@ -363,7 +363,7 @@ export async function judgeRelationships(
 ): Promise<RelationshipJudgementResult> {
   const provider = parseSummarizerProvider(deps.provider);
   if (provider === "anthropic") {
-    if (!deps.anthropicApiKey) {
+    if (deps.anthropicApiKey !== undefined && !deps.anthropicApiKey) {
       throw new RelationshipJudgementError(
         "missing ANTHROPIC_API_KEY for SUMMARIZER_PROVIDER=anthropic",
       );
@@ -378,7 +378,7 @@ export async function judgeRelationships(
       deps,
       ANTHROPIC_MESSAGES_URL,
       {
-        "x-api-key": deps.anthropicApiKey,
+        ...(deps.anthropicApiKey ? { "x-api-key": deps.anthropicApiKey } : {}),
         "anthropic-version": ANTHROPIC_VERSION,
       },
       body,

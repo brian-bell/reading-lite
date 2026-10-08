@@ -21,7 +21,12 @@ import type { RefreshEnvelope } from "./relationship-refresh";
 import { activeRefreshFounder } from "./relationship-refresh";
 import { fromSql } from "./control-plane/db";
 import { createPaidFetch, spendRpcFor } from "./control-plane/paid-dispatch";
-import { hostedProviderSelection, paidAuthorizationFor, tenantProviderKeysEnabled } from "./control-plane/tenant-provider-keys";
+import {
+  deploymentProviderKeys,
+  paidAuthorizationFor,
+  resolveProcessingConfig,
+  summarizerSelectionFor,
+} from "./control-plane/tenant-provider-keys";
 import { acquireProcessingLeases, throwIfDeferred, DeferPaidWorkError, releaseProcessingLeases, presentLeaseBeforePaidDispatch, startProcessingLeaseHeartbeat } from "./control-plane/processing-leases";
 import { readTensionJob, markTensionDispatched, saveTensionResult, markTensionRateLimited, releaseTensionClaim, type SavedTensionResult, type TensionPairKey } from "./control-plane/tension-refresh-jobs";
 import { withSqlSession, type Sql } from "./modules/db/sql";
@@ -149,6 +154,9 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: TensionJob, env: 
     if (await stillFounder()) logNoop("etag_changed");
     return;
   }
+  // The reader's provider, model and effort with tenant keys on; the
+  // deployment's otherwise, as for the reading's own summary.
+  const config = await resolveProcessingConfig(env, db, job.tenantId);
   const attemptId = `tension:${job.a.id}|${job.b.id}:${runAt}`;
   const clock = () => Date.parse(services.now());
   const hold = throwIfDeferred(await acquireProcessingLeases(env, job.tenantId, attemptId, clock()));
@@ -161,7 +169,6 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: TensionJob, env: 
       await presentLeaseBeforePaidDispatch(env, hold, clock);
     };
     let providerDispatched = false;
-    const tenantKeys = tenantProviderKeysEnabled(env);
     const paidFetch = createPaidFetch({
       tenantId: job.tenantId, attemptId, stage: "summarize", fetch: (...args) => { providerDispatched = true; return services.fetch(...args); },
       rpc: spendRpcFor(env), now: Date.now, authorization: paidAuthorizationFor(env, db, job.tenantId), beforeDispatch: assertCurrent,
@@ -185,12 +192,7 @@ async function judgeWith(sql: Sql, tenant: TenantContext, job: TensionJob, env: 
       },
     });
     const result = await judgeTension(input, {
-      fetch: paidFetch, ...hostedProviderSelection(env),
-      ...(tenantKeys ? {} : { openaiApiKey: env.OPENAI_API_KEY }),
-      openaiModel: env.OPENAI_SUMMARIZATION_MODEL,
-      openaiReasoningEffort: env.OPENAI_SUMMARIZATION_REASONING_EFFORT,
-      anthropicModel: env.ANTHROPIC_MODEL,
-      anthropicReasoningEffort: env.ANTHROPIC_SUMMARIZATION_REASONING_EFFORT,
+      fetch: paidFetch, ...deploymentProviderKeys(env), ...summarizerSelectionFor(config),
       retry: retryDepsFromEnv(env),
     });
     if (!await stillCurrent(a.etag, b.etag)) return;

@@ -1,6 +1,7 @@
 // Control-plane guards no integration test owns: account teardown's last
 // checks before the users row is hard-deleted, paid dispatch's refusal to call
-// a provider without clean admission, and provider-key ciphertext binding.
+// a provider without clean admission or with another provider's key header,
+// and provider-key ciphertext binding.
 //
 // Teardown runs against PostgreSQL so the foreign keys are enforced as in
 // production; useControlPlane rolls each test back.
@@ -15,6 +16,7 @@ import type { ControlPlaneDb } from "../../src/control-plane/db";
 import { createPaidFetch, SpendAdmissionError, type SpendRpc } from "../../src/control-plane/paid-dispatch";
 import { decryptProviderKey, encryptProviderKey } from "../../src/control-plane/provider-key-crypto";
 import { toTimestamp } from "../../src/control-plane/pg-time";
+import { buildSummarizeRequestBody as buildAnthropicBody } from "../../src/modules/anthropic";
 import { useControlPlane } from "../helpers/control-plane-pg";
 
 const ROOT_HEX = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -300,6 +302,36 @@ describe("paid dispatch", () => {
       expect(provider, label).toHaveBeenCalledOnce();
       expect(f.kinds, label).not.toContain("settle_spend");
     }
+  });
+
+  // A tenant holding both keys: a deployment key an adapter set must never
+  // ride along with the tenant's, and each request pays from the provider the
+  // quote names.
+  it("resolves the key for the quoted provider and strips the other provider's header", async () => {
+    const sent: Array<[string | null, string | null]> = [];
+    const f = fixture({
+      authorization: {
+        mode: "tenant",
+        resolve: async (provider) => provider === "anthropic"
+          ? { key: "sk-ant-tenant-7777", credentialVersion: 7 }
+          : { key: "sk-openai-tenant-3333", credentialVersion: 3 },
+        markInvalid: async () => {},
+      },
+      fetch: async (_url, request) => {
+        const headers = new Headers(request?.headers);
+        sent.push([headers.get("authorization"), headers.get("x-api-key")]);
+        return Response.json({});
+      },
+    });
+    const stale = { authorization: "Bearer sk-deployment-openai", "x-api-key": "sk-deployment-anthropic" };
+    await f.wrapped(url, { ...init, headers: { ...init.headers, ...stale } });
+    await f.wrapped("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "anthropic-version": "2023-06-01", ...stale },
+      body: JSON.stringify(buildAnthropicBody(
+        { url: "https://example.com", extractedText: "article", similarReadings: [] }, "claude-sonnet-5-5", "low")),
+    });
+    expect(sent).toEqual([["Bearer sk-openai-tenant-3333", null], [null, "sk-ant-tenant-7777"]]);
   });
 });
 

@@ -1,5 +1,5 @@
 import type { Env } from "../index";
-import { actualPaidCost, quotePaidRequest } from "../modules/paid-pricing";
+import { actualPaidCost, quotePaidRequest, type PaidProvider } from "../modules/paid-pricing";
 import { GLOBAL_USAGE_GUARD_NAME } from "./constants";
 import { DeferPaidWorkError } from "./processing-leases";
 import type { SpendPayer } from "./spend-ledger";
@@ -26,7 +26,7 @@ export class SpendAdmissionError extends DeferPaidWorkError {
 // same request cannot succeed until the reader replaces the key, grants it
 // model access, or adds credit, so neither HTTP nor queue retry applies
 // (ADR 0004). A rate-limit 429 stays RateLimitedError and a 5xx stays an
-// adapter error.
+// adapter error. `provider` names whose account answered, for failure copy.
 export type ProviderAccountErrorCode =
   | "provider_key_invalid"
   | "provider_model_access"
@@ -41,7 +41,11 @@ const ACCOUNT_ERROR_MESSAGES: Record<ProviderAccountErrorCode, string> = {
 };
 
 export class ProviderAccountError extends Error {
-  constructor(readonly code: ProviderAccountErrorCode, readonly status: number) {
+  constructor(
+    readonly code: ProviderAccountErrorCode,
+    readonly status: number,
+    readonly provider: PaidProvider,
+  ) {
     super(ACCOUNT_ERROR_MESSAGES[code]);
     this.name = code;
   }
@@ -54,10 +58,12 @@ export type PaidAuthorization =
   | { mode: "deployment" }
   | {
     mode: "tenant";
-    resolve: () => Promise<{ key: string; credentialVersion: number }>;
-    // Fenced by the version that was sent, so a key replaced while the
-    // rejected request was in flight stays active.
-    markInvalid: (credentialVersion: number, nowMs: number) => Promise<void>;
+    // The key for the provider the quote names; each provider is its own row.
+    resolve: (provider: PaidProvider) => Promise<{ key: string; credentialVersion: number }>;
+    // Fenced by the provider and version that were sent, so an Anthropic 401
+    // leaves the OpenAI row alone and a key replaced while the rejected
+    // request was in flight stays active.
+    markInvalid: (provider: PaidProvider, credentialVersion: number, nowMs: number) => Promise<void>;
   };
 
 export interface PaidFetchDeps {
@@ -163,8 +169,8 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
     const attachTenantKey = async () => {
       if (deps.authorization?.mode !== "tenant") return;
       try {
-        const resolved = await deps.authorization.resolve();
-        init = withBearer(init, resolved.key);
+        const resolved = await deps.authorization.resolve(quote.provider);
+        init = withProviderKey(init, quote.provider, resolved.key);
         sentCredentialVersion = resolved.credentialVersion;
       } catch (error) {
         const canceled = await call({ ...identity, kind: "settle_spend", actualMicrodollars: 0 });
@@ -204,64 +210,83 @@ export function createPaidFetch(deps: PaidFetchDeps): typeof fetch {
       else report("unresolved", {reason: "settlement_unavailable"});
       if (!result.ok) console.warn(JSON.stringify({ event: "paid_spend_settlement_held", op_id: opId, reason: result.reason }));
     } else report("unresolved", {reason: "missing_valid_usage"});
-    await throwIfAccountFailure(response, deps, sentCredentialVersion);
+    await throwIfAccountFailure(response, deps, quote.provider, sentCredentialVersion);
     return response;
   };
 }
 
-// Checked before fetchWithRetry sees the status, so insufficient_quota never
-// becomes RateLimitedError. A 401 or 403 is about the tenant's key only when
-// one was sent; on deployment keys it stays the adapter's error. Only a 401
-// invalidates the key: a 403 means a valid key lacks model or project access,
-// which replacing the same key would not fix (provider-key-check agrees).
+// Checked before fetchWithRetry sees the status, so an exhausted account never
+// becomes RateLimitedError. A 401 or 403 (and Anthropic's 404 for a model the
+// key cannot see) is about the tenant's key only when one was sent; on
+// deployment keys it stays the adapter's error. Only a 401 invalidates the
+// key: a 403 means a valid key lacks model or project access, which replacing
+// the same key would not fix (provider-key-check agrees).
 async function throwIfAccountFailure(
   response: Response,
   deps: PaidFetchDeps,
+  provider: PaidProvider,
   credentialVersion: number | null,
 ): Promise<void> {
-  const tenantKeySent = deps.authorization?.mode === "tenant" && credentialVersion !== null;
-  if (response.status === 403 && tenantKeySent) {
+  const fail = (code: ProviderAccountErrorCode): never => {
     response.body?.cancel().catch(() => {});
-    throw new ProviderAccountError("provider_model_access", 403);
+    throw new ProviderAccountError(code, response.status, provider);
+  };
+  const tenantKeySent = deps.authorization?.mode === "tenant" && credentialVersion !== null;
+  if (tenantKeySent && (response.status === 403 || (provider === "anthropic" && response.status === 404))) {
+    fail("provider_model_access");
   }
   if (response.status === 401 && deps.authorization?.mode === "tenant" && credentialVersion !== null) {
-    response.body?.cancel().catch(() => {});
     try {
-      await deps.authorization.markInvalid(credentialVersion, deps.now());
+      await deps.authorization.markInvalid(provider, credentialVersion, deps.now());
     } catch (error) {
       // The attempt still fails as key-invalid; the next dispatch meets the
       // provider's 401 again and retries the mark.
       console.error(JSON.stringify({
         event: "provider_key_mark_invalid_failed",
         tenant_id: deps.tenantId,
+        provider,
         credential_version: credentialVersion,
         message: error instanceof Error ? error.message : String(error),
       }));
     }
-    throw new ProviderAccountError("provider_key_invalid", response.status);
+    fail("provider_key_invalid");
   }
   // Exhausted quota fails now on either key, but only the tenant's own is the
   // reader's billing to fix; on deployment keys it is the operator's.
-  if (response.status === 429 && await isInsufficientQuota(response)) {
-    response.body?.cancel().catch(() => {});
-    throw new ProviderAccountError(tenantKeySent ? "provider_insufficient_quota" : "hosted_provider_quota", 429);
+  if (await isAccountExhausted(response, provider)) {
+    fail(tenantKeySent ? "provider_insufficient_quota" : "hosted_provider_quota");
   }
 }
 
-async function isInsufficientQuota(response: Response): Promise<boolean> {
+// OpenAI: the `insufficient_quota` 429. Anthropic: any 402, a 400 naming the
+// credit balance, or a 429 naming the usage limit (a monthly cap that keeps
+// failing until access resumes). The Anthropic messages are matched loosely
+// until a real key confirms their wording (reading-lite-gh341.15.8).
+async function isAccountExhausted(response: Response, provider: PaidProvider): Promise<boolean> {
+  if (provider === "anthropic" && response.status === 402) return true;
+  if (response.status !== 429 && !(provider === "anthropic" && response.status === 400)) return false;
   try {
     const body: unknown = await response.clone().json();
     const error = body && typeof body === "object" && "error" in body ? body.error : null;
     if (!error || typeof error !== "object") return false;
-    const { code, type } = error as { code?: unknown; type?: unknown };
-    return code === "insufficient_quota" || type === "insufficient_quota";
+    const { code, type, message } = error as { code?: unknown; type?: unknown; message?: unknown };
+    if (provider === "openai") return code === "insufficient_quota" || type === "insufficient_quota";
+    const text = typeof message === "string" ? message : "";
+    return response.status === 400
+      ? type === "invalid_request_error" && /credit balance/i.test(text)
+      : /usage limit|spend limit/i.test(text);
   } catch {
     return false;
   }
 }
 
-function withBearer(init: RequestInit | undefined, key: string): RequestInit {
+// Each provider reads its own header; drop the other so a deployment key an
+// adapter set can never ride along with the tenant's.
+function withProviderKey(init: RequestInit | undefined, provider: PaidProvider, key: string): RequestInit {
   const headers = new Headers(init?.headers);
-  headers.set("authorization", `Bearer ${key}`);
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  if (provider === "anthropic") headers.set("x-api-key", key);
+  else headers.set("authorization", `Bearer ${key}`);
   return { ...init, headers };
 }

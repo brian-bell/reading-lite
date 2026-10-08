@@ -3216,6 +3216,15 @@ components:
             class recorded one (for example a provider's 401 at `summarize`, or
             the source site's 403 at `fetch_source`). Provider messages are the
             provider's own text and do not repeat it.
+        provider:
+          type: string
+          enum: [openai, anthropic]
+          description: >-
+            Whose account a provider key or account failure is about, set only
+            with the `provider_*` and `hosted_provider_quota` codes. With
+            Anthropic selected, a missing Anthropic key fails `summarize` with
+            `provider_key_required` and `provider: anthropic` while the OpenAI
+            key keeps paying for embeddings.
 
     ProcessingAttemptSummary:
       type: object
