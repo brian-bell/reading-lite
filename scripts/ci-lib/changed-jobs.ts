@@ -14,15 +14,12 @@
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const CI_JOBS = ["worker", "ops", "app", "appBrowser"] as const;
+export const CI_JOBS = ["worker", "app", "appBrowser"] as const;
 export type CiJob = (typeof CI_JOBS)[number];
 export type CiJobSelection = Record<CiJob, boolean>;
 
 const ALL: readonly CiJob[] = CI_JOBS;
 const NONE: readonly CiJob[] = [];
-// The Worker suite, plus the Ops CLI job, which imports scripts/ and,
-// through them, src/.
-const BACKEND: readonly CiJob[] = ["worker", "ops"];
 
 type Rule = [pattern: RegExp, jobs: readonly CiJob[]];
 
@@ -53,15 +50,13 @@ const RULES: Rule[] = [
   [/^app\/(test|smoke|scripts)\/|^app\/(wrangler\.jsonc|vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
   [/^app\//, ["app", "appBrowser"]],
 
-  // The root Worker.
-  [/^wrangler\.toml$/, BACKEND],
-  [/^(src|scripts)\//, BACKEND],
-  [/^(package\.json|package-lock\.json|tsconfig\.json|vitest\.config\.ts|vitest\.workspace\.ts)$/, BACKEND],
-  // The Ops CLI job runs this file's wrangler launch case.
-  [/^test\/unit\/operator-guards\.test\.ts$/, BACKEND],
+  // The root Worker and operator scripts. The node pool's operator guards
+  // drive the ops CLI.
+  [/^(src|scripts)\//, ["worker"]],
+  [/^(package\.json|package-lock\.json|tsconfig\.json|vitest\.config\.ts|vitest\.workspace\.ts)$/, ["worker"]],
   // db/ holds the PostgreSQL migrations the Worker suite's globalSetup applies.
   [/^(test|db)\//, ["worker"]],
-  [/^(wrangler\.test\.toml|worker-configuration\.d\.ts)$/, ["worker"]],
+  [/^(wrangler\.toml|wrangler\.test\.toml|worker-configuration\.d\.ts)$/, ["worker"]],
   [/^\.(dev|stg|corpus)\.vars\.example$/, NONE],
 ];
 

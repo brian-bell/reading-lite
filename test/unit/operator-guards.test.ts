@@ -1,9 +1,6 @@
 // Operator tooling guards: the contracts that keep an operator command, a
 // deploy, or a provider batch from damaging production. Each case fails
 // closed — nothing remote, durable, or paid happens on the refusal path.
-//
-// Pure: no database, so CI's Ops CLI job (which has no Postgres service) runs
-// this file too.
 
 import type { ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";

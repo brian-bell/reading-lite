@@ -66,7 +66,8 @@ There is no lint script. Full Worker verification is `npm test`,
 `typecheck`, `test`, `build`, `test:smoke`, and `test:browser` in `app/`. CI
 runs the Worker job as `npm run test:workers:ci` and the Worker node-pool job
 as `npm run test:node:ci`, both on hosted runners, the `app/` checks and its
-browser-evidence job, and the Ops CLI job, all on Node 22. Run `npm test`
+browser-evidence job, all on Node 22. The node-pool job also covers the ops
+CLI: its operator guards drive every registered command. Run `npm test`
 locally before shipping a Worker, migration, or operator-command change.
 Every Workers- and Node-pool test file runs in CI; none is local-only.
 The browser-evidence job runs `test:browser:ci`, the essential subset; run the
