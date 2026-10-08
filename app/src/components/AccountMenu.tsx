@@ -65,11 +65,16 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
       onKeyDown={closeOnEscape}
     >
       <summary className="nav-item">
-        <Icon name="user" size={22} />
-        <span>Account</span>
+        <span className="account-avatar" aria-hidden="true">
+          {email.trim().charAt(0).toUpperCase()}
+        </span>
+        <span className="account-menu-label">Account</span>
       </summary>
       <div className="account-menu-panel">
-        <p className="account-menu-email">{email}</p>
+        <p className="account-menu-email">
+          <span className="account-menu-eyebrow">Signed in as</span>
+          {email}
+        </p>
         <ul className="account-menu-items">
           <li>
             <a href="/account/security">Account</a>
@@ -77,7 +82,7 @@ function AccountMenu({ email, onSignOut }: { email: string; onSignOut: () => Pro
           <li>
             <a href="/account/provider">Provider</a>
           </li>
-          <li>
+          <li className="account-menu-separated">
             <button type="button" disabled={signingOut} onClick={() => void signOut()}>
               {signingOut ? "Signing out…" : "Sign out"}
             </button>
