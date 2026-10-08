@@ -567,8 +567,9 @@ several integration files mutate. Decision (1c.1, after a spike):
   proxy connects to whichever database the client names. Tests pass `env` to
   `worker.fetch`, `worker.queue` and the stores, so the redirect reaches them;
   `SELF` uses the runtime's own bindings and still sees the base database, and
-  only `operator-status.test.ts` used it (removed in reading-lite-rs1m). globalSetup drops the clones when the
-  run ends, and before the next one in case a run was killed.
+  only `operator-status.test.ts` used it (removed in reading-lite-rs1m).
+  globalSetup drops the clones when the run ends, and before the next one in
+  case a run was killed.
 - **Node pool: one database, one rolled-back transaction per test**
   (`test/helpers/pg-rollback.ts`). Code under test that opens a transaction
   gets a `SAVEPOINT`. Two tests inserting the same unique key do not fail; the
