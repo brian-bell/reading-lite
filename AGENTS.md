@@ -116,8 +116,8 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 
 ## Development constraints
 
-- Use TDD by default for behavior changes. Test public behavior and inject
-  `fetch`, `now`, and `newId` through `src/services.ts`.
+- Test public behavior and inject `fetch`, `now`, and `newId` through
+  `src/services.ts`.
 - Validate at seams with zod. Always parse rows read from PostgreSQL into the
   manifest and list shapes. Keep manifest and API schemas, tests, and
   `docs/openapi.yaml` synchronized.
