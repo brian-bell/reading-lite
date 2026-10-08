@@ -28,31 +28,23 @@ type Rule = [pattern: RegExp, jobs: readonly CiJob[]];
 
 const RULES: Rule[] = [
   [/^\.github\/workflows\/ci\.yml$|^scripts\/ci-lib\//, ALL],
-  [/^\.github\/workflows\/claude\.yml$/, NONE],
-  // test/unit/deploy reads the deploy workflows.
-  [/^\.github\/workflows\//, ["worker"]],
+  // No suite reads the other workflows.
+  [/^\.github\/workflows\//, NONE],
 
-  // Documentation. The Worker suite checks routes against docs/openapi.yaml.
-  [/^docs\/openapi\.yaml$/, ["worker"]],
+  // Documentation.
   [/^docs\//, NONE],
   [/^(README\.md|AGENTS\.md|CLAUDE\.md|CONTEXT\.md|LICENSE|skills-lock\.json|\.gitignore|\.dockerignore|Dockerfile|docker-compose\.yml)$/, NONE],
   [/^evaluations\/|^\.beads\/|^\.claude\/skills\//, NONE],
-  [/^(\.agents|\.claude)\/.*\.(md|yaml)$/, NONE],
-  // Agent hooks and rules. .cursor/environment.json stays with the Worker
-  // suite, which checks its install command.
-  [/^(\.claude\/settings\.json|\.codex\/.*|\.cursor\/(hooks\.json|rules\/.*))$/, NONE],
-  // Skill scripts are tested by the Worker suite.
-  [/^\.agents\//, ["worker"]],
+  // Agent skills, hooks, rules, and cloud-agent setup. No suite reads them.
+  [/^(\.agents\/.*|\.claude\/settings\.json|\.codex\/.*|\.cursor\/.*)$/, NONE],
 
-  // app/. The Worker suite imports the browser fixture pack and, through
-  // library-page.js, library-search.ts, checks the bundled sample library
-  // against the pack it is projected from, and pins the Markdown import limit
-  // to the operator gates' (markdown-import-limit.ts).
+  // app/. The Worker suite checks the committed browser fixture pack and
+  // sample library against the local fixture pack they are projected from.
   [/^app\/.*\.md$|^app\/(Dockerfile|\.dockerignore)$/, NONE],
   // The design study (app/prototypes): its own Vite entry and Vitest config,
   // outside the app's tsconfig, tests, build, and browser evidence.
   [/^app\/prototypes\/|^app\/(vite|vitest)\.prototypes\.config\.ts$|^app\/tsconfig\.prototypes\.json$/, NONE],
-  [/^app\/(e2e\/fixtures\/|e2e\/[^/]+\.js$|src\/samples\/|src\/(library-search|markdown-import-limit)\.ts$)/, ["worker", "app", "appBrowser"]],
+  [/^app\/(e2e\/fixtures\/|src\/samples\/)/, ["worker", "app", "appBrowser"]],
   // Unit tests, the smoke suite, and Worker config. wrangler.jsonc is mostly
   // routes and bindings; its compatibility and assets settings shape the built
   // Worker, which the app job's smoke suite serves (backend 404s, cache
@@ -65,10 +57,12 @@ const RULES: Rule[] = [
   [/^wrangler\.toml$|^src\/frontend-reads\.ts$/, [...BACKEND, "app"]],
   [/^(src|scripts)\//, BACKEND],
   [/^(package\.json|package-lock\.json|tsconfig\.json|vitest\.config\.ts|vitest\.workspace\.ts)$/, BACKEND],
-  [/^test\/unit\/lib\/wrangler-cli\.test\.ts$/, BACKEND],
+  // The Ops CLI job runs this file's wrangler launch case.
+  [/^test\/unit\/operator-guards\.test\.ts$/, BACKEND],
   // db/ holds the PostgreSQL migrations the Worker suite's globalSetup applies.
-  [/^(test|db|\.cursor)\//, ["worker"]],
-  [/^(wrangler\.test\.toml|worker-configuration\.d\.ts|\.(dev|stg|corpus)\.vars\.example)$/, ["worker"]],
+  [/^(test|db)\//, ["worker"]],
+  [/^(wrangler\.test\.toml|worker-configuration\.d\.ts)$/, ["worker"]],
+  [/^\.(dev|stg|corpus)\.vars\.example$/, NONE],
 ];
 
 export function jobsForPath(path: string): readonly CiJob[] {

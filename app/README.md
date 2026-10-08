@@ -514,7 +514,7 @@ Extending it:
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
   `e2e/fixtures/fixture-pack.json` and `src/samples/sample-library.json`.
-  `test/unit/fixtures/app-fixture-pack.test.ts` fails while either is stale.
+  `test/unit/operator-guards.test.ts` fails while either is stale.
 - **A viewport or theme:** add a project in `playwright.config.ts`.
 - **Another host:** `E2E_BASE_URL=https://host npm run test:browser` points
   the suite at a running host instead of starting the harness. Nothing there

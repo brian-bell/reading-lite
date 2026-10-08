@@ -579,8 +579,8 @@ export type ArchiveExportDocument = z.infer<typeof ArchiveExportDocumentSchema>;
 // The byte cap is the queue envelope's: promote carries the item to the
 // consumer in one Cloudflare Queues message, so an item that could not fit
 // could never be promoted and stage refuses it (413). db/migrations/0008
-// enforces the Markdown's outer bound; test/unit/import-markdown/app-limit.test.ts
-// pins both numbers to the app's and the operator tooling's copies.
+// enforces the Markdown's outer bound. Keep both numbers equal to the app's
+// and the operator tooling's copies; no test pins them together.
 export const INBOX_MARKDOWN_MAX_BYTES = 128_000;
 // What an item may cost inside that message, measured the way the app's
 // Markdown import and the operator gate measure it: the JSON serialization of
