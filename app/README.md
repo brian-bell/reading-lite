@@ -12,7 +12,7 @@ is required; `npm run ops` does not build this package.
 npm ci
 npm run dev          # :5174; /api proxies to the backend's `npm run dev` on :8787
 npm run typecheck
-npm test             # unit/component tests, plus the service-binding check
+npm test             # the frontend guard tests (test/guards.test.tsx)
 npm run build        # dist/client (assets) and dist/server (Worker + wrangler.json)
 npm run test:smoke   # runs the built Worker in workerd; build first
 npm run test:browser # browser evidence: themes, viewports, axe, keyboard; build first
@@ -59,13 +59,12 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   `public/_headers`.
 - **Service bindings.** Each environment's `BACKEND` binding in
   `wrangler.jsonc` names the backend Worker of the same environment and its
-  `FrontendReads` entrypoint. `test/backend-bindings.test.ts` reads both configs
-  through Wrangler and fails on a crossed binding or a missing entrypoint.
-  Environments do not inherit bindings. Both deploy workflows then run
-  `node scripts/check-build.ts <env>` on the built `dist/server/wrangler.json`,
-  which is what `wrangler deploy` uploads: it must target that environment,
-  match `wrangler.jsonc` on name, routes, services, and `workers_dev`/
-  `preview_urls`, and pass the same binding guard.
+  `FrontendReads` entrypoint. Environments do not inherit bindings. Both
+  deploy workflows run `node scripts/check-build.ts <env>` on the built
+  `dist/server/wrangler.json`, which is what `wrangler deploy` uploads: it must
+  target that environment, match `wrangler.jsonc` on name, routes, services,
+  and `workers_dev`/`preview_urls`, and bind only that environment's backend
+  (`config/backend-bindings.ts`).
 - **Identity.** Server renders read `whoami` through `BACKEND`
   (`src/identity-query.ts`), forwarding only the incoming `Cookie` header and
   host; the browser calls same-origin `/api/whoami`. Both map the response in
@@ -256,8 +255,7 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   the account the page was rendered for, so another tab signing this browser in
   as someone else is caught rather than silently rendering their reading.
   `src/reading-failure.ts` maps a failed manifest's `error.code` and stage to
-  the acceptance matrix's categories, pinned against the fixture pack by
-  `test/reading-failure.test.ts`. A 200 body is parsed through the zod
+  the acceptance matrix's categories. A 200 body is parsed through the zod
   projection in `src/reading.ts`: only `id`, `url`, and `status` are required,
   every other field the app reads is optional and null-tolerant, unknown fields
   pass through, and a malformed field the app does read is the retryable
@@ -458,59 +456,37 @@ stub answers `whoami` for a canned session and serves reading detail from
 snapshot's `generated_at`, so the `pending` fixture stays pending and evidence
 is reproducible.
 
-Every covered route and state runs at 390 px and 1440 px in light and dark:
-axe (WCAG 2.2 AA), the keyboard pass (skip link first and landing on main,
-focus order, a visible focus indicator on every tab stop, no focus trap), and a
-layout check that no positioned panel escapes the viewport fail the run. The
-two skip-link checks are about the document rather than the theme, so each
-viewport runs them in its light project only; the tab walk runs in all four.
-Reduced motion and zoom — 200% of the desktop window, and the 320 px reflow
-floor — run for the shell. `e2e/specs/reading-cache.spec.ts` (the
-`reading-cache` project) records every request a server-rendered reading page
-makes and fails if the browser asks for the reading or identity again after
-hydration, or when the reader leaves for the library and returns (#370).
-`e2e/specs/controls.spec.ts` (the `controls` project) covers the one state the
-resting screenshots never reach: a `.button` under the pointer changes in both
-themes, and a disabled, aria-disabled, or touch-tapped one does not.
-
-The focus indicator is measured on the element the reader sees, as a rendering
-that changes when focus arrives: the theme options focus a transparent radio
-whose ring belongs to the label, so reading the focused element's own outline
-would keep passing after that rule broke. `e2e/specs/focus-check.spec.ts` (the
-`checks` project) suppresses the rule and fails if the check does not. Screenshots go to `e2e/screenshots/` and are
-uploaded by CI for review; they are not pixel-diff baselines, because the
-design spec uses system fonts and wrapping differs by machine.
+Every route in `e2e/coverage.ts` — the library signed out and signed in,
+`/save`, the account page, and a ready reading — runs at 390 px and 1440 px in
+light and dark, as one test per route and project: axe (WCAG 2.2 AA), a layout
+check that no positioned panel escapes the viewport, and the keyboard pass
+(skip link first, a visible focus indicator on every tab stop, no focus trap)
+fail the run. `e2e/specs/onboarding.spec.ts` (the `onboarding` project) walks a
+new reader from the signed-out front door through the samples, sign-in, and
+connecting a key to the first save, and checks on the way that the session
+cookie is out of page script's reach, the key never reaches browser storage,
+and each write carries the CSRF token and the tenant pin. Screenshots go to
+`e2e/screenshots/` and are uploaded by CI for review; they are not pixel-diff
+baselines, because the design spec uses system fonts and wrapping differs by
+machine.
 
 CI runs the essential scope, `npm run test:browser:ci` (`e2e/scope.ts`): the
-cases marked `essential` in `e2e/coverage.ts` — the major states of each route:
-the library signed out, signed in, searched, empty, session-ended, and failed;
-sign-in and save; a ready, pending, failed, and missing reading; one trail hop;
-Source; open Details; the account sessions list; account deletion's typed
-confirmation and closing page; a new reader's library before they connect a
-key; the public legal pages; and the sample library and a sample — in the
-`phone-dark` and `desktop-light` projects, so both viewports and both themes
-are still covered, plus the behaviour specs and `checks`. Reduced motion and
-zoom, the other matrix projects, and the remaining states run only in the full
-`npm run test:browser`, which is the local verification before a frontend
-change ships.
+`phone-dark` and `desktop-light` matrix projects, so both viewports and both
+themes are still covered, plus `onboarding`. The full `npm run test:browser`
+adds the other two matrix projects and is the local verification before a
+frontend change ships.
 
 Extending it:
 
-- **A route or state:** add a case to `e2e/coverage.ts`. Every project picks it
-  up; mark it `essential` only if it is a major state of a route, so CI stays
-  short. `prepare` reaches states that need interaction, as the open account
-  menu does. A state reached by navigating between readings needs
-  `serveReadingsInBrowser` (`e2e/test.ts`) first: the frontend Worker answers
-  `/api/*` with 404 by design, so the browser's own reading requests are served
-  from the fixture pack by a Playwright route. `e2e/specs/reading-trail.spec.ts`
-  (the `reading-trail` project) covers Back, reload, and the phone jump (#371).
-  A case whose state needs an answer to a write routes it in `stub`, fulfilling
-  only that method and calling `route.fallback()` for the rest, so the page's
-  own reads still reach the Worker (`save-rejected-url`, `save-already-saved`).
-- **A behaviour only a browser shows:** add a spec under `e2e/specs/` and a
-  project in `playwright.config.ts` that matches it, as `save` does for the
-  request the save form makes, its client-side navigation (#431), and the
-  one-time notice a reload drops (#432).
+- **A route:** add a case to `e2e/coverage.ts` only for a route none of the
+  covered ones shares a layout with. `prepare` waits for what the load
+  renders. The frontend Worker answers `/api/*` with 404 by design, so a case
+  whose page reads in the browser serves those reads in `stub`, as
+  `account-sessions` does (`e2e/test.ts`).
+- **A behaviour only a browser shows:** add it to the onboarding walk if a new
+  reader passes through it; otherwise add a spec under `e2e/specs/` and a
+  project in `playwright.config.ts` that matches it, and name the project in
+  `e2e/scope.ts` if CI must run it.
 - **A fixture state:** add it in the repo root's `test/fixtures/local-seed.ts`,
   run `npm run fixtures:app` there, and commit the regenerated
   `e2e/fixtures/fixture-pack.json` and `src/samples/sample-library.json`.
@@ -518,12 +494,11 @@ Extending it:
 - **A viewport or theme:** add a project in `playwright.config.ts`.
 - **Another host:** `E2E_BASE_URL=https://host npm run test:browser` points
   the suite at a running host instead of starting the harness. Nothing there
-  answers from the stub or the fixture pack, so it runs only the matrix and
-  shell-extras projects over the cases marked `anyHost` in `e2e/coverage.ts`:
-  the signed-out shell and sign-in, the legal pages, the sample library,
-  `/save`, and a missing
-  reading's 404 (#392). That is the deployed shell's rendering, axe, and
-  keyboard evidence, not reading content, and no case writes. Set
+  answers from the stub or the fixture pack, so it runs only the matrix
+  projects over the cases marked `anyHost` in `e2e/coverage.ts`: the
+  signed-out shell and sign-in, and `/save` (#392). That is the deployed
+  shell's rendering, axe, and keyboard evidence, not reading content, and no
+  case writes. Set
   `E2E_SESSION_COOKIE` (a real session) with `E2E_SESSION_EMAIL` (its
   account's address) to add the signed-in cases; without the cookie the run is
   signed-out only. The cookie without the email, or either one without

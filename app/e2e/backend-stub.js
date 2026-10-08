@@ -12,7 +12,6 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import pack from "./fixtures/fixture-pack.json";
 import { libraryItems, libraryPage } from "./library-page.js";
-import { LIST_SCENARIOS } from "./list-scenarios.js";
 
 // Sessions the suite signs in with. e2e/sessions.ts holds the cookie names the
 // browser sets; keep the two in step.
@@ -34,19 +33,8 @@ const SESSIONS = {
   "reader-new": NEW_READER,
 };
 
-// Reader A again, but the library's list answers with one of the acceptance
-// matrix's common states (#416), so a server render of `/` shows that state:
-// the session ended between whoami and the list (401), an inactive account
-// (403), the expected-tenant pin missed (412), or the backend down (503); or
-// with no rows at all (#417), for "No readings yet.".
-const SCENARIO_SESSIONS = {
-  "reader-empty": LIST_SCENARIOS.empty,
-  "reader-expired": LIST_SCENARIOS.expired,
-  "reader-forbidden": LIST_SCENARIOS.forbidden,
-  "reader-mismatch": LIST_SCENARIOS.mismatch,
-  "reader-outage": LIST_SCENARIOS.outage,
-  "reader-new": LIST_SCENARIOS.empty,
-};
+// The new reader's library is empty.
+const EMPTY_LIBRARY = { readings: [], limit: 20, offset: 0, has_more: false };
 
 function sessionKeyOf(cookie) {
   const match = /(?:^|;\s*)(?:__Host-session|e2e-session)=([^;]+)/.exec(cookie ?? "");
@@ -56,7 +44,7 @@ function sessionKeyOf(cookie) {
 function sessionOf(cookie) {
   const key = sessionKeyOf(cookie);
   if (key === undefined) return undefined;
-  return SESSIONS[key] ?? (key in SCENARIO_SESSIONS ? READER_A : undefined);
+  return SESSIONS[key];
 }
 
 const LIBRARY_ITEMS = libraryItems(pack.list_index.items);
@@ -68,9 +56,9 @@ export class FrontendReads extends WorkerEntrypoint {
   }
 
   async list({ cookie, q, tag, offset }) {
-    if (!sessionOf(cookie)) return { status: 401, body: { error: "unauthorized" } };
-    const scenario = SCENARIO_SESSIONS[sessionKeyOf(cookie)];
-    if (scenario) return scenario;
+    const identity = sessionOf(cookie);
+    if (!identity) return { status: 401, body: { error: "unauthorized" } };
+    if (identity === NEW_READER) return { status: 200, body: EMPTY_LIBRARY };
     return { status: 200, body: libraryPage(LIBRARY_ITEMS, { q, tag, offset }) };
   }
 

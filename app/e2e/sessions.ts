@@ -19,19 +19,6 @@ export function hostSessionEmail(): string | undefined {
 export const SESSION_COOKIE_VALUE = hostSession() ?? "reader-a";
 
 /**
- * The same reader, with the library's list answering one of the common
- * states (#416) or nothing at all (#417). Only e2e/backend-stub.js knows
- * these; against a real host they are ordinary unknown sessions.
- */
-export const LIBRARY_STATE_SESSIONS = {
-  empty: "reader-empty",
-  "session-ended": "reader-expired",
-  forbidden: "reader-forbidden",
-  "account-changed": "reader-mismatch",
-  "server-error": "reader-outage",
-} as const;
-
-/**
  * A new reader (reading-lite-gh341.11): no provider key yet, which saving
  * needs, and nothing in the library. Only e2e/backend-stub.js knows it.
  */

@@ -55,10 +55,10 @@ npm run typecheck
 cd app                          # TanStack Start frontend (ADR 0003)
 npm ci
 npm run dev                     # :5174, proxies /api to :8787
-npm run typecheck && npm test
-npm run build && npm run test:smoke
-npm run test:browser            # Playwright: themes, viewports, axe, keyboard
-npm run test:browser:ci         # the essential subset CI runs
+npm run typecheck && npm test   # test/guards.test.tsx
+npm run build && npm run test:smoke  # the built Worker: privacy, redirects, tenants
+npm run test:browser            # Playwright: 5 routes x 4 themes/viewports, onboarding
+npm run test:browser:ci         # two matrix projects and onboarding, as CI runs
 ```
 
 There is no lint script. Full Worker verification is `npm test`,
@@ -72,7 +72,9 @@ The local-only files are the eight integration files `test/ci-scope.ts` omits,
 among them the relationship and tension judge scenarios and
 `test/integration/readings.test.ts`.
 The browser-evidence job runs `test:browser:ci`, the essential subset; run the
-full `test:browser` locally before shipping a frontend change. On pull requests each job runs only
+full `test:browser` locally before shipping a frontend change. The `app/`
+suites hold only guards no other layer catches (see the
+[app README](app/README.md#browser-evidence)). On pull requests each job runs only
 for the paths its suite reads, as mapped in `scripts/ci-lib/changed-jobs.ts`;
 update that map when a suite starts reading a new path. Unmapped paths run
 everything. Pushes to main run every job, and documentation-only pushes skip

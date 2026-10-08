@@ -195,7 +195,9 @@ jobs:
     # Skipped jobs satisfy required checks; each job runs only for the paths
     # its suite reads.
     if: needs.changes.outputs.app == 'true'
-    runs-on: [self-hosted, linux, x64]
+    # Hosted: after the trim (reading-lite-xido) the suite is a few seconds, so
+    # it need not queue behind the Worker job on the self-hosted runner.
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: app
@@ -209,18 +211,19 @@ jobs:
           cache-dependency-path: app/package-lock.json
       - run: npm ci
       - run: npm run typecheck
-      # Includes the cross-environment service-binding check.
+      # The frontend guards (test/guards.test.tsx).
       - run: npm test
       - run: npm run build
-      # Runs the built Worker: 404 for backend paths, cache headers, themed SSR.
+      # Runs the built Worker: 404 for backend paths, cache headers, sign-in
+      # redirects, and two tenants' concurrent renders kept apart.
       - run: npm run test:smoke
 
   app-browser:
     name: App (browser evidence)
     needs: changes
     if: needs.changes.outputs.app-browser == 'true'
-    # The only hosted job: `playwright install --with-deps` needs passwordless
-    # sudo for its system packages, which the self-hosted runner does not have.
+    # Hosted: `playwright install --with-deps` needs passwordless sudo for its
+    # system packages, which the self-hosted runner does not have.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -248,11 +251,11 @@ jobs:
         if: steps.browser-cache.outputs.cache-hit == 'true'
       # The suite serves the built Worker against the fixture-pack stub.
       - run: npm run build
-      # The essential scope (app/e2e/scope.ts): the major states of each route
-      # in one light and one dark project, plus the behaviour specs. Axe (WCAG
-      # 2.2 AA) and the keyboard pass fail the job; screenshots are evidence
-      # for review, not pixel gates. `npm run test:browser` is the full matrix,
-      # for local verification.
+      # The essential scope (app/e2e/scope.ts): the covered routes in one light
+      # and one dark project, plus onboarding. Axe (WCAG 2.2 AA) and the
+      # keyboard pass fail the job; screenshots are evidence for review, not
+      # pixel gates. `npm run test:browser` is the full matrix, for local
+      # verification.
       - run: npm run test:browser:ci
       - uses: actions/upload-artifact@v4
         if: always()

@@ -41,20 +41,20 @@ const RULES: Rule[] = [
   // app/. The Worker suite checks the committed browser fixture pack and
   // sample library against the local fixture pack they are projected from.
   [/^app\/.*\.md$|^app\/(Dockerfile|\.dockerignore)$/, NONE],
-  // The design study (app/prototypes): its own Vite entry and Vitest config,
-  // outside the app's tsconfig, tests, build, and browser evidence.
-  [/^app\/prototypes\/|^app\/(vite|vitest)\.prototypes\.config\.ts$|^app\/tsconfig\.prototypes\.json$/, NONE],
+  // The design study (app/prototypes): its own Vite entry and tsconfig,
+  // outside the app's tests, build, and browser evidence.
+  [/^app\/prototypes\/|^app\/vite\.prototypes\.config\.ts$|^app\/tsconfig\.prototypes\.json$/, NONE],
   [/^app\/(e2e\/fixtures\/|src\/samples\/)/, ["worker", "app", "appBrowser"]],
   // Unit tests, the smoke suite, and Worker config. wrangler.jsonc is mostly
   // routes and bindings; its compatibility and assets settings shape the built
   // Worker, which the app job's smoke suite serves (backend 404s, cache
-  // headers, themed SSR), so browser evidence waits for a rendering change.
+  // headers, sign-in redirects), so browser evidence waits for a rendering
+  // change.
   [/^app\/(test|smoke|scripts)\/|^app\/(wrangler\.jsonc|vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
   [/^app\//, ["app", "appBrowser"]],
 
-  // The root Worker. app/test checks its routes and service bindings against
-  // wrangler.toml, and mirrors the FrontendReads seam.
-  [/^wrangler\.toml$|^src\/frontend-reads\.ts$/, [...BACKEND, "app"]],
+  // The root Worker.
+  [/^wrangler\.toml$/, BACKEND],
   [/^(src|scripts)\//, BACKEND],
   [/^(package\.json|package-lock\.json|tsconfig\.json|vitest\.config\.ts|vitest\.workspace\.ts)$/, BACKEND],
   // The Ops CLI job runs this file's wrangler launch case.
