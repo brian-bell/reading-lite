@@ -1,7 +1,8 @@
 // Authored article bodies for the local seed pack (issue #366). All content is
 // fiction written for the Connected prototype (see
 // docs/design/connected/design-spec.md#data-mapping and the authored samples.ts
-// at its frozen source commit): no production corpus text,
+// at its frozen source commit) and the next-direction prototype
+// (docs/design/next-direction/README.md#frozen-source): no production corpus text,
 // no real publications, no credentials. Fictional hosts use the reserved
 // .example TLD; the YouTube fixture uses a reserved-style video id.
 //
@@ -31,11 +32,23 @@ ${body}
 </html>
 `;
 
-const h = (heading: string, text: string): string =>
-  `<h2>${heading}</h2>\n<p>${text}</p>`;
+// A section without a heading is a lead paragraph.
+type Section = { heading?: string; text: string };
 
-const md = (sections: { heading: string; text: string }[]): string =>
-  sections.map((s) => `## ${s.heading}\n\n${s.text}`).join("\n\n");
+const h = (heading: string | undefined, text: string): string =>
+  heading === undefined ? `<p>${text}</p>` : `<h2>${heading}</h2>\n<p>${text}</p>`;
+
+const md = (sections: Section[]): string =>
+  sections.map((s) => (s.heading === undefined ? s.text : `## ${s.heading}\n\n${s.text}`)).join("\n\n");
+
+/** An HTML capture of `sections` and its extracted Markdown. */
+const article = (title: string, sections: Section[]): FixtureContent => ({
+  extractedMarkdown: md(sections),
+  raw: {
+    body: html(title, sections.map((s) => h(s.heading, s.text)).join("\n")),
+    contentType: "text/html; charset=utf-8",
+  },
+});
 
 const ATTENTION_SECTIONS = [
   {
@@ -275,4 +288,38 @@ export const FIXTURE_CONTENT: Record<string, FixtureContent> = {
       contentType: "text/html; charset=utf-8",
     },
   },
+  // The next-direction prototype's readings (reading-lite-kl7y.2): a second
+  // thread with a tension and a months-old connection, and two more members of
+  // the first.
+  commonplace: article("What a commonplace book is for", [
+    {
+      heading: "Not a filing system",
+      text: "The commonplace books that survive are not well organised. They are well loved. Passages sit next to each other because they were copied on the same afternoon, and the accidental neighbours are where the thinking happened.",
+    },
+    {
+      heading: "Copying as reading",
+      text: "To copy a passage by hand is to read it at the speed of writing. Nothing you can search for will give you that. The book is a record of attention, and rereading it is attention paid twice.",
+    },
+  ]),
+  "second-brain": article("The second brain is a filing cabinet", [
+    {
+      heading: "Open the drawers",
+      text: "A filing cabinet is only useless if you never open it. The systems that fail are not the ones with too much structure; they are the ones whose owners stopped looking inside. Structure is what makes looking cheap enough to keep doing.",
+    },
+  ]),
+  marginalia: article("On marginalia", [
+    {
+      text: "I found a copy of a book I had read at twenty, with my own handwriting in the margins. The notes were wrong about almost everything, and they were the most useful thing in the book, because they told me exactly what I had been looking for.",
+    },
+  ]),
+  "paper-again": article("Reading on paper, again", [
+    {
+      text: "For a month I printed everything over two thousand words. The printer became a kind of editor: if a piece was not worth the paper, I did not read it. Most were not. The ones that were, I finished.",
+    },
+  ]),
+  conversation: article("Reading as conversation", [
+    {
+      text: "The second time through a book you are not alone. Someone read it before you, and left a trail: a folded corner, a line in the margin, a sentence you now remember wrongly. That someone was you.",
+    },
+  ]),
 };
