@@ -45,6 +45,8 @@ tags:
     description: Session archive export
   - name: inbox
     description: Staged Markdown awaiting review before it becomes a reading
+  - name: desk
+    description: Up to three readings the reader means to read next
 security:
   - bearerAuth: []
   - sessionCookie: []
@@ -1485,6 +1487,112 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
 
+  /api/desk:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      tags: [desk]
+      operationId: addToDesk
+      summary: Put a reading on the desk
+      description: |
+        Appends a ready reading to the tenant's desk, which holds at most
+        three. A reading already on the desk returns 200 unchanged, whatever
+        its status. Takes the tenant's desk lock and the reading row FOR
+        SHARE, then renumbers the desk 1..n. Never updates the reading row.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostDeskBody"
+      responses:
+        "200":
+          description: The desk, in position order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeskWriteResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: The reading is not ready, or the desk already holds three
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/DeskNotReadyError"
+                  - $ref: "#/components/schemas/DeskFullError"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:write
+    delete:
+      tags: [desk]
+      operationId: clearDesk
+      summary: Clear the desk
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The empty desk
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeskWriteResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:write
+
+  /api/desk/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    delete:
+      tags: [desk]
+      operationId: removeFromDesk
+      summary: Take a reading off the desk
+      description: |
+        Removes the reading and renumbers the rest 1..n. A reading not on
+        the desk is a no-op.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: The desk, in position order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeskWriteResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:write
+
   /api/inbox:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -1926,6 +2034,60 @@ components:
       properties:
         error:
           type: string
+
+    PostDeskBody:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          minLength: 1
+
+    DeskWriteResponse:
+      type: object
+      additionalProperties: false
+      required: [desk]
+      properties:
+        desk:
+          type: array
+          maxItems: 3
+          description: Reading ids in desk position order
+          items:
+            type: string
+
+    DeskPosition:
+      type: integer
+      minimum: 1
+      maximum: 3
+      description: >
+        The reading's place on the desk, present only when it is on the desk.
+        Response state from reading_desk, never part of the stored manifest.
+
+    DeskNotReadyError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [not_ready]
+
+    DeskFullError:
+      type: object
+      additionalProperties: false
+      required: [error, code, limit]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [desk_full]
+        limit:
+          type: integer
+          enum: [3]
 
     ProviderKeyRequiredError:
       type: object
@@ -3523,13 +3685,16 @@ components:
       description: |
         GET /api/readings/{id} body: the manifest plus response-only
         relationship_targets, computed at read time from the same tenant's
-        reading rows. Never stored on the manifest.
+        reading rows, and desk_position for a reading on the desk. Neither is
+        stored on the manifest.
       allOf:
         - $ref: "#/components/schemas/ManifestFields"
         - type: object
           required:
             - relationship_targets
           properties:
+            desk_position:
+              $ref: "#/components/schemas/DeskPosition"
             relationship_targets:
               type: object
               description: |
@@ -3731,6 +3896,8 @@ components:
           $ref: "#/components/schemas/ProcessingAttemptSummary"
         enrichment_degradation:
           $ref: "#/components/schemas/EnrichmentDegradation"
+        desk_position:
+          $ref: "#/components/schemas/DeskPosition"
 
     ListReadingsResponse:
       type: object

@@ -223,7 +223,7 @@ call, because it uses the stored embedding.
 
 ### Desk (reading-lite-kl7y.6, kl7y.7)
 
-Migration `0011` adds:
+Migration `0012` adds (`0011` took Anthropic provider credentials):
 
 ```sql
 CREATE TABLE reading_desk (
@@ -256,10 +256,13 @@ on the desk stays there through a reprocess, including a failed one. A
 reading that becomes pending or failed shows on the desk with its status
 badge. Reordering is not in this epic.
 
-The detail manifest (`loadReadingById`) and `ListIndexItem` gain an optional
+`ListIndexItem` and the `GET /api/readings/:id` response gain an optional
 `desk_position` (1–3), present only when the reading is on the desk. It is
 read-only state. `manifest-rows` never writes it, and publication never
-touches `reading_desk`. Each has a test. The archive's `manifest.json` and
+touches `reading_desk`. Each has a test. `loadReadingById` returns it as
+`deskPosition` beside the manifest, not inside it: the relationship and
+tension judges, the operator corpus and the batch compare hash the loaded
+manifest as its version, and a toggle must not change that. The archive's `manifest.json` and
 `index.json` carry it. `docs/archive-export.md` documents it as an additive
 field, without a version bump. MCP output carries it unchanged. There are no
 MCP desk tools.
