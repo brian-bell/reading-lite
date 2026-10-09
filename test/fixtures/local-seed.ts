@@ -17,10 +17,14 @@
 // acceptance-matrix signal it represents. All content is authored fiction from
 // the prototype; nothing here is real corpus content or credentials.
 //
-// The one clock-dependent fixture is `pending`: its timestamps come from the
-// `nowIso` argument so the read-time staleness rule (PENDING_TTL_SECONDS,
-// 900 locally) does not immediately flip it to failed. Re-run the seeder to
-// refresh it once it goes stale.
+// The clock-dependent fixtures are `pending`, `processing`, and
+// `stale-pending`: their timestamps come from the `nowIso` argument, so the
+// read-time staleness rule (PENDING_TTL_SECONDS, 900 locally) leaves the first
+// two running and always flips `stale-pending`, started 40 minutes earlier, to
+// failed. Re-run the seeder to refresh them once they go stale.
+//
+// The plan also carries the tenant's inbox: staged Markdown with no reading,
+// which the seeder writes as inbox_items rows.
 
 import { createHash } from "node:crypto";
 import {
@@ -48,7 +52,7 @@ import {
   type Tension,
   type TensionJudged,
 } from "../../src/schemas/manifest";
-import type { ListIndex, ListIndexItem } from "../../src/schemas/api";
+import { InboxItemSchema, type InboxItem, type ListIndex, type ListIndexItem } from "../../src/schemas/api";
 import { urlHash } from "../../scripts/corpus-lib/url-hash";
 import { FIXTURE_CONTENT, type FixtureContent } from "./local-seed-content";
 
@@ -87,6 +91,8 @@ export interface LocalSeedPlan {
   listIndex: ListIndex;
   /** Connection-target id referenced by fixtures but deliberately never written. */
   removedTargetId: string;
+  /** Staged Markdown, newest first as the inbox lists it; seeded as inbox_items rows. */
+  inbox: InboxItem[];
 }
 
 // Reading ids are minted rd_<10 chars of the Crockford-ish alphabet
@@ -104,7 +110,14 @@ const IDS = {
   youtube: "rd_FXYTDEGRD1",
   old: "rd_FXPAST0001",
   reprocessFailed: "rd_FXREPROC01",
+  commonplace: "rd_FXCMMNBK01",
+  secondBrain: "rd_FXSECBRN01",
+  marginalia: "rd_FXMARGNA01",
+  paperAgain: "rd_FXPAPER001",
+  conversation: "rd_FXCNVRSE01",
   pending: "rd_FXPENDNG01",
+  stalePending: "rd_FXSTPEND01",
+  processing: "rd_FXPRCSSNG1",
   failUnreachable: "rd_FXERR00001",
   failIncomplete: "rd_FXERR00002",
   failProviderLimit: "rd_FXERR00003",
@@ -150,6 +163,12 @@ const TENSIONS_JUDGED_AT = "2026-09-09T03:07:00.000Z";
 
 const FRICTION_TENSION_REASON =
   "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit.";
+
+const RETRIEVAL_TENSION_REASON =
+  "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction.";
+
+const MARGINALIA_CONNECTION_REASON =
+  "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back.";
 
 // ---------------------------------------------------------------------------
 // Content facts
@@ -1019,6 +1038,186 @@ const READY_SPECS: ReadySpec[] = [
       },
     },
   },
+  // The next-direction prototype's readings (reading-lite-kl7y.2). With them
+  // the library has two threads: attention's grows to eight readings, and
+  // commonplace, second-brain, and marginalia form a second with a qualifies
+  // tension and a connection to a reading saved months earlier.
+  {
+    name: "commonplace",
+    state: "Ready; connects to marginalia, saved more than 60 days earlier (worth revisiting); qualified_by tension with second-brain",
+    id: IDS.commonplace,
+    url: "https://commonplace.example/what-a-commonplace-book-is-for",
+    createdAt: "2026-08-18T09:20:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "What a commonplace book is for",
+      tldr: "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+      tags: ["Knowledge", "Notes"],
+      keywords: ["commonplace book", "excerpts", "rereading", "memory"],
+      people: ["Ines Halvorsen"],
+      orgs: ["Commonplace Press"],
+      novelty_verdict: "familiar",
+      connections: [{ id: IDS.marginalia, reason: MARGINALIA_CONNECTION_REASON }],
+      summary_markdown: [
+        "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+        "",
+        "Halvorsen traces the form from Renaissance notebooks to the present and argues that its value was never retrieval. The excerpts were chosen for their pull, and the act of copying them was the point.",
+        "",
+        "The modern mistake is to optimise the book for finding things. A commonplace book you can search is a database; one you reread is a practice.",
+      ].join("\n"),
+    },
+    similarity: { count: 2, max: 0.63, mean: 0.59 },
+    contentKey: "commonplace",
+    neighbourhoodIds: [IDS.marginalia, IDS.gardens, IDS.markdown],
+    usage: {
+      summarization: openaiUsage({ input: 4870, output: 534, reasoning: 226, cached: 3600, cacheWrite: 1270 }),
+      openai_embedding_tokens: 1622,
+    },
+    connectionsComputedAt: CONNECTED_REFRESHED_AT,
+    tensions: [
+      { id: IDS.secondBrain, kind: "qualified_by", reason: RETRIEVAL_TENSION_REASON, computed_at: TENSIONS_JUDGED_AT },
+    ],
+    tensionsJudged: [{ id: IDS.secondBrain, judged_at: TENSIONS_JUDGED_AT }],
+  },
+  {
+    name: "second-brain",
+    state: "Ready; no connections, the qualifies side of the tension with commonplace",
+    id: IDS.secondBrain,
+    url: "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+    createdAt: "2026-08-21T14:00:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "The second brain is a filing cabinet",
+      tldr: "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+      tags: ["Knowledge"],
+      keywords: ["second brain", "retrieval", "note systems", "rereading"],
+      people: ["Tomas Reyes"],
+      orgs: ["Adjacent"],
+      novelty_verdict: "familiar",
+      connections: [],
+      summary_markdown: [
+        "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+        "",
+        "The essay defends search and structure against the romance of the notebook. A practice you cannot find your way back into is a practice you will stop.",
+        "",
+        "Reyes concedes the notebook's point about attention, then asks what happens in year five, when the pages number in the thousands.",
+      ].join("\n"),
+    },
+    similarity: { count: 1, max: 0.62, mean: 0.62 },
+    contentKey: "second-brain",
+    neighbourhoodIds: [IDS.commonplace, IDS.longTitle],
+    usage: {
+      summarization: openaiUsage({ input: 3940, output: 488, reasoning: 201, cached: 2900, cacheWrite: 1040 }),
+      openai_embedding_tokens: 1415,
+    },
+    connectionsComputedAt: CONNECTED_REFRESHED_AT,
+    tensions: [
+      { id: IDS.commonplace, kind: "qualifies", reason: RETRIEVAL_TENSION_REASON, computed_at: TENSIONS_JUDGED_AT },
+    ],
+    tensionsJudged: [{ id: IDS.commonplace, judged_at: TENSIONS_JUDGED_AT }],
+  },
+  {
+    name: "marginalia",
+    state: "Ready, saved months before the rest; its connection to commonplace came from the nightly refresh, since nothing close existed when it was processed",
+    id: IDS.marginalia,
+    url: "https://commonplace.example/on-marginalia",
+    createdAt: "2026-03-02T19:45:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "On marginalia",
+      tldr: "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+      tags: ["Reading", "Notes"],
+      keywords: ["marginalia", "annotation", "rereading", "paper"],
+      people: ["Ines Halvorsen"],
+      orgs: ["Commonplace Press"],
+      novelty_verdict: "novel",
+      connections: [{ id: IDS.commonplace, reason: MARGINALIA_CONNECTION_REASON }],
+      summary_markdown: [
+        "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+        "",
+        "A highlight records that something mattered; a note records why. On the second reading only the second kind is useful, because the first has lost its context.",
+      ].join("\n"),
+    },
+    similarity: { count: 0 },
+    contentKey: "marginalia",
+    neighbourhoodIds: [],
+    usage: {
+      summarization: openaiUsage({ input: 2810, output: 402, reasoning: 158, cached: 0, cacheWrite: 2810 }),
+      openai_embedding_tokens: 1104,
+    },
+    connectionsComputedAt: CONNECTED_REFRESHED_AT,
+  },
+  {
+    name: "paper-again",
+    state: "Ready; joins attention's thread through imported-markdown, saved days later, by the nightly refresh",
+    id: IDS.paperAgain,
+    url: "https://small-hours.example/reading-on-paper-again",
+    createdAt: "2026-08-23T06:30:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "Reading on paper, again",
+      tldr: "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+      tags: ["Reading"],
+      keywords: ["paper", "printing", "long reads", "distraction"],
+      people: ["Alex Rivera"],
+      orgs: ["Small Hours"],
+      novelty_verdict: "novel",
+      connections: [
+        {
+          id: IDS.markdown,
+          reason: "Both are constraint experiments: fewer pieces, one at a time, with the option to defer removed.",
+        },
+      ],
+      summary_markdown: [
+        "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+        "",
+        "Paper removed the option to save for later: the piece was either read or recycled. Rivera suggests the constraint, not the medium, did the work.",
+      ].join("\n"),
+    },
+    similarity: { count: 1, max: 0.52, mean: 0.52 },
+    contentKey: "paper-again",
+    neighbourhoodIds: [IDS.markdown, IDS.sparseArchive],
+    usage: {
+      summarization: openaiUsage({ input: 2960, output: 415, reasoning: 166, cached: 2100, cacheWrite: 860 }),
+      openai_embedding_tokens: 1138,
+    },
+    connectionsComputedAt: CONNECTED_REFRESHED_AT,
+  },
+  {
+    name: "conversation",
+    state: "Ready, saved after the last refresh; joins attention's thread through its ingest-time connection to gardens",
+    id: IDS.conversation,
+    url: "https://commonplace.example/reading-as-conversation",
+    createdAt: "2026-09-09T10:30:00.000Z",
+    trigger: "submit",
+    summary: {
+      title: "Reading as conversation",
+      tldr: "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+      tags: ["Knowledge", "Reading"],
+      keywords: ["conversation", "rereading", "annotation", "dialogue"],
+      people: ["Julian Park"],
+      orgs: ["Commonplace Press"],
+      novelty_verdict: "familiar",
+      connections: [
+        {
+          id: IDS.gardens,
+          reason: "Park's conversation and the garden are the same claim about return visits, made with different images.",
+        },
+      ],
+      summary_markdown: [
+        "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+        "",
+        "The essay treats each reading as a reply to the last one, and a library as the record of the exchange. What matters is not the collection but the ability to find what you said last time.",
+      ].join("\n"),
+    },
+    similarity: { count: 1, max: 0.6, mean: 0.6 },
+    contentKey: "conversation",
+    neighbourhoodIds: [IDS.gardens, IDS.commonplace, IDS.attention],
+    usage: {
+      summarization: openaiUsage({ input: 3050, output: 421, reasoning: 172, cached: 2200, cacheWrite: 850 }),
+      openai_embedding_tokens: 1167,
+    },
+  },
 ];
 
 const FAILED_SPECS: FailedSpec[] = [
@@ -1190,8 +1389,138 @@ const FAILED_SPECS: FailedSpec[] = [
   },
 ];
 
+const STALE_PENDING_AGE_MS = 40 * 60_000;
+
+const PROCESSING_AGE_MS = 8 * 60_000;
+
 /**
- * Build the full seed plan. `nowIso` stamps only the pending fixture; every
+ * A submit drafted exactly as intake writes it: the pending manifest with its
+ * running attempt at `queued`, and that attempt's log so far. The worker
+ * records each stage in the attempt log as it goes and never on the reading,
+ * so `running` moves only the log: the stages before it completed, and it has
+ * started.
+ */
+function assemblePending(spec: {
+  name: string;
+  state: string;
+  id: string;
+  url: string;
+  createdAt: string;
+  running?: ProcessingStage;
+}): AssembledFixture {
+  const hash = urlHash(spec.url);
+  const keyPrefix = buildKeyPrefix(spec.id, spec.createdAt);
+  const { manifest, attempt: summary } = submitPending(
+    { id: spec.id, url: spec.url, urlHash: hash, createdAt: spec.createdAt },
+    { attemptId: attemptIdOf(spec.id, 1), startedAt: spec.createdAt },
+  );
+  const events: ProcessingAttemptEvent[] = [];
+  let at = spec.createdAt;
+  for (const stage of URL_STAGES) {
+    events.push({ stage, status: "started", at });
+    if (stage === (spec.running ?? "queued")) break;
+    const ms = stageMs(stage);
+    at = addMs(at, ms);
+    events.push({ stage, status: "succeeded", at, duration_ms: ms });
+  }
+  const attempt: ProcessingAttempt = ProcessingAttemptSchema.parse({
+    ...summary,
+    stage: spec.running ?? summary.stage,
+    reading_id: spec.id,
+    url: spec.url,
+    url_hash: hash,
+    key_prefix: keyPrefix,
+    events,
+  });
+  return {
+    fixture: { name: spec.name, state: spec.state, id: spec.id, keyPrefix, manifest, attempts: [attempt], ownsUrl: false },
+    objects: [],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The inbox
+
+const inboxItem = (o: {
+  id: string;
+  url: string;
+  title: string | null;
+  markdown: string;
+  createdAt: string;
+  /** A re-stage moves updated_at and keeps the id and created_at. */
+  updatedAt?: string;
+}): InboxItem =>
+  InboxItemSchema.parse({
+    id: o.id,
+    url: o.url,
+    title: o.title,
+    markdown_bytes: bytesOf(o.markdown),
+    created_at: o.createdAt,
+    updated_at: o.updatedAt ?? o.createdAt,
+    markdown: o.markdown,
+  });
+
+/**
+ * Six staged items, newest first as the inbox lists them: one past the desk's
+ * five, so its "Show all" has something to show. Ids follow the store's
+ * `in_` + minted id spelling. All timestamps are static and before the app
+ * snapshot's clock; the inbox has no TTL.
+ */
+const INBOX_ITEMS: InboxItem[] = [
+  inboxItem({
+    id: "in_rd_FXNBX00001",
+    url: "https://notes.example/how-to-keep-a-reading-log",
+    title: "How to keep a reading log",
+    createdAt: "2026-09-11T08:15:00.000Z",
+    markdown:
+      "# How to keep a reading log\n\nOne file. One line per reading: date, title, and the sentence you would say to a friend about it.\n\nNo ratings. No tags at first. Tags arrive when you notice the same word three times.\n",
+  }),
+  inboxItem({
+    id: "in_rd_FXNBX00002",
+    url: "https://small-hours.example/talks/attention-2026/transcript",
+    // Staged without a title: the inbox falls back to the URL.
+    title: null,
+    createdAt: "2026-09-10T19:02:00.000Z",
+    markdown:
+      "Transcript, lightly edited.\n\nThank you. I want to talk about the difference between a queue and an archive, and why the first one makes us miserable.\n\nA queue has an order and an end, and it is always behind. An archive has neither. Nothing in it is late.\n",
+  }),
+  inboxItem({
+    id: "in_rd_FXNBX00003",
+    url: "https://fieldnotes.example/three-questions-before-saving",
+    title: "Three questions to ask before saving",
+    createdAt: "2026-09-09T12:40:00.000Z",
+    updatedAt: "2026-09-10T07:30:00.000Z",
+    markdown:
+      "# Three questions to ask before saving\n\n1. What question would bring me back to this?\n2. Is there something I already saved that it argues with?\n3. Would I mind if it were gone next year?\n\nRevised after a reader pointed out the third question does most of the work.\n",
+  }),
+  inboxItem({
+    id: "in_rd_FXNBX00004",
+    url: "https://small-hours.example/a-reading-list-for-a-slow-winter",
+    title: "A reading list for a slow winter",
+    createdAt: "2026-09-08T21:10:00.000Z",
+    markdown:
+      "# A reading list for a slow winter\n\nFive long pieces, one a week, with a week off in the middle.\n\n- Something on paper\n- Something you have read before\n- Something you expect to disagree with\n",
+  }),
+  inboxItem({
+    id: "in_rd_FXNBX00005",
+    url: "https://commonplace.example/workshops/notes-from-the-margins",
+    title: "Notes from the margins workshop",
+    createdAt: "2026-09-06T16:00:00.000Z",
+    markdown:
+      "# Notes from the margins workshop\n\nTwelve people, one shared book, and pencils only. The rule: every note answers a note someone else left.\n\nBy the end the margins held a longer argument than the chapter did.\n",
+  }),
+  inboxItem({
+    id: "in_rd_FXNBX00006",
+    url: "https://margin.example/what-the-archive-forgot",
+    title: "What the archive forgot",
+    createdAt: "2026-09-02T09:45:00.000Z",
+    markdown:
+      "# What the archive forgot\n\nAn archive keeps the page and loses the afternoon: why you saved it, what you were reading next to it, the question it answered then.\n",
+  }),
+];
+
+/**
+ * Build the full seed plan. `nowIso` stamps only the pending fixtures; every
  * other timestamp is static, so the plan (and its enforcing test) is
  * deterministic given the clock.
  */
@@ -1201,43 +1530,41 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
     ...FAILED_SPECS.map(assembleFailed),
   ];
 
-  // Pending: a fresh submit, drafted exactly as intake writes it, stamped from
-  // the seed clock so read-time staleness does not flip it on arrival.
-  const pendingId = IDS.pending;
-  const pendingUrl = "https://fieldnotes.example/making-room-for-slow-work";
-  const pendingHash = urlHash(pendingUrl);
-  const pendingPrefix = buildKeyPrefix(pendingId, nowIso);
-  const pendingAttemptId = attemptIdOf(pendingId, 1);
-  const { manifest: pendingManifest, attempt: pendingAttemptSummary } =
-    submitPending(
-      {
-        id: pendingId,
-        url: pendingUrl,
-        urlHash: pendingHash,
-        createdAt: nowIso,
-      },
-      { attemptId: pendingAttemptId, startedAt: nowIso },
-    );
-  const pendingAttempt: ProcessingAttempt = ProcessingAttemptSchema.parse({
-    ...pendingAttemptSummary,
-    reading_id: pendingId,
-    url: pendingUrl,
-    url_hash: pendingHash,
-    key_prefix: pendingPrefix,
-    events: [{ stage: "queued", status: "started", at: nowIso }],
-  });
-  assembled.push({
-    fixture: {
+  // Pending: a fresh submit, stamped from the seed clock so read-time
+  // staleness does not flip it on arrival.
+  assembled.push(
+    assemblePending({
       name: "pending",
       state: "Pending: fresh submit with a running attempt, staged from the seed clock (refreshes only by re-seeding once the 15-minute TTL passes)",
-      id: pendingId,
-      keyPrefix: pendingPrefix,
-      manifest: pendingManifest,
-      attempts: [pendingAttempt],
-      ownsUrl: false,
-    },
-    objects: [],
-  });
+      id: IDS.pending,
+      url: "https://fieldnotes.example/making-room-for-slow-work",
+      createdAt: nowIso,
+    }),
+  );
+  // Stalled: the same submit, 40 minutes before the seed clock. Its running
+  // attempt is past the TTL, so every read surfaces it as failed
+  // (`stale_active_attempt`) without a write: fail-stopped's read-time cousin.
+  assembled.push(
+    assemblePending({
+      name: "stale-pending",
+      state: "Pending past the 15-minute TTL: a submit whose running attempt started 40 minutes before the seed clock, read as failed (stale_active_attempt, stage queued)",
+      id: IDS.stalePending,
+      url: "https://adjacent.example/the-cost-of-convenience",
+      createdAt: new Date(Date.parse(nowIso) - STALE_PENDING_AGE_MS).toISOString(),
+    }),
+  );
+  // Mid-run: saved 8 minutes before the seed clock, its attempt log at
+  // summarize while the reading itself still says queued.
+  assembled.push(
+    assemblePending({
+      name: "processing",
+      state: "Pending mid-run: saved 8 minutes before the seed clock; the attempt log has reached summarize while the reading's active_attempt still says queued",
+      id: IDS.processing,
+      url: "https://fieldnotes.example/why-we-skim",
+      createdAt: new Date(Date.parse(nowIso) - PROCESSING_AGE_MS).toISOString(),
+      running: "summarize",
+    }),
+  );
 
   const objects: LocalSeedObject[] = [];
   // Newest first, matching the store's created_at sort, so the list rows read
@@ -1270,5 +1597,6 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
     objects,
     listIndex,
     removedTargetId: LOCAL_SEED_REMOVED_TARGET_ID,
+    inbox: INBOX_ITEMS,
   };
 }

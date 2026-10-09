@@ -2631,8 +2631,9 @@ To exercise the read path or the frontends against real data locally, stop
 The fixture pack from [issue #366](https://github.com/brian-bell/reading-lite/issues/366)
 seeds every accepted reading state (ready baselines with connections and
 tensions, sparse archive, unavailable source, degraded YouTube, old manifest,
-long title, imported Markdown, pending, and one failed reading per failure
-category) with one command, in the state names Phase 3 slices cite:
+long title, imported Markdown, pending, stalled pending, two threads, and one
+failed reading per failure category) and a staged inbox with one command, in
+the state names Phase 3 slices cite:
 
 ```sh
 npm run seed:local
@@ -2645,7 +2646,7 @@ It writes both halves of each reading:
   under the local founder's tenant id with deterministic vectors and each
   fixture's attempt log, through the same manifest-to-rows mapping the runtime
   uses. The tenant's existing reading rows are deleted first, so a reseed drops
-  any other local reading.
+  any other local reading. Its inbox items are replaced the same way.
 - **Content objects in local R2** (`extracted.md`, `raw.{ext}`), which
   `/content` and `/content/raw` read. They are written by
   `wrangler r2 object put --local` into the same on-disk store
@@ -2654,8 +2655,9 @@ It writes both halves of each reading:
   global-rooted; do not seed under `u/<tenantId>/`.
 
 Content goes first, then the rows that point at it. The seeder verifies by
-counting the tenant's readings and attempts back from Postgres. It writes no
-manifests, pointers or `index/list.json`: reading state is rows.
+counting the tenant's readings, attempts, vectors and inbox items back from
+Postgres. It writes no manifests, pointers or `index/list.json`: reading state
+is rows.
 
 The command is idempotent. Re-run it to refresh the pending fixture once it
 passes the 15-minute pending TTL, and to restore the pack after deleting
@@ -2694,7 +2696,7 @@ docker compose down -v                 # also deletes it
 | Who | Database | How it connects |
 |---|---|---|
 | `npm run dev` | `reading_lite` | `dev:setup` starts the service, runs the migration runner, then bootstraps the founder here. The Worker's `HYPERDRIVE` binding uses `localConnectionString` in `wrangler.toml`. |
-| `npm run seed:local` | `reading_lite` | After writing the content to R2 it migrates, then writes the fixture pack as rows (readings, attempts, deterministic vectors) for the local founder's tenant id. Re-running replaces the pack's rows. |
+| `npm run seed:local` | `reading_lite` | After writing the content to R2 it migrates, then writes the fixture pack as rows (readings, attempts, deterministic vectors, inbox items) for the local founder's tenant id. Re-running replaces the pack's rows. |
 | `npm test` | `reading_lite_test_<hash>` | One database per checkout, named from its path, so worktrees never truncate each other's rows or trip migration drift. Vitest globalSetup creates and migrates it once per run and truncates the reading tables. `vitest.workspace.ts` always sets the workers pool's Hyperdrive string to this database, whatever the shell exports. Without Postgres the run fails fast with one line. |
 | CI Worker jobs | `reading_lite_test` | A service container in each of the two jobs (Workers pool, Node pool); `TEST_DATABASE_URL` points the job's pool at it. |
 

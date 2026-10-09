@@ -17,7 +17,8 @@
 // to find, plus each fixture's attempt log. The tenant's existing reading rows
 // are deleted first, so leftover local or retired-fixture readings drop out;
 // their R2 objects stay. Rows are tenant-scoped even though local R2 keys are
-// global-rooted.
+// global-rooted. The tenant's inbox items are replaced with the pack's staged
+// Markdown in the same transaction.
 
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -26,6 +27,9 @@ import { canonicalizeEmail } from "../src/control-plane/email";
 import { sqlFromConnectionString, type SqlQuery } from "../src/modules/db/sql";
 import { loadDotVars } from "./lib/dotvars";
 import type { ProcessingAttempt } from "../src/schemas/manifest";
+import type { InboxItem } from "../src/schemas/api";
+import { deleteTenantInboxItems } from "../src/modules/stores/postgres/inbox-store";
+import { urlHash } from "./corpus-lib/url-hash";
 import { localSeedAttempts, localSeedRows } from "./pg-lib/local-seed-rows";
 import { localDatabase, migrateLocalPostgres } from "./pg-lib/local-postgres";
 import { upsertAttempt, writeReadingRows, type ReadingRows } from "./pg-lib/manifest-rows";
@@ -79,6 +83,7 @@ export interface PostgresSeedResult {
   readings: number;
   attempts: number;
   embeddings: number;
+  inbox: number;
 }
 
 // seed:local replaces the tenant's readings: deleting a reading cascades its
@@ -98,6 +103,19 @@ export async function replaceTenantReadings(
   for (const attempt of attempts) await upsertAttempt(tx, tenantId, attempt);
 }
 
+// The inbox is replaced the same way: the pack's staged items and no others.
+// Rows are written as the store's stage verb writes them, url_hash included.
+async function replaceTenantInbox(tx: SqlQuery, tenantId: string, items: readonly InboxItem[]): Promise<void> {
+  await deleteTenantInboxItems(tx, tenantId);
+  for (const item of items) {
+    await tx.query(
+      `INSERT INTO inbox_items (tenant_id, id, url, url_hash, title, markdown, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [tenantId, item.id, item.url, urlHash(item.url), item.title, item.markdown, item.created_at, item.updated_at],
+    );
+  }
+}
+
 // Local rows belong to the founder that npm run dev bootstrapped into the
 // same local database.
 async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResult> {
@@ -115,11 +133,15 @@ async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResul
     if (!founder) throw new Error("no local founder for " + email + "; run npm run dev once first");
     const tenantId = founder.id;
     const rows = localSeedRows(plan, tenantId);
-    await sql.transaction((tx) => replaceTenantReadings(tx, tenantId, rows, localSeedAttempts(plan)));
-    const [counts] = await sql.query<{ readings: number; attempts: number; embeddings: number }>(
+    await sql.transaction(async (tx) => {
+      await replaceTenantReadings(tx, tenantId, rows, localSeedAttempts(plan));
+      await replaceTenantInbox(tx, tenantId, plan.inbox);
+    });
+    const [counts] = await sql.query<{ readings: number; attempts: number; embeddings: number; inbox: number }>(
       `SELECT (SELECT count(*) FROM readings WHERE tenant_id = $1)::int AS readings,
               (SELECT count(*) FROM reading_attempts WHERE tenant_id = $1)::int AS attempts,
-              (SELECT count(*) FROM reading_embeddings WHERE tenant_id = $1)::int AS embeddings`,
+              (SELECT count(*) FROM reading_embeddings WHERE tenant_id = $1)::int AS embeddings,
+              (SELECT count(*) FROM inbox_items WHERE tenant_id = $1)::int AS inbox`,
       [tenantId],
     );
     return { tenantId, ...counts! };
@@ -182,7 +204,10 @@ export async function runSeed(
     );
     return 1;
   }
-  log(`Seeded PostgreSQL: ${seeded.readings} readings, ${seeded.attempts} attempts, ${seeded.embeddings} vectors for tenant ${seeded.tenantId}.`);
+  log(
+    `Seeded PostgreSQL: ${seeded.readings} readings, ${seeded.attempts} attempts, ${seeded.embeddings} vectors, ` +
+      `${seeded.inbox} inbox items for tenant ${seeded.tenantId}.`,
+  );
 
   const pending = plan.fixtures.find((f) => f.name === "pending");
   log("");
@@ -193,8 +218,8 @@ export async function runSeed(
   log("");
   log("Next steps:");
   log("  • Start (or restart) `npm run dev` and sign in at http://localhost:8787");
-  log("  • The pending fixture is stamped from this run's clock; re-run this command");
-  log("    to refresh it once it passes the 15-minute pending TTL.");
+  log("  • The pending fixtures are stamped from this run's clock; re-run this command");
+  log("    to refresh `pending` once it passes the 15-minute pending TTL.");
   if (pending !== undefined) {
     log(`  • Pending reading id for deep links: ${pending.id}`);
   }

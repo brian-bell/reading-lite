@@ -9,6 +9,18 @@
       "state": "Pending: fresh submit with a running attempt, staged from the seed clock (refreshes only by re-seeding once the 15-minute TTL passes)"
     },
     {
+      "name": "processing",
+      "id": "rd_FXPRCSSNG1",
+      "status": "pending",
+      "state": "Pending mid-run: saved 8 minutes before the seed clock; the attempt log has reached summarize while the reading's active_attempt still says queued"
+    },
+    {
+      "name": "stale-pending",
+      "id": "rd_FXSTPEND01",
+      "status": "failed",
+      "state": "Pending past the 15-minute TTL: a submit whose running attempt started 40 minutes before the seed clock, read as failed (stale_active_attempt, stage queued)"
+    },
+    {
       "name": "fail-source-unreachable",
       "id": "rd_FXERR00001",
       "status": "failed",
@@ -19,6 +31,12 @@
       "id": "rd_FXERR00002",
       "status": "failed",
       "state": "Failed, source incomplete: SourceRejectedError at summarize"
+    },
+    {
+      "name": "conversation",
+      "id": "rd_FXCNVRSE01",
+      "status": "ready",
+      "state": "Ready, saved after the last refresh; joins attention's thread through its ingest-time connection to gardens"
     },
     {
       "name": "fail-provider-limit",
@@ -117,16 +135,40 @@
       "state": "Source unavailable: content_status raw_only (no extracted.md); summary, novelty, and relationships still usable; raw capture viewable"
     },
     {
+      "name": "paper-again",
+      "id": "rd_FXPAPER001",
+      "status": "ready",
+      "state": "Ready; joins attention's thread through imported-markdown, saved days later, by the nightly refresh"
+    },
+    {
+      "name": "second-brain",
+      "id": "rd_FXSECBRN01",
+      "status": "ready",
+      "state": "Ready; no connections, the qualifies side of the tension with commonplace"
+    },
+    {
       "name": "degraded-youtube",
       "id": "rd_FXYTDEGRD1",
       "status": "ready",
       "state": "Degraded YouTube: enrichment_degradation present (tier transcript), ready on the oEmbed floor with description but no transcript"
     },
     {
+      "name": "commonplace",
+      "id": "rd_FXCMMNBK01",
+      "status": "ready",
+      "state": "Ready; connects to marginalia, saved more than 60 days earlier (worth revisiting); qualified_by tension with second-brain"
+    },
+    {
       "name": "old-manifest",
       "id": "rd_FXPAST0001",
       "status": "ready",
       "state": "Old manifest: no similarity, no novelty_verdict, no connections_computed_at (omit the line, never show unclassified); legacy usage shape"
+    },
+    {
+      "name": "marginalia",
+      "id": "rd_FXMARGNA01",
+      "status": "ready",
+      "state": "Ready, saved months before the rest; its connection to commonplace came from the nightly refresh, since nothing close existed when it was processed"
     }
   ],
   "readings": {
@@ -149,6 +191,63 @@
       "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "created_at": "2026-09-11T10:00:00.000Z",
       "updated_at": "2026-09-11T10:00:00.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXPRCSSNG1": {
+      "id": "rd_FXPRCSSNG1",
+      "url": "https://fieldnotes.example/why-we-skim",
+      "url_hash": "ae465c94ac67a97ae57946329ab079a0d3b3a8ba44a0a0cef053044d0eaca477",
+      "source_type": "url",
+      "status": "pending",
+      "active_attempt": {
+        "id": "at_FXPRCSSNG1",
+        "trigger": "submit",
+        "status": "running",
+        "stage": "queued",
+        "started_at": "2026-09-11T09:52:00.000Z"
+      },
+      "content_type": "application/octet-stream",
+      "content_status": "captured",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-11T09:52:00.000Z",
+      "updated_at": "2026-09-11T09:52:00.000Z",
+      "relationship_targets": {}
+    },
+    "rd_FXSTPEND01": {
+      "id": "rd_FXSTPEND01",
+      "url": "https://adjacent.example/the-cost-of-convenience",
+      "url_hash": "210c361f189e38b0d88f10c1dea8988efdf8a863c3cd762cf1bbfb3996b67028",
+      "source_type": "url",
+      "status": "failed",
+      "content_type": "application/octet-stream",
+      "content_status": "captured",
+      "content_bytes": 0,
+      "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "created_at": "2026-09-11T09:20:00.000Z",
+      "updated_at": "2026-09-11T10:00:00.000Z",
+      "last_attempt": {
+        "id": "at_FXSTPEND01",
+        "trigger": "submit",
+        "status": "failed",
+        "stage": "queued",
+        "started_at": "2026-09-11T09:20:00.000Z",
+        "finished_at": "2026-09-11T10:00:00.000Z",
+        "error": {
+          "code": "stale_active_attempt",
+          "message": "active attempt > 900s",
+          "stage": "queued",
+          "failed_at": "2026-09-11T10:00:00.000Z",
+          "retryable": true
+        }
+      },
+      "error": {
+        "code": "stale_active_attempt",
+        "message": "active attempt > 900s",
+        "stage": "queued",
+        "failed_at": "2026-09-11T10:00:00.000Z",
+        "retryable": true
+      },
       "relationship_targets": {}
     },
     "rd_FXERR00001": {
@@ -224,6 +323,85 @@
       "created_at": "2026-09-09T16:42:00.000Z",
       "updated_at": "2026-09-09T16:42:37.000Z",
       "relationship_targets": {}
+    },
+    "rd_FXCNVRSE01": {
+      "id": "rd_FXCNVRSE01",
+      "url": "https://commonplace.example/reading-as-conversation",
+      "url_hash": "50f1810b6774f00d6248d6d4743efccbdf09b8301f307fd5efa46eea6e670913",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXCNVRSE01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-09-09T10:30:04.000Z",
+        "finished_at": "2026-09-09T10:30:47.000Z"
+      },
+      "title": "Reading as conversation",
+      "tldr": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+      "tags": [
+        "knowledge",
+        "reading"
+      ],
+      "keywords": [
+        "conversation",
+        "rereading",
+        "annotation",
+        "dialogue"
+      ],
+      "people": [
+        "Julian Park"
+      ],
+      "orgs": [
+        "Commonplace Press"
+      ],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1,
+        "max": 0.6,
+        "mean": 0.6,
+        "computed_at": "2026-09-09T10:30:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXGARDEN01",
+          "reason": "Park's conversation and the garden are the same claim about return visits, made with different images."
+        }
+      ],
+      "connections_neighbourhood_ids": [
+        "rd_FXGARDEN01",
+        "rd_FXCMMNBK01",
+        "rd_FXATTENT01"
+      ],
+      "summary_markdown": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.\n\nThe essay treats each reading as a reply to the last one, and a library as the record of the exchange. What matters is not the collection but the ability to find what you said last time.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 355,
+      "extracted_bytes": 193,
+      "content_sha256": "2051d677beae76199acc7769e7362061124a861c082610687e2283bf684e5316",
+      "fetched_at": "2026-09-09T10:30:47.000Z",
+      "created_at": "2026-09-09T10:30:00.000Z",
+      "updated_at": "2026-09-09T10:30:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 3050,
+          "output_tokens": 421,
+          "reasoning_tokens": 172,
+          "cached_input_tokens": 2200,
+          "cache_write_tokens": 850
+        },
+        "openai_embedding_tokens": 1167
+      },
+      "relationship_targets": {
+        "rd_FXGARDEN01": {
+          "url": "https://commonplace.example/libraries-are-gardens",
+          "status": "ready",
+          "title": "Libraries are gardens, not warehouses"
+        }
+      }
     },
     "rd_FXERR00003": {
       "id": "rd_FXERR00003",
@@ -1157,6 +1335,171 @@
         }
       }
     },
+    "rd_FXPAPER001": {
+      "id": "rd_FXPAPER001",
+      "url": "https://small-hours.example/reading-on-paper-again",
+      "url_hash": "df4261882b93e5a761556c5695d055ce032e0fd0aa38bf228f621d00b49abd1f",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXPAPER001",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-23T06:30:04.000Z",
+        "finished_at": "2026-08-23T06:30:47.000Z"
+      },
+      "title": "Reading on paper, again",
+      "tldr": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+      "tags": [
+        "reading"
+      ],
+      "keywords": [
+        "paper",
+        "printing",
+        "long reads",
+        "distraction"
+      ],
+      "people": [
+        "Alex Rivera"
+      ],
+      "orgs": [
+        "Small Hours"
+      ],
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 1,
+        "max": 0.52,
+        "mean": 0.52,
+        "computed_at": "2026-08-23T06:30:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXMDPAGE01",
+          "reason": "Both are constraint experiments: fewer pieces, one at a time, with the option to defer removed."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXMDPAGE01",
+        "rd_FXSPARSE01"
+      ],
+      "summary_markdown": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.\n\nPaper removed the option to save for later: the piece was either read or recycled. Rivera suggests the constraint, not the medium, did the work.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 358,
+      "extracted_bytes": 196,
+      "content_sha256": "9706c5081c89d15ac29d9d896713345d83e6a9e4c1da93966a0ffe85cfe6a912",
+      "fetched_at": "2026-08-23T06:30:47.000Z",
+      "created_at": "2026-08-23T06:30:00.000Z",
+      "updated_at": "2026-08-23T06:30:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 2960,
+          "output_tokens": 415,
+          "reasoning_tokens": 166,
+          "cached_input_tokens": 2100,
+          "cache_write_tokens": 860
+        },
+        "openai_embedding_tokens": 1138
+      },
+      "relationship_targets": {
+        "rd_FXMDPAGE01": {
+          "url": "https://notes.example/slow-reading-week",
+          "status": "ready",
+          "title": "Slow reading week"
+        }
+      }
+    },
+    "rd_FXSECBRN01": {
+      "id": "rd_FXSECBRN01",
+      "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+      "url_hash": "dd52e46b7ba9be63ba0aa632e34e71cdfb14862379bc198d5df1dddd0eb75117",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXSECBRN01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-21T14:00:04.000Z",
+        "finished_at": "2026-08-21T14:00:47.000Z"
+      },
+      "title": "The second brain is a filing cabinet",
+      "tldr": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+      "tags": [
+        "knowledge"
+      ],
+      "keywords": [
+        "second brain",
+        "retrieval",
+        "note systems",
+        "rereading"
+      ],
+      "people": [
+        "Tomas Reyes"
+      ],
+      "orgs": [
+        "Adjacent"
+      ],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 1,
+        "max": 0.62,
+        "mean": 0.62,
+        "computed_at": "2026-08-21T14:00:24.000Z"
+      },
+      "connections": [],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXCMMNBK01",
+        "rd_FXMAXNAME1"
+      ],
+      "tensions": [
+        {
+          "id": "rd_FXCMMNBK01",
+          "kind": "qualifies",
+          "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction.",
+          "computed_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "tensions_judged": [
+        {
+          "id": "rd_FXCMMNBK01",
+          "judged_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "summary_markdown": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.\n\nThe essay defends search and structure against the romance of the notebook. A practice you cannot find your way back into is a practice you will stop.\n\nReyes concedes the notebook's point about attention, then asks what happens in year five, when the pages number in the thousands.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 434,
+      "extracted_bytes": 254,
+      "content_sha256": "beab3f943c9356e50d7e0052052c834dca13031015a933e8d813039fe1295749",
+      "fetched_at": "2026-08-21T14:00:47.000Z",
+      "created_at": "2026-08-21T14:00:00.000Z",
+      "updated_at": "2026-08-21T14:00:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 3940,
+          "output_tokens": 488,
+          "reasoning_tokens": 201,
+          "cached_input_tokens": 2900,
+          "cache_write_tokens": 1040
+        },
+        "openai_embedding_tokens": 1415
+      },
+      "relationship_targets": {
+        "rd_FXCMMNBK01": {
+          "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+          "status": "ready",
+          "title": "What a commonplace book is for"
+        }
+      }
+    },
     "rd_FXYTDEGRD1": {
       "id": "rd_FXYTDEGRD1",
       "url": "https://www.youtube.com/watch?v=FxFixture01",
@@ -1227,6 +1570,105 @@
       },
       "relationship_targets": {}
     },
+    "rd_FXCMMNBK01": {
+      "id": "rd_FXCMMNBK01",
+      "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+      "url_hash": "767014af5bd80e5e1c24d37146188b4d33b0fe16efea1cfe8237519e5147d6cb",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXCMMNBK01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-08-18T09:20:04.000Z",
+        "finished_at": "2026-08-18T09:20:47.000Z"
+      },
+      "title": "What a commonplace book is for",
+      "tldr": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+      "tags": [
+        "knowledge",
+        "notes"
+      ],
+      "keywords": [
+        "commonplace book",
+        "excerpts",
+        "rereading",
+        "memory"
+      ],
+      "people": [
+        "Ines Halvorsen"
+      ],
+      "orgs": [
+        "Commonplace Press"
+      ],
+      "novelty_verdict": "familiar",
+      "similarity": {
+        "count": 2,
+        "max": 0.63,
+        "mean": 0.59,
+        "computed_at": "2026-08-18T09:20:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXMARGNA01",
+          "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [
+        "rd_FXMARGNA01",
+        "rd_FXGARDEN01",
+        "rd_FXMDPAGE01"
+      ],
+      "tensions": [
+        {
+          "id": "rd_FXSECBRN01",
+          "kind": "qualified_by",
+          "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction.",
+          "computed_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "tensions_judged": [
+        {
+          "id": "rd_FXSECBRN01",
+          "judged_at": "2026-09-09T03:07:00.000Z"
+        }
+      ],
+      "summary_markdown": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.\n\nHalvorsen traces the form from Renaissance notebooks to the present and argues that its value was never retrieval. The excerpts were chosen for their pull, and the act of copying them was the point.\n\nThe modern mistake is to optimise the book for finding things. A commonplace book you can search is a database; one you reread is a practice.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 644,
+      "extracted_bytes": 459,
+      "content_sha256": "ef3c7f9701c848fe54faaa6891d0aa13f80cd758e6672c0e563f1951248efcac",
+      "fetched_at": "2026-08-18T09:20:47.000Z",
+      "created_at": "2026-08-18T09:20:00.000Z",
+      "updated_at": "2026-08-18T09:20:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 4870,
+          "output_tokens": 534,
+          "reasoning_tokens": 226,
+          "cached_input_tokens": 3600,
+          "cache_write_tokens": 1270
+        },
+        "openai_embedding_tokens": 1622
+      },
+      "relationship_targets": {
+        "rd_FXSECBRN01": {
+          "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+          "status": "ready",
+          "title": "The second brain is a filing cabinet"
+        },
+        "rd_FXMARGNA01": {
+          "url": "https://commonplace.example/on-marginalia",
+          "status": "ready",
+          "title": "On marginalia"
+        }
+      }
+    },
     "rd_FXPAST0001": {
       "id": "rd_FXPAST0001",
       "url": "https://adjacent.example/before-the-archive",
@@ -1270,9 +1712,84 @@
         "openai_embedding_tokens": 1902
       },
       "relationship_targets": {}
+    },
+    "rd_FXMARGNA01": {
+      "id": "rd_FXMARGNA01",
+      "url": "https://commonplace.example/on-marginalia",
+      "url_hash": "1d43f9c3e4d3cd657f3fcf2bde49e51aa965442abb4ada5ecadb4ac24432f26d",
+      "source_type": "url",
+      "status": "ready",
+      "last_attempt": {
+        "id": "at_FXMARGNA01",
+        "trigger": "submit",
+        "status": "succeeded",
+        "stage": "send_email",
+        "started_at": "2026-03-02T19:45:04.000Z",
+        "finished_at": "2026-03-02T19:45:47.000Z"
+      },
+      "title": "On marginalia",
+      "tldr": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+      "tags": [
+        "reading",
+        "notes"
+      ],
+      "keywords": [
+        "marginalia",
+        "annotation",
+        "rereading",
+        "paper"
+      ],
+      "people": [
+        "Ines Halvorsen"
+      ],
+      "orgs": [
+        "Commonplace Press"
+      ],
+      "novelty_verdict": "novel",
+      "similarity": {
+        "count": 0,
+        "computed_at": "2026-03-02T19:45:24.000Z"
+      },
+      "connections": [
+        {
+          "id": "rd_FXCMMNBK01",
+          "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+        }
+      ],
+      "connections_computed_at": "2026-09-08T03:07:00.000Z",
+      "connections_neighbourhood_ids": [],
+      "summary_markdown": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.\n\nA highlight records that something mattered; a note records why. On the second reading only the second kind is useful, because the first has lost its context.",
+      "content_type": "text/html; charset=utf-8",
+      "content_status": "captured",
+      "content_bytes": 391,
+      "extracted_bytes": 239,
+      "content_sha256": "599639cf6ea60a13d76d5ad80ae18eefe8972f85a8b6c6224cf10ce66e95440c",
+      "fetched_at": "2026-03-02T19:45:47.000Z",
+      "created_at": "2026-03-02T19:45:00.000Z",
+      "updated_at": "2026-03-02T19:45:47.000Z",
+      "usage": {
+        "summarization": {
+          "provider": "openai",
+          "model": "gpt-5.6-terra",
+          "input_tokens": 2810,
+          "output_tokens": 402,
+          "reasoning_tokens": 158,
+          "cached_input_tokens": 0,
+          "cache_write_tokens": 2810
+        },
+        "openai_embedding_tokens": 1104
+      },
+      "relationship_targets": {
+        "rd_FXCMMNBK01": {
+          "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+          "status": "ready",
+          "title": "What a commonplace book is for"
+        }
+      }
     }
   },
   "contents": {
+    "rd_FXCNVRSE01": "The second time through a book you are not alone. Someone read it before you, and left a trail: a folded corner, a line in the margin, a sentence you now remember wrongly. That someone was you.",
     "rd_FXATTENT01": "## Somewhere to return\n\nOn a Sunday morning, I opened a folder of articles I had been meaning to read. There were hundreds of them. Every title represented a small promise to a future version of myself: you will have more time, and this will still matter. I closed the folder. Then I opened a single essay I had read a year earlier, and found the sentence I needed.\n\n## From collection to conversation\n\nWe tend to build reading tools around the moment of capture. The button is frictionless, the queue infinite, the archive reassuring. But the important moment comes later. An old idea meets a new question. Two writers disagree in a way you can finally name. A library becomes useful when it can make those moments easier to find.\n\n## A little friction, in the right place\n\nA quieter tool does not have to be an empty tool. It can invite us to pause, compare, and follow one good connection. The distinction is whether the next action serves the thought we arrived with or replaces it. A link back to an earlier reading can deepen a session. A bottomless feed usually starts a different one.\n\n## Designing for enough\n\nImagine a reading session that ends because you have understood something. No streak to maintain, no unfinished counter asking for attention. Just a clear summary, the source within reach, and perhaps one older piece worth returning to. We can make tools that respect this kind of ending. First, we have to decide that an ending is a success.",
     "rd_FXSPARSE01": "## Available, not overdue\n\nAn archive is not a promise to read everything in it. It is a resource for the questions you have now. When an article no longer serves a question, you can let it wait without turning it into a debt.",
     "rd_FXREPROC01": "## The tab that never closes\n\nThere is always one browser tab that survives every restart: an article you meant to finish, kept open as a promise. Keeping it open changes nothing about whether you will read it. What changes is how the promise sits with you, a small unpaid debt in the corner of the screen.\n\n## Save it and let it go\n\nSaving is not the same as deferring. A saved reading has a place to be, and can wait there without asking for anything. The tab can close. If the piece matters, a library brings it back when a newer question makes it relevant again.",
@@ -1280,8 +1797,12 @@
     "rd_FXFRICTN01": "## A pause with a purpose\n\nA book club interrupts a book. So does a margin note. Neither is usually described as a failure of the reading experience. The pause can be the point: it asks us to make a thought our own. Digital tools can offer the same kind of interruption if they leave the reader in control.\n\n## Leave a way back\n\nA tangent becomes a distraction when the original question disappears. Keep the starting point visible. Explain why a connection might matter. Then allow the reader to follow it, or continue exactly where they were.",
     "rd_FXMAXNAME1": "## The work around the work\n\nI spent an afternoon designing a better way to collect my writing ideas. When I finished, the ideas were beautifully arranged. None of them had become writing. Organization is not the enemy, but it is an activity with its own rewards. We need to notice when those rewards have replaced the reason we started.",
     "rd_FXMDPAGE01": "# Slow reading week\n\nA short log of one week spent reading three long pieces instead of thirty short ones.\n\n## What changed\n\nI kept a single question open for the whole week and read toward it. Notes went into one file, and each session ended by writing down what to look at next.\n\n## What I noticed\n\n- Starting was easier, because the question was already there.\n- I reread two passages instead of opening new tabs.\n- The summary I wrote on Friday was more useful than anything I saved that week.\n\n## The log itself\n\nRich content an imported page can carry, for the Source view (#372): a table,\na code block, an image, raw HTML, and a link too long to break.\n\n| Day | Piece | Pages | Note |\n| --- | --- | --- | --- |\n| Monday | The long essay on attention | 34 | Read twice; the second pass was the useful one |\n| Wednesday | A field guide to commonplace books | 58 | Skimmed the history, read the method closely |\n| Friday | An interview about slow tools | 21 | Wrote the summary straight after |\n\nThe script that pulled the week's notes together:\n\n```sh\nfor day in mon wed fri; do\n  cat \"notes/$day.md\" >> week.md\ndone\nwc -w week.md\n```\n\n![The desk on Friday, three books and one notebook](https://images.fieldnotes.example/slow-reading-week/desk.jpg)\n\n<img src=\"https://images.fieldnotes.example/pixel.gif\" onerror=\"alert('imported')\">\n\nThe full notes: <https://notes.fieldnotes.example/slow-reading-week/everything-i-wrote-down-during-the-week-including-the-parts-that-did-not-fit-anywhere-else-and-the-questions-i-am-still-holding>\n",
+    "rd_FXPAPER001": "For a month I printed everything over two thousand words. The printer became a kind of editor: if a piece was not worth the paper, I did not read it. Most were not. The ones that were, I finished.",
+    "rd_FXSECBRN01": "## Open the drawers\n\nA filing cabinet is only useless if you never open it. The systems that fail are not the ones with too much structure; they are the ones whose owners stopped looking inside. Structure is what makes looking cheap enough to keep doing.",
     "rd_FXYTDEGRD1": "# Building a quiet reading app — chapter 4\n\n*By [Quiet Build Studio](https://www.youtube.com/@quietbuildstudio) · [Watch on YouTube](https://www.youtube.com/watch?v=FxFixture01)*\n\nChapter 4 of the build log. This week: why the reading queue is not a feed, and what it took to make the library feel like a place you can leave and come back to. Chapters: 0:00 intro, 2:14 the quiet-library idea, 7:40 queue vs. feed, 12:05 demo, 18:30 what broke.",
-    "rd_FXPAST0001": "## Why archive anything\n\nA saved page is a small bet that a future question will want it. This early note made the case for keeping the original text beside whatever summary replaces it."
+    "rd_FXCMMNBK01": "## Not a filing system\n\nThe commonplace books that survive are not well organised. They are well loved. Passages sit next to each other because they were copied on the same afternoon, and the accidental neighbours are where the thinking happened.\n\n## Copying as reading\n\nTo copy a passage by hand is to read it at the speed of writing. Nothing you can search for will give you that. The book is a record of attention, and rereading it is attention paid twice.",
+    "rd_FXPAST0001": "## Why archive anything\n\nA saved page is a small bet that a future question will want it. This early note made the case for keeping the original text beside whatever summary replaces it.",
+    "rd_FXMARGNA01": "I found a copy of a book I had read at twenty, with my own handwriting in the margins. The notes were wrong about almost everything, and they were the most useful thing in the book, because they told me exactly what I had been looking for."
   },
   "diagnostics": {
     "rd_FXPENDNG01": {
@@ -1357,6 +1878,258 @@
               "stage": "queued",
               "status": "started",
               "at": "2026-09-11T10:00:00.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXPRCSSNG1": {
+      "id": "rd_FXPRCSSNG1",
+      "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1",
+      "manifest": {
+        "id": "rd_FXPRCSSNG1",
+        "url": "https://fieldnotes.example/why-we-skim",
+        "url_hash": "ae465c94ac67a97ae57946329ab079a0d3b3a8ba44a0a0cef053044d0eaca477",
+        "source_type": "url",
+        "status": "pending",
+        "active_attempt": {
+          "id": "at_FXPRCSSNG1",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:52:00.000Z"
+        },
+        "content_type": "application/octet-stream",
+        "content_status": "captured",
+        "content_bytes": 0,
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "created_at": "2026-09-11T09:52:00.000Z",
+        "updated_at": "2026-09-11T09:52:00.000Z"
+      },
+      "index_item": {
+        "id": "rd_FXPRCSSNG1",
+        "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1",
+        "url": "https://fieldnotes.example/why-we-skim",
+        "status": "pending",
+        "created_at": "2026-09-11T09:52:00.000Z",
+        "updated_at": "2026-09-11T09:52:00.000Z",
+        "active_attempt": {
+          "id": "at_FXPRCSSNG1",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:52:00.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXPRCSSNG1",
+            "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXPRCSSNG1",
+            "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [],
+      "attempts": [
+        {
+          "id": "at_FXPRCSSNG1",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "summarize",
+          "started_at": "2026-09-11T09:52:00.000Z",
+          "reading_id": "rd_FXPRCSSNG1",
+          "url": "https://fieldnotes.example/why-we-skim",
+          "url_hash": "ae465c94ac67a97ae57946329ab079a0d3b3a8ba44a0a0cef053044d0eaca477",
+          "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-11T09:52:00.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:02.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-11T09:52:02.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:10.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-09-11T09:52:10.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:12.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-09-11T09:52:12.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:14.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-09-11T09:52:14.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:18.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-09-11T09:52:18.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-09-11T09:52:20.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-09-11T09:52:20.000Z"
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXSTPEND01": {
+      "id": "rd_FXSTPEND01",
+      "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01",
+      "manifest": {
+        "id": "rd_FXSTPEND01",
+        "url": "https://adjacent.example/the-cost-of-convenience",
+        "url_hash": "210c361f189e38b0d88f10c1dea8988efdf8a863c3cd762cf1bbfb3996b67028",
+        "source_type": "url",
+        "status": "failed",
+        "content_type": "application/octet-stream",
+        "content_status": "captured",
+        "content_bytes": 0,
+        "content_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "created_at": "2026-09-11T09:20:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "last_attempt": {
+          "id": "at_FXSTPEND01",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:20:00.000Z",
+          "finished_at": "2026-09-11T10:00:00.000Z",
+          "error": {
+            "code": "stale_active_attempt",
+            "message": "active attempt > 900s",
+            "stage": "queued",
+            "failed_at": "2026-09-11T10:00:00.000Z",
+            "retryable": true
+          }
+        },
+        "error": {
+          "code": "stale_active_attempt",
+          "message": "active attempt > 900s",
+          "stage": "queued",
+          "failed_at": "2026-09-11T10:00:00.000Z",
+          "retryable": true
+        }
+      },
+      "index_item": {
+        "id": "rd_FXSTPEND01",
+        "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01",
+        "url": "https://adjacent.example/the-cost-of-convenience",
+        "status": "failed",
+        "created_at": "2026-09-11T09:20:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "last_attempt": {
+          "id": "at_FXSTPEND01",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:20:00.000Z",
+          "finished_at": "2026-09-11T10:00:00.000Z",
+          "error": {
+            "code": "stale_active_attempt",
+            "message": "active attempt > 900s",
+            "stage": "queued",
+            "failed_at": "2026-09-11T10:00:00.000Z",
+            "retryable": true
+          }
+        },
+        "error": {
+          "code": "stale_active_attempt",
+          "message": "active attempt > 900s",
+          "stage": "queued",
+          "failed_at": "2026-09-11T10:00:00.000Z",
+          "retryable": true
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXSTPEND01",
+            "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXSTPEND01",
+            "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [],
+      "attempts": [
+        {
+          "id": "at_FXSTPEND01",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:20:00.000Z",
+          "reading_id": "rd_FXSTPEND01",
+          "url": "https://adjacent.example/the-cost-of-convenience",
+          "url_hash": "210c361f189e38b0d88f10c1dea8988efdf8a863c3cd762cf1bbfb3996b67028",
+          "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-11T09:20:00.000Z"
             }
           ]
         }
@@ -1676,6 +2449,295 @@
                 "failed_at": "2026-09-09T16:42:37.000Z",
                 "retryable": false
               }
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXCNVRSE01": {
+      "id": "rd_FXCNVRSE01",
+      "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01",
+      "manifest": {
+        "id": "rd_FXCNVRSE01",
+        "url": "https://commonplace.example/reading-as-conversation",
+        "url_hash": "50f1810b6774f00d6248d6d4743efccbdf09b8301f307fd5efa46eea6e670913",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXCNVRSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-09T10:30:04.000Z",
+          "finished_at": "2026-09-09T10:30:47.000Z"
+        },
+        "title": "Reading as conversation",
+        "tldr": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+        "tags": [
+          "knowledge",
+          "reading"
+        ],
+        "keywords": [
+          "conversation",
+          "rereading",
+          "annotation",
+          "dialogue"
+        ],
+        "people": [
+          "Julian Park"
+        ],
+        "orgs": [
+          "Commonplace Press"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.6,
+          "mean": 0.6,
+          "computed_at": "2026-09-09T10:30:24.000Z"
+        },
+        "connections": [
+          {
+            "id": "rd_FXGARDEN01",
+            "reason": "Park's conversation and the garden are the same claim about return visits, made with different images."
+          }
+        ],
+        "connections_neighbourhood_ids": [
+          "rd_FXGARDEN01",
+          "rd_FXCMMNBK01",
+          "rd_FXATTENT01"
+        ],
+        "summary_markdown": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.\n\nThe essay treats each reading as a reply to the last one, and a library as the record of the exchange. What matters is not the collection but the ability to find what you said last time.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 355,
+        "extracted_bytes": 193,
+        "content_sha256": "2051d677beae76199acc7769e7362061124a861c082610687e2283bf684e5316",
+        "fetched_at": "2026-09-09T10:30:47.000Z",
+        "created_at": "2026-09-09T10:30:00.000Z",
+        "updated_at": "2026-09-09T10:30:47.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 3050,
+            "output_tokens": 421,
+            "reasoning_tokens": 172,
+            "cached_input_tokens": 2200,
+            "cache_write_tokens": 850
+          },
+          "openai_embedding_tokens": 1167
+        }
+      },
+      "index_item": {
+        "id": "rd_FXCNVRSE01",
+        "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01",
+        "url": "https://commonplace.example/reading-as-conversation",
+        "status": "ready",
+        "created_at": "2026-09-09T10:30:00.000Z",
+        "updated_at": "2026-09-09T10:30:47.000Z",
+        "title": "Reading as conversation",
+        "tldr": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+        "tags": [
+          "knowledge",
+          "reading"
+        ],
+        "keywords": [
+          "conversation",
+          "rereading",
+          "annotation",
+          "dialogue"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.6,
+          "mean": 0.6,
+          "computed_at": "2026-09-09T10:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCNVRSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-09T10:30:04.000Z",
+          "finished_at": "2026-09-09T10:30:47.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXCNVRSE01",
+            "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXCNVRSE01",
+            "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/09/09T103000Z-rd_FXCNVRSE01/raw.html",
+          "size": 355,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/09/09T103000Z-rd_FXCNVRSE01/extracted.md",
+          "size": 193,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXCNVRSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-09T10:30:04.000Z",
+          "finished_at": "2026-09-09T10:30:47.000Z",
+          "reading_id": "rd_FXCNVRSE01",
+          "url": "https://commonplace.example/reading-as-conversation",
+          "url_hash": "50f1810b6774f00d6248d6d4743efccbdf09b8301f307fd5efa46eea6e670913",
+          "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-09-09T10:30:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-09-09T10:30:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-09-09T10:30:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-09-09T10:30:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-09-09T10:30:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-09-09T10:30:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-09-09T10:30:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-09-09T10:30:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-09-09T10:30:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-09-09T10:30:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-09-09T10:30:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-09-09T10:30:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-09-09T10:30:55.000Z",
+              "duration_ms": 3000
             }
           ]
         }
@@ -5373,6 +6435,589 @@
         }
       ]
     },
+    "rd_FXPAPER001": {
+      "id": "rd_FXPAPER001",
+      "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001",
+      "manifest": {
+        "id": "rd_FXPAPER001",
+        "url": "https://small-hours.example/reading-on-paper-again",
+        "url_hash": "df4261882b93e5a761556c5695d055ce032e0fd0aa38bf228f621d00b49abd1f",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXPAPER001",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-23T06:30:04.000Z",
+          "finished_at": "2026-08-23T06:30:47.000Z"
+        },
+        "title": "Reading on paper, again",
+        "tldr": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+        "tags": [
+          "reading"
+        ],
+        "keywords": [
+          "paper",
+          "printing",
+          "long reads",
+          "distraction"
+        ],
+        "people": [
+          "Alex Rivera"
+        ],
+        "orgs": [
+          "Small Hours"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 1,
+          "max": 0.52,
+          "mean": 0.52,
+          "computed_at": "2026-08-23T06:30:24.000Z"
+        },
+        "connections": [
+          {
+            "id": "rd_FXMDPAGE01",
+            "reason": "Both are constraint experiments: fewer pieces, one at a time, with the option to defer removed."
+          }
+        ],
+        "connections_computed_at": "2026-09-08T03:07:00.000Z",
+        "connections_neighbourhood_ids": [
+          "rd_FXMDPAGE01",
+          "rd_FXSPARSE01"
+        ],
+        "summary_markdown": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.\n\nPaper removed the option to save for later: the piece was either read or recycled. Rivera suggests the constraint, not the medium, did the work.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 358,
+        "extracted_bytes": 196,
+        "content_sha256": "9706c5081c89d15ac29d9d896713345d83e6a9e4c1da93966a0ffe85cfe6a912",
+        "fetched_at": "2026-08-23T06:30:47.000Z",
+        "created_at": "2026-08-23T06:30:00.000Z",
+        "updated_at": "2026-08-23T06:30:47.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 2960,
+            "output_tokens": 415,
+            "reasoning_tokens": 166,
+            "cached_input_tokens": 2100,
+            "cache_write_tokens": 860
+          },
+          "openai_embedding_tokens": 1138
+        }
+      },
+      "index_item": {
+        "id": "rd_FXPAPER001",
+        "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001",
+        "url": "https://small-hours.example/reading-on-paper-again",
+        "status": "ready",
+        "created_at": "2026-08-23T06:30:00.000Z",
+        "updated_at": "2026-08-23T06:30:47.000Z",
+        "title": "Reading on paper, again",
+        "tldr": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+        "tags": [
+          "reading"
+        ],
+        "keywords": [
+          "paper",
+          "printing",
+          "long reads",
+          "distraction"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 1,
+          "max": 0.52,
+          "mean": 0.52,
+          "computed_at": "2026-08-23T06:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXPAPER001",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-23T06:30:04.000Z",
+          "finished_at": "2026-08-23T06:30:47.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXPAPER001",
+            "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXPAPER001",
+            "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/08/23T063000Z-rd_FXPAPER001/raw.html",
+          "size": 358,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/08/23T063000Z-rd_FXPAPER001/extracted.md",
+          "size": 196,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXPAPER001",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-23T06:30:04.000Z",
+          "finished_at": "2026-08-23T06:30:47.000Z",
+          "reading_id": "rd_FXPAPER001",
+          "url": "https://small-hours.example/reading-on-paper-again",
+          "url_hash": "df4261882b93e5a761556c5695d055ce032e0fd0aa38bf228f621d00b49abd1f",
+          "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-08-23T06:30:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-08-23T06:30:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-08-23T06:30:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-08-23T06:30:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-08-23T06:30:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-08-23T06:30:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-08-23T06:30:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-08-23T06:30:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-08-23T06:30:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-08-23T06:30:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-08-23T06:30:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-08-23T06:30:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-08-23T06:30:55.000Z",
+              "duration_ms": 3000
+            }
+          ]
+        }
+      ]
+    },
+    "rd_FXSECBRN01": {
+      "id": "rd_FXSECBRN01",
+      "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01",
+      "manifest": {
+        "id": "rd_FXSECBRN01",
+        "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+        "url_hash": "dd52e46b7ba9be63ba0aa632e34e71cdfb14862379bc198d5df1dddd0eb75117",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXSECBRN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-21T14:00:04.000Z",
+          "finished_at": "2026-08-21T14:00:47.000Z"
+        },
+        "title": "The second brain is a filing cabinet",
+        "tldr": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+        "tags": [
+          "knowledge"
+        ],
+        "keywords": [
+          "second brain",
+          "retrieval",
+          "note systems",
+          "rereading"
+        ],
+        "people": [
+          "Tomas Reyes"
+        ],
+        "orgs": [
+          "Adjacent"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.62,
+          "mean": 0.62,
+          "computed_at": "2026-08-21T14:00:24.000Z"
+        },
+        "connections": [],
+        "connections_computed_at": "2026-09-08T03:07:00.000Z",
+        "connections_neighbourhood_ids": [
+          "rd_FXCMMNBK01",
+          "rd_FXMAXNAME1"
+        ],
+        "tensions": [
+          {
+            "id": "rd_FXCMMNBK01",
+            "kind": "qualifies",
+            "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction.",
+            "computed_at": "2026-09-09T03:07:00.000Z"
+          }
+        ],
+        "tensions_judged": [
+          {
+            "id": "rd_FXCMMNBK01",
+            "judged_at": "2026-09-09T03:07:00.000Z"
+          }
+        ],
+        "summary_markdown": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.\n\nThe essay defends search and structure against the romance of the notebook. A practice you cannot find your way back into is a practice you will stop.\n\nReyes concedes the notebook's point about attention, then asks what happens in year five, when the pages number in the thousands.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 434,
+        "extracted_bytes": 254,
+        "content_sha256": "beab3f943c9356e50d7e0052052c834dca13031015a933e8d813039fe1295749",
+        "fetched_at": "2026-08-21T14:00:47.000Z",
+        "created_at": "2026-08-21T14:00:00.000Z",
+        "updated_at": "2026-08-21T14:00:47.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 3940,
+            "output_tokens": 488,
+            "reasoning_tokens": 201,
+            "cached_input_tokens": 2900,
+            "cache_write_tokens": 1040
+          },
+          "openai_embedding_tokens": 1415
+        }
+      },
+      "index_item": {
+        "id": "rd_FXSECBRN01",
+        "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01",
+        "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+        "status": "ready",
+        "created_at": "2026-08-21T14:00:00.000Z",
+        "updated_at": "2026-08-21T14:00:47.000Z",
+        "title": "The second brain is a filing cabinet",
+        "tldr": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+        "tags": [
+          "knowledge"
+        ],
+        "keywords": [
+          "second brain",
+          "retrieval",
+          "note systems",
+          "rereading"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.62,
+          "mean": 0.62,
+          "computed_at": "2026-08-21T14:00:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXSECBRN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-21T14:00:04.000Z",
+          "finished_at": "2026-08-21T14:00:47.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXSECBRN01",
+            "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXSECBRN01",
+            "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/08/21T140000Z-rd_FXSECBRN01/raw.html",
+          "size": 434,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/08/21T140000Z-rd_FXSECBRN01/extracted.md",
+          "size": 254,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXSECBRN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-21T14:00:04.000Z",
+          "finished_at": "2026-08-21T14:00:47.000Z",
+          "reading_id": "rd_FXSECBRN01",
+          "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+          "url_hash": "dd52e46b7ba9be63ba0aa632e34e71cdfb14862379bc198d5df1dddd0eb75117",
+          "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-08-21T14:00:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-08-21T14:00:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-08-21T14:00:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-08-21T14:00:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-08-21T14:00:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-08-21T14:00:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-08-21T14:00:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-08-21T14:00:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-08-21T14:00:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-08-21T14:00:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-08-21T14:00:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-08-21T14:00:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-08-21T14:00:55.000Z",
+              "duration_ms": 3000
+            }
+          ]
+        }
+      ]
+    },
     "rd_FXYTDEGRD1": {
       "id": "rd_FXYTDEGRD1",
       "key_prefix": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1",
@@ -5665,6 +7310,310 @@
         }
       ]
     },
+    "rd_FXCMMNBK01": {
+      "id": "rd_FXCMMNBK01",
+      "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01",
+      "manifest": {
+        "id": "rd_FXCMMNBK01",
+        "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+        "url_hash": "767014af5bd80e5e1c24d37146188b4d33b0fe16efea1cfe8237519e5147d6cb",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXCMMNBK01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-18T09:20:04.000Z",
+          "finished_at": "2026-08-18T09:20:47.000Z"
+        },
+        "title": "What a commonplace book is for",
+        "tldr": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+        "tags": [
+          "knowledge",
+          "notes"
+        ],
+        "keywords": [
+          "commonplace book",
+          "excerpts",
+          "rereading",
+          "memory"
+        ],
+        "people": [
+          "Ines Halvorsen"
+        ],
+        "orgs": [
+          "Commonplace Press"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.63,
+          "mean": 0.59,
+          "computed_at": "2026-08-18T09:20:24.000Z"
+        },
+        "connections": [
+          {
+            "id": "rd_FXMARGNA01",
+            "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+          }
+        ],
+        "connections_computed_at": "2026-09-08T03:07:00.000Z",
+        "connections_neighbourhood_ids": [
+          "rd_FXMARGNA01",
+          "rd_FXGARDEN01",
+          "rd_FXMDPAGE01"
+        ],
+        "tensions": [
+          {
+            "id": "rd_FXSECBRN01",
+            "kind": "qualified_by",
+            "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction.",
+            "computed_at": "2026-09-09T03:07:00.000Z"
+          }
+        ],
+        "tensions_judged": [
+          {
+            "id": "rd_FXSECBRN01",
+            "judged_at": "2026-09-09T03:07:00.000Z"
+          }
+        ],
+        "summary_markdown": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.\n\nHalvorsen traces the form from Renaissance notebooks to the present and argues that its value was never retrieval. The excerpts were chosen for their pull, and the act of copying them was the point.\n\nThe modern mistake is to optimise the book for finding things. A commonplace book you can search is a database; one you reread is a practice.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 644,
+        "extracted_bytes": 459,
+        "content_sha256": "ef3c7f9701c848fe54faaa6891d0aa13f80cd758e6672c0e563f1951248efcac",
+        "fetched_at": "2026-08-18T09:20:47.000Z",
+        "created_at": "2026-08-18T09:20:00.000Z",
+        "updated_at": "2026-08-18T09:20:47.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 4870,
+            "output_tokens": 534,
+            "reasoning_tokens": 226,
+            "cached_input_tokens": 3600,
+            "cache_write_tokens": 1270
+          },
+          "openai_embedding_tokens": 1622
+        }
+      },
+      "index_item": {
+        "id": "rd_FXCMMNBK01",
+        "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01",
+        "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+        "status": "ready",
+        "created_at": "2026-08-18T09:20:00.000Z",
+        "updated_at": "2026-08-18T09:20:47.000Z",
+        "title": "What a commonplace book is for",
+        "tldr": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+        "tags": [
+          "knowledge",
+          "notes"
+        ],
+        "keywords": [
+          "commonplace book",
+          "excerpts",
+          "rereading",
+          "memory"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.63,
+          "mean": 0.59,
+          "computed_at": "2026-08-18T09:20:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCMMNBK01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-18T09:20:04.000Z",
+          "finished_at": "2026-08-18T09:20:47.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXCMMNBK01",
+            "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXCMMNBK01",
+            "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/08/18T092000Z-rd_FXCMMNBK01/raw.html",
+          "size": 644,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/08/18T092000Z-rd_FXCMMNBK01/extracted.md",
+          "size": 459,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXCMMNBK01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-18T09:20:04.000Z",
+          "finished_at": "2026-08-18T09:20:47.000Z",
+          "reading_id": "rd_FXCMMNBK01",
+          "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+          "url_hash": "767014af5bd80e5e1c24d37146188b4d33b0fe16efea1cfe8237519e5147d6cb",
+          "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-08-18T09:20:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-08-18T09:20:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-08-18T09:20:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-08-18T09:20:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-08-18T09:20:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-08-18T09:20:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-08-18T09:20:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-08-18T09:20:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-08-18T09:20:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-08-18T09:20:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-08-18T09:20:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-08-18T09:20:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-08-18T09:20:55.000Z",
+              "duration_ms": 3000
+            }
+          ]
+        }
+      ]
+    },
     "rd_FXPAST0001": {
       "id": "rd_FXPAST0001",
       "key_prefix": "readings/2026/04/14T091500Z-rd_FXPAST0001",
@@ -5915,9 +7864,295 @@
           ]
         }
       ]
+    },
+    "rd_FXMARGNA01": {
+      "id": "rd_FXMARGNA01",
+      "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01",
+      "manifest": {
+        "id": "rd_FXMARGNA01",
+        "url": "https://commonplace.example/on-marginalia",
+        "url_hash": "1d43f9c3e4d3cd657f3fcf2bde49e51aa965442abb4ada5ecadb4ac24432f26d",
+        "source_type": "url",
+        "status": "ready",
+        "last_attempt": {
+          "id": "at_FXMARGNA01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-03-02T19:45:04.000Z",
+          "finished_at": "2026-03-02T19:45:47.000Z"
+        },
+        "title": "On marginalia",
+        "tldr": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+        "tags": [
+          "reading",
+          "notes"
+        ],
+        "keywords": [
+          "marginalia",
+          "annotation",
+          "rereading",
+          "paper"
+        ],
+        "people": [
+          "Ines Halvorsen"
+        ],
+        "orgs": [
+          "Commonplace Press"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 0,
+          "computed_at": "2026-03-02T19:45:24.000Z"
+        },
+        "connections": [
+          {
+            "id": "rd_FXCMMNBK01",
+            "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+          }
+        ],
+        "connections_computed_at": "2026-09-08T03:07:00.000Z",
+        "connections_neighbourhood_ids": [],
+        "summary_markdown": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.\n\nA highlight records that something mattered; a note records why. On the second reading only the second kind is useful, because the first has lost its context.",
+        "content_type": "text/html; charset=utf-8",
+        "content_status": "captured",
+        "content_bytes": 391,
+        "extracted_bytes": 239,
+        "content_sha256": "599639cf6ea60a13d76d5ad80ae18eefe8972f85a8b6c6224cf10ce66e95440c",
+        "fetched_at": "2026-03-02T19:45:47.000Z",
+        "created_at": "2026-03-02T19:45:00.000Z",
+        "updated_at": "2026-03-02T19:45:47.000Z",
+        "usage": {
+          "summarization": {
+            "provider": "openai",
+            "model": "gpt-5.6-terra",
+            "input_tokens": 2810,
+            "output_tokens": 402,
+            "reasoning_tokens": 158,
+            "cached_input_tokens": 0,
+            "cache_write_tokens": 2810
+          },
+          "openai_embedding_tokens": 1104
+        }
+      },
+      "index_item": {
+        "id": "rd_FXMARGNA01",
+        "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01",
+        "url": "https://commonplace.example/on-marginalia",
+        "status": "ready",
+        "created_at": "2026-03-02T19:45:00.000Z",
+        "updated_at": "2026-03-02T19:45:47.000Z",
+        "title": "On marginalia",
+        "tldr": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+        "tags": [
+          "reading",
+          "notes"
+        ],
+        "keywords": [
+          "marginalia",
+          "annotation",
+          "rereading",
+          "paper"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 0,
+          "computed_at": "2026-03-02T19:45:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXMARGNA01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-03-02T19:45:04.000Z",
+          "finished_at": "2026-03-02T19:45:47.000Z"
+        }
+      },
+      "pointers": {
+        "by_id": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXMARGNA01",
+            "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01"
+          },
+          "matches_manifest": true
+        },
+        "by_url": {
+          "exists": true,
+          "pointer": {
+            "id": "rd_FXMARGNA01",
+            "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01"
+          },
+          "matches_manifest": true
+        }
+      },
+      "objects": [
+        {
+          "key": "readings/2026/03/02T194500Z-rd_FXMARGNA01/raw.html",
+          "size": 391,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        },
+        {
+          "key": "readings/2026/03/02T194500Z-rd_FXMARGNA01/extracted.md",
+          "size": 239,
+          "uploaded": "2026-09-11T10:00:00.000Z"
+        }
+      ],
+      "attempts": [
+        {
+          "id": "at_FXMARGNA01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-03-02T19:45:04.000Z",
+          "finished_at": "2026-03-02T19:45:47.000Z",
+          "reading_id": "rd_FXMARGNA01",
+          "url": "https://commonplace.example/on-marginalia",
+          "url_hash": "1d43f9c3e4d3cd657f3fcf2bde49e51aa965442abb4ada5ecadb4ac24432f26d",
+          "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01",
+          "events": [
+            {
+              "stage": "queued",
+              "status": "started",
+              "at": "2026-03-02T19:45:04.000Z"
+            },
+            {
+              "stage": "queued",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:06.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "fetch_source",
+              "status": "started",
+              "at": "2026-03-02T19:45:06.000Z"
+            },
+            {
+              "stage": "fetch_source",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:14.000Z",
+              "duration_ms": 8000
+            },
+            {
+              "stage": "write_raw",
+              "status": "started",
+              "at": "2026-03-02T19:45:14.000Z"
+            },
+            {
+              "stage": "write_raw",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:16.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_extracted",
+              "status": "started",
+              "at": "2026-03-02T19:45:16.000Z"
+            },
+            {
+              "stage": "write_extracted",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:18.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "embed_source",
+              "status": "started",
+              "at": "2026-03-02T19:45:18.000Z"
+            },
+            {
+              "stage": "embed_source",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:22.000Z",
+              "duration_ms": 4000
+            },
+            {
+              "stage": "query_similar",
+              "status": "started",
+              "at": "2026-03-02T19:45:22.000Z"
+            },
+            {
+              "stage": "query_similar",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:24.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "summarize",
+              "status": "started",
+              "at": "2026-03-02T19:45:24.000Z"
+            },
+            {
+              "stage": "summarize",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:44.000Z",
+              "duration_ms": 20000
+            },
+            {
+              "stage": "embed_summary",
+              "status": "started",
+              "at": "2026-03-02T19:45:44.000Z"
+            },
+            {
+              "stage": "embed_summary",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:47.000Z",
+              "duration_ms": 3000
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "started",
+              "at": "2026-03-02T19:45:47.000Z"
+            },
+            {
+              "stage": "upsert_vector",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:49.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "write_manifest",
+              "status": "started",
+              "at": "2026-03-02T19:45:49.000Z"
+            },
+            {
+              "stage": "write_manifest",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:50.000Z",
+              "duration_ms": 1000
+            },
+            {
+              "stage": "write_indexes",
+              "status": "started",
+              "at": "2026-03-02T19:45:50.000Z"
+            },
+            {
+              "stage": "write_indexes",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:52.000Z",
+              "duration_ms": 2000
+            },
+            {
+              "stage": "send_email",
+              "status": "started",
+              "at": "2026-03-02T19:45:52.000Z"
+            },
+            {
+              "stage": "send_email",
+              "status": "succeeded",
+              "at": "2026-03-02T19:45:55.000Z",
+              "duration_ms": 3000
+            }
+          ]
+        }
+      ]
     }
   },
   "raws": {
+    "rd_FXCNVRSE01": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Reading as conversation</title>\n</head>\n<body>\n<article>\n<p>The second time through a book you are not alone. Someone read it before you, and left a trail: a folded corner, a line in the margin, a sentence you now remember wrongly. That someone was you.</p>\n</article>\n</body>\n</html>\n"
+    },
     "rd_FXATTENT01": {
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>A quieter internet is a choice we can make</title>\n</head>\n<body>\n<article>\n<h2>Somewhere to return</h2>\n<p>On a Sunday morning, I opened a folder of articles I had been meaning to read. There were hundreds of them. Every title represented a small promise to a future version of myself: you will have more time, and this will still matter. I closed the folder. Then I opened a single essay I had read a year earlier, and found the sentence I needed.</p>\n<h2>From collection to conversation</h2>\n<p>We tend to build reading tools around the moment of capture. The button is frictionless, the queue infinite, the archive reassuring. But the important moment comes later. An old idea meets a new question. Two writers disagree in a way you can finally name. A library becomes useful when it can make those moments easier to find.</p>\n<h2>A little friction, in the right place</h2>\n<p>A quieter tool does not have to be an empty tool. It can invite us to pause, compare, and follow one good connection. The distinction is whether the next action serves the thought we arrived with or replaces it. A link back to an earlier reading can deepen a session. A bottomless feed usually starts a different one.</p>\n<h2>Designing for enough</h2>\n<p>Imagine a reading session that ends because you have understood something. No streak to maintain, no unfinished counter asking for attention. Just a clear summary, the source within reach, and perhaps one older piece worth returning to. We can make tools that respect this kind of ending. First, we have to decide that an ending is a success.</p>\n</article>\n</body>\n</html>\n"
@@ -5950,13 +8185,29 @@
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>The web we can no longer revisit</title>\n</head>\n<body>\n<article>\n<h2>A memory of pages</h2>\n<p>The saved summary of a page that later moved behind a paywall is still a record of what it said. It is not the page. Keeping the two apart is part of maintaining an honest archive.</p>\n</article>\n</body>\n</html>\n"
     },
+    "rd_FXPAPER001": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Reading on paper, again</title>\n</head>\n<body>\n<article>\n<p>For a month I printed everything over two thousand words. The printer became a kind of editor: if a piece was not worth the paper, I did not read it. Most were not. The ones that were, I finished.</p>\n</article>\n</body>\n</html>\n"
+    },
+    "rd_FXSECBRN01": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>The second brain is a filing cabinet</title>\n</head>\n<body>\n<article>\n<h2>Open the drawers</h2>\n<p>A filing cabinet is only useless if you never open it. The systems that fail are not the ones with too much structure; they are the ones whose owners stopped looking inside. Structure is what makes looking cheap enough to keep doing.</p>\n</article>\n</body>\n</html>\n"
+    },
     "rd_FXYTDEGRD1": {
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Building a quiet reading app — chapter 4 - YouTube</title>\n</head>\n<body>\n<div id=\"watch\">\n<h1>Building a quiet reading app — chapter 4</h1>\n<div id=\"description\">Chapter 4 of the build log. This week: why the reading queue is not a feed, and what it took to make the library feel like a place you can leave and come back to. Chapters: 0:00 intro, 2:14 the quiet-library idea, 7:40 queue vs. feed, 12:05 demo, 18:30 what broke.</div>\n</div>\n</body>\n</html>\n"
     },
+    "rd_FXCMMNBK01": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>What a commonplace book is for</title>\n</head>\n<body>\n<article>\n<h2>Not a filing system</h2>\n<p>The commonplace books that survive are not well organised. They are well loved. Passages sit next to each other because they were copied on the same afternoon, and the accidental neighbours are where the thinking happened.</p>\n<h2>Copying as reading</h2>\n<p>To copy a passage by hand is to read it at the speed of writing. Nothing you can search for will give you that. The book is a record of attention, and rereading it is attention paid twice.</p>\n</article>\n</body>\n</html>\n"
+    },
     "rd_FXPAST0001": {
       "content_type": "text/html; charset=utf-8",
       "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Before the archive</title>\n</head>\n<body>\n<article>\n<h2>Why archive anything</h2>\n<p>A saved page is a small bet that a future question will want it. This early note made the case for keeping the original text beside whatever summary replaces it.</p>\n</article>\n</body>\n</html>\n"
+    },
+    "rd_FXMARGNA01": {
+      "content_type": "text/html; charset=utf-8",
+      "body": "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>On marginalia</title>\n</head>\n<body>\n<article>\n<p>I found a copy of a book I had read at twenty, with my own handwriting in the margins. The notes were wrong about almost everything, and they were the most useful thing in the book, because they told me exactly what I had been looking for.</p>\n</article>\n</body>\n</html>\n"
     }
   },
   "list_index": {
@@ -5975,6 +8226,51 @@
           "status": "running",
           "stage": "queued",
           "started_at": "2026-09-11T10:00:00.000Z"
+        }
+      },
+      {
+        "id": "rd_FXPRCSSNG1",
+        "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1",
+        "url": "https://fieldnotes.example/why-we-skim",
+        "status": "pending",
+        "created_at": "2026-09-11T09:52:00.000Z",
+        "updated_at": "2026-09-11T09:52:00.000Z",
+        "active_attempt": {
+          "id": "at_FXPRCSSNG1",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:52:00.000Z"
+        }
+      },
+      {
+        "id": "rd_FXSTPEND01",
+        "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01",
+        "url": "https://adjacent.example/the-cost-of-convenience",
+        "status": "failed",
+        "created_at": "2026-09-11T09:20:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "last_attempt": {
+          "id": "at_FXSTPEND01",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:20:00.000Z",
+          "finished_at": "2026-09-11T10:00:00.000Z",
+          "error": {
+            "code": "stale_active_attempt",
+            "message": "active attempt > 900s",
+            "stage": "queued",
+            "failed_at": "2026-09-11T10:00:00.000Z",
+            "retryable": true
+          }
+        },
+        "error": {
+          "code": "stale_active_attempt",
+          "message": "active attempt > 900s",
+          "stage": "queued",
+          "failed_at": "2026-09-11T10:00:00.000Z",
+          "retryable": true
         }
       },
       {
@@ -6037,6 +8333,41 @@
             "failed_at": "2026-09-09T16:42:37.000Z",
             "retryable": false
           }
+        }
+      },
+      {
+        "id": "rd_FXCNVRSE01",
+        "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01",
+        "url": "https://commonplace.example/reading-as-conversation",
+        "status": "ready",
+        "created_at": "2026-09-09T10:30:00.000Z",
+        "updated_at": "2026-09-09T10:30:47.000Z",
+        "title": "Reading as conversation",
+        "tldr": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+        "tags": [
+          "knowledge",
+          "reading"
+        ],
+        "keywords": [
+          "conversation",
+          "rereading",
+          "annotation",
+          "dialogue"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.6,
+          "mean": 0.6,
+          "computed_at": "2026-09-09T10:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCNVRSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-09T10:30:04.000Z",
+          "finished_at": "2026-09-09T10:30:47.000Z"
         }
       },
       {
@@ -6571,6 +8902,74 @@
         }
       },
       {
+        "id": "rd_FXPAPER001",
+        "key_prefix": "readings/2026/08/23T063000Z-rd_FXPAPER001",
+        "url": "https://small-hours.example/reading-on-paper-again",
+        "status": "ready",
+        "created_at": "2026-08-23T06:30:00.000Z",
+        "updated_at": "2026-08-23T06:30:47.000Z",
+        "title": "Reading on paper, again",
+        "tldr": "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+        "tags": [
+          "reading"
+        ],
+        "keywords": [
+          "paper",
+          "printing",
+          "long reads",
+          "distraction"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 1,
+          "max": 0.52,
+          "mean": 0.52,
+          "computed_at": "2026-08-23T06:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXPAPER001",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-23T06:30:04.000Z",
+          "finished_at": "2026-08-23T06:30:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXSECBRN01",
+        "key_prefix": "readings/2026/08/21T140000Z-rd_FXSECBRN01",
+        "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+        "status": "ready",
+        "created_at": "2026-08-21T14:00:00.000Z",
+        "updated_at": "2026-08-21T14:00:47.000Z",
+        "title": "The second brain is a filing cabinet",
+        "tldr": "Note systems promise a second brain and deliver a filing cabinet. That is fine, Reyes argues, as long as you open the drawers: retrieval is what lets rereading happen at all once the notes outgrow memory.",
+        "tags": [
+          "knowledge"
+        ],
+        "keywords": [
+          "second brain",
+          "retrieval",
+          "note systems",
+          "rereading"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.62,
+          "mean": 0.62,
+          "computed_at": "2026-08-21T14:00:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXSECBRN01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-21T14:00:04.000Z",
+          "finished_at": "2026-08-21T14:00:47.000Z"
+        }
+      },
+      {
         "id": "rd_FXYTDEGRD1",
         "key_prefix": "readings/2026/08/20T164000Z-rd_FXYTDEGRD1",
         "url": "https://www.youtube.com/watch?v=FxFixture01",
@@ -6612,6 +9011,41 @@
         }
       },
       {
+        "id": "rd_FXCMMNBK01",
+        "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01",
+        "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+        "status": "ready",
+        "created_at": "2026-08-18T09:20:00.000Z",
+        "updated_at": "2026-08-18T09:20:47.000Z",
+        "title": "What a commonplace book is for",
+        "tldr": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+        "tags": [
+          "knowledge",
+          "notes"
+        ],
+        "keywords": [
+          "commonplace book",
+          "excerpts",
+          "rereading",
+          "memory"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.63,
+          "mean": 0.59,
+          "computed_at": "2026-08-18T09:20:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCMMNBK01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-18T09:20:04.000Z",
+          "finished_at": "2026-08-18T09:20:47.000Z"
+        }
+      },
+      {
         "id": "rd_FXPAST0001",
         "key_prefix": "readings/2026/04/14T091500Z-rd_FXPAST0001",
         "url": "https://adjacent.example/before-the-archive",
@@ -6636,8 +9070,97 @@
           "started_at": "2026-04-14T09:15:04.000Z",
           "finished_at": "2026-04-14T09:15:47.000Z"
         }
+      },
+      {
+        "id": "rd_FXMARGNA01",
+        "key_prefix": "readings/2026/03/02T194500Z-rd_FXMARGNA01",
+        "url": "https://commonplace.example/on-marginalia",
+        "status": "ready",
+        "created_at": "2026-03-02T19:45:00.000Z",
+        "updated_at": "2026-03-02T19:45:47.000Z",
+        "title": "On marginalia",
+        "tldr": "Marginal notes are a conversation with a book that the next reading overhears. Halvorsen argues they matter more than the highlights that replaced them.",
+        "tags": [
+          "reading",
+          "notes"
+        ],
+        "keywords": [
+          "marginalia",
+          "annotation",
+          "rereading",
+          "paper"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 0,
+          "computed_at": "2026-03-02T19:45:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXMARGNA01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-03-02T19:45:04.000Z",
+          "finished_at": "2026-03-02T19:45:47.000Z"
+        }
       }
     ]
   },
-  "removed_target_id": "rd_FXVANSHD01"
+  "removed_target_id": "rd_FXVANSHD01",
+  "inbox": [
+    {
+      "id": "in_rd_FXNBX00001",
+      "url": "https://notes.example/how-to-keep-a-reading-log",
+      "title": "How to keep a reading log",
+      "markdown_bytes": 213,
+      "created_at": "2026-09-11T08:15:00.000Z",
+      "updated_at": "2026-09-11T08:15:00.000Z",
+      "markdown": "# How to keep a reading log\n\nOne file. One line per reading: date, title, and the sentence you would say to a friend about it.\n\nNo ratings. No tags at first. Tags arrive when you notice the same word three times.\n"
+    },
+    {
+      "id": "in_rd_FXNBX00002",
+      "url": "https://small-hours.example/talks/attention-2026/transcript",
+      "title": null,
+      "markdown_bytes": 256,
+      "created_at": "2026-09-10T19:02:00.000Z",
+      "updated_at": "2026-09-10T19:02:00.000Z",
+      "markdown": "Transcript, lightly edited.\n\nThank you. I want to talk about the difference between a queue and an archive, and why the first one makes us miserable.\n\nA queue has an order and an end, and it is always behind. An archive has neither. Nothing in it is late.\n"
+    },
+    {
+      "id": "in_rd_FXNBX00003",
+      "url": "https://fieldnotes.example/three-questions-before-saving",
+      "title": "Three questions to ask before saving",
+      "markdown_bytes": 266,
+      "created_at": "2026-09-09T12:40:00.000Z",
+      "updated_at": "2026-09-10T07:30:00.000Z",
+      "markdown": "# Three questions to ask before saving\n\n1. What question would bring me back to this?\n2. Is there something I already saved that it argues with?\n3. Would I mind if it were gone next year?\n\nRevised after a reader pointed out the third question does most of the work.\n"
+    },
+    {
+      "id": "in_rd_FXNBX00004",
+      "url": "https://small-hours.example/a-reading-list-for-a-slow-winter",
+      "title": "A reading list for a slow winter",
+      "markdown_bytes": 192,
+      "created_at": "2026-09-08T21:10:00.000Z",
+      "updated_at": "2026-09-08T21:10:00.000Z",
+      "markdown": "# A reading list for a slow winter\n\nFive long pieces, one a week, with a week off in the middle.\n\n- Something on paper\n- Something you have read before\n- Something you expect to disagree with\n"
+    },
+    {
+      "id": "in_rd_FXNBX00005",
+      "url": "https://commonplace.example/workshops/notes-from-the-margins",
+      "title": "Notes from the margins workshop",
+      "markdown_bytes": 209,
+      "created_at": "2026-09-06T16:00:00.000Z",
+      "updated_at": "2026-09-06T16:00:00.000Z",
+      "markdown": "# Notes from the margins workshop\n\nTwelve people, one shared book, and pencils only. The rule: every note answers a note someone else left.\n\nBy the end the margins held a longer argument than the chapter did.\n"
+    },
+    {
+      "id": "in_rd_FXNBX00006",
+      "url": "https://margin.example/what-the-archive-forgot",
+      "title": "What the archive forgot",
+      "markdown_bytes": 161,
+      "created_at": "2026-09-02T09:45:00.000Z",
+      "updated_at": "2026-09-02T09:45:00.000Z",
+      "markdown": "# What the archive forgot\n\nAn archive keeps the page and loses the afternoon: why you saved it, what you were reading next to it, the question it answered then.\n"
+    }
+  ]
 }

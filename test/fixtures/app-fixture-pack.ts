@@ -9,7 +9,8 @@
 //
 // The clock is fixed so the file is reproducible and its diffs are real
 // changes; the Playwright suite pins the browser clock to the same instant, so
-// the `pending` fixture never crosses the pending TTL mid-run.
+// the `pending` fixture never crosses the pending TTL mid-run (and
+// `stale-pending`, 40 minutes older, is always past it).
 //
 // test/unit/operator-guards.test.ts fails when the committed file
 // and this projection disagree, so adding a fixture state stays one edit in
@@ -18,7 +19,7 @@
 import { projectRelationshipTargets, relationshipTargetIds } from "../../src/modules/relationship-targets";
 import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
-import type { GetReadingDiagnosticsResponse, GetReadingResponse, ListIndex } from "../../src/schemas/api";
+import type { GetReadingDiagnosticsResponse, GetReadingResponse, InboxItem, ListIndex } from "../../src/schemas/api";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID } from "./local-seed";
 
 /** Seed clock for the snapshot, and the browser clock the suite pins. */
@@ -78,10 +79,18 @@ export interface AppFixturePack {
    * endpoint 404s for the rest, and so does the browser stub.
    */
   raws: Record<string, RawCapture>;
-  /** The tenant's list rows, newest first, as the list route serves them. */
+  /**
+   * The tenant's list rows, newest first, as the list route serves them:
+   * after read-time staleness, so `stale-pending` lists as failed.
+   */
   list_index: ListIndex;
   /** Referenced by `attention` but never written: the removed-target card. */
   removed_target_id: string;
+  /**
+   * `GET /api/inbox/:id` bodies, newest first as `GET /api/inbox` lists
+   * them; the list route serves each without its `markdown`.
+   */
+  inbox: InboxItem[];
 }
 
 export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): AppFixturePack {
@@ -159,8 +168,12 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     contents,
     diagnostics,
     raws,
-    list_index: plan.listIndex,
+    list_index: {
+      ...plan.listIndex,
+      items: plan.listIndex.items.map((item) => applyStaleness(item, PENDING_TTL_SECONDS, nowIso)),
+    },
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
+    inbox: plan.inbox,
   };
 }
 

@@ -75,7 +75,7 @@ bounded refresh rule.
 | Key rejected | Provider credential `status = invalid` | First row of Needs you | Replace key |
 | Failed reading | `needs_you` row, `status = failed` | The failure category headline | Open reading |
 | Failed reprocess | `needs_you` row, ready with failed reprocess `last_attempt` | "Reprocess failed · {headline}" | Open reading |
-| Stalled | Pending past the TTL, read as `stale_pending` | In Needs you: "Processing stopped before finishing." | Open reading |
+| Stalled | Pending past the TTL, read as failed (`stale_active_attempt`; `stale_pending` when there is no attempt) | In Needs you: "Processing stopped before finishing." | Open reading |
 | More than 20 | `needs_you_total` or `processing_total` > 20 | The 20 newest, then "and N more" (the library has no status filter) | — |
 | Inbox over five | More than 5 staged items | Five newest, then "Show all N" | `/inbox` |
 | Processing | `processing` rows | Stage label and "saved {ago}"; refreshes while active | Open reading |

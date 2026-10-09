@@ -17,7 +17,8 @@ the pack without R2: `npm run fixtures:app` projects it into
 `GET /api/readings/:id` returns, at a fixed clock, plus the extracted Markdown
 (`contents`), the `GET …/diagnostics` bodies assembled the way the router
 assembles them from rows (`diagnostics`), and each ready fixture's
-raw capture with its stored content type (`raws`) — and
+raw capture with its stored content type (`raws`), and the staged inbox
+items (`inbox`) — and
 `test/unit/operator-guards.test.ts` fails while that file is stale, so
 a new state is one edit here plus a regenerate. The same command writes
 `app/src/samples/sample-library.json`, the public sample library the frontend
@@ -29,7 +30,9 @@ The names and ids are stable: they live in `test/fixtures/local-seed.ts`, and
 `npm run seed:local` writes them into PostgreSQL.
 
 The pack contains authored fiction from the
-[Connected prototype](design-spec.md#data-mapping): `.example` hosts, a
+[Connected prototype](design-spec.md#data-mapping) and the
+[next-direction prototype](../next-direction/README.md#frozen-source)
+(reading-lite-kl7y.2): `.example` hosts, a
 reserved-style YouTube video id, and invented bylines. No production corpus
 content, no credentials, and no paid processing run produces or consumes it.
 Local `wrangler dev` has no Queue, so seeding is the only way to see these
@@ -49,7 +52,14 @@ states locally.
 | `long-title` | `rd_FXMAXNAME1` | ready | 130-character title, past the summarizer's 120-char output cap (the manifest field has none); must wrap, never truncate |
 | `reprocess-failed` | `rd_FXREPROC01` | ready | Ready reading whose `last_attempt` is a **failed reprocess** (`BadStatusError` at `fetch_source`, trigger `reprocess`): the summary stays, the manifest carries no `error`, and the library card shows the "Reprocess failed" badge. Two attempt logs: the succeeded submit and the failed reprocess |
 | `imported-markdown` | `rd_FXMDPAGE01` | ready | `source_type: "markdown"` with a `text/markdown` raw capture; metadata line says "Imported Markdown". Its body carries the rich content the Source view handles: a table, a fenced code block, an image, raw HTML, and an unbreakable link |
+| `commonplace` | `rd_FXCMMNBK01` | ready | Connects to `marginalia`, saved more than 60 days earlier (Worth revisiting); `qualified_by` tension with `second-brain` |
+| `second-brain` | `rd_FXSECBRN01` | ready | No connections; the `qualifies` side of the tension with `commonplace` |
+| `marginalia` | `rd_FXMARGNA01` | ready | Saved in March, months before the rest; `similarity.count = 0`, and its connection to `commonplace` came from the nightly refresh |
+| `paper-again` | `rd_FXPAPER001` | ready | Joins the `attention` thread through `imported-markdown`, saved days later, by the nightly refresh |
+| `conversation` | `rd_FXCNVRSE01` | ready | Saved after the last refresh (no `connections_computed_at`); joins the `attention` thread through its ingest-time connection to `gardens` |
 | `pending` | `rd_FXPENDNG01` | pending | Fresh submit with a running attempt (`stage: "queued"`). Stamped from the seed clock; re-seed once it passes the 15-minute pending TTL |
+| `processing` | `rd_FXPRCSSNG1` | pending | Saved 8 minutes before the seed clock; its attempt log has reached `summarize` (diagnostics show the progress) while the reading's `active_attempt` still says `queued` |
+| `stale-pending` | `rd_FXSTPEND01` | pending (read as failed) | The same submit, 40 minutes before the seed clock. Its running attempt is past the TTL, so every read shows it failed with `stale_active_attempt` at stage `queued`, without a write (the desk's Stalled row) |
 | `fail-source-unreachable` | `rd_FXERR00001` | failed | `BadStatusError` at `fetch_source` — source unreachable category |
 | `fail-source-incomplete` | `rd_FXERR00002` | failed | `SourceRejectedError` at `summarize` — source incomplete category; also `gardens`' failed connection target |
 | `fail-provider-limit` | `rd_FXERR00003` | failed | `RateLimitedError` at `summarize` — provider limit category |
@@ -65,6 +75,29 @@ The removed relationship target is `rd_FXVANSHD01`: referenced by
 `attention`'s connections but never written anywhere, so any target-enrichment
 lookup misses it and the frontend renders the removed card. Follow it directly
 and the detail route 404s ("arrived from a removed target").
+
+## Threads and the inbox
+
+Following the [threads rule](../next-direction/design-spec.md#threads), the
+ready readings form two threads and four readings standing alone:
+
+- **Eight readings** around `attention`: `friction` (the `contradicts` pair),
+  `gardens`, `reprocess-failed`, `unavailable-source`, `imported-markdown`,
+  `paper-again`, and `conversation`. `gardens`' pending and failed targets do
+  not join it.
+- **Three readings**: `marginalia`, `commonplace`, and `second-brain`, with one
+  `qualifies` pair. `commonplace` → `marginalia` is the pack's only connection
+  to a target saved more than 60 days earlier.
+- **Standing alone**: `sparse-archive`, `long-title`, `degraded-youtube`, and
+  `old-manifest`.
+
+No component exceeds 12 readings; the split rule is covered by kl7y.3's unit
+tests, not by a fixture.
+
+The inbox holds six staged items, newest first: one more than the desk shows
+before "Show all". `in_rd_FXNBX00002` has no title, and `in_rd_FXNBX00003` was
+re-staged, so its `updated_at` is later than its `created_at`. None shares a
+URL with a reading. `seed:local` replaces the founder's inbox rows with them.
 
 ## Shape guarantees
 
@@ -92,9 +125,11 @@ and the detail route 404s ("arrived from a removed target").
 - The seeder replaces the local founder's reading rows with the pack's. Any
   other local reading drops out, though its R2 objects stay; see
   [resetting](../../operations.md#seeding-local-data) for a pristine store.
-- The library lists the pack's 21 rows newest first, matching the store's
-  `created_at` sort: a first page of 20 and `old-manifest` alone on the
-  second.
+- The library lists the pack's 28 rows newest first, matching the store's
+  `created_at` sort: a first page of 20 ending with `long-title` (the library
+  case checks it wraps there) and eight on the second, ending with
+  `old-manifest` and `marginalia`. The snapshot's `list_index` carries
+  read-time staleness, as the list route serves it.
 
 ## What the pack deliberately does not cover
 
@@ -105,3 +140,11 @@ instead. Reprocess-pending (a ready reading under a running reprocess) and
 batch-owned pending are Phase 4 states; add them here as named fixtures when
 those slices need them (the failed variant, `reprocess-failed`, is in the
 pack).
+
+A pending reading reads as `stale_pending` only when it has no active attempt,
+which intake never writes; a stalled submit reads as `stale_active_attempt`,
+as `stale-pending` does, and the frontend gives both the same category. The
+worker records each stage in the attempt log, never on the reading, so a
+reading mid-run still says `queued`; only `processing`'s diagnostics show its
+progress. The browser suite does not serve `GET /api/inbox` yet; the snapshot
+carries the items for the slice that does (reading-lite-kl7y.8).
