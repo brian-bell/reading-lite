@@ -14,16 +14,21 @@ import {
 } from "./middleware";
 import { bindInternalDispatch, createMcpHandler, mcpOriginGuard } from "./mcp";
 import {
+  DESK_CAP,
   INBOX_BODY_MAX_BYTES,
   INBOX_ITEM_CAP,
   INBOX_STAGE_BUDGET_BYTES,
   ListReadingsQuerySchema,
+  PostDeskBodySchema,
   PostInboxBodySchema,
   PostInboxPromoteBodySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
   PostReadingsSimilarBodySchema,
+  type DeskFullResponse,
+  type DeskNotReadyResponse,
+  type DeskWriteResponse,
   type GetReadingResponse,
   type ListInboxResponse,
   type PostInboxExistingResponse,
@@ -36,6 +41,7 @@ import { contentStoreFor, type ContentStore, type RawObject } from "./modules/st
 import { pgReadingStoreFor, type ContentKeys, type PgReadingStore } from "./modules/stores/postgres/reading-store";
 import { pgReadingWriterFor } from "./modules/stores/postgres/reading-writer";
 import { pgInboxStoreFor } from "./modules/stores/postgres/inbox-store";
+import { pgDeskStoreFor } from "./modules/stores/postgres/desk-store";
 import { inboxMessageBytes, stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
 import { promoteInboxItem, type InboxPromoteOutcome } from "./inbox/promote";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
@@ -115,6 +121,14 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
 
 function inboxFor(principal: AuthenticatedPrincipal, services: Services, sql: Sql) {
   return pgInboxStoreFor(sql, { tenantId: principal.tenantId }, services);
+}
+
+function deskFor(principal: AuthenticatedPrincipal, services: Services, sql: Sql) {
+  return pgDeskStoreFor(sql, { tenantId: principal.tenantId }, services);
+}
+
+function deskBody(desk: string[]): DeskWriteResponse {
+  return { desk };
 }
 
 export function createApp(opts: AppOptions = {}) {
@@ -214,6 +228,8 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/readings/*", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/inbox", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/inbox/*", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/desk", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/desk/*", requirePrincipal(authNowMs), requireExpectedTenant());
 
   // The principal's own identity — no scope gate: every authenticated caller
   // may learn who it is. Operator tooling uses this to verify that a bearer
@@ -334,6 +350,41 @@ export function createApp(opts: AppOptions = {}) {
   app.delete("/api/inbox/:id", requireScope("readings:import"), async (c) => {
     const discarded = await inboxFor(c.get("principal"), services, c.get("sql")).discard(c.req.param("id"));
     return discarded ? c.body(null, 204) : c.json({ error: "not found" }, 404);
+  });
+
+  // The desk (reading-lite-kl7y.6): up to DESK_CAP readings set aside to read
+  // next. Writes touch only reading_desk, never the reading; see
+  // src/modules/stores/postgres/desk-store.ts.
+  app.post("/api/desk", requireScope("readings:write"), async (c) => {
+    const json = await c.req.json().catch(() => null);
+    const parsed = PostDeskBodySchema.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: "invalid body", details: parsed.error.message }, 400);
+    }
+    const out = await deskFor(c.get("principal"), services, c.get("sql")).add(parsed.data.id);
+    switch (out.kind) {
+      case "desk":
+        return c.json(deskBody(out.desk));
+      case "not_found":
+        return c.json({ error: "not found" }, 404);
+      case "not_ready": {
+        const body: DeskNotReadyResponse = { error: "only a ready reading can go on the desk", code: "not_ready" };
+        return c.json(body, 409);
+      }
+      case "desk_full": {
+        const body: DeskFullResponse = { error: "the desk is full", code: "desk_full", limit: DESK_CAP };
+        return c.json(body, 409);
+      }
+    }
+  });
+
+  app.delete("/api/desk/:id", requireScope("readings:write"), async (c) => {
+    const out = await deskFor(c.get("principal"), services, c.get("sql")).remove(c.req.param("id"));
+    return out.kind === "desk" ? c.json(deskBody(out.desk)) : c.json({ error: "not found" }, 404);
+  });
+
+  app.delete("/api/desk", requireScope("readings:write"), async (c) => {
+    return c.json(deskBody(await deskFor(c.get("principal"), services, c.get("sql")).clear()));
   });
 
   app.get("/api/readings", requireScope("readings:read"), async (c) => {
@@ -471,6 +522,7 @@ export function createApp(opts: AppOptions = {}) {
       : projectRelationshipTargets(targetIds, await store.relationshipTargets(targetIds), ttl, now);
     const body: GetReadingResponse = {
       ...applyStaleness(found.manifest, ttl, now),
+      ...(found.deskPosition === undefined ? {} : { desk_position: found.deskPosition }),
       relationship_targets,
     };
     return c.json(body);

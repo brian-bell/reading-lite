@@ -177,6 +177,8 @@ describe("tenant guards", () => {
     await drainQueue(services);
     const founder = testReadingsFor(founderTenant());
     expect(await founder.hasEmbedding(id)).toBe(true);
+    const onDesk = await bearer(app, TOKEN, "/api/desk", { method: "POST", json: { id } });
+    expect(await onDesk.json(), "owner's desk").toEqual({ desk: [id] });
     const before = await bucketSnapshot();
 
     // Reads first, so a mutation that wrongly lands cannot empty a later read row.
@@ -201,6 +203,8 @@ describe("tenant guards", () => {
         unknown: `/api/readings/${UNKNOWN_ID}/reprocess`,
       },
       { label: "DELETE", method: "DELETE", path: `/api/readings/${id}`, unknown: `/api/readings/${UNKNOWN_ID}` },
+      { label: "POST desk", method: "POST", path: "/api/desk", json: { id }, unknown: "/api/desk", unknownJson: { id: UNKNOWN_ID } },
+      { label: "DELETE desk entry", method: "DELETE", path: `/api/desk/${id}`, unknown: `/api/desk/${UNKNOWN_ID}` },
     ];
     for (const row of http) {
       if (!row.method) {
@@ -208,11 +212,13 @@ describe("tenant guards", () => {
         expect(owner.status, `${row.label} as owner`).toBe(200);
         await owner.text();
       }
-      const foreign = await bearer(app, OTHER_TOKEN_SECRET, row.path, { method: row.method });
-      const unknown = await bearer(app, OTHER_TOKEN_SECRET, row.unknown, { method: row.method });
+      const foreign = await bearer(app, OTHER_TOKEN_SECRET, row.path, { method: row.method, json: row.json });
+      const unknown = await bearer(app, OTHER_TOKEN_SECRET, row.unknown, { method: row.method, json: row.unknownJson });
       expect(unknown.status, `${row.label} unknown`).toBe(404);
       expect([foreign.status, await foreign.text()], row.label).toEqual([unknown.status, await unknown.text()]);
     }
+    const strangerClear = await bearer(app, OTHER_TOKEN_SECRET, "/api/desk", { method: "DELETE" });
+    expect(await strangerClear.json(), "another tenant clears only its own desk").toEqual({ desk: [] });
 
     for (const path of ["/api/readings", "/api/readings?q=Test%20Article"]) {
       const ids = async (token: string) =>
@@ -286,6 +292,8 @@ describe("tenant guards", () => {
     expect((await founder.manifest(id))?.status, "owner's reading").toBe("ready");
     expect(await founder.hasEmbedding(id), "owner's embedding").toBe(true);
     expect(await founder.urlOwnerId(url), "owner's URL claim").toBe(id);
+    const detail = (await (await bearer(app, TOKEN, `/api/readings/${id}`)).json()) as { desk_position?: number };
+    expect(detail.desk_position, "owner's desk position").toBe(1);
   });
 
   it("two tenants save the same URL and reach ready without observing each other", async () => {

@@ -113,9 +113,10 @@ describe("account wipe", () => {
     };
   }
 
-  // What the live system leaves a tenant: ready readings with embeddings and
-  // bytes, a staged inbox item, and refresh and tension checkpoints. The last
-  // three name no reading row, so nothing cascades them away.
+  // What the live system leaves a tenant: ready readings with embeddings,
+  // bytes and a desk slot, a staged inbox item, and refresh and tension
+  // checkpoints. The last three name no reading row, so nothing cascades them
+  // away; the desk slot goes with its reading.
   async function seedTenantData(tenant: TenantContext): Promise<void> {
     const tenantId = String(tenant.tenantId);
     const readings = testReadingsFor(tenant);
@@ -124,6 +125,10 @@ describe("account wipe", () => {
       await readings.putEmbedding(id, Array.from({ length: 1536 }, (_, i) => (i === 0 ? 1 : 0)));
       await env.READINGS_BUCKET.put(`${rootOf(tenant)}${listItem(id).key_prefix}/raw.html`, "bytes");
     }
+    await db().run(
+      "INSERT INTO reading_desk (tenant_id, reading_id, position, added_at) VALUES (?, ?, 1, ?)",
+      tenantId, ID_A, toTimestamp(NOW_MS),
+    );
     const url = "https://example.com/in_A";
     await db().run(
       `INSERT INTO inbox_items (tenant_id, id, url, url_hash, markdown, created_at, updated_at)
@@ -148,6 +153,7 @@ describe("account wipe", () => {
     return {
       readings: await ids("SELECT id FROM readings WHERE tenant_id = ? ORDER BY id"),
       embeddings: await ids("SELECT reading_id AS id FROM reading_embeddings WHERE tenant_id = ? ORDER BY 1"),
+      desk: await ids("SELECT reading_id AS id FROM reading_desk WHERE tenant_id = ? ORDER BY 1"),
       inbox: await ids("SELECT id FROM inbox_items WHERE tenant_id = ? ORDER BY id"),
       refresh: await ids("SELECT reading_id AS id FROM relationship_refresh_jobs WHERE tenant_id = ? ORDER BY 1"),
       tension: await ids(
@@ -160,12 +166,13 @@ describe("account wipe", () => {
   const SEEDED = {
     readings: [ID_A, ID_B],
     embeddings: [ID_A, ID_B],
+    desk: [ID_A],
     inbox: ["in_A"],
     refresh: [ID_A],
     tension: [`${ID_A}|${ID_B}`],
     objects: 2,
   };
-  const GONE = { readings: [], embeddings: [], inbox: [], refresh: [], tension: [], objects: 0 };
+  const GONE = { readings: [], embeddings: [], desk: [], inbox: [], refresh: [], tension: [], objects: 0 };
   const COMPLETE = { kind: "complete", rows_deleted: 2, objects_deleted: 2 };
 
   // Watches the R2 list and delete calls the wipe makes.
