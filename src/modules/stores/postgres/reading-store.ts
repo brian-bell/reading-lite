@@ -8,7 +8,7 @@
 
 import type { TenantContext } from "../../../control-plane/ids";
 import { parseTenantId } from "../../../control-plane/ids";
-import { ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
+import { DeskPositionSchema, ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
 import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
@@ -38,6 +38,10 @@ export interface ReadingSnapshot {
   // Opaque row version; equal to another read's only if nothing was written
   // to the row in between.
   version: string;
+  // Beside the manifest, not in it: callers hash the manifest as its version,
+  // and a desk toggle is not a change to the reading. The detail response and
+  // the archive put it back as `desk_position`.
+  deskPosition?: number;
 }
 
 export interface ContentKeys {
@@ -47,9 +51,13 @@ export interface ContentKeys {
   contentType: string;
 }
 
+// Every list query selects FROM readings unaliased, so the desk position is a
+// correlated read of the reading's one reading_desk row.
 const LIST_COLUMNS = `id, key_prefix, url, title, tldr, tags, keywords, status, novelty_verdict,
   similarity, source_date, created_at, updated_at, error, active_attempt, last_attempt,
-  enrichment_degradation`;
+  enrichment_degradation,
+  (SELECT k.position FROM reading_desk k WHERE k.tenant_id = readings.tenant_id AND k.reading_id = readings.id)
+    AS desk_position`;
 
 // The list search: a case-insensitive substring over
 // title, tldr, url and keywords, and a case-insensitive exact tag. strpos, not
@@ -168,15 +176,16 @@ export class PgReadingStore {
               r.source_date, r.fetched_at, r.created_at, r.updated_at,
               v.summary_markdown, v.usage, v.connections_computed_at,
               v.connections_neighbourhood_ids, v.tensions_judged,
-              v.connections_present, v.tensions_present
+              v.connections_present, v.tensions_present, k.position AS desk_position
        FROM readings r
        LEFT JOIN reading_revisions v
          ON (v.tenant_id, v.reading_id, v.id) = (r.tenant_id, r.id, r.current_revision_id)
+       LEFT JOIN reading_desk k ON (k.tenant_id, k.reading_id) = (r.tenant_id, r.id)
        WHERE r.tenant_id = $1 AND r.id = $2`,
       [this.tenantId, id],
     );
     if (!row) return null;
-    const { version, key_prefix, connections_present, tensions_present, ...fields } = row;
+    const { version, key_prefix, connections_present, tensions_present, desk_position, ...fields } = row;
     const relationships =
       connections_present || tensions_present
         ? await this.sql.query<{ kind: string; target_id: string; tension_kind: string; reason: string; computed_at: string }>(
@@ -196,7 +205,12 @@ export class PgReadingStore {
         .filter((rel) => rel.kind === "tension")
         .map((rel) => ({ id: rel.target_id, kind: rel.tension_kind, reason: rel.reason, computed_at: rel.computed_at }));
     }
-    return { keyPrefix: key_prefix as string, manifest: ManifestSchema.parse(manifest), version: version as string };
+    return {
+      keyPrefix: key_prefix as string,
+      manifest: ManifestSchema.parse(manifest),
+      version: version as string,
+      ...(desk_position === null ? {} : { deskPosition: DeskPositionSchema.parse(desk_position) }),
+    };
   }
 
   // /lookup's owner resolution: a pure SELECT, so it is safe (and tested)

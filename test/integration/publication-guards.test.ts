@@ -11,11 +11,15 @@
 import { env } from "cloudflare:test";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { buildArchiveExport } from "../../src/archive-export";
+import { archiveExportEnvelopeV1 } from "../../src/control-plane/export-envelope";
 import type { TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
 import type { Sql } from "../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../src/modules/manifest-drafting";
+import { contentStoreFor } from "../../src/modules/stores/content-store";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
+import { pgDeskStoreFor } from "../../src/modules/stores/postgres/desk-store";
 import { pgReadingStoreFor } from "../../src/modules/stores/postgres/reading-store";
 import {
   pgReadingWriterFor,
@@ -30,6 +34,7 @@ import { sha256Hex } from "../../src/services";
 import { axisVector, mintTenant, mintTenantWithoutUser, readyManifest, seedManifest, testSql } from "../helpers/pg-fixtures";
 import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
 import { founderTenant, reserveReadingSlot } from "../helpers/tenant-fixtures";
+import { readZipEntries } from "../helpers/read-zip";
 import { testReadingsFor } from "../helpers/test-readings";
 import { clearBucket, makeServices, makeStubFetch } from "./readings-harness";
 
@@ -373,6 +378,193 @@ describe("reading writer", () => {
         strangerByOwnerVector: null,
         ownerNearest: ["rd_private"],
       },
+    },
+  ];
+
+  it.each(rows.map((row) => [row.name, row] as const))("%s", async (name, { observe, expected }) => {
+    expect(await observe(), name).toEqual(expected);
+  });
+});
+
+describe("the desk", () => {
+  // Ready readings, plus a pending one named `rd_pending` when asked for.
+  async function deskOf(s: Sql, tenant: TenantContext, ids: string[], pending = false) {
+    for (const id of ids) await seedManifest(s, tenant, await readyManifest(id));
+    if (pending) await seedManifest(s, tenant, await readyManifest("rd_pending", { status: "pending" }));
+    return pgDeskStoreFor(s, tenant, { now: () => LATER });
+  }
+
+  // Positions as both reads report them: every list row, and the detail's.
+  async function positions(s: Sql, tenant: TenantContext) {
+    const store = pgReadingStoreFor(s, tenant);
+    const rows = (await store.listManifests({ offset: 0, limit: 10 })).readings;
+    const listed = Object.fromEntries(rows.filter((row) => row.desk_position).map((row) => [row.id, row.desk_position]));
+    const loaded: Record<string, number> = {};
+    for (const row of rows) {
+      const position = (await store.loadReadingById(row.id))?.deskPosition;
+      if (position !== undefined) loaded[row.id] = position;
+    }
+    expect(loaded, "detail positions agree with the list").toEqual(listed);
+    return listed;
+  }
+
+  const rows: { name: string; observe: () => Promise<unknown>; expected: unknown }[] = [
+    {
+      // A reading already there is left where it is, whatever its status;
+      // a new one must be ready, and the fourth is refused.
+      name: "holds three ready readings, adds idempotently, and renumbers on removal",
+      observe: async () => {
+        const s = sql();
+        const tenant = await mintTenant();
+        const desk = await deskOf(s, tenant, ["rd_a", "rd_b", "rd_c", "rd_d"], true);
+        const steps = [
+          await desk.add("rd_a"),
+          await desk.add("rd_b"),
+          await desk.add("rd_c"),
+          await desk.add("rd_a"),
+          await desk.add("rd_d"),
+          await desk.add("rd_pending"),
+          await desk.add("rd_unknown"),
+          await desk.remove("rd_b"),
+          await desk.remove("rd_d"),
+          await desk.remove("rd_unknown"),
+        ];
+        return { steps, positions: await positions(s, tenant) };
+      },
+      expected: {
+        steps: [
+          { kind: "desk", desk: ["rd_a"] },
+          { kind: "desk", desk: ["rd_a", "rd_b"] },
+          { kind: "desk", desk: ["rd_a", "rd_b", "rd_c"] },
+          { kind: "desk", desk: ["rd_a", "rd_b", "rd_c"] },
+          { kind: "desk_full" },
+          { kind: "not_ready" },
+          { kind: "not_found" },
+          { kind: "desk", desk: ["rd_a", "rd_c"] },
+          { kind: "desk", desk: ["rd_a", "rd_c"] },
+          { kind: "not_found" },
+        ],
+        positions: { rd_a: 1, rd_c: 2 },
+      },
+    },
+    {
+      // The purge cascades the row away with no desk code of its own, and the
+      // next write closes the gap it left.
+      name: "a purge frees its slot and the next write renumbers",
+      observe: async () => {
+        const s = sql();
+        const tenant = await mintTenant();
+        const desk = await deskOf(s, tenant, ["rd_a", "rd_b", "rd_c", "rd_d"]);
+        for (const id of ["rd_a", "rd_b", "rd_c"]) await desk.add(id);
+        await pgReadingWriterFor(s, tenant).purge("rd_a", () => false);
+        const afterPurge = await positions(s, tenant);
+        return { afterPurge, add: await desk.add("rd_d"), afterAdd: await positions(s, tenant) };
+      },
+      expected: {
+        afterPurge: { rd_b: 2, rd_c: 3 },
+        add: { kind: "desk", desk: ["rd_b", "rd_c", "rd_d"] },
+        afterAdd: { rd_b: 1, rd_c: 2, rd_d: 3 },
+      },
+    },
+    {
+      // Two connections, so the adds really race. Without the advisory lock
+      // both count two and both take position 3, and one commit fails.
+      name: "two adds racing for the last slot: one lands and one is refused",
+      observe: async () => {
+        const tenant = await mintTenant();
+        const desk = await deskOf(sql(), tenant, ["rd_a", "rd_b", "rd_c", "rd_d"]);
+        await desk.add("rd_a");
+        await desk.add("rd_b");
+        const raced = await Promise.all(
+          ["rd_c", "rd_d"].map((id) => pgDeskStoreFor(sql(), tenant, { now: () => LATER }).add(id)),
+        );
+        return { kinds: raced.map((out) => out.kind).sort(), count: Object.keys(await positions(sql(), tenant)).length };
+      },
+      expected: { kinds: ["desk", "desk_full"], count: 3 },
+    },
+    {
+      // startAttempt compares the row's xmin as its version, and the judges
+      // hash the loaded manifest as theirs: a toggle must change neither, and
+      // a reprocess and its publish must leave the desk alone.
+      name: "a toggle leaves the reading's version alone, and a reprocess and its publish leave the desk alone",
+      observe: async () => {
+        const s = sql();
+        const tenant = await mintTenant();
+        const writer = pgReadingWriterFor(s, tenant);
+        const p = await claimed(writer, "rd_desk");
+        await publishAs(writer, p.manifest, "at_1");
+        const store = pgReadingStoreFor(s, tenant);
+        const seen = (await store.loadReadingById("rd_desk"))!;
+        await pgDeskStoreFor(s, tenant, { now: () => LATER }).add("rd_desk");
+        const toggled = (await store.loadReadingById("rd_desk"))!;
+        const draft = reprocessPending(seen.manifest, { attemptId: "at_2", startedAt: LATER }, LATER);
+        const started = await writer.startAttempt(draft.manifest, { summary: draft.attempt, payload: {} }, seen);
+
+        const statements: string[] = [];
+        const query = pg.Client.prototype.query as (...a: unknown[]) => Promise<unknown>;
+        vi.spyOn(pg.Client.prototype, "query").mockImplementation(function (this: pg.Client, ...args: unknown[]) {
+          const first = args[0] as string | { text?: string };
+          statements.push(typeof first === "string" ? first : first?.text ?? "");
+          return query.apply(this, args);
+        } as never);
+        const published = await publishAs(writer, draft.manifest, "at_2", axisVector(2));
+        vi.restoreAllMocks();
+        return {
+          versionUnchanged: toggled.version === seen.version,
+          updatedAtUnchanged: toggled.manifest.updated_at === seen.manifest.updated_at,
+          manifestCarriesDesk: "desk_position" in toggled.manifest,
+          deskPosition: toggled.deskPosition,
+          started: started.kind,
+          published: published.published,
+          publishTouchedDesk: statements.some((text) => text.includes("reading_desk")),
+          after: await positions(s, tenant),
+        };
+      },
+      expected: {
+        versionUnchanged: true,
+        updatedAtUnchanged: true,
+        manifestCarriesDesk: false,
+        deskPosition: 1,
+        started: "started",
+        published: true,
+        publishTouchedDesk: false,
+        after: { rd_desk: 1 },
+      },
+    },
+    {
+      name: "the archive carries desk_position in a reading's manifest.json and its index.json item",
+      observe: async () => {
+        const s = sql();
+        const tenant = await mintTenant();
+        await (await deskOf(s, tenant, ["rd_on", "rd_off"])).add("rd_on");
+        const exportId = "exp_6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+        await s.execute(
+          `INSERT INTO archive_exports (id, tenant_id, status, requested_at, updated_at) VALUES ($1, $2, 'queued', $3, $3)`,
+          [exportId, String(tenant.tenantId), LATER],
+        );
+        const envelope = archiveExportEnvelopeV1({ tenantId: tenant.tenantId, exportId });
+        let outcome = "continue";
+        for (let delivery = 0; outcome === "continue" && delivery < 10; delivery++) {
+          outcome = await buildArchiveExport(s, envelope, env, { nowMs: Date.parse(LATER) });
+        }
+        const [row] = await s.query<{ segments: { parts: { key: string }[] } }>(
+          "SELECT segments FROM archive_exports WHERE id = $1",
+          [exportId],
+        );
+        const content = contentStoreFor(env.READINGS_BUCKET, tenant, env);
+        const parts = await Promise.all(
+          row!.segments.parts.map(async (part) => new Uint8Array(await (await content.get(part.key))!.arrayBuffer())),
+        );
+        const zip = await readZipEntries(new Uint8Array(parts.flatMap((part) => [...part])));
+        const json = (name: string) => JSON.parse(new TextDecoder().decode(zip.get(name)!));
+        const index = json("index.json") as { items: { id: string; desk_position?: number }[] };
+        return {
+          outcome,
+          manifests: ["rd_on", "rd_off"].map((id) => json(`readings/${id}/manifest.json`).desk_position ?? null),
+          index: Object.fromEntries(index.items.map((item) => [item.id, item.desk_position ?? null])),
+        };
+      },
+      expected: { outcome: "ready", manifests: [1, null], index: { rd_on: 1, rd_off: null } },
     },
   ];
 

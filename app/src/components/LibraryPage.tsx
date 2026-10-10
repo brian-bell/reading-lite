@@ -34,6 +34,7 @@ import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
 import { librarySchedule } from "../status-refresh";
 import { ConnectKeyLink } from "./ConnectKey";
+import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
@@ -530,7 +531,8 @@ function normalizeTag(tag: string): string {
  * the backend matches it, trimmed and case-insensitive, so `?tag=Design` and
  * `?tag=%20design%20` mark the same rows. They are inline
  * links rather than a list, so the card stays the one list item the page's
- * list counts.
+ * list counts. The desk toggle, on a ready card or one already on the desk,
+ * is raised above the stretched link the same way.
  * A reading with no title yet (pending, failed) is named by its URL. Long
  * titles wrap and are never truncated.
  */
@@ -576,6 +578,9 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
             ),
           )}
         </p>
+      ) : null}
+      {row.status === "ready" || row.desk_position !== undefined ? (
+        <DeskToggle reading={row} className="library-card-desk" />
       ) : null}
     </li>
   );

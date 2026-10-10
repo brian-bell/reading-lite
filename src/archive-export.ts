@@ -299,12 +299,13 @@ async function packCurrentReading(
 async function packReading(content: ContentStore, state: ReadingState): Promise<PackedReading> {
   const { loaded, keys } = state;
   const manifest = loaded.manifest;
+  const desk = loaded.deskPosition === undefined ? {} : { desk_position: loaded.deskPosition };
   const id = manifest.id;
   const dir = `readings/${id}`;
   const described = !isEmptyContent(manifest);
   const rowType = keys?.contentType ?? manifest.content_type;
   const extractedPath = `${dir}/extracted.md`;
-  const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes(manifest))];
+  const entries: HashedEntry[] = [await hashed(`${dir}/manifest.json`, jsonBytes({ ...manifest, ...desk }))];
   const missing: ArchiveMissingArtifact[] = [];
   const warnings: ArchiveContentWarning[] = [];
 
@@ -367,7 +368,7 @@ async function packReading(content: ContentStore, state: ReadingState): Promise<
     // The listed item can be stale by now (a publish or reprocess landed
     // between pages), so index.json and counts come from the manifest that
     // ships beside it.
-    item: ListIndexItemSchema.parse({ ...manifest, key_prefix: loaded.keyPrefix }),
+    item: ListIndexItemSchema.parse({ ...manifest, ...desk, key_prefix: loaded.keyPrefix }),
     entries,
     missing,
     warnings,

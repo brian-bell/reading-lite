@@ -176,6 +176,7 @@ export const ReadingSchema = z.looseObject({
   connections_computed_at: absent(z.string()),
   tensions: absent(z.array(TensionSchema)),
   relationship_targets: absent(z.record(z.string(), RelationshipTargetSchema)),
+  desk_position: absent(z.number()),
 });
 export type Reading = Declared<z.output<typeof ReadingSchema>>;
 

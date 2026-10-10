@@ -105,6 +105,26 @@ connection and tension target id to `{ url, title?, status }`, resolved at read
 time from the same tenant's reading rows. It is never stored on the manifest, and
 an id absent from the map is removed or unavailable. MCP `get_reading` omits it.
 
+## Desk routes
+
+The desk holds at most three readings the reader means to read next
+(reading-lite-kl7y.6). It lives in `reading_desk`, a side table cascading from
+`readings`, so a purge or wipe frees the slot. Writes require `readings:write`
+and answer 200 `{ desk: [id, …] }` in position order.
+
+| Method and path | Behavior |
+|---|---|
+| `POST /api/desk` | `{ id }`; appends the reading. A reading already on the desk returns 200 unchanged, whatever its status. 404 for an unknown id; 409 `not_ready` unless the reading is ready; 409 `desk_full` `{ limit: 3 }` for a fourth |
+| `DELETE /api/desk/:id` | Removes the reading; a reading not on the desk is a no-op. 404 for an unknown id |
+| `DELETE /api/desk` | Clears the desk |
+
+Each write takes the tenant's desk lock and the reading row `FOR SHARE`, then
+renumbers the desk 1..n, closing a gap a purge left. A write never updates the
+reading row, so it changes neither its `updated_at` nor the version a
+concurrent reprocess compares. List rows and `GET /api/readings/:id` carry
+`desk_position` (1–3) only for a reading on the desk; it is response state, not
+part of the stored manifest, and the [archive](archive-export.md) carries it.
+
 ## Inbox routes
 
 Markdown staged for review before it becomes a reading (reading-lite-gh423).

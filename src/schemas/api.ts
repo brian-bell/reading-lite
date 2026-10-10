@@ -346,6 +346,15 @@ export const ListReadingsQuerySchema = z.object({
 });
 export type ListReadingsQuery = z.infer<typeof ListReadingsQuerySchema>;
 
+// Readings on the desk at once: a product rule, and the bound
+// db/migrations/0012 checks.
+export const DESK_CAP = 3;
+// Read-only state from reading_desk, on list rows and the reading detail while
+// the reading is on the desk. It is never part of the stored manifest: the
+// writers and the judges' manifest versions never see it, so a toggle cannot
+// make them see a reading as changed.
+export const DeskPositionSchema = z.number().int().min(1).max(DESK_CAP);
+
 export const ListIndexItemSchema = z.object({
   id: z.string().min(1),
   key_prefix: z.string().min(1),
@@ -364,6 +373,7 @@ export const ListIndexItemSchema = z.object({
   active_attempt: ProcessingAttemptSummarySchema.optional(),
   last_attempt: ProcessingAttemptSummarySchema.optional(),
   enrichment_degradation: EnrichmentDegradationSchema.optional(),
+  desk_position: DeskPositionSchema.optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
 
@@ -398,6 +408,7 @@ export const RelationshipTargetsSchema = z.record(z.string().min(1), Relationshi
 export type RelationshipTargets = z.infer<typeof RelationshipTargetsSchema>;
 
 export const GetReadingResponseSchema = ManifestSchema.extend({
+  desk_position: DeskPositionSchema.optional(),
   relationship_targets: RelationshipTargetsSchema,
 });
 export type GetReadingResponse = z.infer<typeof GetReadingResponseSchema>;
@@ -702,6 +713,38 @@ export const PostInboxPromoteActivatedResponseSchema = z
   })
   .strict();
 export type PostInboxPromoteActivatedResponse = z.infer<typeof PostInboxPromoteActivatedResponseSchema>;
+
+// The desk (reading-lite-kl7y.6): POST /api/desk adds a ready reading,
+// DELETE /api/desk/:id takes one off, DELETE /api/desk clears it. Every write
+// answers with the desk's reading ids in position order.
+export const PostDeskBodySchema = z.object({
+  id: z.string().min(1),
+});
+export type PostDeskBody = z.infer<typeof PostDeskBodySchema>;
+
+export const DeskWriteResponseSchema = z
+  .object({
+    desk: z.array(z.string().min(1)).max(DESK_CAP),
+  })
+  .strict();
+export type DeskWriteResponse = z.infer<typeof DeskWriteResponseSchema>;
+
+export const DeskFullResponseSchema = z
+  .object({
+    error: z.string().min(1),
+    code: z.literal("desk_full"),
+    limit: z.literal(DESK_CAP),
+  })
+  .strict();
+export type DeskFullResponse = z.infer<typeof DeskFullResponseSchema>;
+
+export const DeskNotReadyResponseSchema = z
+  .object({
+    error: z.string().min(1),
+    code: z.literal("not_ready"),
+  })
+  .strict();
+export type DeskNotReadyResponse = z.infer<typeof DeskNotReadyResponseSchema>;
 
 export const PostInboxPromoteExistingResponseSchema = ManifestSchema.extend(InboxPromoteFields);
 export type PostInboxPromoteExistingResponse = z.infer<typeof PostInboxPromoteExistingResponseSchema>;
