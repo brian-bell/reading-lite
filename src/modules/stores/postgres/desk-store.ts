@@ -82,7 +82,8 @@ export class PgDeskStore {
     const [row] = await tx.query<{ status: ManifestStatus }>(
       "SELECT status FROM readings WHERE tenant_id = $1 AND id = $2 FOR SHARE",
       [this.tenantId, id],
-    );    return row?.status ?? null;
+    );
+    return row?.status ?? null;
   }
 
   // Positions 1..n in their current order; only rows whose position moves are

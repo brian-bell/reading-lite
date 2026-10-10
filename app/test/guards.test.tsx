@@ -160,10 +160,11 @@ describe("frontend guards", () => {
 
   // Acceptance matrix, Desk writes: a write refreshes the desk, the library
   // and the reading; at the cap the toggle is disabled with visible text; a
-  // 409 is said inline.
+  // 404 frees the gone reading's slot; a 409 is said inline.
   it("writes the desk, refreshes what it changed, and says why a toggle cannot add", async () => {
     const answers = [
       new Response(JSON.stringify({ desk: ["rd_b", "rd_c", "rd_a"] })),
+      new Response(JSON.stringify({ error: "not found" }), { status: 404 }),
       new Response(JSON.stringify({ error: "nope", code: "not_ready" }), { status: 409 }),
     ];
     const calls: Request[] = [];
@@ -203,8 +204,8 @@ describe("frontend guards", () => {
       "the library and this reading, not another",
     ).toEqual([true, true, false]);
 
-    queryClient.setQueryData(["desk", "ids"], []);
-    await waitFor(() => expect(put[1]).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Take off desk" }));
+    await waitFor(() => expect(put[1], "a reading purged elsewhere frees its slot").toBeEnabled());
     fireEvent.click(put[1]!);
     expect(await toggles.findByText("Only ready readings can go on the desk")).toBeVisible();
   });

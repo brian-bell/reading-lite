@@ -1318,6 +1318,11 @@ textarea {
   line-height: 1.4;
 }
 
+/* The refusal's status region stays mounted; empty, it takes no gap. */
+.desk-toggle-note:empty {
+  display: none;
+}
+
 /* On a card the button is raised above the stretched title link, as the tags
    are; the row lets the pointer through to the card. */
 .library-card-desk {

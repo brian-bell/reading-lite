@@ -21,8 +21,10 @@ import { expectedLayoutOf, readingQueryKey } from "../reading";
 // the desk, the library and the reading even when the reader has left.
 //
 // At the cap the toggle is disabled and says why in visible text. The cap is
-// known from the last write's answer (desk.ts); a 409 `desk_full` from a desk
-// another tab filled says the same thing inline.
+// known from the last write's answer (desk.ts), less a reading a 404 says is
+// gone; a 409 `desk_full` from a desk another tab filled says the same thing
+// inline. A desk another tab emptied stays full here until a write answers
+// (kl7y.7's GET /api/desk replaces this cache).
 
 type Notice = Exclude<DeskWriteOutcome, { kind: "desk" | "not-found" }> | { kind: "failed" };
 
@@ -49,6 +51,7 @@ export interface DeskToggleReading {
 export function DeskToggle({ reading, className }: { reading: DeskToggleReading; className?: string }) {
   const queryClient = useQueryClient();
   const noteId = useId();
+  const noticeId = useId();
   const sendingRef = useRef(false);
   const [notice, setNotice] = useState<Notice | null>(null);
   const { data: knownDesk } = useQuery<string[]>({ queryKey: deskIdsQueryKey, queryFn: skipToken, staleTime: Infinity });
@@ -61,6 +64,11 @@ export function DeskToggle({ reading, className }: { reading: DeskToggleReading;
     retry: 0,
     onSuccess: (outcome) => {
       if (outcome.kind === "desk") queryClient.setQueryData(deskIdsQueryKey, outcome.desk);
+      // A reading purged elsewhere left the desk with it; a desk that still
+      // counts it would hold every other toggle at the cap.
+      if (outcome.kind === "not-found") {
+        queryClient.setQueryData<string[]>(deskIdsQueryKey, (desk) => desk?.filter((id) => id !== reading.id));
+      }
     },
     onSettled: (_outcome, error) => {
       if (error instanceof NetworkError && error.offline) return;
@@ -94,7 +102,13 @@ export function DeskToggle({ reading, className }: { reading: DeskToggleReading;
       });
   }
 
-  const note = full ? DESK_FULL_COPY : notice ? noticeCopy(notice) : on ? "On your desk" : null;
+  // A write's refusal goes in a status region that is always mounted, so its
+  // text is what changes: one that mounts with its text already in it is not
+  // reliably announced (ReadingPage.tsx, SaveNoticeBanner). The standing note
+  // gives way to it.
+  const said = notice ? noticeCopy(notice) : null;
+  const note = said ? null : full ? DESK_FULL_COPY : on ? "On your desk" : null;
+  const describedBy = [note ? noteId : null, said ? noticeId : null].filter(Boolean).join(" ");
   return (
     <div className={className ? `desk-toggle ${className}` : "desk-toggle"}>
       <button
@@ -103,16 +117,19 @@ export function DeskToggle({ reading, className }: { reading: DeskToggleReading;
         aria-pressed={on}
         disabled={full}
         aria-disabled={mutation.isPending || undefined}
-        aria-describedby={note ? noteId : undefined}
+        aria-describedby={describedBy || undefined}
         onClick={toggle}
       >
         {on ? "Take off desk" : "Put on desk"}
       </button>
       {note ? (
-        <span id={noteId} className="desk-toggle-note" role={notice ? "status" : undefined}>
+        <span id={noteId} className="desk-toggle-note">
           {note}
         </span>
       ) : null}
+      <span id={noticeId} className="desk-toggle-note" role="status">
+        {said}
+      </span>
     </div>
   );
 }
