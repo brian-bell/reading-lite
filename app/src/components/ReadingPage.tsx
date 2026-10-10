@@ -16,6 +16,7 @@ import type { TrailHop } from "../reading-trail";
 import { saveNoticeOf } from "../save-notice";
 import type { SaveNotice } from "../save";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { DeskToggle } from "./DeskToggle";
 import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
@@ -44,7 +45,8 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 //
 // The order of the reading column is the design spec's (Reading surface),
 // after "Back to library" (#407): the return trail when the reader followed a relationship here, the one-time
-// notice a save left when the URL was already in the library (#432), title,
+// notice a save left when the URL was already in the library (#432), the desk
+// toggle on a ready reading or one on the desk (reading-lite-kl7y.6), title,
 // metadata line, tags, the phone jump to the context column, status card when
 // active or failed, the Summary/Source tabs (#372), the selected view's
 // content, the novelty panel below either view, then the collapsed Details
@@ -229,6 +231,9 @@ function ReadingSurface({
         <BackToLibrary className="reading-back" />
         <ReturnTrail hops={trail} />
         <SaveNoticeBanner />
+        {reading.status === "ready" || reading.desk_position !== undefined ? (
+          <DeskToggle reading={reading} className="reading-desk" />
+        ) : null}
         {/* The actions follow the metadata in reading order, which is where
             phones show them; on wider screens they sit in the heading row. */}
         <div className={reading.status === "ready" ? "reading-head reading-head-actions" : "reading-head"}>

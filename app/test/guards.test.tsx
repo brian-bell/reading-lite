@@ -1,16 +1,17 @@
 // The frontend's guards no other layer catches: the API client's same-origin
 // and CSRF rules, the return-path allowlist, a 401 as the only sign-out, the
-// save and reprocess refusals the pages render as states, and untrusted
-// Markdown kept off the page. The smoke suite owns the built Worker's routes
+// save and reprocess refusals the pages render as states, the desk toggle's
+// write, and untrusted Markdown kept off the page. The smoke suite owns the built Worker's routes
 // and tenant isolation; the browser suite owns a real sign-in and save.
 
-import { QueryClient } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER, apiFetch } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { LOGIN_NEXT_STORAGE_KEY, consumeReturnPath, rememberReturnPath, safeReturnPath } from "../src/auth/return-path";
 import { createQueryClient, sessionEndedQueryKey } from "../src/auth/session";
+import { DeskToggle } from "../src/components/DeskToggle";
 import { ReadingSummary } from "../src/components/ReadingSummary";
 import { SourceMarkdown } from "../src/components/ReadingSource";
 import { whoamiQueryKey, type Identity } from "../src/identity";
@@ -155,6 +156,57 @@ describe("frontend guards", () => {
       expect(() => submitFromResponse(status, { error: "nope" }), `save ${status}`).toThrow(ApiError);
       expect(() => reprocessFromResponse(status, { error: "nope" }), `reprocess ${status}`).toThrow(ApiError);
     }
+  });
+
+  // Acceptance matrix, Desk writes: a write refreshes the desk, the library
+  // and the reading; at the cap the toggle is disabled with visible text; a
+  // 409 is said inline.
+  it("writes the desk, refreshes what it changed, and says why a toggle cannot add", async () => {
+    const answers = [
+      new Response(JSON.stringify({ desk: ["rd_b", "rd_c", "rd_a"] })),
+      new Response(JSON.stringify({ error: "nope", code: "not_ready" }), { status: 409 }),
+    ];
+    const calls: Request[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (request: Request) => {
+        calls.push(request);
+        return answers.shift()!;
+      }),
+    );
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(whoamiQueryKey, identity("csrf-a"));
+    for (const key of [["library", { offset: 0 }], ["reading", "rd_a"], ["reading", "rd_x"]]) {
+      queryClient.setQueryData(key, {});
+    }
+    const toggles = render(
+      <QueryClientProvider client={queryClient}>
+        <DeskToggle reading={{ id: "rd_a" }} />
+        <DeskToggle reading={{ id: "rd_b", desk_position: 1 }} />
+        <DeskToggle reading={{ id: "rd_x" }} />
+      </QueryClientProvider>,
+    );
+    const put = screen.getAllByRole("button", { name: "Put on desk" });
+    expect(screen.getByRole("button", { name: "Take off desk" }), "on the desk").toHaveAttribute("aria-pressed", "true");
+    expect(put[0], "off the desk").toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.click(put[0]!);
+    await waitFor(() => expect(put[1], "a fourth is held back").toBeDisabled());
+    expect(toggles.getByText("Three readings at a time"), "with the reason in text").toBeVisible();
+    expect(calls[0]!.method).toBe("POST");
+    expect(new URL(calls[0]!.url).pathname).toBe("/api/desk");
+    expect(await calls[0]!.json()).toEqual({ id: "rd_a" });
+    expect(calls[0]!.headers.get("x-expected-tenant"), "pinned to the rendered account").toBe("usr_a");
+    const invalidated = (key: unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
+    expect(
+      [invalidated(["library", { offset: 0 }]), invalidated(["reading", "rd_a"]), invalidated(["reading", "rd_x"])],
+      "the library and this reading, not another",
+    ).toEqual([true, true, false]);
+
+    queryClient.setQueryData(["desk", "ids"], []);
+    await waitFor(() => expect(put[1]).toBeEnabled());
+    fireEvent.click(put[1]!);
+    expect(await toggles.findByText("Only ready readings can go on the desk")).toBeVisible();
   });
 
   // The captured page is untrusted and the summary is written from it.

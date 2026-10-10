@@ -33,6 +33,7 @@ export const LibraryRowSchema = z.looseObject({
   error: absent(ReadingErrorSchema),
   active_attempt: absent(ProcessingAttemptSchema),
   last_attempt: absent(ProcessingAttemptSchema),
+  desk_position: absent(z.number()),
 });
 export type LibraryRow = Declared<z.output<typeof LibraryRowSchema>>;
 
