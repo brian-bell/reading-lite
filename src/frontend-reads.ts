@@ -57,9 +57,18 @@ const ListInputSchema = z
   })
   .strict();
 
+const RelationshipsInputSchema = z
+  .object({
+    cookie: z.string().max(16_384).nullable(),
+    host: HostSchema,
+    expectedTenant: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
 export type FrontendWhoamiInput = z.infer<typeof WhoamiInputSchema>;
 export type FrontendReadingInput = z.infer<typeof ReadingInputSchema>;
 export type FrontendListInput = z.infer<typeof ListInputSchema>;
+export type FrontendRelationshipsInput = z.infer<typeof RelationshipsInputSchema>;
 
 const INVALID: FrontendReadResult = { status: 400, body: { error: "invalid request" } };
 
@@ -107,6 +116,14 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
       cookie,
       pinned(expectedTenant),
     );
+  }
+
+  /** GET /api/readings/relationships for the session in `cookie`, optionally pinned. */
+  async relationships(input: FrontendRelationshipsInput): Promise<FrontendReadResult> {
+    const parsed = RelationshipsInputSchema.safeParse(input);
+    if (!parsed.success) return INVALID;
+    const { host, cookie, expectedTenant } = parsed.data;
+    return dispatch(this.env, this.ctx, host, "/api/readings/relationships", cookie, pinned(expectedTenant));
   }
 
   /** Not an HTTP surface: calls must use the allowlisted methods. */

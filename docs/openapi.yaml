@@ -1225,6 +1225,35 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
 
+  /api/readings/relationships:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [readings]
+      operationId: getReadingRelationships
+      summary: Read the tenant's relationship graph
+      description: |
+        One read for the Threads pages: every relationship row whose target is
+        live, and every ready reading plus the readings at either end of those
+        rows. Not paged; makes no provider call.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The tenant's relationship graph
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetReadingRelationshipsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
   /api/readings/similar:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -3710,6 +3739,7 @@ components:
       required:
         - url
         - status
+        - created_at
       properties:
         url:
           type: string
@@ -3719,6 +3749,9 @@ components:
           minLength: 1
         status:
           $ref: "#/components/schemas/ManifestStatus"
+        created_at:
+          type: string
+          format: date-time
 
     ManifestFields:
       type: object
@@ -3898,6 +3931,93 @@ components:
           $ref: "#/components/schemas/EnrichmentDegradation"
         desk_position:
           $ref: "#/components/schemas/DeskPosition"
+        connection_count:
+          type: integer
+          minimum: 0
+          description: >-
+            The reading's connections whose target still exists. Set on list
+            rows; absent from archive index.json items.
+        tension_count:
+          type: integer
+          minimum: 0
+          description: The reading's tensions whose target still exists, as connection_count.
+
+    RelationshipsReading:
+      type: object
+      additionalProperties: false
+      required: [id, url, status, created_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        url:
+          type: string
+          format: uri
+        title:
+          type: string
+          minLength: 1
+        status:
+          $ref: "#/components/schemas/ManifestStatus"
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+
+    RelationshipRow:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [source_id, kind, target_id, reason]
+          properties:
+            source_id:
+              type: string
+              minLength: 1
+            kind:
+              const: connection
+            target_id:
+              type: string
+              minLength: 1
+            reason:
+              type: string
+        - type: object
+          additionalProperties: false
+          required: [source_id, kind, target_id, tension_kind, reason]
+          properties:
+            source_id:
+              type: string
+              minLength: 1
+            kind:
+              const: tension
+            target_id:
+              type: string
+              minLength: 1
+            tension_kind:
+              $ref: "#/components/schemas/TensionKind"
+            reason:
+              type: string
+
+    GetReadingRelationshipsResponse:
+      type: object
+      additionalProperties: false
+      required: [readings, relationships]
+      properties:
+        readings:
+          type: array
+          description: >-
+            Every ready reading, plus any reading at either end of a listed
+            relationship, ordered by id, with read-time staleness applied.
+          items:
+            $ref: "#/components/schemas/RelationshipsReading"
+        relationships:
+          type: array
+          description: >-
+            Every relationship row whose target is a live reading, ordered by
+            source_id, kind, then position.
+          items:
+            $ref: "#/components/schemas/RelationshipRow"
 
     ListReadingsResponse:
       type: object

@@ -1,4 +1,11 @@
-import type { ListIndexItem, RelationshipTarget, RelationshipTargets } from "../schemas/api";
+import type {
+  GetReadingRelationshipsResponse,
+  ListIndexItem,
+  RelationshipRow,
+  RelationshipsReading,
+  RelationshipTarget,
+  RelationshipTargets,
+} from "../schemas/api";
 import type { Manifest } from "../schemas/manifest";
 import { applyStaleness } from "./staleness";
 
@@ -32,9 +39,28 @@ export function projectRelationshipTargets(
   for (const item of items) {
     if (!wanted.has(item.id)) continue;
     const row = applyStaleness(item, ttlSeconds, nowIso);
-    const target: RelationshipTarget = { url: row.url, status: row.status };
+    const target: RelationshipTarget = { url: row.url, status: row.status, created_at: row.created_at };
     if (row.title !== undefined) target.title = row.title;
     targets[row.id] = target;
   }
   return targets;
+}
+
+// GET /api/readings/relationships: each reading after the same stale
+// annotation, cut to what the frontend builds threads from.
+export function projectRelationshipGraph(
+  graph: { readings: readonly ListIndexItem[]; relationships: readonly RelationshipRow[] },
+  ttlSeconds: number,
+  nowIso: string,
+): GetReadingRelationshipsResponse {
+  return {
+    readings: graph.readings.map((item) => {
+      const row = applyStaleness(item, ttlSeconds, nowIso);
+      const reading: RelationshipsReading = { id: row.id, url: row.url, status: row.status, created_at: row.created_at };
+      if (row.title !== undefined) reading.title = row.title;
+      if (row.tags !== undefined) reading.tags = row.tags;
+      return reading;
+    }),
+    relationships: [...graph.relationships],
+  };
 }

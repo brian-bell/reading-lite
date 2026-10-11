@@ -64,6 +64,7 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 | `POST /api/readings/import-markdown` | `{ source_url, markdown, title?, email? }`; uses the URL for ownership and supplied Markdown for content. Email defaults to false; send-time import is always silent |
 | `GET /api/readings` | Newest-first list; `q` matches title/TLDR/URL/keywords by case-insensitive substring; `tag` is an exact case-insensitive tag. `offset` defaults to 0, `limit` to 20 with range 1 to 100. Returns `{ readings, limit, offset, has_more }` |
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No claims, repair writes, or scans |
+| `GET /api/readings/relationships` | The tenant's relationship graph in one read: `{ readings, relationships }`. See [the relationships read](#the-relationships-read) |
 | `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |
 | `GET /api/readings/:id/diagnostics` | Manifest, list row, URL ownership (reported in the `pointers` shape), the R2 objects under its key prefix, and up to 20 recent attempt records |
 | `POST /api/readings/:id/reprocess` | Fresh attempt on the same ID; optional `force` bypasses an active-attempt conflict, and optional `source: { kind: "markdown", markdown, title? }` supplies replacement text |
@@ -101,9 +102,27 @@ refresh adds directional `tensions` and `tensions_judged`. Use
 [diagnostics](operations.md#diagnosing-a-single-reading) explains recovery.
 
 The detail response also carries `relationship_targets`, a map from each
-connection and tension target id to `{ url, title?, status }`, resolved at read
-time from the same tenant's reading rows. It is never stored on the manifest, and
-an id absent from the map is removed or unavailable. MCP `get_reading` omits it.
+connection and tension target id to `{ url, title?, status, created_at }`,
+resolved at read time from the same tenant's reading rows. It is never stored on
+the manifest, and an id absent from the map is removed or unavailable. MCP
+`get_reading` omits it.
+
+Each list row carries `connection_count` and `tension_count`: the reading's own
+connections and tensions whose target still exists. Archive `index.json` items
+do not carry them.
+
+### The relationships read
+
+`GET /api/readings/relationships` backs the Threads pages. `relationships` holds
+every `reading_relationships` row whose target is a live reading, ordered by
+`source_id`, then kind, then the row's position, each as
+`{ source_id, kind, target_id, tension_kind?, reason }`; `tension_kind` appears
+only on tensions. `readings` holds every ready reading, including ones with no
+relationship, plus any reading at either end of a listed row, ordered by id,
+each as `{ id, url, title?, status, tags?, created_at }` with read-time
+staleness applied. It is one statement, so the two lists are one snapshot. A
+purged target's rows are omitted rather than reported dangling. There is no
+paging and no paid call.
 
 ## Desk routes
 

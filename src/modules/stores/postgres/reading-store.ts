@@ -6,9 +6,16 @@
 // the tenant id exactly as tenantKeyRoot does. Captured content stays in R2:
 // this store hands out relative keys and ContentStore reads them.
 
+import { z } from "zod";
 import type { TenantContext } from "../../../control-plane/ids";
 import { parseTenantId } from "../../../control-plane/ids";
-import { DeskPositionSchema, ListIndexItemSchema, type ListIndexItem } from "../../../schemas/api";
+import {
+  DeskPositionSchema,
+  ListIndexItemSchema,
+  RelationshipRowSchema,
+  type ListIndexItem,
+  type RelationshipRow,
+} from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
 import type { Sql, SqlQuery, SqlRow } from "../../db/sql";
@@ -59,6 +66,17 @@ const LIST_COLUMNS = `id, key_prefix, url, title, tldr, tags, keywords, status, 
   (SELECT k.position FROM reading_desk k WHERE k.tenant_id = readings.tenant_id AND k.reading_id = readings.id)
     AS desk_position`;
 
+// The library card's counts: the row's own relationship rows, counting only
+// targets that are still readings (a target has no foreign key, so it can
+// dangle). Tensions are stored on both sides, so each side counts its own.
+const RELATIONSHIP_COUNTS = ["connection", "tension"]
+  .map(
+    (kind) => `(SELECT count(*)::int FROM reading_relationships x
+      JOIN readings t ON (t.tenant_id, t.id) = (x.tenant_id, x.target_id)
+      WHERE x.tenant_id = readings.tenant_id AND x.source_id = readings.id AND x.kind = '${kind}') AS ${kind}_count`,
+  )
+  .join(", ");
+
 // The list search: a case-insensitive substring over
 // title, tldr, url and keywords, and a case-insensitive exact tag. strpos, not
 // LIKE, so q needs no wildcard escaping. Stored tags keep their case. No
@@ -87,7 +105,8 @@ export class PgReadingStore {
     // snapshot, as the single index/list.json read was. The id tiebreak is
     // deliberate: today's sort is stable on created_at alone.
     const rows = await this.sql.query<SqlRow & { total_filtered: number }>(
-      `SELECT ${LIST_COLUMNS}, count(*) OVER ()::int AS total_filtered FROM readings WHERE ${LIST_FILTER}
+      `SELECT ${LIST_COLUMNS}, ${RELATIONSHIP_COUNTS}, count(*) OVER ()::int AS total_filtered
+       FROM readings WHERE ${LIST_FILTER}
        ORDER BY created_at DESC, id DESC OFFSET $4 LIMIT $5`,
       [this.tenantId, q, tag, params.offset, params.limit],
     );
@@ -151,6 +170,36 @@ export class PgReadingStore {
       [this.tenantId, [...ids]],
     );
     return rows.map((row) => ListIndexItemSchema.parse(present(row)));
+  }
+
+  // The tenant's relationship graph (GET /api/readings/relationships): every
+  // ready reading, plus any reading at either end of a relationship whose
+  // target is live, each with its own outgoing rows in kind, position order.
+  // One statement, so the readings and the rows are one snapshot.
+  async relationshipGraph(): Promise<{ readings: ListIndexItem[]; relationships: RelationshipRow[] }> {
+    const rows = await this.sql.query<SqlRow & { relationships: unknown }>(
+      `WITH rel AS (
+         SELECT x.source_id, x.kind, x.target_id, x.tension_kind, x.reason, x.position
+         FROM reading_relationships x
+         JOIN readings t ON (t.tenant_id, t.id) = (x.tenant_id, x.target_id)
+         WHERE x.tenant_id = $1
+       )
+       SELECT ${LIST_COLUMNS},
+         (SELECT coalesce(json_agg(json_strip_nulls(json_build_object(
+                   'source_id', rel.source_id, 'kind', rel.kind, 'target_id', rel.target_id,
+                   'tension_kind', rel.tension_kind, 'reason', rel.reason))
+                 ORDER BY rel.kind, rel.position), '[]'::json)
+          FROM rel WHERE rel.source_id = readings.id) AS relationships
+       FROM readings
+       WHERE tenant_id = $1
+         AND (status = 'ready' OR id IN (SELECT source_id FROM rel) OR id IN (SELECT target_id FROM rel))
+       ORDER BY id`,
+      [this.tenantId],
+    );
+    return {
+      readings: rows.map(({ relationships: _rows, ...row }) => ListIndexItemSchema.parse(present(row))),
+      relationships: rows.flatMap((row) => z.array(RelationshipRowSchema).parse(row.relationships)),
+    };
   }
 
   // Every copy of these URLs, owner or not: what `corpus drop` resolves a URL

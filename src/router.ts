@@ -29,12 +29,17 @@ import {
   type DeskFullResponse,
   type DeskNotReadyResponse,
   type DeskWriteResponse,
+  type GetReadingRelationshipsResponse,
   type GetReadingResponse,
   type ListInboxResponse,
   type PostInboxExistingResponse,
   type PostInboxStagedResponse,
 } from "./schemas/api";
-import { projectRelationshipTargets, relationshipTargetIds } from "./modules/relationship-targets";
+import {
+  projectRelationshipGraph,
+  projectRelationshipTargets,
+  relationshipTargetIds,
+} from "./modules/relationship-targets";
 import { sqlScope } from "./modules/db/request-sql";
 import type { Sql } from "./modules/db/sql";
 import { contentStoreFor, type ContentStore, type RawObject } from "./modules/stores/content-store";
@@ -415,6 +420,18 @@ export function createApp(opts: AppOptions = {}) {
     const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
     const owner = await store.findOwnerByUrl(url);
     return owner ? c.json({ id: owner.id }) : c.json({ error: "not found" }, 404);
+  });
+
+  // One side-effect-free read of the tenant's whole relationship graph, for
+  // the frontend's threads. A fixed segment, registered before /:id.
+  app.get("/api/readings/relationships", requireScope("readings:read"), async (c) => {
+    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const body: GetReadingRelationshipsResponse = projectRelationshipGraph(
+      await store.relationshipGraph(),
+      pendingTtlSeconds(c.env),
+      services.now(),
+    );
+    return c.json(body);
   });
 
   app.post("/api/readings/similar", requireScope("readings:write"), async (c) => {

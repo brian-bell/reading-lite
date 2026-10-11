@@ -8,7 +8,7 @@
 // Each table row mints its own tenant, so the rows count a tenant's whole
 // footprint rather than picking rows out by reading id.
 
-import { env } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 import pg from "pg";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildArchiveExport } from "../../src/archive-export";
@@ -29,6 +29,7 @@ import {
 } from "../../src/modules/stores/postgres/reading-writer";
 import { pgSimilarityStoreFor } from "../../src/modules/stores/postgres/similarity-store";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
+import { createApp } from "../../src/router";
 import type { Manifest } from "../../src/schemas/manifest";
 import { sha256Hex } from "../../src/services";
 import { axisVector, mintTenant, mintTenantWithoutUser, readyManifest, seedManifest, testSql } from "../helpers/pg-fixtures";
@@ -36,7 +37,7 @@ import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
 import { founderTenant, reserveReadingSlot } from "../helpers/tenant-fixtures";
 import { readZipEntries } from "../helpers/read-zip";
 import { testReadingsFor } from "../helpers/test-readings";
-import { clearBucket, makeServices, makeStubFetch } from "./readings-harness";
+import { clearBucket, makeServices, makeStubFetch, TOKEN } from "./readings-harness";
 
 const CREATED_AT = "2026-04-26T20:00:00.000Z";
 const LATER = "2026-04-26T20:05:00.000Z";
@@ -361,6 +362,7 @@ describe("reading writer", () => {
           list: (await stranger.listManifests({ offset: 0, limit: 10 })).readings.map((item) => item.id),
           load: await stranger.loadReadingById("rd_private"),
           targets: await stranger.relationshipTargets(["rd_private"]),
+          graph: (await stranger.relationshipGraph()).readings.map((item) => item.id),
           urlOwner: await stranger.findOwnerByUrl(url),
           contentKeys: await stranger.contentKeys("rd_private"),
           strangerNearest: ids(await pgSimilarityStoreFor(s, strangerTenant).query(axisVector(0), 5)),
@@ -372,6 +374,7 @@ describe("reading writer", () => {
         list: ["rd_mine"],
         load: null,
         targets: [],
+        graph: ["rd_mine"],
         urlOwner: null,
         contentKeys: null,
         strangerNearest: ["rd_mine"],
@@ -570,6 +573,77 @@ describe("the desk", () => {
 
   it.each(rows.map((row) => [row.name, row] as const))("%s", async (name, { observe, expected }) => {
     expect(await observe(), name).toEqual(expected);
+  });
+});
+
+describe("the relationships read", () => {
+  async function get(path: string, init: { method?: string; json?: unknown } = {}) {
+    const ctx = createExecutionContext();
+    const res = await createApp({ services: makeServices(makeStubFetch()) }).fetch(
+      new Request(`http://t${path}`, {
+        method: init.method ?? "GET",
+        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+        body: init.json === undefined ? undefined : JSON.stringify(init.json),
+      }),
+      env as unknown as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    return res.json() as Promise<Record<string, unknown>>;
+  }
+
+  // rd_source connects to a live reading and to one that was purged, and has a
+  // tension with a failed one. A ready reading with no rows still appears; a
+  // pending one with none does not, and an expired pending end reads failed.
+  it("lists every ready reading and each live row's ends, and counts only live targets", async () => {
+    const s = sql();
+    const tenant = founderTenant();
+    const OLD = "2026-01-01T00:00:00.000Z";
+    await seedManifest(s, tenant, await readyManifest("rd_target", { created_at: OLD, updated_at: OLD }));
+    await seedManifest(s, tenant, await readyManifest("rd_failed", { status: "failed", error: { code: "fetch_failed", message: "fetch failed" } }));
+    await seedManifest(s, tenant, await readyManifest("rd_stuck", { status: "pending", created_at: OLD, updated_at: OLD }));
+    await seedManifest(s, tenant, await readyManifest("rd_waiting", { status: "pending", created_at: OLD, updated_at: OLD }));
+    await seedManifest(s, tenant, await readyManifest("rd_alone"));
+    await seedManifest(s, tenant, await readyManifest("rd_source", {
+      connections: [
+        { id: "rd_target", reason: "same ground" },
+        { id: "rd_purged", reason: "gone now" },
+        { id: "rd_stuck", reason: "still pending" },
+      ],
+      tensions: [{ id: "rd_failed", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
+    }));
+
+    const graph = (await get("/api/readings/relationships")) as {
+      readings: { id: string; status: string; created_at: string }[];
+      relationships: unknown[];
+    };
+    expect(graph.readings.map((r) => [r.id, r.status])).toEqual([
+      ["rd_alone", "ready"],
+      ["rd_failed", "failed"],
+      ["rd_source", "ready"],
+      ["rd_stuck", "failed"],
+      ["rd_target", "ready"],
+    ]);
+    expect(graph.relationships).toEqual([
+      { source_id: "rd_source", kind: "connection", target_id: "rd_target", reason: "same ground" },
+      { source_id: "rd_source", kind: "connection", target_id: "rd_stuck", reason: "still pending" },
+      { source_id: "rd_source", kind: "tension", target_id: "rd_failed", tension_kind: "contradicts", reason: "disagrees" },
+    ]);
+
+    const listed = (await get("/api/readings")).readings as { id: string; connection_count?: number; tension_count?: number }[];
+    const counts = Object.fromEntries(listed.map((r) => [r.id, [r.connection_count, r.tension_count]]));
+    expect(counts.rd_source, "rd_purged is not counted").toEqual([2, 1]);
+    expect(counts.rd_alone).toEqual([0, 0]);
+
+    const detail = (await get("/api/readings/rd_source")).relationship_targets as Record<string, { created_at: string }>;
+    expect(detail.rd_target?.created_at).toBe(OLD);
+    const mcp = await get("/mcp", {
+      method: "POST",
+      json: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_reading", arguments: { id: "rd_source" } } },
+    });
+    const tool = JSON.parse((mcp.result as { content: { text: string }[] }).content[0]!.text) as Record<string, unknown>;
+    expect(tool.id).toBe("rd_source");
+    expect(tool, "MCP strips the web UI's target map").not.toHaveProperty("relationship_targets");
   });
 });
 
