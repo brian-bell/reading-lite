@@ -226,6 +226,9 @@ describe("tenant guards", () => {
       expect(await ids(TOKEN), `${path} as owner`).toEqual([id]);
       expect(await ids(OTHER_TOKEN_SECRET), path).toEqual([]);
     }
+    const graph = async (token: string) => (await bearer(app, token, "/api/readings/relationships")).json();
+    expect(((await graph(TOKEN)) as { readings: { id: string }[] }).readings.map((r) => r.id), "relationships as owner").toEqual([id]);
+    expect(await graph(OTHER_TOKEN_SECRET), "relationships").toEqual({ readings: [], relationships: [] });
 
     const tools = [
       { name: "get_reading", ownerReads: true },
@@ -286,6 +289,11 @@ describe("tenant guards", () => {
     const unknown = await reads.reading({ cookie: otherSession.cookie, host, id: UNKNOWN_ID });
     expect(unknown.status, "FrontendReads unknown").toBe(404);
     expect(foreign, "FrontendReads").toEqual(unknown);
+    const ownGraph = await reads.relationships({ cookie: founderSession.cookie, host });
+    expect(ownGraph.status, "FrontendReads relationships as owner").toBe(200);
+    expect((ownGraph.body as { readings: { id: string }[] }).readings.map((r) => r.id)).toEqual([id]);
+    const otherGraph = await reads.relationships({ cookie: otherSession.cookie, host });
+    expect(otherGraph.body, "FrontendReads relationships").toEqual({ readings: [], relationships: [] });
 
     expect(await bucketSnapshot(), "R2 objects").toEqual(before);
     expect(queuedEnvelopes, "queue").toEqual([]);

@@ -129,7 +129,12 @@ URL with a reading. `seed:local` replaces the founder's inbox rows with them.
   `created_at` sort: a first page of 20 ending with `long-title` (the library
   case checks it wraps there) and eight on the second, ending with
   `old-manifest` and `marginalia`. The snapshot's `list_index` carries
-  read-time staleness, as the list route serves it.
+  read-time staleness and each row's `connection_count` and `tension_count`,
+  as the list route serves it.
+- The snapshot's `relationships` is the `GET /api/readings/relationships`
+  body: the rows whose target is in the pack, projected through the same
+  `manifestToRows` the seeder writes, and the ready readings plus each row's
+  ends. The browser suite serves it for `/threads` and the reading page.
 
 ## What the pack deliberately does not cover
 

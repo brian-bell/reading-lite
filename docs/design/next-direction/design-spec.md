@@ -121,6 +121,19 @@ side-effect-free read.
   fixture pack and records the bytes per reading. If a library of 2,000
   readings would pass 1 MB, the slice proposes per-thread reads before
   shipping.
+- Measured (kl7y.3): over the fixture pack the response is 6,605 bytes for
+  17 readings and 15 rows, 389 bytes per reading (1,936 gzipped). A
+  reading entry averages 202 bytes and a row 210, most of it the reason. At
+  the pack's density 2,000 readings is about 0.78 MB, but at the five rows
+  per reading assumed above it is about 1,250 bytes per reading, 2.5 MB
+  uncompressed and about 0.7 MB gzipped, so a full library passes 1 MB.
+  The proposal: keep this read for `/threads`, but drop `reason` from it
+  (the list shows no reasons) and add `GET /api/threads/:id` returning one
+  thread's readings and rows with reasons for `/threads/$id` and the reading
+  page's strip. Without reasons a row is about 90 bytes, so 2,000 readings
+  is about 1.3 MB at five rows each; the list read would also need its rows
+  reduced to pairs (one per unordered pair), which halves it. Tracked in
+  reading-lite-kl7y.12; this slice ships the single read.
 - Server render: `/threads` and `/threads/$id` read it through a new
   `FrontendReads.relationships` method and `backend-reads.ts`. The reading
   page fetches it in the browser after hydration, as the Source view does, so

@@ -16,11 +16,24 @@
 // and this projection disagree, so adding a fixture state stays one edit in
 // local-seed.ts plus `npm run fixtures:app`.
 
-import { projectRelationshipTargets, relationshipTargetIds } from "../../src/modules/relationship-targets";
+import {
+  projectRelationshipGraph,
+  projectRelationshipTargets,
+  relationshipTargetIds,
+} from "../../src/modules/relationship-targets";
 import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
-import type { GetReadingDiagnosticsResponse, GetReadingResponse, InboxItem, ListIndex } from "../../src/schemas/api";
-import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID } from "./local-seed";
+import { manifestToRows } from "../../src/modules/stores/postgres/manifest-rows";
+import { TensionKindSchema } from "../../src/schemas/manifest";
+import type {
+  GetReadingDiagnosticsResponse,
+  GetReadingRelationshipsResponse,
+  GetReadingResponse,
+  InboxItem,
+  ListIndex,
+  RelationshipRow,
+} from "../../src/schemas/api";
+import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID, type LocalSeedFixture } from "./local-seed";
 
 /** Seed clock for the snapshot, and the browser clock the suite pins. */
 export const APP_FIXTURE_PACK_CLOCK = "2026-09-11T10:00:00.000Z";
@@ -81,9 +94,17 @@ export interface AppFixturePack {
   raws: Record<string, RawCapture>;
   /**
    * The tenant's list rows, newest first, as the list route serves them:
-   * after read-time staleness, so `stale-pending` lists as failed.
+   * after read-time staleness, so `stale-pending` lists as failed, and with
+   * each row's `connection_count` and `tension_count`.
    */
   list_index: ListIndex;
+  /**
+   * The `GET /api/readings/relationships` body, assembled as the store's
+   * relationshipGraph query and the router assemble it from rows: the rows
+   * whose target is a live reading, by source id, kind and position, and the
+   * ready readings plus any reading at either end of one.
+   */
+  relationships: GetReadingRelationshipsResponse;
   /** Referenced by `attention` but never written: the removed-target card. */
   removed_target_id: string;
   /**
@@ -103,6 +124,8 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
   const bodyByKey = new Map(plan.objects.map((object) => [object.key, object.body]));
   const urlOwners = new Map(plan.fixtures.filter((f) => f.ownsUrl).map((f) => [f.manifest.url_hash, f]));
   const encoder = new TextEncoder();
+  const rows = relationshipRows(plan.fixtures);
+  const ends = new Set(rows.flatMap((row) => [row.source_id, row.target_id]));
 
   for (const fixture of plan.fixtures) {
     const extracted = bodyByKey.get(layout.extractedKey(fixture.keyPrefix));
@@ -170,11 +193,53 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     raws,
     list_index: {
       ...plan.listIndex,
-      items: plan.listIndex.items.map((item) => applyStaleness(item, PENDING_TTL_SECONDS, nowIso)),
+      items: plan.listIndex.items.map((item) => ({
+        ...applyStaleness(item, PENDING_TTL_SECONDS, nowIso),
+        connection_count: rows.filter((row) => row.source_id === item.id && row.kind === "connection").length,
+        tension_count: rows.filter((row) => row.source_id === item.id && row.kind === "tension").length,
+      })),
     },
+    relationships: projectRelationshipGraph(
+      {
+        readings: [...plan.listIndex.items]
+          .filter((item) => item.status === "ready" || ends.has(item.id))
+          .sort((a, b) => byCodePoint(a.id, b.id)),
+        relationships: rows,
+      },
+      PENDING_TTL_SECONDS,
+      nowIso,
+    ),
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
     inbox: plan.inbox,
   };
+}
+
+function byCodePoint(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+// The rows seed:local writes for each fixture, by source id, kind and
+// position, less those whose target is not a reading.
+function relationshipRows(fixtures: readonly LocalSeedFixture[]): RelationshipRow[] {
+  const live = new Set(fixtures.map((fixture) => fixture.id));
+  return [...fixtures]
+    .sort((a, b) => byCodePoint(a.id, b.id))
+    .flatMap((fixture) =>
+      manifestToRows(fixture.manifest, { tenantId: "usr_fixturepack", keyPrefix: fixture.keyPrefix, ownsUrl: fixture.ownsUrl })
+        .relationships.sort((a, b) => byCodePoint(a.kind, b.kind) || a.position - b.position)
+        .filter((row) => live.has(row.target_id))
+        .map((row): RelationshipRow =>
+          row.kind === "connection"
+            ? { source_id: fixture.id, kind: "connection", target_id: row.target_id, reason: row.reason }
+            : {
+                source_id: fixture.id,
+                kind: "tension",
+                target_id: row.target_id,
+                tension_kind: TensionKindSchema.parse(row.tension_kind),
+                reason: row.reason,
+              },
+        ),
+    );
 }
 
 /** The file's exact bytes, so the emitter and the drift test agree. */

@@ -15,6 +15,7 @@ import { hostSession } from "./sessions";
 import {
   serveExportInBrowser,
   serveLibraryInBrowser,
+  serveReadingsInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
   serveTokensInBrowser,
@@ -105,6 +106,41 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     state: "signed-in",
     heading: "A quieter internet is a choice we can make",
     fixture: "attention",
+    // The thread strip reads the relationship graph after hydration
+    // (reading-lite-kl7y.3), so the page is measured with it in place.
+    stub: (page) => serveReadingsInBrowser(page),
+    prepare: async (page) => {
+      const strip = page.getByRole("navigation", { name: "Thread" });
+      await expect(strip.getByRole("link", { name: /^Earlier/ })).toBeVisible();
+      await expect(strip.getByRole("link", { name: /^Later/ })).toBeVisible();
+    },
+  },
+  // The pack's two threads, its tension pairs, and the readings standing
+  // alone, rendered on the server from the relationship graph (reading-lite-kl7y.3).
+  {
+    name: "threads-signed-in",
+    path: "/threads",
+    state: "signed-in",
+    heading: "Threads",
+    // Its links preload the readings they open.
+    stub: (page) => serveReadingsInBrowser(page),
+    prepare: async (page) => {
+      const threads = page.getByRole("list", { name: "Threads" });
+      await expect(threads.getByRole("link")).toHaveText(["Attention", "Knowledge"]);
+      await expect(page.getByRole("list", { name: "Tensions" }).getByRole("listitem")).toHaveCount(2);
+      await expect(page.getByRole("list", { name: "Readings standing alone" }).getByRole("listitem")).toHaveCount(4);
+    },
+  },
+  // One thread, found by a member that is not its oldest reading.
+  {
+    name: "thread-signed-in",
+    path: "/threads/rd_FXATTENT01",
+    state: "signed-in",
+    heading: "Attention",
+    stub: (page) => serveReadingsInBrowser(page),
+    prepare: async (page) => {
+      await expect(page.getByRole("list", { name: "Readings in Attention" }).getByRole("listitem").first()).toBeVisible();
+    },
   },
 ];
 

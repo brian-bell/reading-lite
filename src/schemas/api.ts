@@ -10,6 +10,7 @@ import {
   ProcessingAttemptSchema,
   ProcessingAttemptSummarySchema,
   SimilaritySnapshotSchema,
+  TensionKindSchema,
 } from "./manifest";
 
 const webUrl = () =>
@@ -374,6 +375,11 @@ export const ListIndexItemSchema = z.object({
   last_attempt: ProcessingAttemptSummarySchema.optional(),
   enrichment_degradation: EnrichmentDegradationSchema.optional(),
   desk_position: DeskPositionSchema.optional(),
+  // GET /api/readings only: the row's own relationship rows whose target is a
+  // live reading. Response-only, like desk_position; the archive's index.json
+  // and the other list reads leave them out.
+  connection_count: z.number().int().nonnegative().optional(),
+  tension_count: z.number().int().nonnegative().optional(),
 });
 export type ListIndexItem = z.infer<typeof ListIndexItemSchema>;
 
@@ -400,6 +406,7 @@ export const RelationshipTargetSchema = z
     url: z.string().url(),
     title: z.string().min(1).optional(),
     status: ManifestStatusSchema,
+    created_at: z.string().datetime(),
   })
   .strict();
 export type RelationshipTarget = z.infer<typeof RelationshipTargetSchema>;
@@ -412,6 +419,38 @@ export const GetReadingResponseSchema = ManifestSchema.extend({
   relationship_targets: RelationshipTargetsSchema,
 });
 export type GetReadingResponse = z.infer<typeof GetReadingResponseSchema>;
+
+// GET /api/readings/relationships: the tenant's relationship graph, for the
+// frontend's threads. `readings` is every ready reading plus any other reading
+// at either end of a listed relationship, after read-time staleness.
+// `relationships` is every stored row whose target is a live reading (the
+// source is one by its foreign key), ordered by source, kind and position.
+export const RelationshipsReadingSchema = z
+  .object({
+    id: z.string().min(1),
+    url: z.string().url(),
+    title: z.string().min(1).optional(),
+    status: ManifestStatusSchema,
+    tags: z.array(z.string()).optional(),
+    created_at: z.string().datetime(),
+  })
+  .strict();
+export type RelationshipsReading = z.infer<typeof RelationshipsReadingSchema>;
+
+const RelationshipEnds = { source_id: z.string().min(1), target_id: z.string().min(1), reason: z.string() };
+export const RelationshipRowSchema = z.discriminatedUnion("kind", [
+  z.object({ ...RelationshipEnds, kind: z.literal("connection") }).strict(),
+  z.object({ ...RelationshipEnds, kind: z.literal("tension"), tension_kind: TensionKindSchema }).strict(),
+]);
+export type RelationshipRow = z.infer<typeof RelationshipRowSchema>;
+
+export const GetReadingRelationshipsResponseSchema = z
+  .object({
+    readings: z.array(RelationshipsReadingSchema),
+    relationships: z.array(RelationshipRowSchema),
+  })
+  .strict();
+export type GetReadingRelationshipsResponse = z.infer<typeof GetReadingRelationshipsResponseSchema>;
 
 export const SimilarItemSchema = z.object({
   id: z.string(),

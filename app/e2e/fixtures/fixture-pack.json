@@ -399,6 +399,7 @@
         "rd_FXGARDEN01": {
           "url": "https://commonplace.example/libraries-are-gardens",
           "status": "ready",
+          "created_at": "2026-09-04T10:00:00.000Z",
           "title": "Libraries are gardens, not warehouses"
         }
       }
@@ -685,11 +686,13 @@
         "rd_FXGARDEN01": {
           "url": "https://commonplace.example/libraries-are-gardens",
           "status": "ready",
+          "created_at": "2026-09-04T10:00:00.000Z",
           "title": "Libraries are gardens, not warehouses"
         },
         "rd_FXFRICTN01": {
           "url": "https://adjacent.example/the-case-for-a-little-friction",
           "status": "ready",
+          "created_at": "2026-09-02T13:45:00.000Z",
           "title": "The case for a little friction"
         }
       }
@@ -868,6 +871,7 @@
         "rd_FXATTENT01": {
           "url": "https://fieldnotes.example/2026/a-quieter-internet",
           "status": "ready",
+          "created_at": "2026-09-07T09:30:00.000Z",
           "title": "A quieter internet is a choice we can make"
         }
       }
@@ -954,15 +958,18 @@
       "relationship_targets": {
         "rd_FXPENDNG01": {
           "url": "https://fieldnotes.example/making-room-for-slow-work",
-          "status": "pending"
+          "status": "pending",
+          "created_at": "2026-09-11T10:00:00.000Z"
         },
         "rd_FXERR00002": {
           "url": "https://consent-walls.example/teaser-article",
-          "status": "failed"
+          "status": "failed",
+          "created_at": "2026-09-09T16:42:00.000Z"
         },
         "rd_FXATTENT01": {
           "url": "https://fieldnotes.example/2026/a-quieter-internet",
           "status": "ready",
+          "created_at": "2026-09-07T09:30:00.000Z",
           "title": "A quieter internet is a choice we can make"
         }
       }
@@ -1084,6 +1091,7 @@
         "rd_FXATTENT01": {
           "url": "https://fieldnotes.example/2026/a-quieter-internet",
           "status": "ready",
+          "created_at": "2026-09-07T09:30:00.000Z",
           "title": "A quieter internet is a choice we can make"
         }
       }
@@ -1257,6 +1265,7 @@
         "rd_FXATTENT01": {
           "url": "https://fieldnotes.example/2026/a-quieter-internet",
           "status": "ready",
+          "created_at": "2026-09-07T09:30:00.000Z",
           "title": "A quieter internet is a choice we can make"
         }
       }
@@ -1331,6 +1340,7 @@
         "rd_FXGARDEN01": {
           "url": "https://commonplace.example/libraries-are-gardens",
           "status": "ready",
+          "created_at": "2026-09-04T10:00:00.000Z",
           "title": "Libraries are gardens, not warehouses"
         }
       }
@@ -1409,6 +1419,7 @@
         "rd_FXMDPAGE01": {
           "url": "https://notes.example/slow-reading-week",
           "status": "ready",
+          "created_at": "2026-08-28T08:30:00.000Z",
           "title": "Slow reading week"
         }
       }
@@ -1496,6 +1507,7 @@
         "rd_FXCMMNBK01": {
           "url": "https://commonplace.example/what-a-commonplace-book-is-for",
           "status": "ready",
+          "created_at": "2026-08-18T09:20:00.000Z",
           "title": "What a commonplace book is for"
         }
       }
@@ -1660,11 +1672,13 @@
         "rd_FXSECBRN01": {
           "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
           "status": "ready",
+          "created_at": "2026-08-21T14:00:00.000Z",
           "title": "The second brain is a filing cabinet"
         },
         "rd_FXMARGNA01": {
           "url": "https://commonplace.example/on-marginalia",
           "status": "ready",
+          "created_at": "2026-03-02T19:45:00.000Z",
           "title": "On marginalia"
         }
       }
@@ -1783,6 +1797,7 @@
         "rd_FXCMMNBK01": {
           "url": "https://commonplace.example/what-a-commonplace-book-is-for",
           "status": "ready",
+          "created_at": "2026-08-18T09:20:00.000Z",
           "title": "What a commonplace book is for"
         }
       }
@@ -8226,7 +8241,9 @@
           "status": "running",
           "stage": "queued",
           "started_at": "2026-09-11T10:00:00.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXPRCSSNG1",
@@ -8241,7 +8258,9 @@
           "status": "running",
           "stage": "queued",
           "started_at": "2026-09-11T09:52:00.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXSTPEND01",
@@ -8271,7 +8290,9 @@
           "stage": "queued",
           "failed_at": "2026-09-11T10:00:00.000Z",
           "retryable": true
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00001",
@@ -8303,7 +8324,9 @@
             "retryable": false,
             "http_status": 403
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00002",
@@ -8333,7 +8356,9 @@
             "failed_at": "2026-09-09T16:42:37.000Z",
             "retryable": false
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXCNVRSE01",
@@ -8368,7 +8393,9 @@
           "stage": "send_email",
           "started_at": "2026-09-09T10:30:04.000Z",
           "finished_at": "2026-09-09T10:30:47.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00003",
@@ -8400,7 +8427,9 @@
             "retryable": true,
             "http_status": 429
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00004",
@@ -8432,7 +8461,9 @@
             "retryable": true,
             "http_status": 500
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00005",
@@ -8464,7 +8495,9 @@
             "retryable": false,
             "http_status": 401
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00009",
@@ -8494,7 +8527,9 @@
             "failed_at": "2026-09-08T10:20:21.000Z",
             "retryable": false
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00010",
@@ -8526,7 +8561,9 @@
             "retryable": false,
             "http_status": 429
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXATTENT01",
@@ -8562,7 +8599,9 @@
           "stage": "send_email",
           "started_at": "2026-09-07T09:30:04.000Z",
           "finished_at": "2026-09-07T09:30:47.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 1
       },
       {
         "id": "rd_FXSPARSE01",
@@ -8594,7 +8633,9 @@
           "stage": "send_email",
           "started_at": "2026-09-06T18:25:04.000Z",
           "finished_at": "2026-09-06T18:25:47.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00006",
@@ -8624,7 +8665,9 @@
             "failed_at": "2026-09-05T21:30:37.000Z",
             "retryable": true
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXREPROC01",
@@ -8666,7 +8709,9 @@
             "retryable": true,
             "http_status": 503
           }
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
       },
       {
         "id": "rd_FXGARDEN01",
@@ -8702,7 +8747,9 @@
           "stage": "send_email",
           "started_at": "2026-09-04T10:00:04.000Z",
           "finished_at": "2026-09-04T10:00:47.000Z"
-        }
+        },
+        "connection_count": 3,
+        "tension_count": 0
       },
       {
         "id": "rd_FXERR00007",
@@ -8732,7 +8779,9 @@
             "failed_at": "2026-09-04T07:27:03.000Z",
             "retryable": true
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXFRICTN01",
@@ -8766,7 +8815,9 @@
           "stage": "send_email",
           "started_at": "2026-09-02T13:45:04.000Z",
           "finished_at": "2026-09-02T13:45:47.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 1
       },
       {
         "id": "rd_FXERR00008",
@@ -8794,7 +8845,9 @@
             "stage": "query_similar",
             "failed_at": "2026-08-30T19:47:23.000Z"
           }
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXMAXNAME1",
@@ -8830,7 +8883,9 @@
           "stage": "send_email",
           "started_at": "2026-08-29T15:20:04.000Z",
           "finished_at": "2026-08-29T15:20:47.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXMDPAGE01",
@@ -8865,7 +8920,9 @@
           "stage": "write_indexes",
           "started_at": "2026-08-28T08:30:04.000Z",
           "finished_at": "2026-08-28T08:30:39.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
       },
       {
         "id": "rd_FXRAWSRC01",
@@ -8899,7 +8956,9 @@
           "stage": "send_email",
           "started_at": "2026-08-25T11:05:04.000Z",
           "finished_at": "2026-08-25T11:05:45.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
       },
       {
         "id": "rd_FXPAPER001",
@@ -8933,7 +8992,9 @@
           "stage": "send_email",
           "started_at": "2026-08-23T06:30:04.000Z",
           "finished_at": "2026-08-23T06:30:47.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
       },
       {
         "id": "rd_FXSECBRN01",
@@ -8967,7 +9028,9 @@
           "stage": "send_email",
           "started_at": "2026-08-21T14:00:04.000Z",
           "finished_at": "2026-08-21T14:00:47.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 1
       },
       {
         "id": "rd_FXYTDEGRD1",
@@ -9008,7 +9071,9 @@
           "tier": "transcript",
           "code": "YoutubeEnrichmentParseError",
           "message": "timedtext response was empty or unparseable"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXCMMNBK01",
@@ -9043,7 +9108,9 @@
           "stage": "send_email",
           "started_at": "2026-08-18T09:20:04.000Z",
           "finished_at": "2026-08-18T09:20:47.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 1
       },
       {
         "id": "rd_FXPAST0001",
@@ -9069,7 +9136,9 @@
           "stage": "send_email",
           "started_at": "2026-04-14T09:15:04.000Z",
           "finished_at": "2026-04-14T09:15:47.000Z"
-        }
+        },
+        "connection_count": 0,
+        "tension_count": 0
       },
       {
         "id": "rd_FXMARGNA01",
@@ -9102,7 +9171,279 @@
           "stage": "send_email",
           "started_at": "2026-03-02T19:45:04.000Z",
           "finished_at": "2026-03-02T19:45:47.000Z"
-        }
+        },
+        "connection_count": 1,
+        "tension_count": 0
+      }
+    ]
+  },
+  "relationships": {
+    "readings": [
+      {
+        "id": "rd_FXATTENT01",
+        "url": "https://fieldnotes.example/2026/a-quieter-internet",
+        "status": "ready",
+        "created_at": "2026-09-07T09:30:00.000Z",
+        "title": "A quieter internet is a choice we can make",
+        "tags": [
+          "attention",
+          "design"
+        ]
+      },
+      {
+        "id": "rd_FXCMMNBK01",
+        "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+        "status": "ready",
+        "created_at": "2026-08-18T09:20:00.000Z",
+        "title": "What a commonplace book is for",
+        "tags": [
+          "knowledge",
+          "notes"
+        ]
+      },
+      {
+        "id": "rd_FXCNVRSE01",
+        "url": "https://commonplace.example/reading-as-conversation",
+        "status": "ready",
+        "created_at": "2026-09-09T10:30:00.000Z",
+        "title": "Reading as conversation",
+        "tags": [
+          "knowledge",
+          "reading"
+        ]
+      },
+      {
+        "id": "rd_FXERR00002",
+        "url": "https://consent-walls.example/teaser-article",
+        "status": "failed",
+        "created_at": "2026-09-09T16:42:00.000Z"
+      },
+      {
+        "id": "rd_FXFRICTN01",
+        "url": "https://adjacent.example/the-case-for-a-little-friction",
+        "status": "ready",
+        "created_at": "2026-09-02T13:45:00.000Z",
+        "title": "The case for a little friction",
+        "tags": [
+          "design"
+        ]
+      },
+      {
+        "id": "rd_FXGARDEN01",
+        "url": "https://commonplace.example/libraries-are-gardens",
+        "status": "ready",
+        "created_at": "2026-09-04T10:00:00.000Z",
+        "title": "Libraries are gardens, not warehouses",
+        "tags": [
+          "knowledge",
+          "attention"
+        ]
+      },
+      {
+        "id": "rd_FXMARGNA01",
+        "url": "https://commonplace.example/on-marginalia",
+        "status": "ready",
+        "created_at": "2026-03-02T19:45:00.000Z",
+        "title": "On marginalia",
+        "tags": [
+          "reading",
+          "notes"
+        ]
+      },
+      {
+        "id": "rd_FXMAXNAME1",
+        "url": "https://working-notes.example/tools-for-thinking",
+        "status": "ready",
+        "created_at": "2026-08-29T15:20:00.000Z",
+        "title": "What we lose when every tool for thinking becomes a place to organize, optimize, and measure the work instead of actually doing it",
+        "tags": [
+          "knowledge",
+          "design"
+        ]
+      },
+      {
+        "id": "rd_FXMDPAGE01",
+        "url": "https://notes.example/slow-reading-week",
+        "status": "ready",
+        "created_at": "2026-08-28T08:30:00.000Z",
+        "title": "Slow reading week",
+        "tags": [
+          "notes",
+          "reading"
+        ]
+      },
+      {
+        "id": "rd_FXPAPER001",
+        "url": "https://small-hours.example/reading-on-paper-again",
+        "status": "ready",
+        "created_at": "2026-08-23T06:30:00.000Z",
+        "title": "Reading on paper, again",
+        "tags": [
+          "reading"
+        ]
+      },
+      {
+        "id": "rd_FXPAST0001",
+        "url": "https://adjacent.example/before-the-archive",
+        "status": "ready",
+        "created_at": "2026-04-14T09:15:00.000Z",
+        "title": "Before the archive",
+        "tags": [
+          "archives"
+        ]
+      },
+      {
+        "id": "rd_FXPENDNG01",
+        "url": "https://fieldnotes.example/making-room-for-slow-work",
+        "status": "pending",
+        "created_at": "2026-09-11T10:00:00.000Z"
+      },
+      {
+        "id": "rd_FXRAWSRC01",
+        "url": "https://margin.example/the-web-we-can-no-longer-revisit",
+        "status": "ready",
+        "created_at": "2026-08-25T11:05:00.000Z",
+        "title": "The web we can no longer revisit",
+        "tags": [
+          "knowledge"
+        ]
+      },
+      {
+        "id": "rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "status": "ready",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "title": "The tab that never closes",
+        "tags": [
+          "attention"
+        ]
+      },
+      {
+        "id": "rd_FXSECBRN01",
+        "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
+        "status": "ready",
+        "created_at": "2026-08-21T14:00:00.000Z",
+        "title": "The second brain is a filing cabinet",
+        "tags": [
+          "knowledge"
+        ]
+      },
+      {
+        "id": "rd_FXSPARSE01",
+        "url": "https://small-hours.example/against-the-endless-queue",
+        "status": "ready",
+        "created_at": "2026-09-06T18:25:00.000Z",
+        "title": "Against the endless queue",
+        "tags": [
+          "attention"
+        ]
+      },
+      {
+        "id": "rd_FXYTDEGRD1",
+        "url": "https://www.youtube.com/watch?v=FxFixture01",
+        "status": "ready",
+        "created_at": "2026-08-20T16:40:00.000Z",
+        "title": "Building a quiet reading app — chapter 4",
+        "tags": [
+          "software",
+          "design"
+        ]
+      }
+    ],
+    "relationships": [
+      {
+        "source_id": "rd_FXATTENT01",
+        "kind": "connection",
+        "target_id": "rd_FXGARDEN01",
+        "reason": "Both treat revisiting as the work. Ellis adds a concrete test: does the tool help an old idea meet a new question?"
+      },
+      {
+        "source_id": "rd_FXATTENT01",
+        "kind": "tension",
+        "target_id": "rd_FXFRICTN01",
+        "tension_kind": "contradicts",
+        "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit."
+      },
+      {
+        "source_id": "rd_FXCMMNBK01",
+        "kind": "connection",
+        "target_id": "rd_FXMARGNA01",
+        "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+      },
+      {
+        "source_id": "rd_FXCMMNBK01",
+        "kind": "tension",
+        "target_id": "rd_FXSECBRN01",
+        "tension_kind": "qualified_by",
+        "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction."
+      },
+      {
+        "source_id": "rd_FXCNVRSE01",
+        "kind": "connection",
+        "target_id": "rd_FXGARDEN01",
+        "reason": "Park's conversation and the garden are the same claim about return visits, made with different images."
+      },
+      {
+        "source_id": "rd_FXFRICTN01",
+        "kind": "tension",
+        "target_id": "rd_FXATTENT01",
+        "tension_kind": "contradicts",
+        "reason": "A stopping point protects attention; a deliberate interruption can deepen it. These essays disagree about where the default should sit."
+      },
+      {
+        "source_id": "rd_FXGARDEN01",
+        "kind": "connection",
+        "target_id": "rd_FXATTENT01",
+        "reason": "Ellis turns the garden metaphor into a design principle: optimize for a useful return visit."
+      },
+      {
+        "source_id": "rd_FXGARDEN01",
+        "kind": "connection",
+        "target_id": "rd_FXPENDNG01",
+        "reason": "The pending essay applies the return-visit principle to slow work; it will appear here once processing finishes."
+      },
+      {
+        "source_id": "rd_FXGARDEN01",
+        "kind": "connection",
+        "target_id": "rd_FXERR00002",
+        "reason": "A related reading on curated queues failed to process; retry it to complete the connection."
+      },
+      {
+        "source_id": "rd_FXMARGNA01",
+        "kind": "connection",
+        "target_id": "rd_FXCMMNBK01",
+        "reason": "Halvorsen's excerpts and the marginal notes in the earlier essay are the same practice seen from two sides: what you copy out and what you write back."
+      },
+      {
+        "source_id": "rd_FXMDPAGE01",
+        "kind": "connection",
+        "target_id": "rd_FXATTENT01",
+        "reason": "The week's standing question came from Ellis's argument for deliberate reading."
+      },
+      {
+        "source_id": "rd_FXPAPER001",
+        "kind": "connection",
+        "target_id": "rd_FXMDPAGE01",
+        "reason": "Both are constraint experiments: fewer pieces, one at a time, with the option to defer removed."
+      },
+      {
+        "source_id": "rd_FXRAWSRC01",
+        "kind": "connection",
+        "target_id": "rd_FXGARDEN01",
+        "reason": "Maintaining a library also means acknowledging what has been lost."
+      },
+      {
+        "source_id": "rd_FXREPROC01",
+        "kind": "connection",
+        "target_id": "rd_FXATTENT01",
+        "reason": "Both essays treat saving as a way to end a session well rather than to defer it."
+      },
+      {
+        "source_id": "rd_FXSECBRN01",
+        "kind": "tension",
+        "target_id": "rd_FXCMMNBK01",
+        "tension_kind": "qualifies",
+        "reason": "Reyes accepts that rereading matters but argues retrieval is what makes rereading possible at scale. Halvorsen treats retrieval as the distraction."
       }
     ]
   },

@@ -11,6 +11,7 @@ const paths = {
   download: "M12 4v11 M7 10l5 5 5-5 M5 20h14",
   sliders: "M6 4v16 M12 4v16 M18 4v16 M3 15h6 M9 9h6 M15 13h6",
   inbox: "M4 13h4l1.5 3h5l1.5-3h4 M6.5 5h11L20 13v6H4v-6z",
+  thread: "M6 4a2 2 0 1 0 0 4 2 2 0 0 0 0-4z M18 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4z M6 8v3a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v-3",
 } as const;
 
 export type IconName = keyof typeof paths;

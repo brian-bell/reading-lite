@@ -205,9 +205,10 @@ textarea {
   flex-shrink: 0;
 }
 
-/* The column has room for one word a tile; the bar spells the label out. Still
-   read out, so the link's name is "Save reading" at every width. */
-@container shell (width > 650px) {
+/* The column has room for one word a tile; the bar spells the label out where
+   its four destinations fit. Still read out, so the link's name is "Save
+   reading" at every width. */
+@container shell (width > 650px) or (width <= 440px) {
   .nav-item-rest {
     position: absolute;
     width: 1px;
@@ -2751,6 +2752,361 @@ textarea {
   }
 }
 
+/* ---- Threads (reading-lite-kl7y.3) ----------------------------------- */
+
+/* Thread cards: a 3 px accent rule, the name stretched over the card, then the
+   first readings as a chain of dots. */
+.thread-list {
+  display: grid;
+  gap: var(--space-3);
+  max-width: var(--measure);
+  margin: 0 0 var(--space-7);
+  padding: 0;
+  list-style: none;
+}
+
+.thread-card {
+  position: relative;
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 7px 7px 0;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.thread-card:hover {
+  border-color: var(--card-border-hover);
+  border-left-color: var(--accent);
+  box-shadow: var(--card-shadow-hover);
+}
+
+.thread-card-title {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-reading);
+  font-size: 26px;
+  font-weight: 400;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.thread-card-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.thread-card-title a::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.thread-card:hover .thread-card-title a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.thread-chain {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-reading);
+  font-size: 16px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.thread-chain li {
+  position: relative;
+  padding-left: 18px;
+}
+
+.thread-chain li::before {
+  position: absolute;
+  top: 0.55em;
+  left: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  content: "";
+}
+
+.thread-chain li + li::after {
+  position: absolute;
+  top: -0.6em;
+  left: 3px;
+  width: 1px;
+  height: 1em;
+  background: var(--border);
+  content: "";
+}
+
+.thread-chain .thread-chain-more {
+  color: var(--muted);
+}
+
+.thread-chain .thread-chain-more::before {
+  background: var(--border);
+}
+
+.threads-section {
+  max-width: var(--measure);
+  margin-top: var(--space-9);
+}
+
+.threads-section-title {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.threads-section > .form-hint {
+  margin: 0 0 var(--space-3);
+}
+
+/* Tension pairs: both titles either side of the kind, in the danger ink. */
+.tension-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tension-pair {
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 0 7px 7px 0;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.tension-pair-titles {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-reading);
+  font-size: 19px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.tension-pair-titles a {
+  text-decoration: none;
+}
+
+.tension-pair-titles a:hover {
+  color: var(--danger);
+  text-decoration: underline;
+}
+
+.tension-kind {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--danger);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* One thread: a rail with a ring per reading, oldest at the top. */
+.thread-page .reading-head {
+  margin-bottom: var(--space-6);
+}
+
+.thread-rail {
+  position: relative;
+  max-width: var(--measure);
+  margin: 0;
+  padding: 0 0 0 26px;
+  list-style: none;
+  border-left: 2px solid var(--border);
+}
+
+.thread-entry {
+  position: relative;
+  padding: 0 0 var(--space-7);
+}
+
+.thread-entry::before {
+  position: absolute;
+  top: 6px;
+  left: -33px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: var(--bg);
+  content: "";
+}
+
+.thread-entry-date {
+  margin: 0 0 var(--space-1);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.thread-entry-title {
+  margin: 0 0 var(--space-1);
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 400;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.thread-entry-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.thread-entry-title a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.thread-entry-meta {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.thread-links {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.thread-link-row {
+  padding: var(--space-2) var(--space-3);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  background: var(--surface);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.thread-link-row a {
+  font-family: var(--font-reading);
+  font-size: 16px;
+  text-decoration: none;
+}
+
+.thread-link-row a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.thread-link-row .relationship-kind {
+  display: inline;
+  margin: 0;
+}
+
+.thread-link-tension {
+  border-left-color: var(--danger);
+}
+
+.thread-link-tension .relationship-kind {
+  color: var(--danger);
+}
+
+.thread-link-reason {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+/* The reading page's thread strip, above the relationship cards. */
+.thread-strip {
+  margin: 0 0 var(--space-5);
+  padding: 0 0 var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.thread-strip-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 var(--space-3);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.thread-strip-name a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.thread-strip-name a:hover {
+  text-decoration: underline;
+}
+
+.thread-strip-steps {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.thread-step {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  font-family: var(--font-reading);
+  font-size: 15px;
+  line-height: 1.35;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+a.thread-step:hover {
+  border-color: var(--card-border-hover);
+  color: var(--accent);
+}
+
+.thread-step-empty {
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
+.thread-step-label {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Worth revisiting: the positive ink, so it reads apart from the cards above. */
+.relationship-card-revisit {
+  border-left-color: var(--positive);
+}
+
+.relationship-card-revisit .relationship-kind {
+  color: var(--positive);
+}
+
 /* ---- Compact bar at container width ≤650 px --------------------------- */
 
 @container shell (max-width: 650px) {
@@ -2912,8 +3268,19 @@ textarea {
 }
 
 /* At the 320 px reflow floor the bar's first row has no room for the name. */
+@container shell (max-width: 440px) {
+  .nav-item {
+    padding-inline: var(--space-1);
+  }
+}
+
 @container shell (max-width: 359px) {
   .brand-name {
+    display: none;
+  }
+
+  /* Four labels fit the bar only without their icons. */
+  .nav-item svg {
     display: none;
   }
 }

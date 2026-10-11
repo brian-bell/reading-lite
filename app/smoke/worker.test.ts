@@ -107,11 +107,12 @@ describe("built Worker", () => {
 
   it("keeps identity, CSRF tokens, and library rows apart across concurrent renders for two tenants", async () => {
     // A answers slower than B, so renders overlap and finish out of order.
-    const order = Array.from({ length: 40 }, (_, i) => (i % 2 === 0 ? A : B));
+    // The library and Threads each read the tenant's rows during the render.
+    const order = Array.from({ length: 40 }, (_, i) => ({ tenant: i % 2 === 0 ? A : B, path: i % 4 < 2 ? "/" : "/threads" }));
     const pages = await Promise.all(
-      order.map(async (tenant) => ({
+      order.map(async ({ tenant, path }) => ({
         tenant,
-        response: await request("/", { headers: { Cookie: tenant.cookie } }),
+        response: await request(path, { headers: { Cookie: tenant.cookie } }),
       })),
     );
     for (const { tenant, response } of pages) {

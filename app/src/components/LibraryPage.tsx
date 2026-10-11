@@ -32,7 +32,9 @@ import { libraryReturnState } from "../library-return";
 import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
+import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
+import { relationshipCount } from "../threads";
 import { ConnectKeyLink } from "./ConnectKey";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
@@ -102,6 +104,7 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
   const { data, error, fetchStatus, refetch } = useQuery(
     libraryQueryOptions(queryClient, params, identity, watch.options),
   );
+  useGraphRefreshOnSettle(data);
   // An error while the page is checking itself, or after it stopped for
   // failures, is a failed check, which keeps the rows. Any other keeps its own
   // state: offline at once, and a failed read with no check to blame (none
@@ -123,6 +126,26 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
       <PageStateFocus kind={view.kind}>{pageFor(view, search, params.offset, retry, stoppedChecking)}</PageStateFocus>
     </PendingFilterFocus.Provider>
   );
+}
+
+/**
+ * A row this page saw processing that has since settled may have joined the
+ * relationship graph, which never goes stale on its own (relationships-query.ts),
+ * so the graph is invalidated, as the reading page does for the attempt it
+ * watches. Nothing is fetched until a Threads page or a reading page reads it.
+ */
+function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
+  const queryClient = useQueryClient();
+  const processing = useRef<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (data?.state !== "ready") return;
+    const was = processing.current;
+    const rows = data.page.readings;
+    processing.current = new Set(rows.filter(isProcessing).map((row) => row.id));
+    if (rows.some((row) => was.has(row.id) && !processing.current.has(row.id))) {
+      void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
+    }
+  }, [data, queryClient]);
 }
 
 /** What the library's status watch follows: the page's query, while any row on it is active. */
@@ -540,6 +563,7 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
   const badge = libraryBadge(row);
   const focusAfterFilterChange = useFocusAfterFilterChange();
   const activeTag = search.tag === undefined ? undefined : normalizeTag(search.tag);
+  const count = relationshipCount(row);
   return (
     <li className="library-card">
       {badge ? (
@@ -555,7 +579,14 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
         </Link>
       </h2>
       {row.tldr ? <p className="library-card-summary">{row.tldr}</p> : null}
-      <p className="library-card-meta">{hostnameOf(row.url)}</p>
+      {count ? (
+        <p className="reading-meta library-card-meta">
+          <span>{hostnameOf(row.url)}</span>
+          <span>{count}</span>
+        </p>
+      ) : (
+        <p className="library-card-meta">{hostnameOf(row.url)}</p>
+      )}
       {row.tags && row.tags.length > 0 ? (
         <p className="library-card-tags">
           {row.tags.map((tag) =>

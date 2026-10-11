@@ -147,6 +147,8 @@ export const RelationshipTargetSchema = z.looseObject({
   url: z.string(),
   title: absent(z.string()),
   status: ReadingStatusSchema,
+  /** When the target was saved: Worth revisiting reads it (threads.ts, revisitPrompts). */
+  created_at: absent(z.string()),
 });
 export type RelationshipTarget = Declared<z.output<typeof RelationshipTargetSchema>>;
 

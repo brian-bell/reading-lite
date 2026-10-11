@@ -4,6 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { hostnameOf, publishedOn, savedOn, sourceLabel } from "../reading-presentation";
 import { readingQueryOptions } from "../reading-query";
+import { relationshipsQueryKey } from "../relationships";
+import { relationshipsQueryOptions } from "../relationships-query";
+import { threadFor, threadsOf, type Thread } from "../threads";
 import { hasRelationships } from "../reading-relationships";
 import { searchForView, type ReadingView } from "../reading-view";
 import { isProcessing, type Reading, type ReadingResult } from "../reading";
@@ -106,6 +109,21 @@ function watchKeyOf(data: ReadingResult | undefined): string | null {
   return data.reading.active_attempt?.id ?? `pending:${data.reading.id}`;
 }
 
+/**
+ * The thread this reading is in, from the relationship graph (design spec,
+ * Screens: Reading). Only observed here, never prefetched, so it is read in
+ * the browser after hydration and the reading's server render stays bounded.
+ * Nothing while it loads or when the read fails or is refused: the strip
+ * takes no space then, and the rest of the page is unaffected.
+ */
+function useThreadOf(id: string): Thread | undefined {
+  const queryClient = useQueryClient();
+  const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+  const { data, status } = useQuery(relationshipsQueryOptions(queryClient, identity));
+  const graph = status === "success" && data.state === "ready" ? data.value : undefined;
+  return useMemo(() => (graph ? threadFor(threadsOf(graph), id) : undefined), [graph, id]);
+}
+
 /** Something said once in the polite region. A new object each time, so saying the same words again is a new event. */
 interface Said {
   text: string;
@@ -132,6 +150,7 @@ function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): Sa
     previous.current = key;
     if (was === null || key !== null) return;
     void queryClient.invalidateQueries({ queryKey: ["library"] });
+    void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
     void queryClient.invalidateQueries({ queryKey: sourceQueryKey(id) });
     void queryClient.invalidateQueries({ queryKey: diagnosticsQueryKey(id) });
     if (data?.state === "ready") setAnnounced({ text: outcomeText(data.reading) });
@@ -181,7 +200,8 @@ function ReadingSurface({
   const published = publishedOn(reading.source_date);
   const saved = savedOn(reading.created_at);
   const source = sourceLabel(reading.source_type);
-  const context = hasRelationships(reading);
+  const thread = useThreadOf(reading.id);
+  const context = hasRelationships(reading) || thread !== undefined;
   const [confirming, setConfirming] = useState(false);
   const [importing, setImporting] = useState(false);
   const reprocessRef = useRef<HTMLButtonElement>(null);
@@ -291,7 +311,7 @@ function ReadingSurface({
         <ReadingNovelty reading={reading} />
         <ReadingDetails key={`details-${reading.id}`} reading={reading} />
       </article>
-      {context ? <ReadingContext reading={reading} /> : null}
+      {context ? <ReadingContext reading={reading} thread={thread} /> : null}
       {confirming ? (
         <ConfirmDialog
           title="Reprocess this reading?"

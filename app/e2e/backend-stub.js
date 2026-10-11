@@ -1,8 +1,9 @@
 // Stand-in for the backend's FrontendReads entrypoint (the repo root's
 // src/frontend-reads.ts) in the browser-evidence suite: same method names and
-// result shape, canned identities per session cookie, and reading detail and
-// the library's list served from the fixture pack snapshot (#366 via
-// scripts/emit-app-fixture-pack.ts), with generated rows past it for paging.
+// result shape, canned identities per session cookie, and reading detail, the
+// library's list and the relationship graph served from the fixture pack
+// snapshot (#366 via scripts/emit-app-fixture-pack.ts), with generated rows
+// past the list for paging.
 // Plain JavaScript so the app's TypeScript config doesn't need the full Workers
 // runtime types, as smoke/backend-stub.js is.
 //
@@ -60,6 +61,15 @@ export class FrontendReads extends WorkerEntrypoint {
     if (!identity) return { status: 401, body: { error: "unauthorized" } };
     if (identity === NEW_READER) return { status: 200, body: EMPTY_LIBRARY };
     return { status: 200, body: libraryPage(LIBRARY_ITEMS, { q, tag, offset }) };
+  }
+
+  // The /threads pages' server render: the pack's graph, or the new reader's
+  // empty one.
+  async relationships({ cookie }) {
+    const identity = sessionOf(cookie);
+    if (!identity) return { status: 401, body: { error: "unauthorized" } };
+    if (identity === NEW_READER) return { status: 200, body: { readings: [], relationships: [] } };
+    return { status: 200, body: pack.relationships };
   }
 
   async reading({ cookie, id }) {

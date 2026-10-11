@@ -20,6 +20,7 @@ export const STEP_UP_LOGIN_HREF = stepUpLoginHref(ACCOUNT_SECURITY_PATH);
 
 const READING_PATH = /^\/readings\/[A-Za-z0-9_-]+$/;
 const INBOX_ITEM_PATH = /^\/inbox\/[A-Za-z0-9_-]+$/;
+const THREAD_PATH = /^\/threads\/[A-Za-z0-9_-]+$/;
 
 // Candidates are parsed against a fixed origin: only a root-relative path
 // resolves to it, so any host, scheme, or protocol-relative form is refused
@@ -30,6 +31,7 @@ function allowedParams(pathname: string): readonly string[] | undefined {
   if (pathname === "/") return ["q", "tag", "offset"];
   if (READING_PATH.test(pathname)) return ["view"];
   if (pathname === "/save" || pathname === "/inbox" || INBOX_ITEM_PATH.test(pathname)) return [];
+  if (pathname === "/threads" || THREAD_PATH.test(pathname)) return [];
   if (pathname === ACCOUNT_SECURITY_PATH || pathname === ACCOUNT_PROVIDER_PATH) return [];
   return undefined;
 }
