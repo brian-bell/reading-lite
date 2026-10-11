@@ -7,6 +7,8 @@ The consumer extracts content to R2, embeds, finds related readings with
 pgvector, summarizes, and publishes the reading, its relationships, and its
 embedding in one transaction.
 
+For non-trivial coding tasks, read `.cursor/skills/poteto-mode/SKILL.md` first and follow it.
+
 Read [CONTEXT.md](CONTEXT.md) for domain names and the relevant module's header
 comments before changing it. [Architecture](docs/architecture.md) contains the
 module map and write-order details; [operations](docs/operations.md) contains
