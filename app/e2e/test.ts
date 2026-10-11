@@ -46,7 +46,8 @@ export { expect };
  * client-side navigation between readings has a backend to ask. The frontend
  * Worker under test answers `/api/*` with 404 by design (ADR 0003: the backend
  * owns those routes), and the harness binds the stub only as the server
- * render's service binding. `overrides` replaces a body, and an id absent from
+ * render's service binding. It serves the pack's relationship graph too, which
+ * the reading page reads in the browser. `overrides` replaces a body, and an id absent from
  * both is a 404 — the removed target. `requests` records the id of each
  * reading the browser asked for, and `answer`, when given, replaces the answer
  * for a request with a canned one (#406): a reading's status checks. It may
@@ -60,6 +61,12 @@ export async function serveReadingsInBrowser(
 ): Promise<void> {
   await page.route("**/api/readings/*", async (route) => {
     const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
+    // The reading page's thread strip reads the graph after hydration; it is
+    // not a reading.
+    if (id === "relationships") {
+      await route.fulfill({ status: 200, json: pack.relationships });
+      return;
+    }
     requests.push(id);
     const canned = answer?.(id);
     if (canned) {

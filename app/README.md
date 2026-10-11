@@ -80,7 +80,8 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   the mailed path, and its `/login/verify` alias redeem the fragment credential
   only on Continue. Return paths go through `src/auth/return-path.ts`: an
   allowlist of `/` (`q`, `tag`, `offset`), `/readings/:id` (`view`), `/save`,
-  `/inbox`, `/inbox/:id`, `/account/security`, and `/account/provider`, with
+  `/inbox`, `/inbox/:id`, `/threads`, `/threads/:id`, `/account/security`,
+  and `/account/provider`, with
   other parameters dropped. The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
   cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
@@ -410,6 +411,22 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   cached list and marks the inbox stale without refetching the item on screen,
   which would answer 404 under a page that is leaving. A promote never sends
   `email`.
+- **Threads.** `/threads` and `/threads/:id` (reading-lite-kl7y.3) group the
+  library by the connections and tensions between its readings. Both are under
+  `src/routes/_authed`, and their loaders read the tenant's relationship graph
+  (`GET /api/readings/relationships`, `FrontendReads.relationships`) during the
+  server render (`src/relationships-query.ts`). `src/threads.ts` derives the
+  rest, ported from the next-direction prototype: threads (components of two
+  or more ready readings, split by tag above 12, oldest first), the library's
+  tension pairs in the active voice, the readings that stand alone, and the
+  thread a reading is in. `/threads/:id` shows the thread containing reading
+  `:id`, or "This reading isn't in a thread." The reading page observes the
+  same query, so it is read in the browser after hydration: the thread strip
+  (Earlier and Later) sits above Connections & tensions once it loads, and
+  takes no space before then or when the read fails. Worth revisiting, after
+  the cards, comes from `relationship_targets[].created_at` alone. A finished
+  attempt and a started reprocess invalidate the graph. Library cards show
+  their `connection_count` and `tension_count`.
 - **Sample library.** `/samples` and `/samples/:id` (reading-lite-gh341.10)
   show a few readings to anyone, signed in or not, before they have a key.
   The readings are bundled: `src/samples/sample-library.json` is generated
@@ -450,14 +467,15 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
 `e2e/`. It serves the built Worker through Wrangler's test harness — the same
 arrangement as `test:smoke`, so Workers Assets and the `BACKEND` service
 binding are real — with `e2e/backend-stub.js` standing in for the backend. The
-stub answers `whoami` for a canned session and serves reading detail from
-`e2e/fixtures/fixture-pack.json`, the fixture pack (#366) projected the way
-`GET /api/readings/:id` projects it. The browser clock is pinned to the
+stub answers `whoami` for a canned session and serves reading detail and the
+relationship graph from `e2e/fixtures/fixture-pack.json`, the fixture pack
+(#366) projected the way `GET /api/readings/:id` and
+`GET /api/readings/relationships` project it. The browser clock is pinned to the
 snapshot's `generated_at`, so the `pending` fixture stays pending and evidence
 is reproducible.
 
 Every route in `e2e/coverage.ts` — the library signed out and signed in,
-`/save`, the account page, and a ready reading — runs at 390 px and 1440 px in
+`/save`, the account page, a ready reading, `/threads`, and one thread — runs at 390 px and 1440 px in
 light and dark, as one test per route and project: axe (WCAG 2.2 AA), a layout
 check that no positioned panel escapes the viewport, and the keyboard pass
 (skip link first, a visible focus indicator on every tab stop, no focus trap)

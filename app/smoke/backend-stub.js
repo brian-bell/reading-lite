@@ -48,10 +48,22 @@ const READING = {
 // sessions' reads would show it.
 const LIBRARIES = {
   "session-a": [
-    { id: "rd_A000000001", url: "https://fieldnotes.example/a-quieter-internet", status: "ready", title: "Reader A's quiet internet" },
+    {
+      id: "rd_A000000001",
+      url: "https://fieldnotes.example/a-quieter-internet",
+      status: "ready",
+      title: "Reader A's quiet internet",
+      created_at: "2026-09-07T09:30:00.000Z",
+    },
   ],
   "session-b": [
-    { id: "rd_B000000001", url: "https://working-notes.example/gardens", status: "ready", title: "Reader B's library gardens" },
+    {
+      id: "rd_B000000001",
+      url: "https://working-notes.example/gardens",
+      status: "ready",
+      title: "Reader B's library gardens",
+      created_at: "2026-09-08T09:30:00.000Z",
+    },
   ],
 };
 
@@ -85,6 +97,17 @@ export class FrontendReads extends WorkerEntrypoint {
     if (!session) return { status: 401, body: { error: "unauthorized" } };
     await new Promise((resolve) => setTimeout(resolve, session.delayMs));
     return { status: 200, body: libraryPage(LIBRARIES[sessionKeyOf(cookie)], { q, tag, offset }) };
+  }
+
+  // The tenant's library as its relationship graph: ready readings and no
+  // rows, so /threads lists each as standing alone.
+  async relationships({ cookie, host }) {
+    if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
+    if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
+    const session = sessionOf(cookie);
+    if (!session) return { status: 401, body: { error: "unauthorized" } };
+    await new Promise((resolve) => setTimeout(resolve, session.delayMs));
+    return { status: 200, body: { readings: LIBRARIES[sessionKeyOf(cookie)], relationships: [] } };
   }
 
   // One ready reading; any other id is a reading this tenant does not have.

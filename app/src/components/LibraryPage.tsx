@@ -33,6 +33,7 @@ import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
 import { hostnameOf } from "../reading-presentation";
 import { librarySchedule } from "../status-refresh";
+import { relationshipCount } from "../threads";
 import { ConnectKeyLink } from "./ConnectKey";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
@@ -540,6 +541,7 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
   const badge = libraryBadge(row);
   const focusAfterFilterChange = useFocusAfterFilterChange();
   const activeTag = search.tag === undefined ? undefined : normalizeTag(search.tag);
+  const count = relationshipCount(row);
   return (
     <li className="library-card">
       {badge ? (
@@ -555,7 +557,14 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
         </Link>
       </h2>
       {row.tldr ? <p className="library-card-summary">{row.tldr}</p> : null}
-      <p className="library-card-meta">{hostnameOf(row.url)}</p>
+      {count ? (
+        <p className="reading-meta library-card-meta">
+          <span>{hostnameOf(row.url)}</span>
+          <span>{count}</span>
+        </p>
+      ) : (
+        <p className="library-card-meta">{hostnameOf(row.url)}</p>
+      )}
       {row.tags && row.tags.length > 0 ? (
         <p className="library-card-tags">
           {row.tags.map((tag) =>

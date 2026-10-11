@@ -19,6 +19,7 @@ import { Route as SamplesRouteImport } from './routes/samples'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as AuthedInboxRouteImport } from './routes/_authed/inbox'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
+import { Route as AuthedThreadsRouteImport } from './routes/_authed/threads'
 import { Route as AuthVerifyRouteImport } from './routes/auth.verify'
 import { Route as LoginVerifyRouteImport } from './routes/login_.verify'
 import { Route as SamplesIdRouteImport } from './routes/samples_.$id'
@@ -26,6 +27,7 @@ import { Route as AuthedAccountProviderRouteImport } from './routes/_authed/acco
 import { Route as AuthedAccountSecurityRouteImport } from './routes/_authed/account.security'
 import { Route as AuthedInboxIdRouteImport } from './routes/_authed/inbox_.$id'
 import { Route as AuthedReadingsIdRouteImport } from './routes/_authed/readings.$id'
+import { Route as AuthedThreadsIdRouteImport } from './routes/_authed/threads_.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -76,6 +78,11 @@ const AuthedSaveRoute = AuthedSaveRouteImport.update({
   path: '/save',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedThreadsRoute = AuthedThreadsRouteImport.update({
+  id: '/threads',
+  path: '/threads',
+  getParentRoute: () => AuthedRoute,
+} as any)
 const AuthVerifyRoute = AuthVerifyRouteImport.update({
   id: '/auth/verify',
   path: '/auth/verify',
@@ -111,6 +118,11 @@ const AuthedReadingsIdRoute = AuthedReadingsIdRouteImport.update({
   path: '/readings/$id',
   getParentRoute: () => AuthedRoute,
 } as any)
+const AuthedThreadsIdRoute = AuthedThreadsIdRouteImport.update({
+  id: '/threads_/$id',
+  path: '/threads/$id',
+  getParentRoute: () => AuthedRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -122,6 +134,7 @@ export interface FileRoutesByFullPath {
   '/terms': typeof TermsRoute
   '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
+  '/threads': typeof AuthedThreadsRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/samples/$id': typeof SamplesIdRoute
@@ -129,6 +142,7 @@ export interface FileRoutesByFullPath {
   '/account/security': typeof AuthedAccountSecurityRoute
   '/inbox/$id': typeof AuthedInboxIdRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
+  '/threads/$id': typeof AuthedThreadsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -140,6 +154,7 @@ export interface FileRoutesByTo {
   '/terms': typeof TermsRoute
   '/inbox': typeof AuthedInboxRoute
   '/save': typeof AuthedSaveRoute
+  '/threads': typeof AuthedThreadsRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login/verify': typeof LoginVerifyRoute
   '/samples/$id': typeof SamplesIdRoute
@@ -147,6 +162,7 @@ export interface FileRoutesByTo {
   '/account/security': typeof AuthedAccountSecurityRoute
   '/inbox/$id': typeof AuthedInboxIdRoute
   '/readings/$id': typeof AuthedReadingsIdRoute
+  '/threads/$id': typeof AuthedThreadsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -160,6 +176,7 @@ export interface FileRoutesById {
   '/terms': typeof TermsRoute
   '/_authed/inbox': typeof AuthedInboxRoute
   '/_authed/save': typeof AuthedSaveRoute
+  '/_authed/threads': typeof AuthedThreadsRoute
   '/auth/verify': typeof AuthVerifyRoute
   '/login_/verify': typeof LoginVerifyRoute
   '/samples_/$id': typeof SamplesIdRoute
@@ -167,6 +184,7 @@ export interface FileRoutesById {
   '/_authed/account/security': typeof AuthedAccountSecurityRoute
   '/_authed/inbox_/$id': typeof AuthedInboxIdRoute
   '/_authed/readings/$id': typeof AuthedReadingsIdRoute
+  '/_authed/threads_/$id': typeof AuthedThreadsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -180,6 +198,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/inbox'
     | '/save'
+    | '/threads'
     | '/auth/verify'
     | '/login/verify'
     | '/samples/$id'
@@ -187,6 +206,7 @@ export interface FileRouteTypes {
     | '/account/security'
     | '/inbox/$id'
     | '/readings/$id'
+    | '/threads/$id'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -198,6 +218,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/inbox'
     | '/save'
+    | '/threads'
     | '/auth/verify'
     | '/login/verify'
     | '/samples/$id'
@@ -205,6 +226,7 @@ export interface FileRouteTypes {
     | '/account/security'
     | '/inbox/$id'
     | '/readings/$id'
+    | '/threads/$id'
   id:
     | '__root__'
     | '/'
@@ -217,6 +239,7 @@ export interface FileRouteTypes {
     | '/terms'
     | '/_authed/inbox'
     | '/_authed/save'
+    | '/_authed/threads'
     | '/auth/verify'
     | '/login_/verify'
     | '/samples_/$id'
@@ -224,6 +247,7 @@ export interface FileRouteTypes {
     | '/_authed/account/security'
     | '/_authed/inbox_/$id'
     | '/_authed/readings/$id'
+    | '/_authed/threads_/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -312,6 +336,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedSaveRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/threads': {
+      id: '/_authed/threads'
+      path: '/threads'
+      fullPath: '/threads'
+      preLoaderRoute: typeof AuthedThreadsRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/auth/verify': {
       id: '/auth/verify'
       path: '/auth/verify'
@@ -361,25 +392,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedReadingsIdRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/threads_/$id': {
+      id: '/_authed/threads_/$id'
+      path: '/threads/$id'
+      fullPath: '/threads/$id'
+      preLoaderRoute: typeof AuthedThreadsIdRouteImport
+      parentRoute: typeof AuthedRoute
+    }
   }
 }
 
 interface AuthedRouteChildren {
   AuthedInboxRoute: typeof AuthedInboxRoute
   AuthedSaveRoute: typeof AuthedSaveRoute
+  AuthedThreadsRoute: typeof AuthedThreadsRoute
   AuthedAccountProviderRoute: typeof AuthedAccountProviderRoute
   AuthedAccountSecurityRoute: typeof AuthedAccountSecurityRoute
   AuthedInboxIdRoute: typeof AuthedInboxIdRoute
   AuthedReadingsIdRoute: typeof AuthedReadingsIdRoute
+  AuthedThreadsIdRoute: typeof AuthedThreadsIdRoute
 }
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedInboxRoute: AuthedInboxRoute,
   AuthedSaveRoute: AuthedSaveRoute,
+  AuthedThreadsRoute: AuthedThreadsRoute,
   AuthedAccountProviderRoute: AuthedAccountProviderRoute,
   AuthedAccountSecurityRoute: AuthedAccountSecurityRoute,
   AuthedInboxIdRoute: AuthedInboxIdRoute,
   AuthedReadingsIdRoute: AuthedReadingsIdRoute,
+  AuthedThreadsIdRoute: AuthedThreadsIdRoute,
 }
 
 const AuthedRouteWithChildren =

@@ -83,6 +83,8 @@ describe("frontend guards", () => {
       ["/?q=a+b&tag=ai&offset=20", "/?q=a+b&tag=ai&offset=20"],
       ["/account/provider?key=sk-proj-abc", "/account/provider"],
       ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
+      ["/threads?view=source", "/threads"],
+      ["/threads/rd_ONE?offset=20", "/threads/rd_ONE"],
     ]) {
       expect(safeReturnPath(raw), raw).toBe(expected);
     }
@@ -97,6 +99,7 @@ describe("frontend guards", () => {
       "/api/whoami",
       "/readings/%2F%2Fevil.example",
       "/readings/rd_ONE@evil.example",
+      "/threads/rd_ONE/more",
     ]) {
       expect(safeReturnPath(raw), raw).toBeUndefined();
     }

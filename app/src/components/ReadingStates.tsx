@@ -64,6 +64,29 @@ export function InboxItemNotFound() {
 }
 
 /**
+ * `/threads/$id` for a reading in no thread (reading-lite-kl7y.3): it stands
+ * alone, is not ready, or is not in the library. `readingExists` offers the
+ * reading itself when it is there to open.
+ */
+export function ThreadNotFound({ id, readingExists }: { id: string; readingExists: boolean }) {
+  return (
+    <StatePage heading="This reading isn't in a thread.">
+      <p className="auth-lede">It may not connect to another reading yet, or the link may be wrong.</p>
+      <div className="form-actions">
+        <Link to="/threads" className="button button-primary">
+          All threads
+        </Link>
+        {readingExists ? (
+          <Link to="/readings/$id" params={{ id }} className="button">
+            Open the reading
+          </Link>
+        ) : null}
+      </div>
+    </StatePage>
+  );
+}
+
+/**
  * A sample library link that names no sample (reading-lite-gh341.10): a
  * wrong or outdated link. The samples are bundled, so nothing else can be
  * missing.

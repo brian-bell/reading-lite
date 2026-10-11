@@ -5,6 +5,7 @@ import { reprocessReading } from "../api/reprocess";
 import { whoamiQueryKey, type Identity } from "../identity";
 import type { ReprocessMarkdownBody } from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
+import { relationshipsQueryKey } from "../relationships";
 import type { ReprocessOutcome } from "../reprocess";
 
 // Retry on a failed reading and Reprocess on a ready one (#410), and Import a
@@ -101,6 +102,7 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
       return Promise.all([
         CHANGED_THE_READING.has(kind) ? queryClient.invalidateQueries({ queryKey: readingQueryKey(id) }) : undefined,
         kind === "started" ? queryClient.invalidateQueries({ queryKey: ["library"] }) : undefined,
+        kind === "started" ? queryClient.invalidateQueries({ queryKey: relationshipsQueryKey }) : undefined,
       ]);
     },
   });
