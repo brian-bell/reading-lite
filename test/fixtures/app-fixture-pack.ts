@@ -234,7 +234,10 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
 // read-time staleness, newest first as the list is.
 function deskRead(items: readonly ListIndexItem[], since: string): GetDeskResponse {
   const reprocessFailed = (item: ListIndexItem) =>
-    item.status === "ready" && item.last_attempt?.trigger === "reprocess" && item.last_attempt.status === "failed";
+    item.status === "ready" &&
+    item.active_attempt?.status !== "running" &&
+    item.last_attempt?.trigger === "reprocess" &&
+    item.last_attempt.status === "failed";
   const bounded = (rows: ListIndexItem[], limit: number) => rows.slice(0, limit);
   const needsYou = items.filter((item) => item.status === "failed" || reprocessFailed(item));
   const processing = items.filter((item) => item.status === "pending");

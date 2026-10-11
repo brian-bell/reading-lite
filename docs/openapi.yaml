@@ -1528,7 +1528,8 @@ paths:
         snapshot, every row a list item after read-time staleness.
         `on_desk` is the desk in position order, any status. `needs_you` is
         failed readings and ready ones whose last attempt is a failed
-        reprocess. `processing` is pending readings. `ready_since` is ready
+        reprocess, unless another attempt is running. `processing` is pending
+        readings. `ready_since` is ready
         readings created after `since` that are not on the desk; it is empty
         without `since`. A ready reading whose reprocess failed is in both
         `needs_you` and `ready_since`. Each group is newest first and

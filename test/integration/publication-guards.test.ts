@@ -628,8 +628,12 @@ describe("the desk read", () => {
     });
     await seed("rd_pending", "19:58", { status: "pending", active_attempt: attempt("submit", "19:58") });
     for (let i = 0; i <= 10; i++) await seed(`rd_r${pad(i)}`, `18:${pad(i + 1)}`);
-    // A live reprocess leaves a ready reading ready.
-    await seed("rd_live_reprocess", "18:30", { active_attempt: attempt("reprocess", "19:59") });
+    // A live reprocess leaves a ready reading ready, and retrying a failed
+    // reprocess takes it out of needs_you.
+    await seed("rd_live_reprocess", "18:30", {
+      active_attempt: attempt("reprocess", "19:59"),
+      last_attempt: { ...attempt("reprocess", "19:40"), status: "failed", finished_at: at("19:41"), error: failedError },
+    });
     await seed("rd_at_since", "18:00");
     await seed("rd_old", "17:00");
     for (const [position, id] of [[1, "rd_r00"], [2, "rd_f00"]] as const) {

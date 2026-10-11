@@ -151,7 +151,7 @@ staleness, grouped by the status staleness leaves them with.
 | Group | Rows | Order and bound |
 |---|---|---|
 | `on_desk` | The desk, any status | Position; at most 3 |
-| `needs_you` | Failed, or ready with a failed reprocess as `last_attempt` | Newest first; 20, plus `needs_you_total` |
+| `needs_you` | Failed, or ready with a failed reprocess as `last_attempt` and no attempt running | Newest first; 20, plus `needs_you_total` |
 | `processing` | Pending | Newest first; 20, plus `processing_total` |
 | `ready_since` | Ready, `created_at` after `since`, not on the desk | Newest first; 10, plus `ready_since_total` |
 

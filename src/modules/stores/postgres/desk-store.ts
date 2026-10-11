@@ -30,7 +30,8 @@ type DeskGroup = "needs_you" | "processing" | "ready_since";
 // never stale. A running attempt started before the cutoff ($2) has failed:
 // it fails a pending or failed row, and leaves a ready one ready with that
 // attempt as its last. Otherwise a pending row last written before the cutoff
-// has failed.
+// has failed. A failed reprocess under a live attempt is being retried, so it
+// no longer needs the reader.
 const EFFECTIVE_ROWS = `base AS (
   SELECT id, created_at, updated_at, status, active_attempt, last_attempt,
          coalesce(status = 'pending' AND active_attempt->>'id' LIKE 'batch\\_%'
@@ -46,7 +47,8 @@ const EFFECTIVE_ROWS = `base AS (
               WHEN status = 'pending' AND coalesce(updated_at, created_at) < $2::timestamptz THEN 'failed'
               ELSE status::text END AS status,
          CASE WHEN expired THEN active_attempt->>'trigger' = 'reprocess'
-              ELSE coalesce(last_attempt->>'trigger' = 'reprocess' AND last_attempt->>'status' = 'failed', false)
+              ELSE coalesce(active_attempt->>'status' IS DISTINCT FROM 'running'
+                AND last_attempt->>'trigger' = 'reprocess' AND last_attempt->>'status' = 'failed', false)
          END AS reprocess_failed
   FROM base
 )`;
