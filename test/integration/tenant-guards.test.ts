@@ -14,7 +14,6 @@
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FOUNDER_PLACEHOLDER_LIMITS } from "../../src/control-plane/bootstrap";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
@@ -763,11 +762,15 @@ describe("tenant guards", () => {
          FROM tenant_provider_credentials WHERE tenant_id = ? ORDER BY provider`,
         FOUNDER_TENANT_ID,
       );
+    const operatorCap = (await testControlPlane(workerEnv).first<{ daily_spend_microdollars: number }>(
+      "SELECT daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    ))!.daily_spend_microdollars;
     const caps = {
       effort: "high",
       daily_spend_cap_microdollars: null,
-      effective_daily_spend_microdollars: FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
-      operator_daily_spend_microdollars: FOUNDER_PLACEHOLDER_LIMITS.daily_spend_microdollars,
+      effective_daily_spend_microdollars: operatorCap,
+      operator_daily_spend_microdollars: operatorCap,
     };
     try {
       const connect = (path: string, apiKey: string) =>
