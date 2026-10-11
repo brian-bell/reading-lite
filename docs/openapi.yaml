@@ -1519,6 +1519,47 @@ paths:
   /api/desk:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [desk]
+      operationId: getDesk
+      summary: Read the desk page
+      description: |
+        The desk and the groups the desk page lists around it, one READ ONLY
+        snapshot, every row a list item after read-time staleness.
+        `on_desk` is the desk in position order, any status. `needs_you` is
+        failed readings and ready ones whose last attempt is a failed
+        reprocess. `processing` is pending readings. `ready_since` is ready
+        readings created after `since` that are not on the desk; it is empty
+        without `since`. A ready reading whose reprocess failed is in both
+        `needs_you` and `ready_since`. Each group is newest first and
+        bounded, with its unbounded count beside it.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - name: since
+          in: query
+          required: false
+          description: The reader's previous visit, an ISO 8601 date-time
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: The desk and its groups
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetDeskResponse"
+        "400":
+          $ref: "#/components/responses/InvalidQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
     post:
       tags: [desk]
       operationId: addToDesk
@@ -2084,6 +2125,48 @@ components:
           description: Reading ids in desk position order
           items:
             type: string
+
+    GetDeskResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - on_desk
+        - needs_you
+        - needs_you_total
+        - processing
+        - processing_total
+        - ready_since
+        - ready_since_total
+      properties:
+        on_desk:
+          type: array
+          maxItems: 3
+          items:
+            $ref: "#/components/schemas/ListIndexItem"
+        needs_you:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ListIndexItem"
+        needs_you_total:
+          type: integer
+          minimum: 0
+        processing:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/ListIndexItem"
+        processing_total:
+          type: integer
+          minimum: 0
+        ready_since:
+          type: array
+          maxItems: 10
+          items:
+            $ref: "#/components/schemas/ListIndexItem"
+        ready_since_total:
+          type: integer
+          minimum: 0
 
     DeskPosition:
       type: integer

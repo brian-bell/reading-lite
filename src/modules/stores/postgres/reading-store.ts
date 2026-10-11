@@ -60,7 +60,7 @@ export interface ContentKeys {
 
 // Every list query selects FROM readings unaliased, so the desk position is a
 // correlated read of the reading's one reading_desk row.
-const LIST_COLUMNS = `id, key_prefix, url, title, tldr, tags, keywords, status, novelty_verdict,
+export const LIST_COLUMNS = `id, key_prefix, url, title, tldr, tags, keywords, status, novelty_verdict,
   similarity, source_date, created_at, updated_at, error, active_attempt, last_attempt,
   enrichment_degradation,
   (SELECT k.position FROM reading_desk k WHERE k.tenant_id = readings.tenant_id AND k.reading_id = readings.id)
@@ -106,7 +106,7 @@ const LIST_FILTER = `tenant_id = $1
   AND ($3 = '' OR $3 = ANY (SELECT lower(t) FROM unnest(tags) AS t))`;
 
 // NULL columns are absent manifest fields, never nulls.
-function present(row: SqlRow): Record<string, unknown> {
+export function present(row: SqlRow): Record<string, unknown> {
   return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== null));
 }
 

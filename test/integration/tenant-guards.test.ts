@@ -51,6 +51,10 @@ const FOUNDER_EMAIL = "founder@test.example";
 const OTHER_EMAIL = "other@test.example";
 const UNKNOWN_ID = "rd_0000000000";
 const NEVER_SUBMITTED = "https://example.com/never-submitted";
+const DESK_SINCE_EPOCH = "/api/desk?since=1970-01-01T00:00:00.000Z";
+const EMPTY_DESK = {
+  on_desk: [], needs_you: [], needs_you_total: 0, processing: [], processing_total: 0, ready_since: [], ready_since_total: 0,
+};
 
 beforeEach(() => {
   installQueueStub();
@@ -229,6 +233,9 @@ describe("tenant guards", () => {
     const graph = async (token: string) => (await bearer(app, token, "/api/readings/relationships")).json();
     expect(((await graph(TOKEN)) as { readings: { id: string }[] }).readings.map((r) => r.id), "relationships as owner").toEqual([id]);
     expect(await graph(OTHER_TOKEN_SECRET), "relationships").toEqual({ readings: [], relationships: [] });
+    const deskRead = async (token: string) => (await bearer(app, token, DESK_SINCE_EPOCH)).json();
+    expect(((await deskRead(TOKEN)) as { on_desk: { id: string }[] }).on_desk.map((r) => r.id), "desk read as owner").toEqual([id]);
+    expect(await deskRead(OTHER_TOKEN_SECRET), "desk read").toEqual(EMPTY_DESK);
 
     const tools = [
       { name: "get_reading", ownerReads: true },
@@ -294,6 +301,11 @@ describe("tenant guards", () => {
     expect((ownGraph.body as { readings: { id: string }[] }).readings.map((r) => r.id)).toEqual([id]);
     const otherGraph = await reads.relationships({ cookie: otherSession.cookie, host });
     expect(otherGraph.body, "FrontendReads relationships").toEqual({ readings: [], relationships: [] });
+    const since = "1970-01-01T00:00:00.000Z";
+    const ownDesk = await reads.desk({ cookie: founderSession.cookie, host, since });
+    expect(ownDesk.status, "FrontendReads desk as owner").toBe(200);
+    expect((ownDesk.body as { on_desk: { id: string }[] }).on_desk.map((r) => r.id)).toEqual([id]);
+    expect((await reads.desk({ cookie: otherSession.cookie, host, since })).body, "FrontendReads desk").toEqual(EMPTY_DESK);
 
     expect(await bucketSnapshot(), "R2 objects").toEqual(before);
     expect(queuedEnvelopes, "queue").toEqual([]);
