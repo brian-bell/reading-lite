@@ -2,6 +2,8 @@ import { z } from "zod";
 
 // A redirect would carry the bearer token off this host.
 const MODELS_URL = "https://api.openai.com/v1/models";
+const ANTHROPIC_MODEL_URL = "https://api.anthropic.com/v1/models/";
+const ANTHROPIC_VERSION = "2023-06-01";
 const MODEL_LIST_TIMEOUT_MS = 10_000;
 
 const ModelsPageSchema = z.object({
@@ -56,6 +58,52 @@ export async function checkOpenAIProviderKey(input: {
   if (!ids.has(input.summarizationModel) || !ids.has(input.embeddingModel)) {
     return { ok: false, code: "model_access" };
   }
+  return { ok: true };
+}
+
+/**
+ * A non-200 body is discarded unread. Anthropic's 401 text can echo key
+ * material, the same way OpenAI's does. A 200 from the configured model's
+ * own URL is the access check; the body only has to finish before the timeout.
+ */
+export async function checkAnthropicProviderKey(input: {
+  fetch: typeof fetch;
+  apiKey: string;
+  model: string;
+  timeoutMs?: number;
+}): Promise<ProviderKeyCheck> {
+  const signal = AbortSignal.timeout(input.timeoutMs ?? MODEL_LIST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await input.fetch(`${ANTHROPIC_MODEL_URL}${encodeURIComponent(input.model)}`, {
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      headers: {
+        "x-api-key": input.apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+      },
+      signal,
+    });
+  } catch {
+    return { ok: false, code: "provider_unavailable" };
+  }
+
+  if (response.status === 401) {
+    await discard(response);
+    return { ok: false, code: "invalid_key" };
+  }
+  if (response.status === 403 || response.status === 404) {
+    await discard(response);
+    return { ok: false, code: "model_access" };
+  }
+  if (response.status !== 200) {
+    await discard(response);
+    return { ok: false, code: "provider_unavailable" };
+  }
+
+  await readJson(response, signal);
+  if (signal.aborted) return { ok: false, code: "provider_unavailable" };
   return { ok: true };
 }
 

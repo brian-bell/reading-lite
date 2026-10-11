@@ -77,7 +77,9 @@ import {
 } from "./control-plane/token-handlers";
 import { handleGetSettings, handlePostSettings } from "./control-plane/settings-handlers";
 import {
+  handleConnectAnthropicKey,
   handleConnectProviderKey,
+  handleDeleteAnthropicKey,
   handleDeleteProviderKey,
   handleGetProviderSettings,
   handleGetProviderUsage,
@@ -190,6 +192,10 @@ export function createApp(opts: AppOptions = {}) {
     handleConnectProviderKey(c, authNowMs(), services.fetch),
   );
   app.delete("/api/auth/provider", requireRecentAuth(authNowMs), (c) => handleDeleteProviderKey(c));
+  app.post("/api/auth/provider/anthropic", requireRecentAuth(authNowMs), (c) =>
+    handleConnectAnthropicKey(c, authNowMs(), services.fetch),
+  );
+  app.delete("/api/auth/provider/anthropic", requireRecentAuth(authNowMs), (c) => handleDeleteAnthropicKey(c));
   app.post("/api/auth/provider/preferences", (c) => handleUpdateProviderPreferences(c, authNowMs()));
   app.get("/api/auth/provider/usage", (c) => handleGetProviderUsage(c));
   app.get("/api/dev/mailbox", (c) => handleDevMailbox(c));

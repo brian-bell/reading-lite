@@ -1,7 +1,8 @@
 // Control-plane guards no integration test owns: account teardown's last
 // checks before the users row is hard-deleted, paid dispatch's refusal to call
 // a provider without clean admission or with another provider's key header,
-// and provider-key ciphertext binding.
+// provider-key ciphertext binding, and the Anthropic key check's refusal to
+// read a non-200 body.
 //
 // Teardown runs against PostgreSQL so the foreign keys are enforced as in
 // production; useControlPlane rolls each test back.
@@ -14,6 +15,7 @@ import { SESSION_ABSOLUTE_TTL_MS, SESSION_IDLE_TTL_MS } from "../../src/control-
 import { parseAuthRootSecret, parseProviderKeySecret } from "../../src/control-plane/crypto";
 import type { ControlPlaneDb } from "../../src/control-plane/db";
 import { createPaidFetch, SpendAdmissionError, type SpendRpc } from "../../src/control-plane/paid-dispatch";
+import { checkAnthropicProviderKey } from "../../src/control-plane/provider-key-check";
 import { decryptProviderKey, encryptProviderKey } from "../../src/control-plane/provider-key-crypto";
 import { toTimestamp } from "../../src/control-plane/pg-time";
 import { buildSummarizeRequestBody as buildAnthropicBody } from "../../src/modules/anthropic";
@@ -332,6 +334,90 @@ describe("paid dispatch", () => {
         { url: "https://example.com", extractedText: "article", similarReadings: [] }, "claude-sonnet-5-5", "low")),
     });
     expect(sent).toEqual([["Bearer sk-openai-tenant-3333", null], [null, "sk-ant-tenant-7777"]]);
+  });
+});
+
+describe("checkAnthropicProviderKey", () => {
+  const MODEL = "claude-sonnet-5-5";
+  const KEY = "sk-ant-unit-check-key";
+  const MODEL_URL = `https://api.anthropic.com/v1/models/${MODEL}`;
+
+  // A non-200 body that throws if anything pulls it. Cancel is allowed.
+  function unread(): BodyInit {
+    return new ReadableStream({
+      pull() {
+        throw new Error("non-200 body was read");
+      },
+    });
+  }
+
+  function recording(status: number): {
+    fetch: typeof fetch;
+    calls: Array<{ url: string; init: RequestInit | undefined }>;
+  } {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init });
+      return new Response(status === 200 ? JSON.stringify({ type: "model", id: MODEL }) : unread(), {
+        status,
+        headers: status === 302 ? { location: "https://evil.example" } : undefined,
+      });
+    };
+    return { fetch: fetchImpl, calls };
+  }
+
+  function expectRequest(calls: Array<{ url: string; init: RequestInit | undefined }>) {
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(MODEL_URL);
+    expect(calls[0]?.init).toMatchObject({
+      method: "GET",
+      redirect: "manual",
+      cache: "no-store",
+      headers: { "x-api-key": KEY, "anthropic-version": "2023-06-01" },
+    });
+    expect(calls[0]?.init?.signal).toBeInstanceOf(AbortSignal);
+  }
+
+  it.each([
+    [200, { ok: true }],
+    [401, { ok: false, code: "invalid_key" }],
+    [403, { ok: false, code: "model_access" }],
+    [404, { ok: false, code: "model_access" }],
+    [500, { ok: false, code: "provider_unavailable" }],
+    [302, { ok: false, code: "provider_unavailable" }],
+  ] as const)("classifies HTTP %s", async (status, expected) => {
+    const { fetch, calls } = recording(status);
+    await expect(checkAnthropicProviderKey({ fetch, apiKey: KEY, model: MODEL })).resolves.toEqual(expected);
+    expectRequest(calls);
+  });
+
+  it("classifies a stalled model body as provider unavailable", async () => {
+    const fetchImpl: typeof fetch = (_input, init) => {
+      const stream = new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => {
+            controller.error(new DOMException("The operation was aborted", "AbortError"));
+          });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200, headers: { "content-type": "application/json" } }));
+    };
+    await expect(
+      checkAnthropicProviderKey({ fetch: fetchImpl, apiKey: KEY, model: MODEL, timeoutMs: 20 }),
+    ).resolves.toEqual({ ok: false, code: "provider_unavailable" });
+  });
+
+  it("classifies a network failure as provider unavailable", async () => {
+    let url = "";
+    const fetchImpl: typeof fetch = async (input) => {
+      url = String(input);
+      throw new Error("connect ECONNREFUSED");
+    };
+    await expect(checkAnthropicProviderKey({ fetch: fetchImpl, apiKey: KEY, model: MODEL })).resolves.toEqual({
+      ok: false,
+      code: "provider_unavailable",
+    });
+    expect(url).toBe(MODEL_URL);
   });
 });
 

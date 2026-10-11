@@ -10,8 +10,13 @@ import {
 import type { AppBindings } from "../middleware";
 import { jsonAuth } from "./auth-handlers";
 import { fromSql } from "./db";
-import { checkOpenAIProviderKey, type ProviderKeyRejection } from "./provider-key-check";
-import { deleteProviderCredential, PROVIDER_OPENAI, upsertProviderCredential } from "./provider-credentials";
+import { checkAnthropicProviderKey, checkOpenAIProviderKey, type ProviderKeyRejection } from "./provider-key-check";
+import {
+  deleteProviderCredential,
+  PROVIDER_ANTHROPIC,
+  PROVIDER_OPENAI,
+  upsertProviderCredential,
+} from "./provider-credentials";
 import { readProviderKeyRoots } from "./provider-key-crypto";
 import { loadProviderSettings, loadSpendCaps, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
 import { fetchTenantSpendStatus } from "./spend-status";
@@ -105,6 +110,49 @@ export async function handleDeleteProviderKey(c: Context<AppBindings>): Promise<
   const userId = String(c.get("principal").userId);
   const db = fromSql(c.get("sql"));
   await deleteProviderCredential(db, { tenantId: userId, provider: PROVIDER_OPENAI });
+  return settingsResponse(await loadProviderSettings(db, userId));
+}
+
+export async function handleConnectAnthropicKey(
+  c: Context<AppBindings>,
+  nowMs: number,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  const json: unknown = await c.req.json().catch(() => null);
+  const parsed = PostProviderKeyBodySchema.safeParse(json);
+  if (!parsed.success) return jsonAuth({ error: "invalid body" }, 400);
+
+  let roots;
+  try {
+    roots = readProviderKeyRoots(c.env);
+  } catch {
+    return jsonAuth({ error: "auth misconfigured" }, 500);
+  }
+
+  const check = await checkAnthropicProviderKey({
+    fetch: fetchImpl,
+    apiKey: parsed.data.api_key,
+    model: c.env.ANTHROPIC_MODEL.trim(),
+  });
+  if (!check.ok) return keyRejection(check.code);
+
+  const userId = String(c.get("principal").userId);
+  const db = fromSql(c.get("sql"));
+  await upsertProviderCredential(db, {
+    tenantId: userId,
+    plaintext: parsed.data.api_key,
+    root: roots.providerKeyRoot,
+    nowMs,
+    validatedAtMs: nowMs,
+    provider: PROVIDER_ANTHROPIC,
+  });
+  return settingsResponse(await loadProviderSettings(db, userId));
+}
+
+export async function handleDeleteAnthropicKey(c: Context<AppBindings>): Promise<Response> {
+  const userId = String(c.get("principal").userId);
+  const db = fromSql(c.get("sql"));
+  await deleteProviderCredential(db, { tenantId: userId, provider: PROVIDER_ANTHROPIC });
   return settingsResponse(await loadProviderSettings(db, userId));
 }
 
