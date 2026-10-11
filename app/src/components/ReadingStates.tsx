@@ -65,10 +65,12 @@ export function InboxItemNotFound() {
 
 /**
  * `/threads/$id` for a reading in no thread (reading-lite-kl7y.3): it stands
- * alone, is not ready, or is not in the library. `readingExists` offers the
- * reading itself when it is there to open.
+ * alone, is not ready, or is not in the library. The reading is always
+ * offered: the graph holds only ready readings and relationship ends, so it
+ * cannot say whether the reading exists, and the reading page has its own
+ * not-found state.
  */
-export function ThreadNotFound({ id, readingExists }: { id: string; readingExists: boolean }) {
+export function ThreadNotFound({ id }: { id: string }) {
   return (
     <StatePage heading="This reading isn't in a thread.">
       <p className="auth-lede">It may not connect to another reading yet, or the link may be wrong.</p>
@@ -76,11 +78,9 @@ export function ThreadNotFound({ id, readingExists }: { id: string; readingExist
         <Link to="/threads" className="button button-primary">
           All threads
         </Link>
-        {readingExists ? (
-          <Link to="/readings/$id" params={{ id }} className="button">
-            Open the reading
-          </Link>
-        ) : null}
+        <Link to="/readings/$id" params={{ id }} className="button">
+          Open the reading
+        </Link>
       </div>
     </StatePage>
   );

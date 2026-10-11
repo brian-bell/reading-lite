@@ -29,8 +29,8 @@ export function relationshipsQueryOptions(queryClient: QueryClient, identity: Id
     queryFn: ({ signal }): Promise<RelationshipsResult> => loadRelationships(queryClient, expectedTenant, signal),
     enabled: identity != null,
     // Dehydrated with the Threads pages, so hydration asks nothing again. A
-    // finished attempt and a started reprocess invalidate it, as they do the
-    // library (ReadingPage.tsx, use-reprocess.ts).
+    // finished attempt, on the reading page or a library row, and a started
+    // reprocess invalidate it (ReadingPage.tsx, LibraryPage.tsx, use-reprocess.ts).
     staleTime: Infinity,
     retry: false,
   });

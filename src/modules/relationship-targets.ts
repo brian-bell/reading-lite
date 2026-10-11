@@ -46,10 +46,16 @@ export function projectRelationshipTargets(
   return targets;
 }
 
+/** What the graph read selects per reading (PgReadingStore.relationshipGraph). */
+export type GraphReadingRow = Pick<
+  ListIndexItem,
+  "id" | "url" | "title" | "tags" | "status" | "created_at" | "updated_at" | "error" | "active_attempt" | "last_attempt"
+>;
+
 // GET /api/readings/relationships: each reading after the same stale
 // annotation, cut to what the frontend builds threads from.
 export function projectRelationshipGraph(
-  graph: { readings: readonly ListIndexItem[]; relationships: readonly RelationshipRow[] },
+  graph: { readings: readonly GraphReadingRow[]; relationships: readonly RelationshipRow[] },
   ttlSeconds: number,
   nowIso: string,
 ): GetReadingRelationshipsResponse {

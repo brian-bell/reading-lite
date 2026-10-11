@@ -206,7 +206,7 @@ export function ThreadPage({ id }: { id: string }) {
 
 function ThreadOf({ graph, id, notice }: { graph: RelationshipGraph; id: string; notice: ReactNode }) {
   const thread = useMemo(() => threadFor(threadsOf(graph), id), [graph, id]);
-  if (!thread) return <ThreadNotFound id={id} readingExists={graph.readings.some((reading) => reading.id === id)} />;
+  if (!thread) return <ThreadNotFound id={id} />;
   const titles = new Map(graph.readings.map((reading) => [reading.id, reading.title ?? reading.url]));
   const first = thread.readings[0]!;
   const span = spanOf(thread);

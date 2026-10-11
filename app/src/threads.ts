@@ -151,9 +151,10 @@ export function threadFor(threads: readonly Thread[], readingId: string): Thread
 const ACTIVE_VOICE: Record<string, string> = { superseded_by: "supersedes", qualified_by: "qualifies" };
 
 /**
- * One pair per unordered {a, b}, from whichever side's row reads in the active
- * voice, newest first by the later of the two readings. Tensions are stored on
- * both sides with inverse kinds and the same reason.
+ * One pair per unordered {a, b} of ready readings, as threads are, from
+ * whichever side's row reads in the active voice, newest first by the later of
+ * the two readings. Tensions are stored on both sides with inverse kinds and
+ * the same reason.
  */
 export function tensionPairs(graph: RelationshipGraph): TensionPair[] {
   const byId = new Map(graph.readings.map((reading) => [reading.id, reading]));
@@ -163,7 +164,7 @@ export function tensionPairs(graph: RelationshipGraph): TensionPair[] {
     if (row.kind !== "tension") continue;
     const source = byId.get(row.source_id);
     const target = byId.get(row.target_id);
-    if (!source || !target) continue;
+    if (source?.status !== "ready" || target?.status !== "ready") continue;
     const key = [source.id, target.id].sort(byCodePoint).join("|");
     const flipped = row.tension_kind === undefined ? undefined : ACTIVE_VOICE[row.tension_kind];
     // A row already in the active voice wins; otherwise the first row stands.

@@ -130,8 +130,9 @@ describe("tensionPairs", () => {
       ],
     ],
     ["connections are not tensions", [conn("a", "b")], []],
+    ["a tension with a reading that is not ready is left out", [ten("a", "f", "contradicts")], []],
   ])("%s", (_name, rows, expected) => {
-    const g = graph([r("a", 0), r("b", 1), r("c", 2), r("d", 3)], rows);
+    const g = graph([r("a", 0), r("b", 1), r("c", 2), r("d", 3), r("f", 4, [], "failed")], rows);
     expect(tensionPairs(g).map((pair) => [pair.a.id, pair.kind, pair.b.id])).toEqual(expected);
   });
 

@@ -77,6 +77,25 @@ const RELATIONSHIP_COUNTS = ["connection", "tension"]
   )
   .join(", ");
 
+// The relationship graph's columns: what its response carries, plus what
+// read-time staleness decides over. Not LIST_COLUMNS, whose summaries,
+// keywords and desk position the graph would read and throw away.
+const GRAPH_COLUMNS = `readings.id, readings.url, readings.title, readings.tags, readings.status,
+  readings.created_at, readings.updated_at, readings.error, readings.active_attempt, readings.last_attempt`;
+
+const GraphReadingRowSchema = ListIndexItemSchema.pick({
+  id: true,
+  url: true,
+  title: true,
+  tags: true,
+  status: true,
+  created_at: true,
+  updated_at: true,
+  error: true,
+  active_attempt: true,
+  last_attempt: true,
+});
+
 // The list search: a case-insensitive substring over
 // title, tldr, url and keywords, and a case-insensitive exact tag. strpos, not
 // LIKE, so q needs no wildcard escaping. Stored tags keep their case. No
@@ -175,29 +194,39 @@ export class PgReadingStore {
   // The tenant's relationship graph (GET /api/readings/relationships): every
   // ready reading, plus any reading at either end of a relationship whose
   // target is live, each with its own outgoing rows in kind, position order.
-  // One statement, so the readings and the rows are one snapshot.
-  async relationshipGraph(): Promise<{ readings: ListIndexItem[]; relationships: RelationshipRow[] }> {
+  // One statement, so the readings and the rows are one snapshot. The rows are
+  // grouped by source once and joined, rather than read by a correlated
+  // subquery per reading: `rel` is referenced more than once, so it is
+  // materialized, and a materialized CTE has no index to probe.
+  async relationshipGraph(): Promise<{
+    readings: z.infer<typeof GraphReadingRowSchema>[];
+    relationships: RelationshipRow[];
+  }> {
     const rows = await this.sql.query<SqlRow & { relationships: unknown }>(
       `WITH rel AS (
          SELECT x.source_id, x.kind, x.target_id, x.tension_kind, x.reason, x.position
          FROM reading_relationships x
          JOIN readings t ON (t.tenant_id, t.id) = (x.tenant_id, x.target_id)
          WHERE x.tenant_id = $1
+       ),
+       grouped AS (
+         SELECT rel.source_id, json_agg(json_strip_nulls(json_build_object(
+                  'source_id', rel.source_id, 'kind', rel.kind, 'target_id', rel.target_id,
+                  'tension_kind', rel.tension_kind, 'reason', rel.reason))
+                ORDER BY rel.kind, rel.position) AS relationships
+         FROM rel GROUP BY rel.source_id
        )
-       SELECT ${LIST_COLUMNS},
-         (SELECT coalesce(json_agg(json_strip_nulls(json_build_object(
-                   'source_id', rel.source_id, 'kind', rel.kind, 'target_id', rel.target_id,
-                   'tension_kind', rel.tension_kind, 'reason', rel.reason))
-                 ORDER BY rel.kind, rel.position), '[]'::json)
-          FROM rel WHERE rel.source_id = readings.id) AS relationships
+       SELECT ${GRAPH_COLUMNS}, coalesce(grouped.relationships, '[]'::json) AS relationships
        FROM readings
-       WHERE tenant_id = $1
-         AND (status = 'ready' OR id IN (SELECT source_id FROM rel) OR id IN (SELECT target_id FROM rel))
-       ORDER BY id`,
+       LEFT JOIN grouped ON grouped.source_id = readings.id
+       WHERE readings.tenant_id = $1
+         AND (readings.status = 'ready'
+           OR readings.id IN (SELECT source_id FROM rel) OR readings.id IN (SELECT target_id FROM rel))
+       ORDER BY readings.id`,
       [this.tenantId],
     );
     return {
-      readings: rows.map(({ relationships: _rows, ...row }) => ListIndexItemSchema.parse(present(row))),
+      readings: rows.map(({ relationships: _rows, ...row }) => GraphReadingRowSchema.parse(present(row))),
       relationships: rows.flatMap((row) => z.array(RelationshipRowSchema).parse(row.relationships)),
     };
   }
