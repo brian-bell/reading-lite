@@ -206,9 +206,9 @@ textarea {
 }
 
 /* The column has room for one word a tile; the bar spells the label out where
-   its four destinations fit. Still read out, so the link's name is "Save
+   its five destinations fit. Still read out, so the link's name is "Save
    reading" at every width. */
-@container shell (width > 650px) or (width <= 440px) {
+@container shell (width > 650px) or (width <= 520px) {
   .nav-item-rest {
     position: absolute;
     width: 1px;
@@ -3832,20 +3832,23 @@ a.thread-step:hover {
   }
 }
 
-/* At the 320 px reflow floor the bar's first row has no room for the name. */
-@container shell (max-width: 440px) {
+/* The bar's five destinations on one row, down to the 320 px reflow floor:
+   tighter items first, then the labels without their icons. */
+@container shell (max-width: 480px) {
   .nav-item {
     padding-inline: var(--space-1);
   }
 }
 
-@container shell (max-width: 359px) {
-  .brand-name {
+@container shell (max-width: 389px) {
+  .nav-item svg {
     display: none;
   }
+}
 
-  /* Four labels fit the bar only without their icons. */
-  .nav-item svg {
+/* At the reflow floor the bar's first row has no room for the name. */
+@container shell (max-width: 359px) {
+  .brand-name {
     display: none;
   }
 }
