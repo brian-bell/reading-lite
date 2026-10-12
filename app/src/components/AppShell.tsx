@@ -12,6 +12,9 @@ export type { AccountState } from "./AccountMenu";
 // Connected navigation shell (design spec, Layout and Components): an 80 px
 // column at desktop widths, a brand row plus horizontal bar at container width
 // ≤650 px. The account menu (or a sign-in link) follows the theme control.
+// The items are the design spec's (Decisions, 9) as far as their pages
+// exist: Catalog joins with its page (reading-lite-kl7y.4), and Inbox leaves
+// once the desk carries it (kl7y.8).
 export function AppShell({
   theme,
   onThemeChange,
@@ -46,6 +49,12 @@ export function AppShell({
               <ul className="nav-items">
                 <li>
                   <Link to="/" className="nav-item" activeOptions={{ exact: true, includeSearch: false }}>
+                    <Icon name="desk" size={22} />
+                    <span>Desk</span>
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/library" className="nav-item" activeOptions={{ includeSearch: false }}>
                     <Icon name="library" size={22} />
                     <span>Library</span>
                   </Link>

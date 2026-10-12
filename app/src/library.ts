@@ -34,6 +34,7 @@ export const LibraryRowSchema = z.looseObject({
   active_attempt: absent(ProcessingAttemptSchema),
   last_attempt: absent(ProcessingAttemptSchema),
   desk_position: absent(z.number()),
+  novelty_verdict: absent(z.string()),
   connection_count: absent(z.number()),
   tension_count: absent(z.number()),
 });

@@ -5,6 +5,7 @@ import { accountViewOf } from "../account-state";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import { discardInboxItem, promoteInboxItem } from "../api/inbox";
 import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
+import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
 import {
   inboxItemName,
@@ -153,6 +154,7 @@ export function InboxItemPage({ id }: { id: string }) {
             // A failed owner the backend rewrote in place (see SavePage.tsx).
             queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
             await queryClient.invalidateQueries({ queryKey: ["library"] });
+            await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
           }
           setRefused(outcome);
           setAnnouncement(noticeSentence(outcome) ?? null);
@@ -161,6 +163,7 @@ export function InboxItemPage({ id }: { id: string }) {
         setAnnouncement(outcome.kind === "existing" ? "Opening the reading…" : "Added. Opening the reading…");
         await forgetItem();
         await queryClient.invalidateQueries({ queryKey: ["library"] });
+        await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
         queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
         const notice = outcome.kind === "existing" ? outcome.notice : undefined;
         await navigate({

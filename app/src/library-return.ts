@@ -1,6 +1,6 @@
 // The way back to the library (#407; design spec, Routes and navigation
 // state): "Back to library" returns to the library URL the reader came from,
-// carried in router history state, else `/`.
+// carried in router history state, else `/library`.
 //
 // Opening a reading from a library card records the library entry's history
 // position. The reading, every relationship followed from it, and the
@@ -14,7 +14,7 @@
 //
 // Like the trail (reading-trail.ts) the record names the document load that
 // wrote it. A reload or a shared link carries none from this load, and neither
-// does a server render, so both render the plain link to `/` and hydration has
+// does a server render, so both render the plain link to `/library` and hydration has
 // nothing to disagree about.
 
 import type { HistoryState, ParsedHistoryState } from "@tanstack/history";
@@ -44,7 +44,7 @@ export function libraryReturnState(
 
 /**
  * How far back the library entry is, when this location carries a record from
- * this load that points behind it; otherwise undefined and the page links to `/`.
+ * this load that points behind it; otherwise undefined and the page links to `/library`.
  */
 export function libraryReturnDelta(state: Partial<ParsedHistoryState> | undefined, loadId: string = currentLoadId()): number | undefined {
   const record = state?.libraryReturn;
