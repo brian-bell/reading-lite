@@ -336,7 +336,6 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Weekly relationship refresh (#175), gated off in both environments.
 [[env.staging.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-staging-refresh"
@@ -607,7 +606,6 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Weekly relationship refresh (#175), gated off in both environments.
 [[env.production.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-refresh"

@@ -9,13 +9,11 @@ const REFRESH_SCHEDULE = {
 
 export const REFRESH_CRON = `${REFRESH_SCHEDULE.minute} ${REFRESH_SCHEDULE.hour} * * ${REFRESH_SCHEDULE.sunday}` as const;
 
-/** Latest Sunday 03:07:00.000 UTC at or before the instant. */
 type RefreshPeriod = { readonly startsAtMs: number };
 
 function refreshPeriod(atMs: number): RefreshPeriod {
   const at = new Date(atMs);
   const daysBack = (at.getUTCDay() - REFRESH_SCHEDULE.sunday + 7) % 7;
-  // Equal to the boundary opens the period. One millisecond earlier stays on the previous Sunday.
   const boundary = Date.UTC(
     at.getUTCFullYear(),
     at.getUTCMonth(),
