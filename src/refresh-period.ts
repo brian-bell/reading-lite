@@ -28,11 +28,30 @@ function refreshPeriod(atMs: number): RefreshPeriod {
   return { startsAtMs: atMs < boundary ? boundary - WEEK_MS : boundary };
 }
 
+function refreshInstantMs(iso: string): number {
+  // Date.parse accepts a date-only prefix and rolls 2026-02-31 into March.
+  // Either would look like a real instant and skip or mint a week.
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?Z$/.exec(iso);
+  if (!match) throw new RangeError(`unparseable refresh instant ${iso}`);
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const ms = Number(match[7] ?? "0");
+  const atMs = Date.UTC(year, month, day, hour, minute, second, ms);
+  const at = new Date(atMs);
+  if (
+    at.getUTCFullYear() !== year || at.getUTCMonth() !== month || at.getUTCDate() !== day ||
+    at.getUTCHours() !== hour || at.getUTCMinutes() !== minute || at.getUTCSeconds() !== second ||
+    at.getUTCMilliseconds() !== ms
+  ) {
+    throw new RangeError(`unparseable refresh instant ${iso}`);
+  }
+  return atMs;
+}
+
 export function opensNewRefreshBudget(nowIso: string, budgetAtIso: string): boolean {
-  const nowMs = Date.parse(nowIso);
-  const budgetMs = Date.parse(budgetAtIso);
-  // Returning false for a bad string would skip a week.
-  if (Number.isNaN(nowMs)) throw new RangeError(`unparseable refresh instant ${nowIso}`);
-  if (Number.isNaN(budgetMs)) throw new RangeError(`unparseable refresh instant ${budgetAtIso}`);
-  return refreshPeriod(nowMs).startsAtMs > refreshPeriod(budgetMs).startsAtMs;
+  return refreshPeriod(refreshInstantMs(nowIso)).startsAtMs > refreshPeriod(refreshInstantMs(budgetAtIso)).startsAtMs;
 }

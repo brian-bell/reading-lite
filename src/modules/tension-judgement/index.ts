@@ -1,7 +1,7 @@
 // Pairwise tension judgement: the relationship-only sibling that answers "does
 // reading A contradict, supersede, or qualify reading B?" from the two stored
 // summaries alone. It never sees extracted content, never re-summarizes, and
-// is only ever called by `ops corpus refresh-tensions` and the hosted nightly
+// is only ever called by `ops corpus refresh-tensions` and the hosted weekly
 // refresh (src/tension-judge.ts) — ingest cannot produce tensions because the
 // conflicting reading is exactly what ingest cannot see.
 //

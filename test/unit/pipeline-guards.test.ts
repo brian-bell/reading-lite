@@ -189,10 +189,20 @@ describe("opensNewRefreshBudget", () => {
       ["2027-01-02T12:00:00.000Z", "2026-12-30T03:07:00.000Z", false, "Saturday 2 Jan stays on the December period"],
       ["2027-01-03T03:06:59.999Z", "2026-12-27T03:07:00.000Z", false, "one millisecond before 3 Jan"],
       ["2027-01-03T03:07:00.000Z", "2026-12-27T03:07:00.000Z", true, "Sunday 3 Jan opens across the year"],
+      ["2026-10-18T03:07:00.000Z", "2026-10-25T03:07:00.000Z", false, "clock stepped backward"],
     ];
     for (const [now, budget, opens, label] of cases) {
       expect(opensNewRefreshBudget(now, budget), label).toBe(opens);
     }
+  });
+
+  it("rejects a date-only prefix and a rolled calendar date", () => {
+    expect(() => opensNewRefreshBudget("2026-10-19", "2026-10-18T03:07:00.000Z")).toThrow(
+      new RangeError("unparseable refresh instant 2026-10-19"),
+    );
+    expect(() => opensNewRefreshBudget("2026-02-31T03:07:00.000Z", "2026-10-18T03:07:00.000Z")).toThrow(
+      new RangeError("unparseable refresh instant 2026-02-31T03:07:00.000Z"),
+    );
   });
 
   it("keeps the 15-minute cron and points both hosted schedules at REFRESH_CRON", () => {
