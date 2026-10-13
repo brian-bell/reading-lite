@@ -1,10 +1,11 @@
 // Reading pipeline guards that no integration test owns: prompt-cache
 // stability, fail-closed provider configuration, SSRF host blocking, the R2
-// key spelling the live corpus is stored under, and the content sweep's
-// refusal to delete what a reading still points at.
+// key spelling the live corpus is stored under, the content sweep's
+// refusal to delete what a reading still points at, and the weekly refresh budget.
 
 import { describe, expect, it, vi } from "vitest";
 import { AttemptIo } from "../../src/attempt-io";
+import { opensNewRefreshBudget } from "../../src/refresh-period";
 import { buildSummarizeRequestBody as buildAnthropicSummarizeRequestBody } from "../../src/modules/anthropic";
 import { isBlockedHost } from "../../src/modules/extractor";
 import { buildSummarizeRequestBody as buildOpenAISummarizeRequestBody } from "../../src/modules/openai-summarizer";
@@ -161,6 +162,35 @@ describe("R2 content", () => {
       await io(content, current).discardSupersededContent({ rawKey, extractedKey });
       expect(content.deletePrefix, label).not.toHaveBeenCalled();
       expect(content.delete, label).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("opensNewRefreshBudget", () => {
+  it("opens on the next Sunday 03:07 UTC and stays shut for the rest of that period", () => {
+    const cases: [string, string, boolean, string][] = [
+      ["2026-10-18T03:07:00.000Z", "2026-10-18T03:07:00.000Z", false, "same Sunday retry"],
+      ["2026-10-18T03:07:13.000Z", "2026-10-18T03:07:13.000Z", false, "same firing with seconds"],
+      ["2026-10-18T15:00:00.000Z", "2026-10-18T03:07:00.000Z", false, "later the same Sunday"],
+      ["2026-10-18T03:22:00.000Z", "2026-10-18T03:07:00.000Z", false, "rollover already recorded this Sunday"],
+      ["2026-10-18T03:07:00.000Z", "2026-10-18T02:00:00.000Z", true, "03:07 opens against a grant earlier that Sunday"],
+      ["2026-10-18T02:00:00.000Z", "2026-10-11T03:07:00.000Z", false, "Sunday before 03:07 stays on the previous period"],
+      ["2026-10-18T03:06:59.999Z", "2026-10-11T03:07:00.000Z", false, "one millisecond before the boundary"],
+      ["2026-10-18T03:07:00.000Z", "2026-10-11T03:07:00.000Z", true, "exact boundary against the previous Sunday"],
+      ["2026-10-19T03:07:00.000Z", "2026-10-18T03:07:00.000Z", false, "Monday stays in the Sunday period"],
+      ["2026-10-24T23:59:59.999Z", "2026-10-18T03:07:00.000Z", false, "Saturday night stays in the Sunday period"],
+      ["2026-10-17T03:07:00.000Z", "2026-10-14T03:07:00.000Z", false, "Saturday after a Wednesday grant stays in that period"],
+      ["2026-10-18T03:07:00.000Z", "2026-10-14T03:07:00.000Z", true, "next Sunday opens against a Wednesday grant"],
+      ["2026-10-18T03:07:00.000Z", "2026-10-17T03:07:00.000Z", true, "next Sunday opens against a Saturday grant"],
+      ["2026-10-25T03:06:59.999Z", "2026-10-18T03:07:13.000Z", false, "one millisecond before the next Sunday"],
+      ["2026-10-25T03:07:00.000Z", "2026-10-18T03:07:00.000Z", true, "next Sunday"],
+      ["2026-11-01T03:07:00.000Z", "2026-10-25T03:07:00.000Z", true, "the Sunday of the US clock change"],
+      ["2027-01-02T12:00:00.000Z", "2026-12-30T03:07:00.000Z", false, "Saturday 2 Jan stays on the December period"],
+      ["2027-01-03T03:06:59.999Z", "2026-12-27T03:07:00.000Z", false, "one millisecond before 3 Jan"],
+      ["2027-01-03T03:07:00.000Z", "2026-12-27T03:07:00.000Z", true, "Sunday 3 Jan opens across the year"],
+    ];
+    for (const [now, budget, opens, label] of cases) {
+      expect(opensNewRefreshBudget(now, budget), label).toBe(opens);
     }
   });
 });
