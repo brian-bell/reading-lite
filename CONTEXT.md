@@ -191,22 +191,22 @@ item and promotes ("Add to library") or discards it (reading-lite-fy8t).
 
 ## Relationship refresh
 
-- **Refresh scan** — a gated nightly, founder-tenant full scan of ready readings,
-  in queue shards of 25. It reuses the offline neighbourhood-drift rules and
+- **Refresh scan** — a gated weekly, founder-tenant full scan of ready readings
+  at Sunday 03:07 UTC, in queue shards of 25. It reuses the offline neighbourhood-drift rules and
   only reads reading data. All shards finish before judge fan-out starts.
 - **Tension pair** — two readings, one in the other's floored ready
   neighbourhood, stored canonically (`a < b`). The scan collects every pair that
   clears the overlap pre-filter and is not already judged; pairs dispatch after
-  the connection judges, under their own nightly cap. Leftover pairs are not
-  carried: the next night's fresh scan finds them again.
+  the connection judges, under their own weekly cap. Leftover pairs are not
+  carried. The next Sunday's fresh scan finds them again.
 - **Tension repair** — the free, provider-less fix for a one-sided pair
   (`findOneSided`): mirror what one side lost, drop a stale side, or purge an
   entry naming a partner that is no longer ready. The scan plans repairs for
   every pair its readings name and dispatches them, uncapped, before the
   connection judges.
 - **Refresh cursor** — tenant `index/refresh-cursor.json`, CAS-written with scan
-  targets, flagged candidates and dispatch progress. A nightly judgement cap
-  reserves pending batches before send and carries the remainder to later nights.
+  targets, flagged candidates and dispatch progress. A weekly judgement cap
+  reserves pending batches before send and carries the remainder to later Sundays.
   Judge identity is `(runAt, readingId)` across retries. This cursor is independent
   of the operator's refresh-state marker.
 - **Refresh judgement checkpoint** — `relationship_refresh_jobs` keeps one

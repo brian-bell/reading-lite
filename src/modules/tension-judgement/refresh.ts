@@ -1,6 +1,6 @@
 // Pure pair policy for tension refresh, shared by the operator pass
 // (`ops corpus refresh-tensions`, scripts/corpus-lib/refresh-tensions.ts) and
-// the hosted nightly refresh (src/tension-judge.ts).
+// the hosted weekly refresh (src/tension-judge.ts).
 //
 // The universe is (target, neighbour) pairs already floored by similarity;
 // similarity alone is necessary but not sufficient, so pairs are pre-filtered
@@ -254,7 +254,7 @@ function tensionReading(manifest: RawManifest): TensionJudgementInput["a"] {
 }
 
 /**
- * Whether the nightly refresh should pay to judge this pair: two distinct
+ * Whether the weekly refresh should pay to judge this pair: two distinct
  * readings that clear the overlap pre-filter, are not already judged, and
  * both carry the summary text the judge reads. The operator pass reaches the
  * same answer through `tensionCandidates`, `isPairJudged` and a plan-time

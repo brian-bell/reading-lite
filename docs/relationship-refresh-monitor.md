@@ -1,7 +1,7 @@
 # Relationship refresh monitor
 
-The **RL Nightly Refresh** scheduled task watches the Worker's nightly
-relationship refresh in production and reports on it every night. It runs in
+The **RL Weekly Refresh** scheduled task watches the Worker's weekly
+relationship refresh in production and reports on it each Sunday. It runs in
 the Claude desktop app on an operator's machine, not in this repository, so
 this runbook is its source of truth: everything needed to recreate it from
 nothing is here. The task only reads. It never enqueues, never runs `ops corpus`
@@ -9,7 +9,7 @@ commands, and never changes policy.
 
 What it watches is documented in [relationship refresh queue
 plumbing](operations.md#relationship-refresh-queue-plumbing): one founder-tenant
-pass at 03:07 UTC that scans every ready reading, then sends free tension
+pass at Sunday 03:07 UTC that scans every ready reading, then sends free tension
 repairs, connection judges (`REFRESH_MAX_JUDGEMENTS`) and tension pairs
 (`REFRESH_MAX_TENSION_JUDGEMENTS`). It is not the offline
 `ops corpus refresh-neighbours` sweep.
@@ -52,8 +52,8 @@ entries). It prints ids and counts, never secrets or summary text. Save it at
 checkout's absolute path (the TypeScript loader does not expand `~`).
 
 ```ts
-// Read-only status of the production nightly relationship refresh, for rl-nightly-refresh.
-// Covers all three kinds of nightly work since #555 (tension pairs) and #556 (free repairs):
+// Read-only status of the production weekly relationship refresh, for rl-nightly-refresh.
+// Covers all three kinds of weekly work since #555 (tension pairs) and #556 (free repairs):
 // the R2 cursor, both checkpoint tables in PostgreSQL, and the corpus's tension health.
 // Prints ids and counts only, never secrets or summary text.
 // Run from <workspace> with the secrets loaded (docs/relationship-refresh-monitor.md). Replace <workspace>
@@ -88,7 +88,7 @@ if (body == null) {
       : repairs.offset < repairs.candidates ? "reserving repairs"
       : judges.offset < judges.candidates && judges.dispatched < judges.limit ? "reserving connection judges"
       : tensions.offset < tensions.candidates && tensions.dispatched < (tensions.limit ?? 0) ? "reserving tension pairs"
-      : "idle until next night";
+      : "idle until next Sunday";
     console.log("CURSOR lastModified:", meta?.lastModified, "etag:", meta?.etag?.slice(0, 8));
     out("CURSOR", {
       version: c.version, run_at: c.run_at, budget_at: c.budget_at, rollover: c.rollover ?? null, token_present: !!c.token, phase,
@@ -135,8 +135,8 @@ try {
   }
 
   // Corpus tension health: what #556's repairs exist to drive to zero. A
-  // dangling tension names a reading that is no longer ready; tier 1 flags its
-  // holder stale_connection, and a connection judge is paid for, every night
+  // dangling tension names a reading that is no longer ready. Tier 1 flags its
+  // holder stale_connection on the operator nightly pass, and a hosted connection judge is paid each Sunday
   // until it is repaired. A one-sided tension has no inverse on its partner.
   out("CORPUS tensions", (await q(`
     WITH ready AS (SELECT id FROM readings WHERE tenant_id=$1 AND status='ready'),
@@ -173,19 +173,19 @@ app's scheduled-task UI. Fill in the three placeholders in the prompt first.
 | Setting | Value |
 |---|---|
 | Task id | `rl-nightly-refresh` |
-| Title | `RL Nightly Refresh` |
-| Description | `Monitor the Worker's nightly refresh: repairs, connection judges, and tension pairs (#555, #556).` |
-| Schedule | cron `30 23 * * *`, local time (America/New_York): about 25 minutes after the 03:07 UTC pass in summer time, about 85 minutes after it in winter |
+| Title | `RL Weekly Refresh` |
+| Description | `Monitor the Worker's weekly refresh: repairs, connection judges, and tension pairs (#555, #556).` |
+| Schedule | cron `30 23 * * 6` in America/New_York. Sunday 03:07 UTC is Saturday 23:07 EDT and Saturday 22:07 EST, so 23:30 local is about 25 minutes later in EDT and about 85 minutes later in EST. |
 | Enabled | yes |
 
 Prompt:
 
 ````text
-You are RL OpsBot, reading-lite production ops. Every night, report on the Cloudflare Worker's nightly relationship refresh. It runs on wrangler cron `7 3 * * *` (03:07 UTC / 11:07pm ET), and this task fires about 25 minutes later. Report on the most recent 03:07 UTC pass. You only observe: never run a mutating command, never run `ops corpus` commands, never change policy, and never touch the queue. Every command below is read-only.
+You are RL OpsBot, reading-lite production ops. Each Sunday, report on the Cloudflare Worker's weekly relationship refresh. It runs on wrangler cron `7 3 * * 0` (Sunday 03:07 UTC). This task fires about 25 minutes later in EDT and about 85 minutes later in EST. Report on the most recent Sunday 03:07 UTC pass. You only observe. Never run a mutating command, never run `ops corpus` commands, never change policy, and never touch the queue. Every command below is read-only.
 
 This task is reconstituted from docs/relationship-refresh-monitor.md in the reading-lite repo, with its placeholders filled in for this host. If this prompt and that runbook disagree beyond those placeholders, the runbook on main wins: say so in the report.
 
-## What the nightly job does now
+## What the weekly job does now
 
 Since #555 (tension pairs) and #556 (free repairs), one pass for the founder tenant does three kinds of work. They share one R2 cursor and one queue, which processes one job at a time:
 
@@ -195,9 +195,9 @@ Since #555 (tension pairs) and #556 (free repairs), one pass for the founder ten
    - repairs: one-sided or dangling tension entries, fixed with no provider call.
 2. **Repairs.** Sent first. No cap and no spend. Each job recomputes on the live pair and writes all affected sides in one transaction. A repeated delivery does nothing.
 3. **Connection judges.** Paid, capped by `REFRESH_MAX_JUDGEMENTS=100`. Because repairs run first, a judge whose only drift was a dangling tension now finds nothing to do: an empty-diff noop with no checkpoint row.
-4. **Tension pairs.** Paid, capped separately by `REFRESH_MAX_TENSION_JUDGEMENTS=100`, and sent after the connection judges. Pairs over the cap are not carried over. The next night's fresh scan finds them again, so a large "remaining" count while the backlog clears is normal.
+4. **Tension pairs.** Paid, capped separately by `REFRESH_MAX_TENSION_JUDGEMENTS=100`, and sent after the connection judges. Pairs over the cap are not carried over. The next Sunday's fresh scan finds them again, so a large "remaining" count while the backlog clears is normal.
 
-A fresh full scan starts on a night when the previous scan's connection candidates are all dispatched. A new `run_at` with the scan in progress is normal then.
+A fresh full scan starts on a Sunday when the previous scan's connection candidates are all dispatched. A new `run_at` with the scan in progress is normal then.
 
 Every paid call first reserves its maximum possible cost against the tenant's daily spend budget. A call the budget refuses is deferred and re-queued (about every 15 seconds, for up to 24 hours), not dropped, and it makes no provider call.
 
@@ -244,13 +244,13 @@ Worker logs are optional (`wrangler tail` is live-only). Skip them without block
 ## Health checks
 
 Freshness and version:
-- The cursor's `lastModified` and `budget_at` should fall shortly after the most recent 03:07 UTC.
-- `fields.tensions_555` and `fields.repairs_556` should both be true. Either being false after a post-deploy night means that deploy didn't take effect: page.
+- The cursor's `lastModified` and `budget_at` should fall shortly after the most recent Sunday 03:07 UTC.
+- `fields.tensions_555` and `fields.repairs_556` should both be true. Either being false after a post-deploy Sunday means that deploy didn't take effect. Page.
 - `PG tension_refresh_jobs: TABLE MISSING` means migration 0009 is not applied: page.
 
 Progress (`phase`):
-- "idle until next night" means every batch was reserved and sent.
-- Any other phase at report time is normal on a heavy night. Jobs run one at a time, and up to 200 paid calls can outlast the 25-minute gap. Report the phase and counts; don't page.
+- "idle until next Sunday" means every batch was reserved and sent.
+- Any other phase at report time is normal on a heavy Sunday. Jobs run one at a time, and up to 200 paid calls can outlast the gap before this report. Report the phase and counts. Don't page.
 - Page only if the cursor did not advance at all at the last cron, or is missing or unparseable.
 
 Spend:
@@ -277,11 +277,12 @@ Tension pairs (#555):
 Uncertain dispatches:
 - Report any `no_result` rows in either table.
 - One or two isolated rows is a ticket, not a page.
-- Page if the count grows night over night, or if rows cluster on one `run_at` along with `recent_retry` (that points to a provider incident).
+- Page if the count grows from one Sunday to the next, or if rows cluster on one `run_at` along with `recent_retry` (that points to a provider incident).
 
 ## Report
 
-Always send a short nightly status to Brian, including on a quiet night:
+Always send a short weekly status to Brian, including on a quiet Sunday.
+
 - Overall verdict: healthy / ticket / page.
 - `phase` and `run_at` (fresh scan or continuation).
 - One line each for repairs, connection judges and tension pairs: candidates, dispatched vs cap, remaining, and checkpoint rows vs offset.
@@ -297,18 +298,18 @@ Page clearly when the cursor is missing, unparseable, or didn't advance at the l
 
 1. Run the status script by hand, exactly as step 3 of the prompt does. Expect
    a `CURSOR` line with `phase` and both `fields` true, then `PG connection`,
-   `PG tension` and `CORPUS` lines. `CURSOR: MISSING` before the first nightly
-   pass of a fresh environment is expected; afterwards it is a page.
+   `PG tension` and `CORPUS` lines. `CURSOR: MISSING` before the first weekly
+   pass of a fresh environment is expected. Afterwards it is a page.
 2. Run the spend check in step 4 of the prompt, and confirm it prints the
    tenant's budget and `"accounting": "available"`.
 3. Press **Run now** on the task once, and approve the tools it asks for. The
    approvals are stored on the task, so scheduled runs don't stop on
-   permission prompts. A run before that night's 03:07 UTC pass reports the
-   previous night.
+   permission prompts. A run before that Sunday's 03:07 UTC pass reports the
+   previous Sunday.
 
 ## Maintenance
 
-- **When the nightly job changes** (a cursor field, a checkpoint table, a cap,
+- **When the weekly job changes** (a cursor field, a checkpoint table, a cap,
   or an order), update the script and the prompt here in the same pull request
   as the change, then reapply both to the task. The live task is this page
   with its placeholders filled in; this page is the original.
