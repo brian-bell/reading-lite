@@ -8,11 +8,11 @@ import { processTensionRepair } from "./tension-repair";
 import { defaultServices, type Services } from "./services";
 import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 /**
- * Founder-only nightly refresh (#175). Full read-only scans run in
- * bounded queue shards, then flagged ids are dispatched under a nightly cap.
+ * Founder-only weekly refresh (#175). Full read-only scans run in
+ * bounded queue shards, then flagged ids are dispatched under a weekly cap.
  * The same scan collects every floored ready-neighbour pair that clears the
  * tension pre-filter and is not already judged; those pairs dispatch after the
- * connection judges, under their own nightly cap (reading-lite-mtdh). It also
+ * connection judges, under their own weekly cap (reading-lite-mtdh). It also
  * collects every pair one of its readings names that the free one-sided
  * repairs would change; those dispatch first, uncapped, so a dangling tension
  * is gone before its holder's connection judge re-measures it, and a pair one
@@ -23,7 +23,7 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  * sends may redeliver the same judge identity (runAt + readingId, or runAt +
  * pair); the judge deduplicates that identity before paid work. The next cron
  * recovers interrupted continuations. Undispatched tension pairs never hold
- * back the next night's scan: a pair left over is still unjudged, so the fresh
+ * back the next period's scan. A pair left over is still unjudged, so the fresh
  * scan finds it again. The operator's offline run marker (the corpus_refresh_state
  * row) is separate and owned by `ops corpus refresh-neighbours`.
  * Scan running checks overlay applyStaleness via services.now(): a zombie
@@ -33,6 +33,7 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
  */
 import { z } from "zod";
 import type { Env } from "./index";
+import { opensNewRefreshBudget } from "./refresh-period";
 import { fromSql, withControlPlane, type ControlPlaneDb } from "./control-plane/db";
 import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
@@ -46,7 +47,6 @@ import { orderPair, pairTensionRepairs, tensionPairEligible, tensionPartnerIds, 
 import type { Manifest } from "./schemas/manifest";
 import { effectivelyRunning, pendingTtlSeconds } from "./modules/staleness";
 
-export const REFRESH_CRON = "7 3 * * *";
 export const REFRESH_SCAN_SIZE = 25;
 const DEFAULT_MAX_JUDGEMENTS = 100;
 const TargetSchema = z.object({ id: z.string().min(1), key_prefix: z.string().startsWith("readings/") });
@@ -71,18 +71,18 @@ const CursorSchema = z.object({
   candidates: z.array(TargetSchema), judge_offset: z.number().int().nonnegative(),
   pending: z.array(TargetSchema).max(REFRESH_SCAN_SIZE),
   // The tension fields default so a cursor written before them still parses.
-  // With no tension_limit, that night dispatches no tension pairs; the next
-  // night's allowance sets one.
+  // With no tension_limit, that period dispatches no tension pairs. The next
+  // period's allowance sets one.
   tension_limit: Cap.optional(),
   tension_dispatched: z.number().int().nonnegative().default(0),
   tension_candidates: z.array(PairSchema).default([]),
   tension_offset: z.number().int().nonnegative().default(0),
   tension_pending: z.array(PairSchema).max(REFRESH_SCAN_SIZE).default([]),
-  // Free repairs are uncapped: every one a scan collects dispatches that night.
+  // Free repairs are uncapped. Every one a scan collects dispatches that period.
   repair_candidates: z.array(IdPairSchema).default([]),
   repair_offset: z.number().int().nonnegative().default(0),
   repair_pending: z.array(IdPairSchema).max(REFRESH_SCAN_SIZE).default([]),
-  // A new night can arrive while an old reservation is awaiting confirmation.
+  // A new period can arrive while an old reservation is awaiting confirmation.
   rollover: z.object({ budget_at: z.string().datetime(), limit: Cap, tension_limit: Cap.optional() }).optional(),
 }).refine(c => c.scan_offset <= c.targets.length && c.judge_offset <= c.candidates.length && c.dispatched <= c.limit &&
   c.tension_offset <= c.tension_candidates.length && c.tension_dispatched <= (c.tension_limit ?? 0) &&
@@ -146,7 +146,7 @@ function runnable(c: Cursor): boolean {
   return c.pending.length > 0 || c.tension_pending.length > 0 || c.repair_pending.length > 0 ||
     c.scan_offset < c.targets.length || repairsLeft(c) || judgesLeft(c) || tensionsLeft(c);
 }
-// A new night's full scan of every ready reading, sorted for stable shards.
+// A new period's full scan of every ready reading, sorted for stable shards.
 function freshCursor(library: { id: string; key_prefix: string; status: string }[], runAt: string, token: string,
   limit: number, tensionLimit: number | undefined): Cursor {
   return {
@@ -177,16 +177,16 @@ export async function scheduleRelationshipRefresh(env: Env, nowMs: number, newId
     const previous = await readCursor(env, tenant);
     const runAt = new Date(nowMs).toISOString();
     let c = previous?.cursor;
-    const nextNight = !c || runAt.slice(0, 10) > c.budget_at.slice(0, 10);
-    if (!c || (nextNight && complete(c))) {
+    const newPeriod = !c || opensNewRefreshBudget(runAt, c.budget_at);
+    if (!c || (newPeriod && complete(c))) {
       const library = await pgReadingStoreFor(sql, tenant).allListItems();
       c = freshCursor(library, runAt, newId(), limit, tensionLimit);
       if (!await saveCursor(env, db, tenant, previous, c)) return;
-    } else if (nextNight && c.pending.length === 0 && c.tension_pending.length === 0 && c.repair_pending.length === 0) {
+    } else if (newPeriod && c.pending.length === 0 && c.tension_pending.length === 0 && c.repair_pending.length === 0) {
       c = { ...c, token: newId(), budget_at: runAt, limit, dispatched: 0,
         tension_limit: tensionLimit, tension_dispatched: 0, rollover: undefined };
       if (!await saveCursor(env, db, tenant, previous, c)) return;
-    } else if (nextNight && (!c.rollover || runAt.slice(0, 10) > c.rollover.budget_at.slice(0, 10))) {
+    } else if (newPeriod && (!c.rollover || opensNewRefreshBudget(runAt, c.rollover.budget_at))) {
       c = { ...c, token: newId(), rollover: { budget_at: runAt, limit, tension_limit: tensionLimit } };
       if (!await saveCursor(env, db, tenant, previous, c)) return;
     }
@@ -213,8 +213,8 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
     return;
   }
   const c = stored.cursor;
-  // A confirmed send is where a new night's recorded allowance takes effect.
-  // When that leaves the connection work complete, the new night starts its
+  // A confirmed send is where a new period's recorded allowance takes effect.
+  // When that leaves the connection work complete, the new period starts its
   // fresh scan here, as the cron would have without a pending batch, rather
   // than spending its tension allowance on the old scan's leftover pairs.
   const confirmed = async (sent: Cursor): Promise<Cursor> => {
@@ -316,7 +316,7 @@ async function processScanWith(sql: Sql, env: Env, job: Extract<RefreshEnvelope,
     next = { ...c, repair_pending, repair_offset: c.repair_offset + repair_pending.length, token: newId() };
   } else if (judgesLeft(c)) {
     // Reserve before send; retries keep identical judge identities and cannot
-    // reserve another batch beyond this night's cap.
+    // reserve another batch beyond this period's cap.
     const pending = c.candidates.slice(c.judge_offset, c.judge_offset + Math.min(REFRESH_SCAN_SIZE, c.limit - c.dispatched));
     next = { ...c, pending, judge_offset: c.judge_offset + pending.length,
       dispatched: c.dispatched + pending.length, token: newId() };

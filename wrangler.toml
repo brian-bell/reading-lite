@@ -336,7 +336,7 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Nightly relationship refresh (#175), gated off in both environments.
+# Weekly relationship refresh (#175), gated off in both environments.
 [[env.staging.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-staging-refresh"
@@ -357,7 +357,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.staging.triggers]
-crons = ["*/15 * * * *", "7 3 * * *"]
+crons = ["*/15 * * * *", "7 3 * * 0"]
 
 [[env.staging.r2_buckets]]
 binding = "READINGS_BUCKET"
@@ -607,7 +607,7 @@ max_batch_timeout = 5
 max_concurrency = 1
 max_retries = 3
 
-# Nightly relationship refresh (#175), gated off in both environments.
+# Weekly relationship refresh (#175), gated off in both environments.
 [[env.production.queues.producers]]
 binding = "RELATIONSHIP_REFRESH_JOBS"
 queue = "reading-lite-refresh"
@@ -628,7 +628,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.production.triggers]
-crons = ["*/15 * * * *", "7 3 * * *"]
+crons = ["*/15 * * * *", "7 3 * * 0"]
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

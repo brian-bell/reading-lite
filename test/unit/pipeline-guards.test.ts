@@ -3,9 +3,10 @@
 // key spelling the live corpus is stored under, the content sweep's
 // refusal to delete what a reading still points at, and the weekly refresh budget.
 
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AttemptIo } from "../../src/attempt-io";
-import { opensNewRefreshBudget } from "../../src/refresh-period";
+import { REFRESH_CRON, opensNewRefreshBudget } from "../../src/refresh-period";
 import { buildSummarizeRequestBody as buildAnthropicSummarizeRequestBody } from "../../src/modules/anthropic";
 import { isBlockedHost } from "../../src/modules/extractor";
 import { buildSummarizeRequestBody as buildOpenAISummarizeRequestBody } from "../../src/modules/openai-summarizer";
@@ -191,6 +192,16 @@ describe("opensNewRefreshBudget", () => {
     ];
     for (const [now, budget, opens, label] of cases) {
       expect(opensNewRefreshBudget(now, budget), label).toBe(opens);
+    }
+  });
+
+  it("keeps the 15-minute cron and points both hosted schedules at REFRESH_CRON", () => {
+    const lines = readFileSync(new URL("../../wrangler.toml", import.meta.url), "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("crons = "));
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(JSON.parse(line.slice("crons = ".length)), line).toEqual(["*/15 * * * *", REFRESH_CRON]);
     }
   });
 });

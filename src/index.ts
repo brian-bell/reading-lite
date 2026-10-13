@@ -1,4 +1,5 @@
-import { REFRESH_CRON, scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
+import { REFRESH_CRON } from "./refresh-period";
+import { scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
 import type { TenantContext } from "./control-plane/ids";
 import { fromSql, type ControlPlaneDb } from "./control-plane/db";
 import { withSqlSession } from "./modules/db/sql";
