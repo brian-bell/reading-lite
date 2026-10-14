@@ -147,7 +147,7 @@ async function settleInboxWrite(
           }
         : previous,
     );
-  } else if (effect === "retain") {
+  } else {
     await queryClient.invalidateQueries({ queryKey: inboxItemQueryKey(userId, id), exact: true });
   }
   const readingId = readingIdOf(outcome);

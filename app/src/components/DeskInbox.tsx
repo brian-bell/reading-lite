@@ -3,7 +3,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { accountViewOf } from "../account-state";
 import { NetworkError, isUnauthorized } from "../api/errors";
-import { ALREADY_PROCESSING_SENTENCE } from "../capture-refusal";
+import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { inboxItemName, inboxItemSize, type DeskInboxBlock, type DeskInboxFold, type InboxItemMeta } from "../inbox";
 import { inboxItemQueryOptions } from "../inbox-query";
@@ -186,56 +186,81 @@ function useLoadedImages(): LoadedImages {
 }
 
 function DeskInboxNotice({ writes }: { writes: InboxWrites }) {
-  const body = deskNotice(writes);
-  if (body === null) return null;
-  return <div className="desk-inbox-notice">{body}</div>;
+  const shown = deskNotice(writes);
+  return (
+    <>
+      {shown === null ? null : <div className="desk-inbox-notice">{shown.node}</div>}
+      <p className="visually-hidden" role="status">
+        {shown?.sentence}
+      </p>
+    </>
+  );
 }
 
-function deskNotice(writes: InboxWrites): ReactNode {
+function deskNotice(writes: InboxWrites): { sentence: string; node: ReactNode } | null {
   const refusal = writes.refusal;
   if (refusal) {
     switch (refusal.kind) {
       case "forbidden":
-        return <InlineNotice message="You don't have access to this." live={false} />;
-      case "account-changed":
-        return (
-          <InlineNotice message="This tab is signed in to a different account than the page expects." live={false}>
-            <button type="button" className="button button-primary" onClick={() => window.location.reload()}>
-              Reload
-            </button>
-          </InlineNotice>
-        );
+        return said("You don't have access to this.");
+      case "account-changed": {
+        const sentence = "This tab is signed in to a different account than the page expects.";
+        return {
+          sentence,
+          node: (
+            <InlineNotice message={sentence} live={false}>
+              <button type="button" className="button button-primary" onClick={() => window.location.reload()}>
+                Reload
+              </button>
+            </InlineNotice>
+          ),
+        };
+      }
       case "gone":
-        return <InlineNotice message="This item isn't in your inbox." live={false} />;
+        return said("This item isn't in your inbox.");
       case "already-processing":
-        return <InlineNotice message={ALREADY_PROCESSING_SENTENCE} live={false} />;
+        return said(ALREADY_PROCESSING_SENTENCE);
       case "too-large":
-        return <InlineNotice message={TOO_LARGE} live={false} />;
+        return said(TOO_LARGE);
       case "invalid":
-        return <InlineNotice message={refusal.message} live={false} />;
-      default:
-        return (
-          <CaptureRefusalNotice refusal={refusal} unavailable={UNAVAILABLE} onTryAgain={writes.promote}>
-            {refusal.kind === "unavailable" && refusal.id ? (
-              <Link className="notice-link" to="/readings/$id" params={{ id: refusal.id }}>
-                Open the reading
-              </Link>
-            ) : null}
-          </CaptureRefusalNotice>
-        );
+        return said(refusal.message);
+      case "limited":
+      case "guard-unavailable":
+      case "unavailable":
+      case "key-required":
+        return {
+          sentence: captureRefusalSentence(refusal, UNAVAILABLE),
+          node: (
+            <CaptureRefusalNotice refusal={refusal} unavailable={UNAVAILABLE} onTryAgain={writes.promote}>
+              {refusal.kind === "unavailable" && refusal.id ? (
+                <Link className="notice-link" to="/readings/$id" params={{ id: refusal.id }}>
+                  Open the reading
+                </Link>
+              ) : null}
+            </CaptureRefusalNotice>
+          ),
+        };
+      default: {
+        const unreachable: never = refusal;
+        return unreachable;
+      }
     }
   }
   if (writes.promotePaused) {
-    return <OfflineNotice message="You're offline. This item will be added when your connection returns." />;
+    return said("You're offline. This item will be added when your connection returns.");
   }
   if (writes.promoteError instanceof NetworkError && writes.promoteError.offline) {
-    return <OfflineNotice onRetry={writes.promote} />;
+    return said("You're offline. Check your connection and try again.", writes.promote);
   }
   if (writes.discardError instanceof NetworkError && writes.discardError.offline) {
-    return <OfflineNotice onRetry={writes.askDiscard} />;
+    return said("You're offline. Check your connection and try again.", writes.askDiscard);
   }
   const thrown = [writes.promoteError, writes.discardError].find((error) => error != null && !isUnauthorized(error));
   if (thrown == null) return null;
   const retry = writes.promoteError != null ? writes.promote : writes.askDiscard;
-  return <InlineNotice message={thrown instanceof Error ? thrown.message : String(thrown)} onAction={retry} />;
+  return said(thrown instanceof Error ? thrown.message : String(thrown), retry);
+}
+
+function said(sentence: string, onAction?: () => void): { sentence: string; node: ReactNode } {
+  return { sentence, node: <InlineNotice message={sentence} onAction={onAction} live={false} /> };
 }

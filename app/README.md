@@ -447,10 +447,10 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   retry. "Discard…" deletes the item after a confirm dialog and returns to
   the inbox; it is sent at once even offline, and a failed one's Retry opens
   the dialog again rather than resending. A discarded item, one that is gone,
-  or a promote the server did not retain leaves the cached list. A promote
-  with `inbox_item_retained` stays, and that item is read again. Both writes
-  invalidate the exact inbox list and the desk. The open item query is left
-  in place. A promote never sends `email`.
+  or a promote the server did not retain leaves the cached list. A row that
+  stays, including a refused promote and one the server retained, reads its
+  item again. Both writes invalidate the exact inbox list and the desk. The
+  open item query stays mounted. A promote never sends `email`.
 - **Threads.** `/threads` and `/threads/:id` (reading-lite-kl7y.3) group the
   library by the connections and tensions between its readings. Both are under
   `src/routes/_authed`, and their loaders read the tenant's relationship graph
