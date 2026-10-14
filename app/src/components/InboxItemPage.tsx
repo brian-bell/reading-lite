@@ -1,28 +1,16 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { accountViewOf } from "../account-state";
 import { NetworkError, isUnauthorized } from "../api/errors";
-import { discardInboxItem, promoteInboxItem } from "../api/inbox";
 import { ALREADY_PROCESSING_SENTENCE, captureRefusalSentence } from "../capture-refusal";
-import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
-import {
-  inboxItemName,
-  inboxItemSize,
-  inboxQueryKey,
-  type DiscardOutcome,
-  type InboxItem,
-  type InboxItemResult,
-  type InboxListResult,
-  type PromoteOutcome,
-} from "../inbox";
+import { inboxItemName, inboxItemSize, type InboxItem, type InboxItemResult } from "../inbox";
 import { inboxItemQueryOptions } from "../inbox-query";
-import { expectedLayoutOf, readingQueryKey } from "../reading";
+import { type InboxWriteRefusal, useInboxWrites } from "../inbox-writes";
 import { dateTimeOn, hostnameOf } from "../reading-presentation";
 import { saveNoticeState } from "../save-notice";
 import { CaptureRefusalNotice } from "./CaptureNotice";
-import { ConfirmDialog } from "./ConfirmDialog";
 import { ExternalLink } from "./ExternalLink";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import {
@@ -56,13 +44,11 @@ import { SourceMarkdown, type LoadedImages } from "./ReadingSource";
 // one offers Retry, which asks again through the dialog rather than resending
 // behind the reader's back.
 //
-// Either write drops the item from the cached list and marks the inbox stale
-// without refetching the item on screen, which would briefly answer 404 under
-// a page that is about to leave.
+// The write hook settles the cache. A retained promote keeps the id and
+// refetches that item. The item query stays until this page navigates.
 
 /** What the backend decided about a write, other than a reading to open. */
-type WriteRefusal =
-  Exclude<PromoteOutcome, { kind: "accepted" | "existing" }> | Exclude<DiscardOutcome, { kind: "discarded" }>;
+type WriteRefusal = InboxWriteRefusal;
 
 /** What is said above the item without replacing it. */
 type ItemNotice =
@@ -92,117 +78,42 @@ export function InboxItemPage({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  const expectedTenant = expectedLayoutOf(identity);
-  const listKey = inboxQueryKey(identity?.user_id ?? "");
   const read = useQuery(inboxItemQueryOptions(queryClient, id, identity));
-  const [refused, setRefused] = useState<WriteRefusal | null>(null);
-  const [announcement, setAnnouncement] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const promoteRef = useRef<HTMLButtonElement>(null);
-  const discardRef = useRef<HTMLButtonElement>(null);
-  // A second write while the first is in flight, or held paused offline,
-  // would ask twice. Cleared once the write has settled.
-  const writingRef = useRef(false);
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(() => new Set());
   const onLoad = useCallback((src: string) => setLoaded((prev) => new Set(prev).add(src)), []);
   const images = useMemo<LoadedImages>(() => ({ loaded, onLoad }), [loaded, onLoad]);
-
-  const promote = useMutation({ mutationFn: () => promoteInboxItem(queryClient, id, expectedTenant) });
-  const discard = useMutation({
-    mutationFn: () => discardInboxItem(queryClient, id, expectedTenant),
-    networkMode: "always",
-    retry: 0,
+  const writes = useInboxWrites(id, {
+    onPromoted: async (outcome) => {
+      setOpening(outcome.kind === "existing" ? "Opening the reading…" : "Added. Opening the reading…");
+      const notice = outcome.kind === "existing" ? outcome.notice : undefined;
+      await navigate({
+        to: "/readings/$id",
+        params: { id: outcome.id },
+        state: notice ? { saveNotice: saveNoticeState(notice) } : undefined,
+      });
+    },
+    onDiscarded: () => navigate({ to: "/inbox" }),
   });
 
-  /** The item has left the inbox: off the cached list now, and the list read again when next shown. */
-  async function forgetItem() {
-    queryClient.setQueryData<InboxListResult>(listKey, (previous) =>
-      previous?.state === "ready"
-        ? { state: "ready", value: { ...previous.value, items: previous.value.items.filter((item) => item.id !== id) } }
-        : previous,
-    );
-    await queryClient.invalidateQueries({ queryKey: listKey, refetchType: "none" });
-  }
-
-  /** What the last write answered is stale the moment another is asked for. */
-  function clearWrites() {
-    promote.reset();
-    discard.reset();
-    setRefused(null);
-    setAnnouncement(null);
-  }
-
-  /**
-   * Adds the item to the library. The button and a notice's Try again both
-   * come through here. As on the save page, the outcome is handled in
-   * `mutate`'s own callbacks: a paused add that resumes after the reader has
-   * left this page reaches the backend and lands in the library without
-   * pulling the reader back to it.
-   */
+  /** The button and a notice's Try again both come through here. */
   function addToLibrary() {
-    if (writingRef.current) return;
+    if (writes.pending) return;
     // The notice that asked for this is about to go, and with it the button
     // the reader pressed; focus goes to Add to library rather than the document.
     if (document.activeElement?.closest(".offline-notice")) promoteRef.current?.focus();
-    clearWrites();
-    writingRef.current = true;
-    promote.mutate(undefined, {
-      onSuccess: async (outcome) => {
-        if (outcome.kind !== "accepted" && outcome.kind !== "existing") {
-          if (outcome.kind === "gone") await forgetItem();
-          if (outcome.kind === "unavailable" && outcome.id !== undefined) {
-            // A failed owner the backend rewrote in place (see SavePage.tsx).
-            queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
-            await queryClient.invalidateQueries({ queryKey: ["library"] });
-            await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
-          }
-          setRefused(outcome);
-          setAnnouncement(noticeSentence(outcome) ?? null);
-          return;
-        }
-        setAnnouncement(outcome.kind === "existing" ? "Opening the reading…" : "Added. Opening the reading…");
-        await forgetItem();
-        await queryClient.invalidateQueries({ queryKey: ["library"] });
-        await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
-        queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
-        const notice = outcome.kind === "existing" ? outcome.notice : undefined;
-        await navigate({
-          to: "/readings/$id",
-          params: { id: outcome.id },
-          state: notice ? { saveNotice: saveNoticeState(notice) } : undefined,
-        });
-      },
-      onSettled: () => {
-        writingRef.current = false;
-      },
-    });
+    setOpening(null);
+    writes.promote();
   }
 
-  function openDiscard() {
-    if (writingRef.current) return;
-    setConfirming(true);
+  function clearWrites() {
+    setOpening(null);
+    writes.reset();
   }
 
-  function discardNow() {
-    if (writingRef.current) return;
-    clearWrites();
-    writingRef.current = true;
-    discard.mutate(undefined, {
-      onSuccess: async (outcome) => {
-        if (outcome.kind !== "discarded") {
-          setRefused(outcome);
-          return;
-        }
-        await forgetItem();
-        await navigate({ to: "/inbox" });
-      },
-      onSettled: () => {
-        writingRef.current = false;
-      },
-    });
-  }
-
-  const view = viewOf(read, refused, promote, discard);
+  const announcement = opening ?? (writes.refusal === null ? null : (noticeSentence(writes.refusal) ?? null));
+  const view = viewOf(read, writes.refusal, writes);
   return <PageStateFocus kind={view.kind}>{pageFor(view)}</PageStateFocus>;
 
   function pageFor(current: ItemView) {
@@ -245,7 +156,7 @@ export function InboxItemPage({ id }: { id: string }) {
         );
       case "item": {
         const { item } = current;
-        const busy = promote.isPending || discard.isPending;
+        const busy = writes.pending;
         const staged = dateTimeOn(item.updated_at);
         return (
           <div className="page reading">
@@ -278,9 +189,9 @@ export function InboxItemPage({ id }: { id: string }) {
                   <button
                     type="button"
                     className="button"
-                    ref={discardRef}
+                    ref={writes.discardAnchor}
                     aria-disabled={busy || undefined}
-                    onClick={openDiscard}
+                    onClick={writes.askDiscard}
                   >
                     Discard…
                   </button>
@@ -290,7 +201,7 @@ export function InboxItemPage({ id }: { id: string }) {
               <ItemNoticeBanner
                 notice={current.notice}
                 onTryAgain={addToLibrary}
-                onRetryDiscard={() => setConfirming(true)}
+                onRetryDiscard={writes.askDiscard}
               />
               {/* The page's standing polite region, as on the save page: a
                   notice's sentence is said here, and heard only while that
@@ -308,17 +219,7 @@ export function InboxItemPage({ id }: { id: string }) {
                 <SourceMarkdown markdown={item.markdown} base={item.url} images={images} />
               </section>
             </article>
-            {confirming ? (
-              <ConfirmDialog
-                title="Discard this item?"
-                confirmLabel="Discard"
-                returnFocus={() => discardRef.current}
-                onClose={() => setConfirming(false)}
-                onConfirm={discardNow}
-              >
-                <p>The staged Markdown is deleted from your inbox. Nothing is added to your library.</p>
-              </ConfirmDialog>
-            ) : null}
+            {writes.discardDialog}
           </div>
         );
       }
@@ -333,13 +234,12 @@ export function InboxItemPage({ id }: { id: string }) {
 function viewOf(
   read: { data: InboxItemResult | undefined; error: unknown; fetchStatus: "fetching" | "paused" | "idle" },
   refused: WriteRefusal | null,
-  promote: { isPaused: boolean; error: unknown },
-  discard: { error: unknown },
+  writes: { promotePaused: boolean; promoteError: unknown; discardError: unknown },
 ): ItemView {
   const data = read.data;
   if (refused?.kind === "forbidden" || refused?.kind === "account-changed") return refused;
   if (refused?.kind === "gone" || data?.state === "not-found") return { kind: "not-found" };
-  const writeError = [promote.error, discard.error].find((error) => error != null && !isUnauthorized(error));
+  const writeError = [writes.promoteError, writes.discardError].find((error) => error != null && !isUnauthorized(error));
   const offlineWrite = writeError instanceof NetworkError && writeError.offline;
   if (writeError != null && !offlineWrite) {
     return {
@@ -362,21 +262,20 @@ function viewOf(
   }
   const item = readView.kind === "offline" || readView.kind === "ready" ? readView.value : undefined;
   if (item === undefined) return { kind: "loading" };
-  return { kind: "item", item, offline: readView.kind === "offline", notice: noticeOf(refused, promote, discard) };
+  return { kind: "item", item, offline: readView.kind === "offline", notice: noticeOf(refused, writes) };
 }
 
 function noticeOf(
   refused: WriteRefusal | null,
-  promote: { isPaused: boolean; error: unknown },
-  discard: { error: unknown },
+  writes: { promotePaused: boolean; promoteError: unknown; discardError: unknown },
 ): ItemNotice {
   if (refused && refused.kind !== "forbidden" && refused.kind !== "account-changed" && refused.kind !== "gone") {
     return refused;
   }
-  if (promote.isPaused) return { kind: "offline-paused" };
-  if (promote.error instanceof NetworkError && promote.error.offline)
+  if (writes.promotePaused) return { kind: "offline-paused" };
+  if (writes.promoteError instanceof NetworkError && writes.promoteError.offline)
     return { kind: "offline-failed", write: "promote" };
-  if (discard.error instanceof NetworkError && discard.error.offline)
+  if (writes.discardError instanceof NetworkError && writes.discardError.offline)
     return { kind: "offline-failed", write: "discard" };
   return { kind: "none" };
 }

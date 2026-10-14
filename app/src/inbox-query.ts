@@ -7,8 +7,8 @@ import { expectedLayoutOf } from "./reading";
 // Browser-only, like the sessions list (sessions-query.ts): no isomorphic
 // server branch and never a loader's prefetch, so the inbox is not part of the
 // server render. The keys are account-scoped, so sign-in and sign-out drop
-// them (src/auth/session.ts), and an item's key sits under the list's, so
-// invalidating the inbox after a write reaches both.
+// them (src/auth/session.ts). An item key sits under the list key, so a write
+// invalidates the list exactly (inbox-writes.ts) and does not refetch the item.
 //
 // No timed reads: an agent staging more Markdown shows up the next time the
 // page is opened or a write invalidates it (AGENTS.md, no other polling).
