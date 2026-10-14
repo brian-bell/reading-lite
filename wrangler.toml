@@ -356,7 +356,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.staging.triggers]
-crons = ["*/15 * * * *", "7 3 * * 0"]
+crons = ["*/15 * * * *", "7 3 * * SUN"]
 
 [[env.staging.r2_buckets]]
 binding = "READINGS_BUCKET"
@@ -626,7 +626,7 @@ max_concurrency = 1
 max_retries = 3
 
 [env.production.triggers]
-crons = ["*/15 * * * *", "7 3 * * 0"]
+crons = ["*/15 * * * *", "7 3 * * SUN"]
 
 [[env.production.r2_buckets]]
 binding = "READINGS_BUCKET"

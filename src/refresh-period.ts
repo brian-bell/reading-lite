@@ -1,19 +1,20 @@
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-// Cron weekday 0 is Sunday. An ISO week starts on Monday and would grant a second budget the next day.
+// Date.getUTCDay() uses 0 = Sunday. Cloudflare Workers cron weekdays are 1-7
+// (Sunday = 1) or SUN. Mixing those calendars shifts the period by a day.
 const REFRESH_SCHEDULE = {
   minute: 7,
   hour: 3,
-  sunday: 0,
+  utcSunday: 0,
 } as const;
 
-export const REFRESH_CRON = `${REFRESH_SCHEDULE.minute} ${REFRESH_SCHEDULE.hour} * * ${REFRESH_SCHEDULE.sunday}` as const;
+export const REFRESH_CRON = `${REFRESH_SCHEDULE.minute} ${REFRESH_SCHEDULE.hour} * * SUN` as const;
 
 type RefreshPeriod = { readonly startsAtMs: number };
 
 function refreshPeriod(atMs: number): RefreshPeriod {
   const at = new Date(atMs);
-  const daysBack = (at.getUTCDay() - REFRESH_SCHEDULE.sunday + 7) % 7;
+  const daysBack = (at.getUTCDay() - REFRESH_SCHEDULE.utcSunday + 7) % 7;
   const boundary = Date.UTC(
     at.getUTCFullYear(),
     at.getUTCMonth(),

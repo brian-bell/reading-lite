@@ -214,4 +214,9 @@ describe("opensNewRefreshBudget", () => {
       expect(JSON.parse(line.slice("crons = ".length)), line).toEqual(["*/15 * * * *", REFRESH_CRON]);
     }
   });
+
+  it("does not use weekday 0, which Cloudflare Workers rejects", () => {
+    const weekday = REFRESH_CRON.split(" ")[4] ?? "";
+    expect(weekday).toMatch(/^(SUN|MON|TUE|WED|THU|FRI|SAT|[1-7])$/i);
+  });
 });
