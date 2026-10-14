@@ -2925,7 +2925,7 @@ Gate-off queue deliveries acknowledge and discard without storage/provider
 access; the refresh cron also does nothing. DLQ deliveries log and acknowledge
 without changing readings.
 
-With the gate set to `1`, the separate `7 3 * * 0` cron (Sunday 03:07 UTC)
+With the gate set to `1`, the separate `7 3 * * SUN` cron (Sunday 03:07 UTC)
 starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
 `TENANT_DATA_PLANE=1` is required. The existing */15 digest/wipe cron is separate.
 Each queue shard reads at most 25 readings and runs the pgvector similarity
