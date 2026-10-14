@@ -2907,6 +2907,9 @@ Hosted processing requires Workers Paid; `usage_model: standard` alone does not
 establish that subscription. Both hosted environments pin `limits.cpu_ms=30_000`.
 See the [CPU diagnosis and recovery procedure](relationship-refresh-recovery.md)
 before resuming a run interrupted by CPU terminations.
+The weekly pass is watched by RL OpsBot's routine on the shared box;
+[relationship refresh monitor](relationship-refresh-monitor.md) holds its prompt
+and status script and recreates it from scratch.
 
 `RELATIONSHIP_REFRESH_JOBS` uses dedicated queues
 `reading-lite-staging-refresh` / `reading-lite-staging-refresh-dlq` and
