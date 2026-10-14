@@ -3,6 +3,8 @@ import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { accountViewOf, type AccountView } from "../account-state";
 import { clearDesk } from "../api/desk";
+import { deskInboxFold, deskQuietOf } from "../inbox";
+import { inboxQueryOptions } from "../inbox-query";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import {
   DESK_CAP,
@@ -30,6 +32,7 @@ import { dateOn, hostnameOf } from "../reading-presentation";
 import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
 import { ConnectKeyLink } from "./ConnectKey";
+import { DeskInboxSection } from "./DeskInbox";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
@@ -39,10 +42,11 @@ import { useStatusWatch } from "./use-status-watch";
 
 // The desk, at `/` (reading-lite-kl7y.7; design spec, Screens: Desk). One
 // read, GET /api/desk?since= for this visit (desk-query.ts), renders the
-// sections in the spec's order, each omitted when empty: Needs you,
-// Processing, On your desk, and Ready since the visit began. The provider
-// tile, and the rejected key at the top of Needs you, come from the
-// provider read, in the browser only like the provider page.
+// sections in order, each omitted when empty: Needs you, Inbox, Processing,
+// On your desk, and Ready since the visit began. The inbox list is a browser
+// read (inbox-query.ts), separate from the desk read. The provider tile, and
+// the rejected key at the top of Needs you, come from the provider read, in
+// the browser only like the provider page.
 //
 // While anything is processing the read is refreshed on the library's
 // bounded schedule (status-refresh.ts), in the terms of use-status-watch.ts;
@@ -152,12 +156,17 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
   const queryClient = useQueryClient();
   const provider = useQuery(providerQueryOptions(queryClient, identity));
   const usage = useQuery(providerUsageQueryOptions(queryClient, identity));
+  const inbox = useQuery(inboxQueryOptions(queryClient, identity));
+  const fold = deskInboxFold(accountViewOf({ data: inbox.data, error: inbox.error, fetchStatus: inbox.fetchStatus }));
   const settings = provider.data?.state === "ready" ? provider.data.value : undefined;
   const keyRejected = settings?.credential?.status === "invalid";
   const now = visit.next.latest;
   const needsYouCount = desk.needs_you_total + (keyRejected ? 1 : 0);
-  const nothing =
+  const groupsEmpty =
     needsYouCount === 0 && desk.processing_total === 0 && desk.on_desk.length === 0 && desk.ready_since_total === 0;
+  // The list is not on the server render. Withholding the empty sentence
+  // until it settles avoids painting "Nothing needs you." and then taking it back.
+  const quiet = deskQuietOf(groupsEmpty, fold);
 
   return (
     <>
@@ -176,6 +185,7 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
           <MoreRow shown={desk.needs_you.length} total={desk.needs_you_total} />
         </DeskSection>
       ) : null}
+      <DeskInboxSection fold={fold} onRetry={() => void inbox.refetch()} Section={DeskSection} />
       {desk.processing_total > 0 ? (
         <DeskSection title="Processing" count={desk.processing_total}>
           {desk.processing.map((row) => (
@@ -184,11 +194,8 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
           <MoreRow shown={desk.processing.length} total={desk.processing_total} />
         </DeskSection>
       ) : null}
-      {nothing ? (
-        <DeskEmpty identity={identity} />
-      ) : (
-        <OnYourDesk rows={desk.on_desk} />
-      )}
+      {quiet === "empty" ? <DeskEmpty identity={identity} /> : null}
+      {quiet === "occupied" ? <OnYourDesk rows={desk.on_desk} /> : null}
       {desk.ready_since.length > 0 ? (
         <DeskSection
           title={`Ready since ${dateOn(new Date(visit.since).toISOString())}`}

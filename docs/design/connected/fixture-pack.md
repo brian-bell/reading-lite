@@ -157,5 +157,6 @@ which intake never writes; a stalled submit reads as `stale_active_attempt`,
 as `stale-pending` does, and the frontend gives both the same category. The
 worker records each stage in the attempt log, never on the reading, so a
 reading mid-run still says `queued`; only `processing`'s diagnostics show its
-progress. The browser suite does not serve `GET /api/inbox` yet; the snapshot
-carries the items for the slice that does (reading-lite-kl7y.8).
+progress. The browser suite serves `GET /api/inbox` from this snapshot on the
+signed-in desk. The list response omits `markdown`, and `GET /api/inbox/:id`
+returns the body.

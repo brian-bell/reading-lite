@@ -16,6 +16,7 @@ import { NEW_READER_SESSION } from "../sessions";
 import {
   E2E_PROVIDER_API_KEY,
   serveProviderInBrowser,
+  serveInboxInBrowser,
   serveReadingsInBrowser,
   serveSaveInBrowser,
   signIn,
@@ -66,6 +67,7 @@ test("goes from the front door through the samples and a key to the first save",
   });
   await serveReadingsInBrowser(page);
   const provider = await serveProviderInBrowser(page);
+  await serveInboxInBrowser(page, []);
   await page.goto("/");
   await expect(page.getByRole("heading", { level: 1, name: "Desk" })).toBeVisible();
   await expect(page.getByText("Nothing needs you.")).toBeVisible();

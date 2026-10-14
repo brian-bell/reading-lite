@@ -580,6 +580,47 @@ export async function serveProviderInBrowser(
 }
 
 /**
+ * GET /api/inbox and GET /api/inbox/:id from the fixture pack. The list is
+ * metadata only. The item response is the fixture, markdown included, or 404.
+ */
+export async function serveInboxInBrowser(
+  page: Page,
+  items: readonly ServedInboxItem[] = pack.inbox,
+): Promise<void> {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  await page.route("**/api/inbox**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const match = /^\/api\/inbox(?:\/([^/]+))?$/.exec(path);
+    if (request.method() !== "GET" || !match) {
+      await route.fallback();
+      return;
+    }
+    const id = match[1];
+    if (id === undefined) {
+      await route.fulfill({ status: 200, json: { items: items.map(inboxMeta) } });
+      return;
+    }
+    const item = byId.get(decodeURIComponent(id));
+    if (!item) {
+      await route.fulfill({ status: 404, json: { error: "not found" } });
+      return;
+    }
+    await route.fulfill({ status: 200, json: item });
+  });
+}
+
+interface ServedInboxItem {
+  id: string;
+  markdown: string;
+}
+
+function inboxMeta(item: ServedInboxItem): Omit<ServedInboxItem, "markdown"> {
+  const { markdown: _markdown, ...meta } = item;
+  return meta;
+}
+
+/**
  * Sets the session cookie with the backend's attributes (HttpOnly,
  * SameSite=Lax; `url` supplies Path=/ and, on https, Secure), so a real
  * session an external run supplies is no more exposed to page script than in

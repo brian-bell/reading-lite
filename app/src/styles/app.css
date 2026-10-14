@@ -206,8 +206,8 @@ textarea {
 }
 
 /* The column has room for one word a tile; the bar spells the label out where
-   its five destinations fit. Still read out, so the link's name is "Save
-   reading" at every width. */
+   its four destinations fit. Catalog will make five. Still read out, so the
+   link's name is "Save reading" at every width. */
 @container shell (width > 650px) or (width <= 520px) {
   .nav-item-rest {
     position: absolute;
@@ -1626,6 +1626,25 @@ textarea {
   position: absolute;
   inset: 0;
   content: "";
+}
+
+/* An inbox row's preview and buttons take their own clicks, so the cover stops. */
+.desk-inbox-row .desk-row-title a::after {
+  content: none;
+}
+
+.desk-inbox-preview,
+.desk-inbox-notice {
+  position: relative;
+  z-index: 1;
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+/* A short note fits. A longer one scrolls. /inbox/$id keeps the full preview. */
+.desk-inbox-preview:has(.reading-source) {
+  max-height: 12rem;
+  overflow: auto;
 }
 
 .desk-row-linked:hover .desk-row-title a {
@@ -3832,8 +3851,8 @@ a.thread-step:hover {
   }
 }
 
-/* The bar's five destinations on one row, down to the 320 px reflow floor:
-   tighter items first, then the labels without their icons. */
+/* The bar's four destinations on one row, down to the 320 px reflow floor.
+   Catalog will make five. Tighter items first, then the labels without their icons. */
 @container shell (max-width: 480px) {
   .nav-item {
     padding-inline: var(--space-1);
