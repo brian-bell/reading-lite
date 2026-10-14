@@ -118,6 +118,25 @@ export async function serveLibraryInBrowser(
 }
 
 /**
+ * Serves `GET /api/desk` in the browser from the pack's first-visit desk, the
+ * body the stub entrypoint gives the server render. The desk page reads it
+ * on the server, so only its status refresh and a client-side navigation to
+ * it ask here, as do the desk toggles and the session bar on other pages.
+ * `requests` records each request's path and query.
+ */
+export async function serveDeskInBrowser(page: Page, requests: string[] = []): Promise<void> {
+  await page.route(/\/api\/desk(\?.*)?$/, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    const url = new URL(route.request().url());
+    requests.push(`${url.pathname}${url.search}`);
+    await route.fulfill({ status: 200, json: pack.desk });
+  });
+}
+
+/**
  * Answers `POST /api/readings` in the browser with one canned response, and
  * records the saves made (#431, #432, #433): an accepted save, an owner the
  * reader already has, or a refusal the page renders, from a 400 to a 503.

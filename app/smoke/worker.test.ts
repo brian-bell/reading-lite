@@ -68,7 +68,7 @@ describe("built Worker", () => {
     expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response.headers.get("Content-Security-Policy")).toBe("img-src 'self' https: data:");
-    expect(await response.text(), "signed out, the library is the sign-in form").toContain(heading("Sign in"));
+    expect(await response.text(), "signed out, the desk is the sign-in form").toContain(heading("Sign in"));
 
     for (const [method, path] of [
       ["GET", "/api/whoami"],
@@ -88,6 +88,17 @@ describe("built Worker", () => {
     const signedOut = await request("/readings/rd_0123456789?view=source");
     expect([302, 307], "a signed-out deep link").toContain(signedOut.status);
     expect(location(signedOut)).toBe("/login?next=%2Freadings%2Frd_0123456789%3Fview%3Dsource");
+    const library = await request("/library?tag=ai");
+    expect([302, 307], "the library is signed-in only").toContain(library.status);
+    expect(location(library)).toBe("/login?next=%2Flibrary%3Ftag%3Dai");
+
+    for (const cookie of [undefined, A.cookie]) {
+      const moved = await request("/?q=a+b&tag=ai&offset=20", cookie ? { headers: { Cookie: cookie } } : {});
+      expect([301, 302, 307, 308], `the library's old address, ${cookie ? "signed in" : "signed out"}`).toContain(
+        moved.status,
+      );
+      expect(location(moved)).toBe("/library?q=a+b&tag=ai&offset=20");
+    }
 
     for (const [next, expected] of [
       ["/readings/rd_0123456789?view=source&x=1", "/readings/rd_0123456789?view=source"],
@@ -107,8 +118,9 @@ describe("built Worker", () => {
 
   it("keeps identity, CSRF tokens, and library rows apart across concurrent renders for two tenants", async () => {
     // A answers slower than B, so renders overlap and finish out of order.
-    // The library and Threads each read the tenant's rows during the render.
-    const order = Array.from({ length: 40 }, (_, i) => ({ tenant: i % 2 === 0 ? A : B, path: i % 4 < 2 ? "/" : "/threads" }));
+    // The desk, the library and Threads each read the tenant's rows during the render.
+    const paths = ["/", "/library", "/threads"];
+    const order = Array.from({ length: 48 }, (_, i) => ({ tenant: i % 2 === 0 ? A : B, path: paths[Math.floor(i / 2) % 3]! }));
     const pages = await Promise.all(
       order.map(async ({ tenant, path }) => ({
         tenant,

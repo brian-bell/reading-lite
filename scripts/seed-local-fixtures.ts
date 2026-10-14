@@ -18,7 +18,7 @@
 // are deleted first, so leftover local or retired-fixture readings drop out;
 // their R2 objects stay. Rows are tenant-scoped even though local R2 keys are
 // global-rooted. The tenant's inbox items are replaced with the pack's staged
-// Markdown in the same transaction.
+// Markdown, and its desk with the pack's, in the same transaction.
 
 import { type ChildProcess } from "node:child_process";
 import { pathToFileURL } from "node:url";
@@ -136,6 +136,12 @@ async function seedLocalPostgres(plan: LocalSeedPlan): Promise<PostgresSeedResul
     await sql.transaction(async (tx) => {
       await replaceTenantReadings(tx, tenantId, rows, localSeedAttempts(plan));
       await replaceTenantInbox(tx, tenantId, plan.inbox);
+      for (const [index, id] of plan.desk.entries()) {
+        await tx.query(
+          "INSERT INTO reading_desk (tenant_id, reading_id, position, added_at) VALUES ($1, $2, $3, now())",
+          [tenantId, id, index + 1],
+        );
+      }
     });
     const [counts] = await sql.query<{ readings: number; attempts: number; embeddings: number; inbox: number }>(
       `SELECT (SELECT count(*) FROM readings WHERE tenant_id = $1)::int AS readings,

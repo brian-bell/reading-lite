@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useElementScrollRestoration, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, useElementScrollRestoration, useNavigate } from "@tanstack/react-router";
 import {
   createContext,
   useContext,
@@ -31,7 +31,9 @@ import {
 import { libraryReturnState } from "../library-return";
 import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
-import { hostnameOf } from "../reading-presentation";
+import { DESK_QUERY_ROOT } from "../desk";
+import { useLibraryLayout } from "../library-layout";
+import { hostnameOf, noveltyLabel } from "../reading-presentation";
 import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
 import { relationshipCount } from "../threads";
@@ -40,7 +42,6 @@ import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
-import { SignInPage } from "./SignInPage";
 import { useStatusWatch } from "./use-status-watch";
 
 // The library (#413, first slice of #404). The page the URL names is read
@@ -76,17 +77,12 @@ import { useStatusWatch } from "./use-status-watch";
 // page stopped checking, until another page, filter, or a reload starts a new
 // watch. It has no button: a manual check would not restart the refresh.
 
-/** `/`: the sign-in form in place when signed out, the library when signed in. */
+/** `/library`, behind the signed-in guard. */
 export function LibraryHome({ search }: { search: LibrarySearch }) {
   const { data: identity } = useQuery(whoamiQueryOptions());
-  // The form renders here rather than at /login, so it has to carry this URL
-  // itself: without it the library's filters are lost on return, and the
-  // request wipes a path stored earlier in this tab (#384 review).
-  const href = useLocation({ select: (location) => location.href });
-  if (identity === null) return <SignInPage next={href} landing />;
   // Identity could not be determined: the shell shows neither account state,
   // and there is no account to read a library for.
-  if (identity === undefined) {
+  if (!identity) {
     return (
       <div className="page">
         <PageHeading>Library</PageHeading>
@@ -130,9 +126,10 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
 
 /**
  * A row this page saw processing that has since settled may have joined the
- * relationship graph, which never goes stale on its own (relationships-query.ts),
- * so the graph is invalidated, as the reading page does for the attempt it
- * watches. Nothing is fetched until a Threads page or a reading page reads it.
+ * relationship graph and moved between the desk's groups, neither of which
+ * goes stale on its own (relationships-query.ts, desk-query.ts), so both are
+ * invalidated, as the reading page does for the attempt it watches. Nothing
+ * is fetched until a page that reads them is open.
  */
 function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
   const queryClient = useQueryClient();
@@ -144,6 +141,7 @@ function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
     processing.current = new Set(rows.filter(isProcessing).map((row) => row.id));
     if (rows.some((row) => was.has(row.id) && !processing.current.has(row.id))) {
       void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
     }
   }, [data, queryClient]);
 }
@@ -171,7 +169,10 @@ function pageFor(
     default:
       return (
         <div className="page library">
-          <PageHeading>Library</PageHeading>
+          <div className="library-head">
+            <PageHeading>Library</PageHeading>
+            <LayoutSwitch />
+          </div>
           <LibraryFilters search={search} />
           <LibraryContent
             view={view}
@@ -253,12 +254,27 @@ function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolean): voi
 }
 
 function LibraryRows({ rows, search }: { rows: readonly LibraryRow[]; search: LibrarySearch }) {
+  const [layout] = useLibraryLayout();
   return (
-    <ul className="library-list" aria-label="Readings">
+    <ul className={layout === "rows" ? "library-list library-list-rows" : "library-list"} aria-label="Readings">
       {rows.map((row) => (
         <LibraryCard key={row.id} row={row} search={search} />
       ))}
     </ul>
+  );
+}
+
+/** Cards or Rows (design spec, Screens: Library): two pressed-state buttons, the same rows either way. */
+function LayoutSwitch() {
+  const [layout, setLayout] = useLibraryLayout();
+  return (
+    <div className="segmented" role="group" aria-label="Layout">
+      {(["cards", "rows"] as const).map((option) => (
+        <button key={option} type="button" aria-pressed={layout === option} onClick={() => setLayout(option)}>
+          {option === "cards" ? "Cards" : "Rows"}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -332,7 +348,7 @@ function LibraryFilters({ search }: { search: LibrarySearch }) {
     // The field shows what was searched for, even when the URL does not change.
     setDraft(next.q ?? "");
     focusAfterFilterChange("search", next);
-    void navigate({ to: "/", search: next });
+    void navigate({ to: "/library", search: next });
   };
 
   return (
@@ -360,7 +376,7 @@ function LibraryFilters({ search }: { search: LibrarySearch }) {
           <span>Filtered by</span>
           {q ? (
             <Link
-              to="/"
+              to="/library"
               search={searchForFilters(search, { q: undefined })}
               activeOptions={PAGE_LINK_ACTIVE}
               preload={false}
@@ -375,7 +391,7 @@ function LibraryFilters({ search }: { search: LibrarySearch }) {
           {tag ? (
             <Link
               ref={chip}
-              to="/"
+              to="/library"
               search={searchForFilters(search, { tag: undefined })}
               activeOptions={PAGE_LINK_ACTIVE}
               preload={false}
@@ -399,7 +415,7 @@ function ClearFilter({ search, filter }: { search: LibrarySearch; filter: "q" | 
   const next = searchForFilters(search, { [filter]: undefined });
   return (
     <Link
-      to="/"
+      to="/library"
       search={next}
       activeOptions={PAGE_LINK_ACTIVE}
       className="button"
@@ -444,7 +460,7 @@ function EmptyLibrary({ empty, search }: { empty: LibraryEmpty; search: LibraryS
           </Link>
         ) : null}
         {empty.kind === "past-end" ? (
-          <Link to="/" search={searchForPage(search, 0)} activeOptions={PAGE_LINK_ACTIVE} className="button">
+          <Link to="/library" search={searchForPage(search, 0)} activeOptions={PAGE_LINK_ACTIVE} className="button">
             First page
           </Link>
         ) : null}
@@ -520,7 +536,7 @@ function Pager({ search, offset, hasMore }: { search: LibrarySearch; offset: num
 function PagerStep({ label, search }: { label: string; search: LibrarySearch | null }) {
   return (
     <Link
-      to="/"
+      to="/library"
       // A disabled link has no href, so the search is only read for a step
       // that can be followed.
       search={search ?? {}}
@@ -542,7 +558,8 @@ function normalizeTag(tag: string): string {
 /**
  * One card: the state badge when the reading is not simply ready (#415), the
  * title, the summary lead clamped at three lines (the stylesheet's job), the
- * hostname, and the tags (#417). The title link is stretched over the whole
+ * hostname, the novelty verdict's label on a ready card, the relationship
+ * counts, and the tags (#417). The Rows layout is the same card, denser. The title link is stretched over the whole
  * card, so the card is one target without nesting anything inside a link;
  * the badge and the failure's headline are plain text, so they add nothing
  * the pointer or the keyboard could land on instead. The tags are the one
@@ -564,6 +581,7 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
   const focusAfterFilterChange = useFocusAfterFilterChange();
   const activeTag = search.tag === undefined ? undefined : normalizeTag(search.tag);
   const count = relationshipCount(row);
+  const verdict = noveltyLabel(row);
   return (
     <li className="library-card">
       {badge ? (
@@ -579,10 +597,11 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
         </Link>
       </h2>
       {row.tldr ? <p className="library-card-summary">{row.tldr}</p> : null}
-      {count ? (
+      {count || verdict ? (
         <p className="reading-meta library-card-meta">
           <span>{hostnameOf(row.url)}</span>
-          <span>{count}</span>
+          {verdict ? <span className="library-card-verdict">{verdict}</span> : null}
+          {count ? <span>{count}</span> : null}
         </p>
       ) : (
         <p className="library-card-meta">{hostnameOf(row.url)}</p>
@@ -597,7 +616,7 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
             ) : (
               <Link
                 key={tag}
-                to="/"
+                to="/library"
                 search={searchForFilters(search, { tag })}
                 activeOptions={PAGE_LINK_ACTIVE}
                 preload={false}

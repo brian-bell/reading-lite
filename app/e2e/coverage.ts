@@ -13,8 +13,11 @@ import { expect, type Page } from "@playwright/test";
 import { externalBaseUrl } from "./harness";
 import { hostSession } from "./sessions";
 import {
+  E2E_PROVIDER,
+  serveDeskInBrowser,
   serveExportInBrowser,
   serveLibraryInBrowser,
+  serveProviderInBrowser,
   serveReadingsInBrowser,
   serveSessionsInBrowser,
   serveSettingsInBrowser,
@@ -45,10 +48,10 @@ export interface EvidenceCase {
 }
 
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
-  // Signed out, the library renders the sign-in form in place (#369), so its
+  // Signed out, the desk renders the sign-in form in place (#369), so its
   // heading is the form's.
   {
-    name: "library-signed-out",
+    name: "desk-signed-out",
     anyHost: true,
     path: "/",
     state: "signed-out",
@@ -59,16 +62,46 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(about.getByRole("link", { name: "Browse samples" })).toBeVisible();
     },
   },
+  // Signed in, the pack's first-visit desk, rendered on the server
+  // (reading-lite-kl7y.7): failures and a failed reprocess under Needs you,
+  // the pending rows, two readings on the desk, and what arrived this week.
+  {
+    name: "desk-signed-in",
+    path: "/",
+    state: "signed-in",
+    heading: "Desk",
+    // The provider tile reads in the browser; the pending rows make the page
+    // check itself on the library's schedule; its links preload readings.
+    stub: async (page) => {
+      await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
+      await serveDeskInBrowser(page);
+      await serveReadingsInBrowser(page);
+    },
+    prepare: async (page) => {
+      const needsYou = page.getByRole("region", { name: "Needs you" });
+      await expect(needsYou.getByText(/^Reprocess failed · /)).toBeVisible();
+      const onDesk = page.getByRole("region", { name: "On your desk" });
+      await expect(onDesk.getByRole("link", { name: "Start" })).toBeVisible();
+      await expect(onDesk.getByRole("button", { name: "Take off desk" })).toHaveCount(2);
+      const readySince = page.getByRole("region", { name: /^Ready since / });
+      await expect(readySince.getByRole("button", { name: "Put on desk" }).first()).toBeEnabled();
+      await expect(page.getByRole("region", { name: "Provider" }).getByText("OpenAI key ending c0de")).toBeVisible();
+    },
+  },
   // Signed in, the first page of the pack's list index, rendered on the server
   // (#413), with its pending, failed, and long-title rows.
   {
     name: "library-signed-in",
-    path: "/",
+    path: "/library",
     state: "signed-in",
     heading: "Library",
     // The pending row makes the page check itself every 15 s in the browser
-    // (#409), and the frontend Worker answers /api/* with 404 by design.
-    stub: (page) => serveLibraryInBrowser(page),
+    // (#409), and the frontend Worker answers /api/* with 404 by design. The
+    // desk toggles read what is on the desk.
+    stub: async (page) => {
+      await serveLibraryInBrowser(page);
+      await serveDeskInBrowser(page);
+    },
     prepare: async (page) => {
       const list = page.getByRole("list", { name: "Readings" });
       await expect(list.getByRole("listitem").first()).toBeVisible();

@@ -98,6 +98,12 @@ const VERDICTS: Record<string, Omit<NoveltyPanel, "linksToConnections">> = {
   duplicate: { label: "Duplicate", sentence: "Effectively the same piece as one already in your library." },
 };
 
+/** The verdict's label alone, for a library card: none unless ready with a verdict this app names. */
+export function noveltyLabel(row: { status: string; novelty_verdict?: string }): string | undefined {
+  if (row.status !== "ready" || row.novelty_verdict === undefined) return undefined;
+  return VERDICTS[row.novelty_verdict]?.label;
+}
+
 /** Sparse archive: the library itself had nothing to compare against. */
 const SPARSE_SENTENCE = "Your library had no close readings when this was processed.";
 

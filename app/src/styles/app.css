@@ -206,9 +206,9 @@ textarea {
 }
 
 /* The column has room for one word a tile; the bar spells the label out where
-   its four destinations fit. Still read out, so the link's name is "Save
+   its five destinations fit. Still read out, so the link's name is "Save
    reading" at every width. */
-@container shell (width > 650px) or (width <= 440px) {
+@container shell (width > 650px) or (width <= 520px) {
   .nav-item-rest {
     position: absolute;
     width: 1px;
@@ -1339,6 +1339,571 @@ textarea {
 
 .reading-desk {
   margin: 0 0 var(--space-3);
+}
+
+/* The library's heading with the Cards / Rows switch beside it. */
+.library-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 68ch;
+}
+
+.library-head .segmented {
+  margin-bottom: var(--space-5);
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+}
+
+.segmented button {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Rows: the same cards, denser, with the summary on one line. */
+.library-list-rows {
+  gap: var(--space-2);
+}
+
+.library-list-rows .library-card {
+  padding: var(--space-3) var(--space-4);
+}
+
+.library-list-rows .library-card-title {
+  margin-bottom: var(--space-1);
+  font-size: 19px;
+}
+
+.library-list-rows .library-card-summary {
+  -webkit-line-clamp: 1;
+  line-clamp: 1;
+  margin-bottom: var(--space-1);
+}
+
+.library-list-rows .library-card-desk {
+  margin-top: var(--space-2);
+}
+
+.library-card-verdict {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* An icon-only control, 32 px square, in the muted tone until hovered. */
+.button-icon {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+@media (hover: hover) {
+  .button-icon:hover:not(:disabled, [aria-disabled="true"]) {
+    color: var(--ink);
+  }
+}
+
+/* ---- Desk (reading-lite-kl7y.7) --------------------------------------- */
+
+/* Sections share a surface of rows; the danger section rules its left edge,
+   and the desk itself is lifted as the page's centre. Row radii are
+   concentric with the surface's. */
+.desk-section {
+  max-width: 56rem;
+  margin: 0 0 var(--space-7);
+}
+
+.desk-section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-3);
+}
+
+.desk-section-title {
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.desk-section-count {
+  color: var(--muted);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+
+.desk-section-aside {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+}
+
+.desk-section-note {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.desk-section-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+
+.desk-rows {
+  --row-radius: 9px;
+  --row-radius-left: var(--row-radius);
+  --row-x: 18px;
+  --row-y: 14px;
+
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--row-radius) + 1px);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.desk-section-danger .desk-rows {
+  --row-radius-left: 0px;
+
+  border-left: 3px solid var(--danger);
+  border-radius: 0 calc(var(--row-radius) + 1px) calc(var(--row-radius) + 1px) 0;
+}
+
+.desk-section-focus .desk-rows {
+  --row-x: 20px;
+  --row-y: 18px;
+
+  border-color: color-mix(in oklab, var(--border), var(--accent) 40%);
+  box-shadow: var(--card-shadow-hover);
+}
+
+/* An empty desk is an outline, as every empty state is. */
+.desk-section-focus .desk-rows:has(.desk-row-empty) {
+  border: 1px dashed var(--control-border);
+  background: transparent;
+  box-shadow: none;
+}
+
+.desk-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  padding: var(--row-y) var(--row-x);
+}
+
+.desk-row-marked {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.desk-row + .desk-row {
+  border-top: 1px solid var(--border);
+}
+
+.desk-row:first-child {
+  border-top-left-radius: var(--row-radius-left);
+  border-top-right-radius: var(--row-radius);
+}
+
+.desk-row:last-child {
+  border-bottom-left-radius: var(--row-radius-left);
+  border-bottom-right-radius: var(--row-radius);
+}
+
+.desk-row-linked:hover {
+  background: color-mix(in oklab, var(--ink) 4%, var(--surface));
+}
+
+.desk-row-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A running attempt: a dot with a ring that breathes outward. */
+.desk-row-live {
+  position: relative;
+  width: 10px;
+  height: 10px;
+  margin: 0 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.desk-row-live::after {
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  animation: desk-pulse 1.8s cubic-bezier(0.2, 0, 0, 1) infinite;
+  content: "";
+}
+
+@keyframes desk-pulse {
+  0% {
+    scale: 0.6;
+    opacity: 0.7;
+  }
+
+  70%,
+  100% {
+    scale: 1.25;
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .desk-row-live::after {
+    animation: none;
+  }
+}
+
+.desk-row-text {
+  min-width: 0;
+}
+
+.desk-row-badge {
+  margin: 0 0 4px;
+}
+
+.desk-row-title {
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 17px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.desk-section-focus .desk-row-title {
+  font-size: 19px;
+}
+
+.desk-row-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* The title's link is the row's target: it covers the row, under the controls. */
+.desk-row-title a::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.desk-row-linked:hover .desk-row-title a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.desk-row-note {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.desk-row-empty {
+  justify-content: center;
+}
+
+.desk-row-empty .desk-row-note,
+.desk-row-more .desk-row-note {
+  margin: 0;
+  font-size: 14px;
+}
+
+.desk-row-empty .desk-row-note {
+  text-align: center;
+}
+
+.desk-row-actions {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.desk-row-actions > * {
+  pointer-events: auto;
+}
+
+.desk-row-actions .button {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.desk-row-actions .button-primary {
+  min-height: 34px;
+  padding: 0 var(--space-4);
+}
+
+.desk-row-actions .button-icon {
+  padding: 0;
+}
+
+/* A linked row with nothing else to show ends in a chevron that leans toward the pointer. */
+.desk-row-chevron {
+  display: inline-flex;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+.desk-row-linked:hover .desk-row-chevron {
+  color: var(--accent);
+  opacity: 1;
+  translate: 2px 0;
+}
+
+/* The desk's slots beside its heading, filled left to right. */
+.desk-slots {
+  display: inline-flex;
+  gap: 5px;
+}
+
+.desk-slot {
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--control-border);
+  border-radius: 50%;
+}
+
+.desk-slot-filled {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.desk-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+  gap: var(--space-4);
+  max-width: 56rem;
+}
+
+.desk-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: 18px 20px 20px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.desk-tile-eyebrow {
+  margin: 0 0 2px;
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.desk-tile-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px var(--space-2);
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 19px;
+  line-height: 1.3;
+}
+
+.desk-tile-title-meta {
+  color: var(--muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
+}
+
+.desk-tile-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.desk-tile-actions {
+  margin-top: auto;
+  padding-top: var(--space-3);
+}
+
+.desk-tile-actions .button {
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  font-size: 13px;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--positive);
+  translate: 0 -2px;
+}
+
+.status-dot-danger {
+  background: var(--danger);
+}
+
+.status-dot-muted {
+  background: var(--control-border);
+}
+
+/* Today's spend against its limit, as a thin bar under the status. */
+.spend-meter {
+  height: 4px;
+  margin: var(--space-1) 0 0;
+  border-radius: 2px;
+  background: var(--soft);
+}
+
+.spend-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+/* Above a reading on the desk: where it sits in the session, Done and Pause. */
+.session-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: var(--measure);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 7px 7px 0;
+  background: var(--surface);
+}
+
+.session-bar-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.session-bar-next {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.session-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.session-bar-actions .button-primary {
+  min-height: 36px;
+}
+
+.session-bar-notice {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.session-bar-notice:empty {
+  display: none;
+}
+
+@container shell (max-width: 650px) {
+  .desk-rows {
+    --row-x: 14px;
+  }
+
+  .desk-section-focus .desk-rows {
+    --row-x: 16px;
+    --row-y: 14px;
+  }
+
+  /* A row with a text control stacks its controls under the text, indented
+     past any mark; a row whose only control is an icon keeps it inline. */
+  .desk-row:has(.desk-row-actions .button:not(.button-icon)) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .desk-row-marked:has(.desk-row-actions .button:not(.button-icon)) {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .desk-row:has(.desk-row-actions .button:not(.button-icon)) .desk-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .desk-row-marked:has(.desk-row-actions .button:not(.button-icon)) .desk-row-actions {
+    grid-column: 2 / -1;
+  }
+
+  .desk-tile {
+    padding: 16px;
+  }
 }
 
 /* Offline (acceptance matrix, Common states; #416): a notice above whatever
@@ -3267,20 +3832,23 @@ a.thread-step:hover {
   }
 }
 
-/* At the 320 px reflow floor the bar's first row has no room for the name. */
-@container shell (max-width: 440px) {
+/* The bar's five destinations on one row, down to the 320 px reflow floor:
+   tighter items first, then the labels without their icons. */
+@container shell (max-width: 480px) {
   .nav-item {
     padding-inline: var(--space-1);
   }
 }
 
-@container shell (max-width: 359px) {
-  .brand-name {
+@container shell (max-width: 389px) {
+  .nav-item svg {
     display: none;
   }
+}
 
-  /* Four labels fit the bar only without their icons. */
-  .nav-item svg {
+/* At the reflow floor the bar's first row has no room for the name. */
+@container shell (max-width: 359px) {
+  .brand-name {
     display: none;
   }
 }

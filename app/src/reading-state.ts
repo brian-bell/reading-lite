@@ -39,3 +39,14 @@ export function readingState(reading: ReadingStateFields): ReadingState {
   }
   return { kind: "ready" };
 }
+
+/** A ready reading whose last attempt was a reprocess that failed: its earlier summary and content stay. */
+export function reprocessFailed(reading: ReadingStateFields): boolean {
+  return reading.status === "ready" && readingState(reading).kind === "reprocess-failed";
+}
+
+/** The failure a card, badge, or desk row explains: the reading's own, or its failed reprocess's. */
+export function failureOf(reading: ReadingStateFields): ReadingError | undefined {
+  const state = readingState(reading);
+  return state.kind === "failed" || state.kind === "reprocess-failed" ? state.error : undefined;
+}

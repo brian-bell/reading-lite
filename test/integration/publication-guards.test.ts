@@ -576,21 +576,134 @@ describe("the desk", () => {
   });
 });
 
-describe("the relationships read", () => {
-  async function get(path: string, init: { method?: string; json?: unknown } = {}) {
-    const ctx = createExecutionContext();
-    const res = await createApp({ services: makeServices(makeStubFetch()) }).fetch(
-      new Request(`http://t${path}`, {
-        method: init.method ?? "GET",
-        headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
-        body: init.json === undefined ? undefined : JSON.stringify(init.json),
-      }),
-      env as unknown as Env,
-      ctx,
-    );
-    await waitOnExecutionContext(ctx);
-    return res.json() as Promise<Record<string, unknown>>;
+async function api(path: string, init: { method?: string; json?: unknown } = {}) {
+  const ctx = createExecutionContext();
+  const res = await createApp({ services: makeServices(makeStubFetch()) }).fetch(
+    new Request(`http://t${path}`, {
+      method: init.method ?? "GET",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },
+      body: init.json === undefined ? undefined : JSON.stringify(init.json),
+    }),
+    env as unknown as Env,
+    ctx,
+  );
+  await waitOnExecutionContext(ctx);
+  return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+}
+
+describe("the desk read", () => {
+  // The request clock is CREATED_AT (20:00) and the test TTL 300 s, so the
+  // staleness cutoff is 19:55. `since` is 18:00.
+  const at = (time: string) => `2026-04-26T${time}:00.000Z`;
+  const SINCE = at("18:00");
+  const failedError = { code: "fetch_failed", message: "fetch failed" };
+  const attempt = (trigger: "submit" | "import" | "reprocess", started: string, rest: Record<string, unknown> = {}) => ({
+    id: `at_${trigger}_${started}`,
+    trigger,
+    status: "running" as const,
+    started_at: at(started),
+    ...rest,
+  });
+  const ids = (rows: unknown) => (rows as { id: string }[]).map((row) => row.id);
+  const pad = (i: number) => String(i).padStart(2, "0");
+
+  async function seedCorpus() {
+    const s = sql();
+    const tenant = founderTenant();
+    const seed = async (id: string, created: string, overrides: Partial<Manifest> = {}) =>
+      seedManifest(s, tenant, await readyManifest(id, { created_at: at(created), updated_at: at(created), ...overrides }));
+    for (let i = 0; i < 25; i++) await seed(`rd_f${pad(i)}`, `10:${pad(i)}`, { status: "failed", error: failedError });
+    await seed("rd_reprocess_failed", "19:30", {
+      last_attempt: { ...attempt("reprocess", "19:40"), status: "failed", finished_at: at("19:41"), error: failedError },
+    });
+    // Expired attempts: a ready reading's reprocess fails it as a reprocess;
+    // a pending reading's fails the reading.
+    await seed("rd_reprocess_expired", "19:31", { active_attempt: attempt("reprocess", "19:00") });
+    await seed("rd_pending_expired", "19:01", { status: "pending", active_attempt: attempt("submit", "19:01") });
+    await seed("rd_stale_pending", "19:00", { status: "pending" });
+    // Batch-owned pending is exempt from staleness.
+    await seed("rd_batch", "08:00", {
+      status: "pending",
+      active_attempt: attempt("import", "08:00", { id: "batch_1", stage: "summarize" }),
+    });
+    await seed("rd_pending", "19:58", { status: "pending", active_attempt: attempt("submit", "19:58") });
+    for (let i = 0; i <= 10; i++) await seed(`rd_r${pad(i)}`, `18:${pad(i + 1)}`);
+    // A live reprocess leaves a ready reading ready, and retrying a failed
+    // reprocess takes it out of needs_you.
+    await seed("rd_live_reprocess", "18:30", {
+      active_attempt: attempt("reprocess", "19:59"),
+      last_attempt: { ...attempt("reprocess", "19:40"), status: "failed", finished_at: at("19:41"), error: failedError },
+    });
+    await seed("rd_at_since", "18:00");
+    await seed("rd_old", "17:00");
+    for (const [position, id] of [[1, "rd_r00"], [2, "rd_f00"]] as const) {
+      await s.execute(
+        "INSERT INTO reading_desk (tenant_id, reading_id, position, added_at) VALUES ($1, $2, $3, $4)",
+        [String(tenant.tenantId), id, position, CREATED_AT],
+      );
+    }
   }
+
+  it("groups after staleness, bounds each group, counts what it left out, and needs since for ready_since", async () => {
+    await seedCorpus();
+    const { status, body } = await api(`/api/desk?since=${SINCE}`);
+    expect(status).toBe(200);
+    const byId = new Map(
+      [...(body.on_desk as never[]), ...(body.needs_you as never[]), ...(body.processing as never[]), ...(body.ready_since as never[])]
+        .map((row: { id: string }) => [row.id, row as Record<string, unknown>]),
+    );
+    expect({
+      on_desk: ids(body.on_desk),
+      desk_positions: (body.on_desk as { desk_position: number }[]).map((row) => row.desk_position),
+      needs_you: ids(body.needs_you),
+      needs_you_total: body.needs_you_total,
+      processing: ids(body.processing),
+      processing_total: body.processing_total,
+      ready_since: ids(body.ready_since),
+      ready_since_total: body.ready_since_total,
+    }).toEqual({
+      on_desk: ["rd_r00", "rd_f00"],
+      desk_positions: [1, 2],
+      needs_you: [
+        "rd_reprocess_expired", "rd_reprocess_failed", "rd_pending_expired", "rd_stale_pending",
+        ...Array.from({ length: 16 }, (_, i) => `rd_f${pad(24 - i)}`),
+      ],
+      needs_you_total: 29,
+      processing: ["rd_pending", "rd_batch"],
+      processing_total: 2,
+      // A failed reprocess leaves the reading ready, so it is also new here.
+      ready_since: [
+        "rd_reprocess_expired", "rd_reprocess_failed", "rd_live_reprocess",
+        ...Array.from({ length: 7 }, (_, i) => `rd_r${pad(10 - i)}`),
+      ],
+      ready_since_total: 13,
+    });
+    expect(
+      Object.fromEntries(
+        ["rd_reprocess_expired", "rd_pending_expired", "rd_stale_pending", "rd_f00"].map((id) => {
+          const row = byId.get(id)! as { status: string; error?: { code: string }; last_attempt?: { status: string; error?: { code: string } } };
+          return [id, [row.status, row.error?.code ?? null, row.last_attempt?.error?.code ?? null]];
+        }),
+      ),
+      "rows carry the staleness the grouping decided over",
+    ).toEqual({
+      rd_reprocess_expired: ["ready", null, "stale_active_attempt"],
+      rd_pending_expired: ["failed", "stale_active_attempt", "stale_active_attempt"],
+      rd_stale_pending: ["failed", "stale_pending", null],
+      rd_f00: ["failed", "fetch_failed", null],
+    });
+
+    const unsince = await api("/api/desk");
+    expect(
+      { status: unsince.status, ready_since: unsince.body.ready_since, total: unsince.body.ready_since_total },
+      "no since lists nothing as ready since",
+    ).toEqual({ status: 200, ready_since: [], total: 0 });
+    expect((await api("/api/desk?since=yesterday")).status, "a since that is not a datetime").toBe(400);
+  });
+});
+
+describe("the relationships read", () => {
+  const get = async (path: string, init: { method?: string; json?: unknown } = {}) => (await api(path, init)).body;
 
   // rd_source connects to a live reading and to one that was purged, and has a
   // tension with a failed one. A ready reading with no rows still appears; a

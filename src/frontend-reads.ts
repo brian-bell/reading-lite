@@ -65,10 +65,20 @@ const RelationshipsInputSchema = z
   })
   .strict();
 
+const DeskInputSchema = z
+  .object({
+    cookie: z.string().max(16_384).nullable(),
+    host: HostSchema,
+    since: z.string().datetime().optional(),
+    expectedTenant: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
 export type FrontendWhoamiInput = z.infer<typeof WhoamiInputSchema>;
 export type FrontendReadingInput = z.infer<typeof ReadingInputSchema>;
 export type FrontendListInput = z.infer<typeof ListInputSchema>;
 export type FrontendRelationshipsInput = z.infer<typeof RelationshipsInputSchema>;
+export type FrontendDeskInput = z.infer<typeof DeskInputSchema>;
 
 const INVALID: FrontendReadResult = { status: 400, body: { error: "invalid request" } };
 
@@ -124,6 +134,15 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
     if (!parsed.success) return INVALID;
     const { host, cookie, expectedTenant } = parsed.data;
     return dispatch(this.env, this.ctx, host, "/api/readings/relationships", cookie, pinned(expectedTenant));
+  }
+
+  /** GET /api/desk for the session in `cookie`, with `since`, optionally pinned. */
+  async desk(input: FrontendDeskInput): Promise<FrontendReadResult> {
+    const parsed = DeskInputSchema.safeParse(input);
+    if (!parsed.success) return INVALID;
+    const { host, cookie, since, expectedTenant } = parsed.data;
+    const path = since === undefined ? "/api/desk" : `/api/desk?${new URLSearchParams({ since })}`;
+    return dispatch(this.env, this.ctx, host, path, cookie, pinned(expectedTenant));
   }
 
   /** Not an HTTP surface: calls must use the allowlisted methods. */

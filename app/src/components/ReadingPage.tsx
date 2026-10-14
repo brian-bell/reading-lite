@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { hostnameOf, publishedOn, savedOn, sourceLabel } from "../reading-presentation";
 import { readingQueryOptions } from "../reading-query";
@@ -20,6 +21,7 @@ import { saveNoticeOf } from "../save-notice";
 import type { SaveNotice } from "../save";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeskToggle } from "./DeskToggle";
+import { SessionBar } from "./SessionBar";
 import { PageHeading } from "./PageHeading";
 import { ContextJump, ReadingContext } from "./ReadingContext";
 import { ReadingDetails } from "./ReadingDetails";
@@ -48,8 +50,9 @@ import { ViewTabs, tabId, type TabItem } from "./ViewTabs";
 //
 // The order of the reading column is the design spec's (Reading surface),
 // after "Back to library" (#407): the return trail when the reader followed a relationship here, the one-time
-// notice a save left when the URL was already in the library (#432), the desk
-// toggle on a ready reading or one on the desk (reading-lite-kl7y.6), title,
+// notice a save left when the URL was already in the library (#432), the
+// session bar on a reading on the desk (reading-lite-kl7y.7) or the desk
+// toggle on a ready one that is not (reading-lite-kl7y.6), title,
 // metadata line, tags, the phone jump to the context column, status card when
 // active or failed, the Summary/Source tabs (#372), the selected view's
 // content, the novelty panel below either view, then the collapsed Details
@@ -150,6 +153,7 @@ function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): Sa
     previous.current = key;
     if (was === null || key !== null) return;
     void queryClient.invalidateQueries({ queryKey: ["library"] });
+    void queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
     void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
     void queryClient.invalidateQueries({ queryKey: sourceQueryKey(id) });
     void queryClient.invalidateQueries({ queryKey: diagnosticsQueryKey(id) });
@@ -251,7 +255,9 @@ function ReadingSurface({
         <BackToLibrary className="reading-back" />
         <ReturnTrail hops={trail} />
         <SaveNoticeBanner />
-        {reading.status === "ready" || reading.desk_position !== undefined ? (
+        {reading.desk_position !== undefined ? (
+          <SessionBar reading={{ id: reading.id, desk_position: reading.desk_position }} />
+        ) : reading.status === "ready" ? (
           <DeskToggle reading={reading} className="reading-desk" />
         ) : null}
         {/* The actions follow the metadata in reading order, which is where
@@ -480,7 +486,7 @@ function ReadingTags({ tags }: { tags: string[] | undefined }) {
     <ul className="reading-tags" aria-label="Tags">
       {tags.map((tag) => (
         <li key={tag}>
-          <Link className="tag" to="/" search={{ tag }}>
+          <Link className="tag" to="/library" search={{ tag }}>
             {tag}
           </Link>
         </li>

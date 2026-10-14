@@ -29,6 +29,8 @@ export interface BackendReads {
   }): Promise<BackendReadResult>;
   /** GET /api/readings/relationships, optionally pinned. */
   relationships(input: { cookie: string | null; host: string; expectedTenant?: string }): Promise<BackendReadResult>;
+  /** GET /api/desk, with `since` as an ISO timestamp, optionally pinned. */
+  desk(input: { cookie: string | null; host: string; since?: string; expectedTenant?: string }): Promise<BackendReadResult>;
 }
 
 /** What a server render forwards: the incoming Cookie header and host, nothing else. */

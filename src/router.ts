@@ -17,6 +17,7 @@ import {
   DESK_CAP,
   INBOX_BODY_MAX_BYTES,
   INBOX_ITEM_CAP,
+  GetDeskQuerySchema,
   INBOX_STAGE_BUDGET_BYTES,
   ListReadingsQuerySchema,
   PostDeskBodySchema,
@@ -29,6 +30,7 @@ import {
   type DeskFullResponse,
   type DeskNotReadyResponse,
   type DeskWriteResponse,
+  type GetDeskResponse,
   type GetReadingRelationshipsResponse,
   type GetReadingResponse,
   type ListInboxResponse,
@@ -359,7 +361,7 @@ export function createApp(opts: AppOptions = {}) {
 
   // The desk (reading-lite-kl7y.6): up to DESK_CAP readings set aside to read
   // next. Writes touch only reading_desk, never the reading; see
-  // src/modules/stores/postgres/desk-store.ts.
+  // src/modules/stores/postgres/desk-store.ts. GET is the desk page's read.
   app.post("/api/desk", requireScope("readings:write"), async (c) => {
     const json = await c.req.json().catch(() => null);
     const parsed = PostDeskBodySchema.safeParse(json);
@@ -386,6 +388,16 @@ export function createApp(opts: AppOptions = {}) {
   app.delete("/api/desk/:id", requireScope("readings:write"), async (c) => {
     const out = await deskFor(c.get("principal"), services, c.get("sql")).remove(c.req.param("id"));
     return out.kind === "desk" ? c.json(deskBody(out.desk)) : c.json({ error: "not found" }, 404);
+  });
+
+  app.get("/api/desk", requireScope("readings:read"), async (c) => {
+    const parsed = GetDeskQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) {
+      return c.json({ error: "invalid query", details: parsed.error.message }, 400);
+    }
+    const desk = deskFor(c.get("principal"), services, c.get("sql"));
+    const body: GetDeskResponse = await desk.read({ since: parsed.data.since, ttlSeconds: pendingTtlSeconds(c.env) });
+    return c.json(body);
   });
 
   app.delete("/api/desk", requireScope("readings:write"), async (c) => {
