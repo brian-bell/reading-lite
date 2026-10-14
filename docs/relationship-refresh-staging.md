@@ -5,6 +5,8 @@
 > [operations](operations.md#relationship-refresh-queue-plumbing). The manifests,
 > list rows, D1 and Vectorize named below are the pre-PostgreSQL stores
 > ([ADR 0005](decisions/0005-postgresql-storage.md)).
+> The cron strings in the tables are the 2026-09-08 nightly cron. The live cron
+> is Sunday `7 3 * * 0`.
 
 Issue #175 slice 4. On 2026-09-07 the owner authorized **one clean actual nightly
 staging run** before acceptance and production enablement, replacing the earlier

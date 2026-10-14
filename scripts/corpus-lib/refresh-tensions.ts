@@ -3,7 +3,7 @@
 //
 // Tier 3 of the nightly corpus refresh: pairwise, directional, and separate
 // from the connections judgement. The pair policy it shares with the hosted
-// nightly refresh (overlap pre-filter, judged-pair memory, directional sides,
+// weekly refresh (overlap pre-filter, judged-pair memory, directional sides,
 // the merge, and the free one-sided repairs) lives in
 // src/modules/tension-judgement/refresh.ts and is re-exported here. Like
 // refresh-connections, nothing here touches status, vectors, title, tldr,

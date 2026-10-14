@@ -95,7 +95,7 @@ execution because citations are an admission arm.
 ## Establish the maintenance hold
 
 Hold submit, import, reprocess, deletion, recovery, ingest, batch writers, other
-refreshes (including the hosted nightly refresh: its 03:07 UTC cron and the
+refreshes (including the hosted weekly refresh, its Sunday 03:07 UTC cron, and the
 `reading-lite-refresh` queue), and any account wipe affecting this tenant. Check background jobs and
 operator schedules. The account must be active with no wipe in progress.
 Queue pause alone does not stop HTTP intake or administrative writers;

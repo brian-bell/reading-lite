@@ -1,5 +1,5 @@
 /** Hosted one-sided tension repair (reading-lite-qxfh): the free half of
- * `ops corpus refresh-tensions`, run for one pair the nightly scan collected.
+ * `ops corpus refresh-tensions`, run for one pair the weekly scan collected.
  * It calls no provider, so it takes no lease, spend admission or checkpoint:
  * the repair is recomputed from the live pair on every delivery, which makes
  * a redelivery of a finished repair a noop. The rules are `findOneSided`'s:

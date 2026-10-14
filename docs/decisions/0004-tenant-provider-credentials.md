@@ -35,7 +35,7 @@ variables. Four paid call sites read them:
 | Source embedding | `embed_source` in `src/process-reading.ts` | OpenAI `text-embedding-3-small`, 1536 dimensions |
 | Summarization | `summarize` in `src/process-reading.ts` | `SUMMARIZER_PROVIDER` (production and staging since 2026-09: Anthropic `claude-sonnet-5-5`, effort `medium`; the OpenAI model is `gpt-5.6-terra`) |
 | Summary embedding | `embed_summary` in `src/process-reading.ts` | OpenAI embeddings |
-| Nightly relationship refresh (connections and tensions) | `src/relationship-judge.ts` and `src/tension-judge.ts`, founder-only (`src/relationship-refresh.ts`) | `SUMMARIZER_PROVIDER` |
+| Weekly relationship refresh (connections and tensions) | `src/relationship-judge.ts` and `src/tension-judge.ts`, founder-only (`src/relationship-refresh.ts`) | `SUMMARIZER_PROVIDER` |
 
 Every hosted provider fetch goes through `createPaidFetch`
 (`src/control-plane/paid-dispatch.ts`): a tenant-plus-global daily spend
@@ -92,7 +92,7 @@ operator-funded requests.
   tenant keys. A missing, invalid, removed, or undecryptable key fails closed.
 - Brian's account moves to his own stored key, through the same settings path new
   readers use.
-- The nightly relationship refresh stays founder-only and is paid by Brian's
+- The weekly relationship refresh stays founder-only and is paid by Brian's
   tenant key for his selected summarization provider. In tenant mode both judges
   use the tenant's provider and effort, not `SUMMARIZER_PROVIDER` or the
   deployment effort variables. Opening it to other tenants needs a separate
