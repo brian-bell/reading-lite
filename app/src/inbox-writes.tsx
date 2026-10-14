@@ -15,19 +15,11 @@ import {
 import { expectedLayoutOf, readingQueryKey } from "./reading";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 
-// Promote and discard for one staged item (reading-lite-kl7y.8). The desk row
-// and the item page both call this, so the list cache has one writer.
-// Discard is only sent from the confirm dialog this hook returns. A click
-// can ask. It cannot send.
-
 export interface InboxWriteHandlers {
-  /** After settlement, for accepted and existing, retained or not. */
   onPromoted?: (outcome: Extract<PromoteOutcome, { kind: "accepted" | "existing" }>) => void | Promise<void>;
-  /** After settlement, for discarded. */
   onDiscarded?: () => void | Promise<void>;
 }
 
-/** A parsed write that leaves the reader on the item. Success navigates away. */
 export type InboxWriteRefusal =
   | Exclude<PromoteOutcome, { kind: "accepted" | "existing" }>
   | Exclude<DiscardOutcome, { kind: "discarded" }>;
@@ -139,11 +131,6 @@ function tenantOf(queryClient: QueryClient): string | undefined {
   return expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey));
 }
 
-/**
- * Applies `inboxWriteEffect`, then marks the list and the desk stale.
- * The list invalidate is exact. The item key lives under it, and a prefix
- * match would refetch an item the page has not left yet.
- */
 async function settleInboxWrite(
   queryClient: QueryClient,
   id: string,
@@ -152,8 +139,6 @@ async function settleInboxWrite(
   const userId = queryClient.getQueryData<Identity | null>(whoamiQueryKey)?.user_id ?? "";
   const effect: InboxWriteEffect = inboxWriteEffect(outcome);
   if (effect === "drop") {
-    // exact: without it, findAll includes the item query, which starts with
-    // the list key and has no items array.
     queryClient.setQueriesData<InboxListResult>({ queryKey: inboxQueryKey(userId), exact: true }, (previous) =>
       previous?.state === "ready"
         ? {

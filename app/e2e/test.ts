@@ -579,10 +579,6 @@ export async function serveProviderInBrowser(
   return { connects, removes, saves };
 }
 
-/**
- * GET /api/inbox and GET /api/inbox/:id from the fixture pack. The list is
- * metadata only. The item response is the fixture, markdown included, or 404.
- */
 export async function serveInboxInBrowser(
   page: Page,
   items: readonly ServedInboxItem[] = pack.inbox,

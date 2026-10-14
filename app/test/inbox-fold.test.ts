@@ -7,9 +7,6 @@ import {
   type InboxItemMeta,
 } from "../src/inbox";
 
-// The desk's inbox fold (reading-lite-kl7y.8): what one list read shows, when
-// the desk may say it is empty, and whether a write drops the staged row.
-
 const item = (id: string, title: string | null): InboxItemMeta => ({
   id,
   url: `https://example.com/${id}`,
@@ -102,24 +99,26 @@ describe("deskInboxFold", () => {
   });
 });
 
+const clearGroups = { needsYou: 0, processing: 0, onDesk: 0, readySince: 0 };
+
 describe("deskQuietOf", () => {
   it("occupies the desk when a reading group has rows", () => {
-    expect(deskQuietOf(false, { kind: "pending" })).toBe("occupied");
-    expect(deskQuietOf(false, { kind: "empty" })).toBe("occupied");
+    expect(deskQuietOf({ ...clearGroups, needsYou: 1 }, { kind: "pending" })).toBe("occupied");
+    expect(deskQuietOf({ ...clearGroups, onDesk: 1 }, { kind: "empty" })).toBe("occupied");
   });
 
   it("withholds the empty sentence while the inbox has not settled", () => {
-    expect(deskQuietOf(true, { kind: "pending" })).toBe("withheld");
+    expect(deskQuietOf(clearGroups, { kind: "pending" })).toBe("withheld");
   });
 
   it("is empty only when the inbox is empty", () => {
-    expect(deskQuietOf(true, { kind: "empty" })).toBe("empty");
+    expect(deskQuietOf(clearGroups, { kind: "empty" })).toBe("empty");
   });
 
   it("occupies the desk when items are staged or the list is blocked", () => {
-    expect(deskQuietOf(true, { kind: "staged", shown: [amber], total: 1 })).toBe("occupied");
-    expect(deskQuietOf(true, { kind: "blocked", block: { kind: "offline" } })).toBe("occupied");
-    expect(deskQuietOf(true, { kind: "blocked", block: { kind: "forbidden" } })).toBe("occupied");
+    expect(deskQuietOf(clearGroups, { kind: "staged", shown: [amber], total: 1 })).toBe("occupied");
+    expect(deskQuietOf(clearGroups, { kind: "blocked", block: { kind: "offline" } })).toBe("occupied");
+    expect(deskQuietOf(clearGroups, { kind: "blocked", block: { kind: "forbidden" } })).toBe("occupied");
   });
 });
 

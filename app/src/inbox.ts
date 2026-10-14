@@ -4,22 +4,6 @@ import { ApiError } from "./api/errors";
 import { actingTenantOf, messageOf } from "./reading";
 import { submitFromResponse, type SubmitOutcome } from "./save";
 
-// The Markdown inbox (reading-lite-fy8t, follow-up to reading-lite-gh423):
-// Markdown an agent staged over MCP waits in the reader's inbox until they
-// add it to the library or discard it. The REST routes are GET /api/inbox,
-// GET /api/inbox/:id, POST /api/inbox/:id/promote, and DELETE
-// /api/inbox/:id (docs/api.md, Inbox routes). Pure, so every mapping is
-// tested without a DOM; api/inbox.ts does the requests. The desk, InboxPage,
-// and InboxItemPage render what comes out. Writes settle in inbox-writes.ts.
-//
-// Everything here is read in the browser only, as the account page's lists
-// are (ADR 0003): the inbox is never part of the server render, so nothing
-// the backend's FrontendReads entrypoint exposes has to change for it.
-//
-// The projections are loose like the reading's: only what the pages show is
-// declared, unknown fields pass through, and a malformed field this app reads
-// is the retryable "unexpected body" error rather than a crash in a component.
-
 export const InboxItemMetaSchema = z.looseObject({
   id: z.string().min(1),
   url: z.string().min(1),
@@ -35,13 +19,9 @@ export interface InboxList {
   items: InboxItemMeta[];
 }
 
-/** How many staged items the desk shows before "Show all". */
 export const DESK_INBOX_LIMIT = 5;
 
-/**
- * The desk's view of one inbox list read. `shown` keeps the server's order.
- * A blocked list stays a section on the desk. It does not replace the page.
- */
+/** `shown` keeps the server's order. */
 export type DeskInboxFold =
   | { kind: "pending" }
   | { kind: "empty" }
@@ -61,7 +41,6 @@ export type DeskInboxBlock =
  */
 export type DeskQuiet = "withheld" | "empty" | "occupied";
 
-/** What one list read means on the desk. `view` is `accountViewOf` of that read. */
 export function deskInboxFold(view: AccountView<InboxList>): DeskInboxFold {
   switch (view.kind) {
     case "loading":
@@ -98,8 +77,11 @@ function foldList(list: InboxList): DeskInboxFold {
   };
 }
 
-/** `groupsEmpty` counts a rejected provider key inside Needs you. */
-export function deskQuietOf(groupsEmpty: boolean, fold: DeskInboxFold): DeskQuiet {
+export function deskQuietOf(
+  groups: { needsYou: number; processing: number; onDesk: number; readySince: number },
+  fold: DeskInboxFold,
+): DeskQuiet {
+  const groupsEmpty = groups.needsYou === 0 && groups.processing === 0 && groups.onDesk === 0 && groups.readySince === 0;
   if (!groupsEmpty) return "occupied";
   switch (fold.kind) {
     case "pending":
@@ -125,7 +107,7 @@ export function inboxQueryKey(userId: string): readonly unknown[] {
 }
 
 export function inboxItemQueryKey(userId: string, id: string): readonly unknown[] {
-  return ["inbox", userId, id];
+  return ["inbox-item", userId, id];
 }
 
 /**
@@ -195,7 +177,6 @@ export function promoteFromResponse(status: number, body: unknown): PromoteOutco
   return submitted;
 }
 
-/** `inbox_item_retained: true` is the only value that keeps the staged row. */
 function retainedOf(body: unknown): boolean {
   return (
     typeof body === "object" && body !== null && "inbox_item_retained" in body && body.inbox_item_retained === true

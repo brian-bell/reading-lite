@@ -25,28 +25,6 @@ import {
 import { BackToLibrary } from "./BackToLibrary";
 import { SourceMarkdown, type LoadedImages } from "./ReadingSource";
 
-// Reviewing one staged item (reading-lite-fy8t): the Markdown an agent
-// staged, rendered as the reading's Source view renders a capture, with the
-// two things a person can do about it — add it to the library (promote) or
-// discard it. Read in the browser only (inbox-query.ts).
-//
-// Add to library is a capture write and ends in the save page's outcomes
-// (inbox.ts, promoteFromResponse), handled the way SavePage.tsx handles them:
-// a reading that lands opens, with the save notice for one that was already
-// the reader's; a refusal that will pass is a notice over the item with Try
-// again; 403 and 412 replace the page with the shared states. Promote's own
-// 404 is the item-gone page, and its 413 a notice with nothing to retry.
-//
-// Discard deletes the staged text and nothing else, after a confirmation,
-// and returns to the inbox. It is sent at once even offline (networkMode
-// "always"), as the account page's writes are: a discard held until the
-// network returns would land long after the reader stopped looking. A failed
-// one offers Retry, which asks again through the dialog rather than resending
-// behind the reader's back.
-//
-// The write hook settles the cache. A retained promote keeps the id and
-// refetches that item. The item query stays until this page navigates.
-
 /** What the backend decided about a write, other than a reading to open. */
 type WriteRefusal = InboxWriteRefusal;
 
@@ -97,7 +75,6 @@ export function InboxItemPage({ id }: { id: string }) {
     onDiscarded: () => navigate({ to: "/inbox" }),
   });
 
-  /** The button and a notice's Try again both come through here. */
   function addToLibrary() {
     if (writes.pending) return;
     // The notice that asked for this is about to go, and with it the button

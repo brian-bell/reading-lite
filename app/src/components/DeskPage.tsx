@@ -40,25 +40,6 @@ import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, 
 import { SignInPage } from "./SignInPage";
 import { useStatusWatch } from "./use-status-watch";
 
-// The desk, at `/` (reading-lite-kl7y.7; design spec, Screens: Desk). One
-// read, GET /api/desk?since= for this visit (desk-query.ts), renders the
-// sections in order, each omitted when empty: Needs you, Inbox, Processing,
-// On your desk, and Ready since the visit began. The inbox list is a browser
-// read (inbox-query.ts), separate from the desk read. The provider tile, and
-// the rejected key at the top of Needs you, come from the provider read, in
-// the browser only like the provider page.
-//
-// While anything is processing the read is refreshed on the library's
-// bounded schedule (status-refresh.ts), in the terms of use-status-watch.ts;
-// a row that settles moves between groups in place, and the library and the
-// relationship graph, which do not go stale on their own, are invalidated.
-// A failed check keeps the sections; after three, a quiet note says the page
-// stopped checking.
-//
-// The visit (desk.ts) is the loader's, so the server render and hydration
-// name the same "since" and the same "saved … ago". The cookie is written
-// after hydration.
-
 const HEADING = "Desk";
 
 /** `/`: the sign-in form in place when signed out, the desk when signed in. */
@@ -162,11 +143,15 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
   const keyRejected = settings?.credential?.status === "invalid";
   const now = visit.next.latest;
   const needsYouCount = desk.needs_you_total + (keyRejected ? 1 : 0);
-  const groupsEmpty =
-    needsYouCount === 0 && desk.processing_total === 0 && desk.on_desk.length === 0 && desk.ready_since_total === 0;
-  // The list is not on the server render. Withholding the empty sentence
-  // until it settles avoids painting "Nothing needs you." and then taking it back.
-  const quiet = deskQuietOf(groupsEmpty, fold);
+  const quiet = deskQuietOf(
+    {
+      needsYou: needsYouCount,
+      processing: desk.processing_total,
+      onDesk: desk.on_desk.length,
+      readySince: desk.ready_since_total,
+    },
+    fold,
+  );
 
   return (
     <>

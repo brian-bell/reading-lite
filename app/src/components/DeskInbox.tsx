@@ -14,10 +14,6 @@ import { CaptureRefusalNotice } from "./CaptureNotice";
 import { InlineNotice, LoadingRegion, OfflineNotice } from "./ReadingStates";
 import { SourceMarkdown, type LoadedImages } from "./ReadingSource";
 
-// The inbox section on the desk (reading-lite-kl7y.8). DeskPage owns the
-// section chrome and passes it in, so this file does not branch the desk's
-// other groups. Pending and empty draw nothing. A blocked read stays here.
-
 const UNAVAILABLE = "Adding to your library is unavailable right now.";
 
 const TOO_LARGE =
@@ -189,7 +185,6 @@ function useLoadedImages(): LoadedImages {
   return useMemo(() => ({ loaded, onLoad }), [loaded, onLoad]);
 }
 
-/** A write that stays on the row. Success leaves for the reading, and discard unmounts the row. */
 function DeskInboxNotice({ writes }: { writes: InboxWrites }) {
   const body = deskNotice(writes);
   if (body === null) return null;
