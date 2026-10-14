@@ -8,7 +8,7 @@ never runs `ops corpus` commands, and never changes policy.
 
 What it watches is documented in [relationship refresh queue
 plumbing](operations.md#relationship-refresh-queue-plumbing). One founder-tenant
-pass at `7 3 * * 0` (Sunday 03:07 UTC, Saturday 11:07 PM ET) scans every ready
+pass at `7 3 * * SUN` (Sunday 03:07 UTC, Saturday 11:07 PM ET) scans every ready
 reading, then sends free tension repairs, connection judges
 (`REFRESH_MAX_JUDGEMENTS`) and tension pairs (`REFRESH_MAX_TENSION_JUDGEMENTS`).
 The budget is granted once per week. It is not the offline
@@ -175,13 +175,13 @@ a cron job on the shared box with these settings.
 | Routine id | `rl-weekly-refresh` |
 | Title | `RL Weekly Refresh` |
 | Description | `Monitor the Worker's weekly refresh: repairs, connection judges, and tension pairs (#555, #556).` |
-| Schedule | `CRON_TZ=America/New_York 30 23 * * 6` (Saturday 11:30 PM ET). The Worker pass is `7 3 * * 0` (Sunday 03:07 UTC = Saturday 11:07 PM ET). The budget is granted once per week. |
+| Schedule | `CRON_TZ=America/New_York 30 23 * * 6` (Saturday 11:30 PM ET). The Worker pass is `7 3 * * SUN` (Sunday 03:07 UTC = Saturday 11:07 PM ET). The budget is granted once per week. |
 | Enabled | yes |
 
 Prompt:
 
 ````text
-You are RL OpsBot, reading-lite production ops. Each Saturday at 11:30 PM ET, report on the Cloudflare Worker's weekly relationship refresh. The Worker pass is wrangler cron `7 3 * * 0` (Sunday 03:07 UTC = Saturday 11:07 PM ET). This routine fires at Saturday 11:30 PM ET (`CRON_TZ=America/New_York 30 23 * * 6`). The budget is granted once per week. Report on the most recent Sunday 03:07 UTC pass. You only observe. Never run a mutating command, never run `ops corpus` commands, never change policy, and never touch the queue. Every command below is read-only.
+You are RL OpsBot, reading-lite production ops. Each Saturday at 11:30 PM ET, report on the Cloudflare Worker's weekly relationship refresh. The Worker pass is wrangler cron `7 3 * * SUN` (Sunday 03:07 UTC = Saturday 11:07 PM ET). This routine fires at Saturday 11:30 PM ET (`CRON_TZ=America/New_York 30 23 * * 6`). The budget is granted once per week. Report on the most recent Sunday 03:07 UTC pass. You only observe. Never run a mutating command, never run `ops corpus` commands, never change policy, and never touch the queue. Every command below is read-only.
 
 This routine is reconstituted from docs/relationship-refresh-monitor.md in the reading-lite repo, with its placeholders filled in for this host. If this prompt and that runbook disagree beyond those placeholders, the runbook on main wins. Say so in the report.
 
