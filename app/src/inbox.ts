@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AccountRead, AccountRefusal } from "./account-state";
+import type { AccountRead, AccountRefusal, AccountView } from "./account-state";
 import { ApiError } from "./api/errors";
 import { actingTenantOf, messageOf } from "./reading";
 import { submitFromResponse, type SubmitOutcome } from "./save";
@@ -9,8 +9,8 @@ import { submitFromResponse, type SubmitOutcome } from "./save";
 // add it to the library or discard it. The REST routes are GET /api/inbox,
 // GET /api/inbox/:id, POST /api/inbox/:id/promote, and DELETE
 // /api/inbox/:id (docs/api.md, Inbox routes). Pure, so every mapping is
-// tested without a DOM; api/inbox.ts does the requests and InboxPage.tsx and
-// InboxItemPage.tsx render what comes out.
+// tested without a DOM; api/inbox.ts does the requests. The desk, InboxPage,
+// and InboxItemPage render what comes out. Writes settle in inbox-writes.ts.
 //
 // Everything here is read in the browser only, as the account page's lists
 // are (ADR 0003): the inbox is never part of the server render, so nothing
@@ -33,6 +33,87 @@ export type InboxItemMeta = z.infer<typeof InboxItemMetaSchema>;
 export const InboxListSchema = z.looseObject({ items: z.array(InboxItemMetaSchema) });
 export interface InboxList {
   items: InboxItemMeta[];
+}
+
+/** How many staged items the desk shows before "Show all". */
+export const DESK_INBOX_LIMIT = 5;
+
+/**
+ * The desk's view of one inbox list read. `shown` keeps the server's order.
+ * A blocked list stays a section on the desk. It does not replace the page.
+ */
+export type DeskInboxFold =
+  | { kind: "pending" }
+  | { kind: "empty" }
+  | { kind: "blocked"; block: DeskInboxBlock }
+  | { kind: "staged"; shown: readonly InboxItemMeta[]; total: number };
+
+export type DeskInboxBlock =
+  | { kind: "forbidden" }
+  | { kind: "account-changed"; actingTenant?: string }
+  | { kind: "offline" }
+  | { kind: "error"; message: string };
+
+/**
+ * Whether the desk says it is empty.
+ * `withheld` draws neither "Nothing needs you." nor On your desk.
+ * `empty` is that sentence. `occupied` draws On your desk.
+ */
+export type DeskQuiet = "withheld" | "empty" | "occupied";
+
+/** What one list read means on the desk. `view` is `accountViewOf` of that read. */
+export function deskInboxFold(view: AccountView<InboxList>): DeskInboxFold {
+  switch (view.kind) {
+    case "loading":
+      return { kind: "pending" };
+    case "forbidden":
+      return { kind: "blocked", block: { kind: "forbidden" } };
+    case "account-changed":
+      return {
+        kind: "blocked",
+        block: {
+          kind: "account-changed",
+          ...(view.actingTenant === undefined ? {} : { actingTenant: view.actingTenant }),
+        },
+      };
+    case "server-error":
+      return { kind: "blocked", block: { kind: "error", message: view.message } };
+    case "offline":
+      return view.value === undefined ? { kind: "blocked", block: { kind: "offline" } } : foldList(view.value);
+    case "ready":
+      return foldList(view.value);
+    default: {
+      const unreachable: never = view;
+      return unreachable;
+    }
+  }
+}
+
+function foldList(list: InboxList): DeskInboxFold {
+  if (list.items.length === 0) return { kind: "empty" };
+  return {
+    kind: "staged",
+    shown: list.items.slice(0, DESK_INBOX_LIMIT),
+    total: list.items.length,
+  };
+}
+
+/** `groupsEmpty` counts a rejected provider key inside Needs you. */
+export function deskQuietOf(groupsEmpty: boolean, fold: DeskInboxFold): DeskQuiet {
+  if (!groupsEmpty) return "occupied";
+  switch (fold.kind) {
+    case "pending":
+      return "withheld";
+    case "empty":
+      return "empty";
+    case "staged":
+    case "blocked":
+      return "occupied";
+    default: {
+      const unreachable: never = fold;
+      return unreachable;
+    }
+  }
 }
 
 export const InboxItemSchema = InboxItemMetaSchema.extend({ markdown: z.string() });
@@ -97,12 +178,28 @@ export function inboxItemFromResponse(status: number, body: unknown): InboxItemR
  *   only when an untitled item's failed owner lends it a title stage did not
  *   count. Asking again gets the same answer, so it offers nothing.
  */
-export type PromoteOutcome = SubmitOutcome | { kind: "gone" } | { kind: "too-large" };
+export type PromoteOutcome =
+  | (Extract<SubmitOutcome, { kind: "accepted" }> & { retained: boolean })
+  | (Extract<SubmitOutcome, { kind: "existing" }> & { retained: boolean })
+  | Exclude<SubmitOutcome, { kind: "accepted" | "existing" }>
+  | { kind: "gone" }
+  | { kind: "too-large" };
 
 export function promoteFromResponse(status: number, body: unknown): PromoteOutcome {
   if (status === 404) return { kind: "gone" };
   if (status === 413) return { kind: "too-large" };
-  return submitFromResponse(status, body);
+  const submitted = submitFromResponse(status, body);
+  if (submitted.kind === "accepted" || submitted.kind === "existing") {
+    return { ...submitted, retained: retainedOf(body) };
+  }
+  return submitted;
+}
+
+/** `inbox_item_retained: true` is the only value that keeps the staged row. */
+function retainedOf(body: unknown): boolean {
+  return (
+    typeof body === "object" && body !== null && "inbox_item_retained" in body && body.inbox_item_retained === true
+  );
 }
 
 /**
@@ -116,6 +213,15 @@ export function discardFromResponse(status: number, body: unknown): DiscardOutco
   if (status === 403) return { kind: "forbidden" };
   if (status === 412) return { kind: "account-changed", actingTenant: actingTenantOf(body) };
   throw new ApiError(status, messageOf(body) ?? `discard returned ${status}`);
+}
+
+/** Whether a settled write leaves the cached list, keeps a newer stage, or changes nothing. */
+export type InboxWriteEffect = "drop" | "retain" | "keep";
+
+export function inboxWriteEffect(outcome: PromoteOutcome | DiscardOutcome): InboxWriteEffect {
+  if (outcome.kind === "discarded" || outcome.kind === "gone") return "drop";
+  if (outcome.kind === "accepted" || outcome.kind === "existing") return outcome.retained ? "retain" : "drop";
+  return "keep";
 }
 
 /** What an item is called: its title, or its URL when the agent gave none. */
