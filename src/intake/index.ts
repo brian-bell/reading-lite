@@ -1,5 +1,6 @@
 import type { ProcessReadingEnvelopeV1 } from "../control-plane/envelope";
 import type { AuthenticatedPrincipal } from "../control-plane/principal";
+import type { ProviderName } from "../control-plane/provider-credentials";
 import { BlockedHostError } from "../modules/extractor/errors";
 import { assertSafeUrl } from "../modules/extractor/safe-fetch";
 import { applyStaleness } from "../modules/staleness";
@@ -76,9 +77,10 @@ const RETRY: unique symbol = Symbol("retry");
  *                     failed after the rollback ran.
  * - `rate_limited` / `quota_exhausted` — tenant ingress ceilings (→ 429).
  * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
- * - `provider_key_required` — tenant provider keys are on and the tenant has no
- *                     active key, so nothing is claimed (→ 409). Checked after
- *                     the request-rate admission, like every refusal.
+ * - `provider_key_required` — tenant provider keys are on and the named
+ *                     provider's key is not active (OpenAI first), so nothing
+ *                     is claimed (→ 409). Checked after the request-rate
+ *                     admission, like every refusal.
  * - `tenant_inactive` — the account stopped being active between admission and
  *                     the claim transaction, which committed nothing (→ 403).
  * - `too_large`     — importMarkdown only, when the caller passed `fitsMessage`:
@@ -95,7 +97,7 @@ export type IntakeOutcome =
   | { kind: "rate_limited"; limit: "request_rate"; resetAtMs: number }
   | { kind: "quota_exhausted"; limit: "hourly" | "monthly"; resetAtMs: number }
   | { kind: "guard_unavailable" }
-  | { kind: "provider_key_required" }
+  | { kind: "provider_key_required"; provider: ProviderName }
   | { kind: "tenant_inactive" }
   | { kind: "too_large" };
 
@@ -132,10 +134,10 @@ export interface ReadingIntakeDeps {
   /** Tenant-keyed ingress quotas. Missing/deny fails closed. */
   usage: TenantUsage;
   /**
-   * False when the tenant's work has no key to run under (tenant provider
-   * keys on, no active key); see providerKeyReady.
+   * The provider whose key is not active, OpenAI first, or null when the
+   * work can run. Nothing is claimed while a provider is named.
    */
-  providerKeyReady: () => Promise<boolean>;
+  providerKeyNeeded: () => Promise<ProviderName | null>;
 }
 
 export function readingIntakeFor(deps: ReadingIntakeDeps): ReadingIntake {
@@ -223,7 +225,8 @@ export class ReadingIntake {
   private async gateRequest(): Promise<IntakeOutcome | null> {
     const denied = this.usageOutcome(await this.deps.usage.admitRequest(nowMs(this.deps.services)));
     if (denied) return denied;
-    if (!(await this.deps.providerKeyReady())) return { kind: "provider_key_required" };
+    const provider = await this.deps.providerKeyNeeded();
+    if (provider) return { kind: "provider_key_required", provider };
     return null;
   }
 

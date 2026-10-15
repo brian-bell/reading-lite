@@ -10,7 +10,13 @@ import {
 } from "../modules/summarizer";
 import { readSummarizationSettings, type SummarizationSettings } from "./provider-settings";
 import { decryptProviderKey, readProviderKeyRoots } from "./provider-key-crypto";
-import { markProviderCredentialInvalid, readProviderCredential, type ProviderName } from "./provider-credentials";
+import {
+  PROVIDER_ANTHROPIC,
+  PROVIDER_OPENAI,
+  markProviderCredentialInvalid,
+  readProviderCredential,
+  type ProviderName,
+} from "./provider-credentials";
 import type { PaidAuthorization } from "./paid-dispatch";
 
 export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }): boolean {
@@ -18,21 +24,29 @@ export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }
 }
 
 /**
- * Whether this tenant's reading work can reach a provider: always with tenant
- * keys off, since the deployment pays; with them on, only while the tenant
- * holds an active key. Intake asks before it claims anything, so a reader with
- * no key is told to connect one rather than handed a reading that fails at its
- * first paid stage. Dispatch still resolves the key for itself, because a key
- * can be removed after intake admitted the work.
+ * Whose key this tenant's reading work is waiting on, or null when the work
+ * can run. With tenant keys off the deployment pays and this reads nothing.
+ * With them on, OpenAI is first because embeddings need it, then Anthropic
+ * when that provider summarizes. Intake asks before it claims anything, so a
+ * reader missing a key is told to connect one rather than handed a reading
+ * that fails at its first paid stage. Dispatch still resolves the key for
+ * itself, because a key can be removed after intake admitted the work.
  */
-export async function providerKeyReady(
+export async function providerKeyNeeded(
   env: { TENANT_PROVIDER_KEYS?: string },
   db: ControlPlaneDb,
   tenantId: string,
-): Promise<boolean> {
-  if (!tenantProviderKeysEnabled(env)) return true;
-  const row = await readProviderCredential(db, tenantId);
-  return row?.status === "active";
+): Promise<ProviderName | null> {
+  if (!tenantProviderKeysEnabled(env)) return null;
+  const settings = await readSummarizationSettings(db, tenantId);
+  const needed = settings?.provider === "anthropic"
+    ? [PROVIDER_OPENAI, PROVIDER_ANTHROPIC]
+    : [PROVIDER_OPENAI];
+  for (const provider of needed) {
+    const row = await readProviderCredential(db, tenantId, provider);
+    if (row?.status !== "active") return provider;
+  }
+  return null;
 }
 
 export class TenantProviderKeyError extends Error {

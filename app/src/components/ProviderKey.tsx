@@ -100,12 +100,13 @@ export function ProviderKeySection({
       }
       if (outcome.kind !== "saved") return;
       setApiKey("");
-      if (needsProviderKey(queryClient.getQueryData<Identity | null>(whoamiQueryKey))) {
+      const cached = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+      if (needsProviderKey(cached) && (cached?.provider_key_provider ?? "openai") === "openai") {
         setFirstKey(true);
         // An in-flight whoami can land after this write and put the flag back.
         await queryClient.cancelQueries({ queryKey: whoamiQueryKey });
         queryClient.setQueryData<Identity | null>(whoamiQueryKey, (current) =>
-          current ? { ...current, needs_provider_key: false } : current,
+          current ? { ...current, needs_provider_key: false, provider_key_provider: null } : current,
         );
       }
       setRemovedHere(false);
