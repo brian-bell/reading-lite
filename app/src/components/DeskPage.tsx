@@ -52,7 +52,6 @@ import { useStatusWatch } from "./use-status-watch";
 
 const HEADING = "Desk";
 
-/** `/`: the landing when signed out, the desk when signed in. */
 export function DeskHome({ visit }: { visit: VisitAt }) {
   const { data: identity } = useQuery(whoamiQueryOptions());
   if (identity === null) return <LandingPage />;
@@ -146,31 +145,24 @@ function useGraphRefreshOnSettle(data: DeskResult | undefined) {
   }, [data, queryClient]);
 }
 
-/**
- * What this visit shows first (onboarding.ts). The library's first page is
- * read only while the steps could be shown. `opened` is set by the first
- * render that shows them and lasts for this mount, so a key connected on the
- * steps leaves them up.
- */
 function useDeskMode(queryClient: QueryClient, identity: Identity): DeskMode {
   const keyNeeded = needsProviderKey(identity);
-  const [opened, setOpened] = useState(false);
+  const [shownThisMount, setShownThisMount] = useState(false);
   const list = useQuery({
     ...libraryQueryOptions(queryClient, FIRST_LIBRARY_PAGE, identity),
-    enabled: needsLibraryRead({ keyNeeded, opened }),
+    enabled: needsLibraryRead({ keyNeeded, shownThisMount }),
   });
   const mode = deskModeOf({
     keyNeeded,
-    opened,
+    shownThisMount,
     library: libraryEmptinessOf(list.data, list.isError),
   });
   useEffect(() => {
-    if (mode.kind === "onboarding") setOpened(true);
+    if (mode.kind === "onboarding") setShownThisMount(true);
   }, [mode.kind]);
   return mode;
 }
 
-/** The inbox fold, shared by the steps and the ordinary sections. */
 function useDeskInbox(identity: Identity): { fold: DeskInboxFold; retry: () => void } {
   const queryClient = useQueryClient();
   const inbox = useQuery(inboxQueryOptions(queryClient, identity));
@@ -180,7 +172,6 @@ function useDeskInbox(identity: Identity): { fold: DeskInboxFold; retry: () => v
   };
 }
 
-/** The steps, then the inbox. Staged Markdown is input, and the inbox has no other way in. */
 function NewReaderDesk({ keyStep, identity }: { keyStep: KeyStep; identity: Identity }) {
   const inbox = useDeskInbox(identity);
   return (

@@ -29,10 +29,10 @@ import {
   ServerError,
 } from "./ReadingStates";
 
-// The provider page (reading-lite-gh341.8; ADR 0004). The OpenAI key is
-// ProviderKeySection. This page adds the summary effort and the daily spending
-// limit with today's charges. Fetched in the browser only, like the account
-// page (ADR 0003). Effort and the limit do not need a recent sign-in.
+// The provider page (reading-lite-gh341.8; ADR 0004). Summary effort and the
+// daily spending limit with today's charges. Fetched in the browser only, like
+// the account page (ADR 0003). Effort and the limit do not need a recent
+// sign-in.
 //
 // A 403 or 412 from any read or write is the whole page's state, as it is on
 // the account page; a failed write stays in its own section.

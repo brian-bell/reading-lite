@@ -26,9 +26,7 @@ import { expectedLayoutOf } from "./reading";
 //
 // - The desk page's read is the whole GET /api/desk for this visit,
 //   prefetched by the `/` loader, and it leaves what is on the desk for the
-//   toggles and the session bar (on-desk-query.ts). A keyless reader also
-//   prefetches the library's first page, which says whether the library is
-//   empty (onboarding.ts).
+//   toggles and the session bar (on-desk-query.ts).
 // - `prefetchOnDesk` is that on-desk query for the reading route, whose
 //   session bar is part of the reading's server render.
 //
@@ -81,10 +79,9 @@ const visitCookie = createIsomorphicFn()
   .server(() => getCookie(VISIT_COOKIE))
   .client(() => readVisitFromCookieHeader(document.cookie));
 
-/** What `/` reads for a signed-in reader: the desk, and the library's first page while the steps could be shown. */
 function deskPageReads(queryClient: QueryClient, visit: VisitAt, identity: Identity): Promise<void>[] {
   const reads = [queryClient.prefetchQuery(deskQueryOptions(queryClient, visit, identity))];
-  if (needsLibraryRead({ keyNeeded: needsProviderKey(identity), opened: false })) {
+  if (needsLibraryRead({ keyNeeded: needsProviderKey(identity), shownThisMount: false })) {
     reads.push(queryClient.prefetchQuery(libraryQueryOptions(queryClient, FIRST_LIBRARY_PAGE, identity)));
   }
   return reads;

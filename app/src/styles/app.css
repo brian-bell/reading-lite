@@ -1422,10 +1422,6 @@ textarea {
   }
 }
 
-/* ---- Landing (reading-lite-kl7y.9) ------------------------------------ */
-
-/* Signed-out `/`. The title is the product sentence, and the columns stack
-   once the shell is narrower than 1000px. */
 .landing-head {
   max-width: 44rem;
   margin: 0 0 var(--space-7);
@@ -1887,9 +1883,6 @@ textarea {
   background: var(--accent);
 }
 
-/* The new reader's three steps (reading-lite-kl7y.9). Step 2 is the only
-   one with a done mark. Nothing records an opened sample, and the first save
-   leaves the desk. */
 .onboarding {
   max-width: 44rem;
   margin: 0 0 var(--space-7);

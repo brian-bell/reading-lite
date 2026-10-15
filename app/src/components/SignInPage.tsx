@@ -9,8 +9,7 @@ import { TurnstileWidget } from "./TurnstileWidget";
 
 // Magic-link request (acceptance matrix, `/login`): Turnstile when configured,
 // `next` remembered for the tab that opens the link, and step-up with the
-// signed-in email locked. The signed-out `/` hosts the same form on the
-// landing (LandingPage.tsx).
+// signed-in email locked.
 
 const loginOptionsQueryKey = ["login-options"] as const;
 

@@ -1,22 +1,9 @@
-// When the desk leads with the three steps (reading-lite-kl7y.9). Pure, so
-// each rule is a row in test/onboarding.test.ts. DeskPage reads the facts.
-//
-// An empty desk is not an empty library. The desk's groups cover this visit,
-// so a reader with older readings can still have a quiet desk. Emptiness is
-// the library's first unfiltered page: offset 0, no rows, and no further page.
-//
-// The cached `needs_provider_key` clears the moment a key connects. A visit
-// that already showed the steps keeps them while that page stays empty, so
-// the save step opens in place. The next visit decides from the flag again.
-
 import type { LibraryParams, LibraryResult } from "./library";
 
-/** The library's first page, unfiltered: the read that says whether any reading exists. */
 export const FIRST_LIBRARY_PAGE: LibraryParams = { offset: 0 };
 
 export type LibraryEmptiness = "pending" | "empty" | "occupied" | "unknown";
 
-/** Data already in hand wins over a failed refetch. A refusal is unknown, and the desk's own read shows it. */
 export function libraryEmptinessOf(result: LibraryResult | undefined, failed: boolean): LibraryEmptiness {
   if (result === undefined) return failed ? "unknown" : "pending";
   if (result.state !== "ready") return "unknown";
@@ -25,7 +12,6 @@ export function libraryEmptinessOf(result: LibraryResult | undefined, failed: bo
   return "occupied";
 }
 
-/** Step 2. Step 3 is open exactly when this is "connected". */
 export type KeyStep = "needed" | "connected";
 
 export type DeskMode =
@@ -34,17 +20,13 @@ export type DeskMode =
   | { kind: "onboarding"; keyStep: KeyStep };
 
 export interface DeskModeFacts {
-  /** `needsProviderKey(identity)`, as cached. */
   keyNeeded: boolean;
-  /** This visit has already shown the steps. */
-  opened: boolean;
-  /** Only read while `needsLibraryRead` holds. Ignored otherwise. */
+  shownThisMount: boolean;
   library: LibraryEmptiness;
 }
 
-/** The first page is read only while the steps could be shown. The loader passes `opened: false`. */
-export function needsLibraryRead({ keyNeeded, opened }: Pick<DeskModeFacts, "keyNeeded" | "opened">): boolean {
-  return keyNeeded || opened;
+export function needsLibraryRead({ keyNeeded, shownThisMount }: Pick<DeskModeFacts, "keyNeeded" | "shownThisMount">): boolean {
+  return keyNeeded || shownThisMount;
 }
 
 export function deskModeOf(facts: DeskModeFacts): DeskMode {

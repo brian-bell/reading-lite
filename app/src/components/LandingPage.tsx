@@ -6,10 +6,6 @@ import { PageHeading } from "./PageHeading";
 import { SampleCard } from "./SamplePages";
 import { SignInForm } from "./SignInPage";
 
-// The signed-out `/` (reading-lite-kl7y.9). What the service does, the sign-in
-// form in place, and the bundled sample library, card by card and as a whole
-// at /samples. It reads no identity, so it renders the same on any host.
-
 export function LandingPage() {
   const signInId = useId();
   const samplesId = useId();

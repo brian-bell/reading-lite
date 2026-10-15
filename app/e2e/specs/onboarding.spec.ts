@@ -1,8 +1,3 @@
-// A new reader's way in, end to end (reading-lite-kl7y.9): the signed-out
-// landing, the sample library, a sign-in link, the three steps on an empty
-// keyless desk, connecting the OpenAI key there, and the first save landing
-// on its pending reading.
-//
 // The magic link itself is mail, so the spec requests one and then holds the
 // session the link would have started: the stub's new reader, whose library is
 // empty and who has no key. Every write after that is answered in the browser.
@@ -63,9 +58,6 @@ test("goes from the front door through the samples and a key to the first save",
   await expect(page.getByRole("status").filter({ hasText: "we sent a short-lived link" })).toBeVisible();
   expect(challenges).toEqual(["new-reader@example.com"]);
 
-  // The link signs the reader in. The library is empty and has no key, so the
-  // desk opens on the three steps. The key form arrives after the browser's
-  // provider read, and the save stays in this document.
   await page.unroute("**/api/whoami");
   await signIn(page.context(), baseURL!, NEW_READER_SESSION);
   const saves = await serveSaveInBrowser(page, {

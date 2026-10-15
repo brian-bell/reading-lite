@@ -9,11 +9,6 @@ import { readWhoamiFromBackend, whoamiQueryKey } from "./identity";
 // server function, so the browser never reaches identity through this Worker.
 // The runtime module is imported inside the server branch, which the Start
 // compiler removes from the client build.
-//
-// The browser passes the query's signal. Cancelling the query aborts an
-// in-flight whoami, so a connect can clear `needs_provider_key` without a
-// response that left earlier putting the flag back. The server render ignores
-// the signal.
 const loadIdentity = createIsomorphicFn()
   .server(async (_signal?: AbortSignal) => {
     const { env } = await import("cloudflare:workers");

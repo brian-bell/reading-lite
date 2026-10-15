@@ -49,9 +49,6 @@ export interface EvidenceCase {
 }
 
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
-  // Signed out, `/` is the landing (reading-lite-kl7y.9): the product sentence,
-  // the sign-in form, and the bundled sample library. It expects nothing from
-  // the stub, so any host.
   {
     name: "desk-signed-out",
     anyHost: true,

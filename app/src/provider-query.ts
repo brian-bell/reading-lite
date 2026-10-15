@@ -40,11 +40,6 @@ export function providerUsageQueryOptions(queryClient: QueryClient, identity: Id
   });
 }
 
-/**
- * A provider write's answer, stored as the read's: new settings, or a refusal
- * the host then shows as a refused read. New settings may move the limit, so
- * today's usage is read again. The one writer of the provider caches.
- */
 export function useProviderStore(): {
   saved(settings: ProviderSettings): void;
   refused(refusal: AccountRefusal): void;

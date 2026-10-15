@@ -9,12 +9,6 @@ import { Icon } from "./Icon";
 import { KEY_CONNECTED_SENTENCE, ProviderKeySection } from "./ProviderKey";
 import { InlineNotice, LoadingRegion } from "./ReadingStates";
 
-// The new reader's three steps (reading-lite-kl7y.9), a view of the desk's
-// mode (onboarding.ts). Step 1 opens the samples and has no done state:
-// nothing records that a sample was opened. Step 2 is the provider page's
-// own key section. Step 3 is held until a key is connected. Its status
-// region says so when it opens, since focus stays in the key form.
-
 export function Onboarding({ keyStep, identity }: { keyStep: KeyStep; identity: Identity }) {
   const headingId = useId();
   const keyHintId = useId();
@@ -71,7 +65,6 @@ function Step({ mark, done, title, children }: { mark: 1 | 2 | 3; done: boolean;
   );
 }
 
-/** Step 2's form, from the browser's provider read, as the desk's provider tile reads it. */
 function KeyStepForm({ identity }: { identity: Identity }) {
   const queryClient = useQueryClient();
   const provider = useQuery(providerQueryOptions(queryClient, identity));

@@ -21,28 +21,6 @@ import { PendingLabel } from "./PendingLabel";
 import { InlineNotice } from "./ReadingStates";
 import { StepUpNotice } from "./StepUpNotice";
 
-// The reader's OpenAI key: connect, replace, and remove (reading-lite-gh341.8;
-// ADR 0004). One section wherever a reader is asked for it: the provider page,
-// and step 2 of a new reader's desk (reading-lite-kl7y.9).
-//
-// The key is in the field's own state and the connect request's body, and
-// nowhere else: never browser storage, and the field is emptied once the
-// backend has it. The backend checks a key with OpenAI before storing it, so
-// OpenAI's refusal is the field's error, not the page's. Connect, replace,
-// and remove need a sign-in from the last ten minutes; that refusal comes
-// back to the provider page, which hosts this same section
-// (auth/return-path.ts).
-//
-// The backend has no removed state: a removed key is no key. A removal made
-// on this visit says what it changed. The library, sources, and search stay.
-// The confirmation before it says that requests already sent may still finish
-// and be charged.
-//
-// A key connected by a reader who could not save clears `needs_provider_key`
-// in the cached identity. The in-flight whoami is cancelled first, so a
-// response that left before the connect cannot put the flag back. A removal
-// reads identity again.
-
 export const KEY_CONNECTED_SENTENCE = "Your key is connected. You can save readings now.";
 
 const KEY_HEADING_ID = "provider-key-heading";
@@ -50,7 +28,6 @@ const STEP_UP_HREF = stepUpLoginHref(ACCOUNT_PROVIDER_PATH);
 
 type Failure = { kind: "offline" } | { kind: "server-error"; message: string };
 
-/** How a write that threw reads: offline, or the retryable server error. A 401 is the shell's page. */
 export function failureOf(error: unknown): Failure | undefined {
   if (error === null || error === undefined || isUnauthorized(error)) return undefined;
   const view = accountViewOf<never>({ data: undefined, error, fetchStatus: "idle" });
@@ -68,7 +45,6 @@ const KEY_STATUS: Record<KeyState["kind"], string> = {
   invalid: "Key not accepted",
 };
 
-/** What the key field says under itself, from the check before the request or OpenAI's answer. */
 type KeyFieldError = "empty" | "malformed" | "invalid_key" | "model_access";
 
 const KEY_FIELD_ERRORS: Record<KeyFieldError, string> = {
@@ -90,7 +66,6 @@ export function ProviderKeySection({
   next,
 }: {
   settings: ProviderSettings;
-  /** Shown once a reader's first key is connected here. Required, so a host decides what follows. */
   next: ReactNode;
 }) {
   const queryClient = useQueryClient();
@@ -101,9 +76,7 @@ export function ProviderKeySection({
   const [apiKey, setApiKey] = useState("");
   const [checkError, setCheckError] = useState<"empty" | "malformed" | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  // A removal on this visit, so the section can say what it changed.
   const [removedHere, setRemovedHere] = useState(false);
-  /** A key connected here by a reader who could not save without one: the next step is their first save. */
   const [firstKey, setFirstKey] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const removeRef = useRef<HTMLButtonElement>(null);
@@ -127,8 +100,6 @@ export function ProviderKeySection({
       }
       if (outcome.kind !== "saved") return;
       setApiKey("");
-      // An active key is what saving was waiting for (reading-lite-gh341.11),
-      // whatever the deployment's switch says, so identity can say so now.
       if (needsProviderKey(queryClient.getQueryData<Identity | null>(whoamiQueryKey))) {
         setFirstKey(true);
         // An in-flight whoami can land after this write and put the flag back.
@@ -153,7 +124,6 @@ export function ProviderKeySection({
       }
       if (outcome.kind !== "saved") return;
       setFirstKey(false);
-      // Whether saving now needs a key again is the deployment's to say.
       void queryClient.invalidateQueries({ queryKey: whoamiQueryKey });
       setRemovedHere(true);
       store.saved(outcome.settings);
@@ -166,7 +136,6 @@ export function ProviderKeySection({
   const removeFailure = failureOf(remove.error);
   const stepUp = connect.data?.kind === "step-up" || remove.data?.kind === "step-up";
 
-  // Acceptance matrix, Invalid input: the reason under the field, and focus on it.
   useEffect(() => {
     if (fieldError !== null) inputRef.current?.focus();
   }, [fieldError, connect.data]);
@@ -194,7 +163,6 @@ export function ProviderKeySection({
     <section className="account-section provider-card" aria-labelledby={KEY_HEADING_ID}>
       <div className="account-section-head">
         <div className="provider-name">
-          {/* The design's provider mark: decorative, the heading names it. */}
           <span className="provider-mark">
             <Icon name="sliders" size={22} />
           </span>

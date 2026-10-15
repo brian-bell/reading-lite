@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { LibraryPage, LibraryResult } from "../src/library";
 import { deskModeOf, libraryEmptinessOf, needsLibraryRead, type LibraryEmptiness } from "../src/onboarding";
 
-// The new reader's desk (reading-lite-kl7y.9): whether the first library page
-// is empty, whether it is read, and which desk that produces.
-
 const ready = (
   offset: number,
   hasMore: boolean,
@@ -40,8 +37,8 @@ describe("whether the first page is read", () => {
     ["a keyless reader", true, false, true],
     ["a visit that already showed the steps", false, true, true],
     ["a keyless visit that already showed the steps", true, true, true],
-  ])("%s", (_case, keyNeeded, opened, read) => {
-    expect(needsLibraryRead({ keyNeeded, opened })).toBe(read);
+  ])("%s", (_case, keyNeeded, shownThisMount, read) => {
+    expect(needsLibraryRead({ keyNeeded, shownThisMount })).toBe(read);
   });
 });
 
@@ -60,7 +57,7 @@ describe("desk mode", () => {
     ["a reading arrived after the steps opened", false, true, "occupied", { kind: "sections" }],
     ["the list was refused or failed", true, false, "unknown", { kind: "sections" }],
     ["the list was refused after the steps opened", true, true, "unknown", { kind: "sections" }],
-  ])("%s", (_case, keyNeeded, opened, library, mode) => {
-    expect(deskModeOf({ keyNeeded, opened, library })).toEqual(mode);
+  ])("%s", (_case, keyNeeded, shownThisMount, library, mode) => {
+    expect(deskModeOf({ keyNeeded, shownThisMount, library })).toEqual(mode);
   });
 });
