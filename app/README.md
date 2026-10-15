@@ -86,7 +86,7 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
   cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
-  signed-out reader to `/login?next=<URL>`; signed out, `/` shows the form in
+  signed-out reader to `/login?next=<URL>`; signed out, the landing renders in
   place.
 - **Session state.** `src/auth/session.ts` builds the request's QueryClient.
   A 401 from any query or mutation shows "Your session ended" at that URL,

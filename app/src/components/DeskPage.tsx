@@ -37,15 +37,15 @@ import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
-import { SignInPage } from "./SignInPage";
+import { LandingPage } from "./LandingPage";
 import { useStatusWatch } from "./use-status-watch";
 
 const HEADING = "Desk";
 
-/** `/`: the sign-in form in place when signed out, the desk when signed in. */
+/** `/`: the landing when signed out, the desk when signed in. */
 export function DeskHome({ visit }: { visit: VisitAt }) {
   const { data: identity } = useQuery(whoamiQueryOptions());
-  if (identity === null) return <SignInPage next="/" landing />;
+  if (identity === null) return <LandingPage />;
   // Identity could not be determined: the shell shows neither account state.
   if (identity === undefined) {
     return (

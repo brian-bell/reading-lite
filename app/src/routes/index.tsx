@@ -5,8 +5,8 @@ import { hasLibraryParams } from "../library-search";
 
 // The desk (reading-lite-kl7y.7). Signed in, the loader reads GET /api/desk
 // for this visit during the server render, so it is dehydrated into the page
-// and the browser renders it without asking again. Signed out, the sign-in
-// form renders in place, with no redirect. The library's old address,
+// and the browser renders it without asking again. Signed out, the landing
+// renders in place, with no redirect. The library's old address,
 // `/?q=&tag=&offset=`, redirects to `/library` with the same parameters, so
 // old links and stored return paths keep working.
 export const Route = createFileRoute("/")({

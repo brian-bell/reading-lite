@@ -1422,6 +1422,61 @@ textarea {
   }
 }
 
+/* ---- Landing (reading-lite-kl7y.9) ------------------------------------ */
+
+/* Signed-out `/`. The title is the product sentence, and the columns stack
+   once the shell is narrower than 1000px. */
+.landing-head {
+  max-width: 44rem;
+  margin: 0 0 var(--space-7);
+}
+
+.landing .page-title {
+  max-width: 24ch;
+  font-size: clamp(30px, 3.2cqw, 44px);
+}
+
+.landing-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 24rem) minmax(0, var(--measure));
+  gap: var(--space-9);
+  align-items: start;
+}
+
+.landing-signin {
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.landing-signin .form-hint:first-of-type {
+  margin: 0 0 var(--space-4);
+}
+
+.landing-signin > .form-hint:not(:first-of-type) {
+  margin-top: var(--space-4);
+}
+
+.landing-section-title {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.landing-samples > .button {
+  margin-top: var(--space-4);
+}
+
+@container shell (max-width: 1000px) {
+  .landing-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ---- Desk (reading-lite-kl7y.7) --------------------------------------- */
 
 /* Sections share a surface of rows; the danger section rules its left edge,
