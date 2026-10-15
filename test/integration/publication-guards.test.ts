@@ -700,6 +700,44 @@ describe("the desk read", () => {
     ).toEqual({ status: 200, ready_since: [], total: 0 });
     expect((await api("/api/desk?since=yesterday")).status, "a since that is not a datetime").toBe(400);
   });
+
+  it("ages a ready reading out of needs_you more than seven days after its reprocess failed", async () => {
+    const s = sql();
+    const tenant = founderTenant();
+    const seed = async (id: string, created: string, overrides: Partial<Manifest> = {}) =>
+      seedManifest(s, tenant, await readyManifest(id, { created_at: at(created), updated_at: at(created), ...overrides }));
+    const failedReprocess = (finished?: string) => ({
+      id: `at_reprocess_${finished ?? "unfinished"}`,
+      trigger: "reprocess" as const,
+      status: "failed" as const,
+      started_at: "2026-03-01T00:00:00.000Z",
+      ...(finished === undefined ? {} : { finished_at: finished }),
+      error: failedError,
+    });
+    await seed("rd_aged_out", "19:10", { last_attempt: failedReprocess("2026-04-19T19:59:59.999Z") });
+    await seed("rd_seven_days", "19:11", { last_attempt: failedReprocess("2026-04-19T20:00:00.000Z") });
+    await seed("rd_unfinished", "19:12", { last_attempt: failedReprocess() });
+    // Expired as a reprocess; its stored last_attempt is the previous one.
+    await seed("rd_expired_over_old", "19:13", {
+      active_attempt: attempt("reprocess", "19:00"),
+      last_attempt: failedReprocess("2026-03-01T00:00:10.000Z"),
+    });
+    await seed("rd_failed_long_ago", "19:14", {
+      status: "failed",
+      error: failedError,
+      last_attempt: { ...failedReprocess("2026-03-01T00:00:10.000Z"), id: "at_submit_old", trigger: "submit" },
+    });
+    const { body } = await api(`/api/desk?since=${SINCE}`);
+    expect({
+      needs_you: ids(body.needs_you),
+      needs_you_total: body.needs_you_total,
+      ready_since: ids(body.ready_since),
+    }).toEqual({
+      needs_you: ["rd_failed_long_ago", "rd_expired_over_old", "rd_unfinished", "rd_seven_days"],
+      needs_you_total: 4,
+      ready_since: ["rd_expired_over_old", "rd_unfinished", "rd_seven_days", "rd_aged_out"],
+    });
+  });
 });
 
 describe("the relationships read", () => {
