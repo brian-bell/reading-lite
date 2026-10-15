@@ -850,8 +850,10 @@ paths:
         Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
         Validates the key with OpenAI's free model-list endpoint and stores
         it only when the fixed summarization model and `text-embedding-3-small`
-        are listed. A failed check stores nothing. The response is the masked
-        settings view. The key is never returned.
+        are listed. A failed check stores nothing. The write locks the user
+        row and stores nothing when the user is missing or not `active`,
+        answering 403. The response is the masked settings view. The key is
+        never returned.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
         - $ref: "#/components/parameters/ExpectedTenant"
@@ -879,7 +881,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          description: Forbidden origin, CSRF, bearer, recent authentication required, or the account is not active
           content:
             application/json:
               schema:
@@ -907,6 +909,107 @@ paths:
         Deletes the OpenAI credential row only; an Anthropic key stays.
         Idempotent when no key is stored. Returns the masked settings view
         with a null credential.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
+      responses:
+        "200":
+          description: Masked settings after removal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+
+  /api/auth/provider/anthropic:
+    post:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: connectAnthropicKey
+      summary: Connect or replace the Anthropic key
+      description: |
+        Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
+        The same gates as `POST /api/auth/provider`. Validates the key with a
+        free `GET https://api.anthropic.com/v1/models/{ANTHROPIC_MODEL}`
+        (`x-api-key`, `anthropic-version: 2023-06-01`, redirect manual, body
+        discarded on any non-200) and stores it only when that call returns
+        200. 401 is `invalid_key`; 403 or 404 is `model_access`; anything else,
+        including a timeout or network failure, is `provider_unavailable`.
+        A failed check stores nothing. The write locks the user row and stores
+        nothing when the user is missing or not `active`, answering 403. The
+        response is the masked settings view. The key is never returned.
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+        - $ref: "#/components/parameters/ExpectedTenant"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostProviderKeyBody"
+      responses:
+        "200":
+          description: Masked settings after the key is stored
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsResponse"
+        "400":
+          description: Invalid body, invalid key, or the key cannot use ANTHROPIC_MODEL
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ErrorMessage"
+                  - $ref: "#/components/schemas/ProviderSettingsError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Forbidden origin, CSRF, bearer, recent authentication required, or the account is not active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "500":
+          $ref: "#/components/responses/AuthMisconfigured"
+        "503":
+          description: Anthropic's model endpoint could not be checked. Nothing was stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderSettingsError"
+    delete:
+      security:
+        - sessionCookie: []
+      tags: [identity]
+      operationId: deleteAnthropicKey
+      summary: Remove the stored Anthropic key
+      description: |
+        Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
+        Deletes the Anthropic credential row only; the OpenAI key stays.
+        When `summarization_provider` was `anthropic`, the same transaction
+        resets it to `openai`. Idempotent when no Anthropic key is stored.
+        Returns the masked settings view. Selecting `anthropic` afterwards
+        is `POST /api/auth/provider/preferences` and answers 400
+        `anthropic_key_required` until an active Anthropic key is stored again.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
         - $ref: "#/components/parameters/ExpectedTenant"
@@ -2931,7 +3034,7 @@ components:
           minLength: 4
           maxLength: 256
           pattern: "^\\S+$"
-          description: OpenAI key. Stored encrypted. Never returned.
+          description: Provider API key (OpenAI or Anthropic, depending on the route). Stored encrypted. Never returned.
 
     PostProviderPreferencesBody:
       type: object

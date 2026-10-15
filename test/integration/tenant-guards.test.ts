@@ -1,8 +1,10 @@
 // The tenant boundary as an attacker meets it, end to end through the Worker:
-// another tenant's readings, sessions, tokens, provider key and account, over
+// another tenant's readings, sessions, tokens, provider keys and account, over
 // HTTP, MCP and the FrontendReads entrypoint, plus the cookie guards (Origin,
 // session-bound CSRF, no bearer-to-cookie fallback) every browser write passes,
-// and the digest mail that leaves the system with a tenant's readings in it.
+// the Anthropic key routes (mask only, that key's own credential version, the
+// selection reset on remove, and a deletion that lands during validation), and
+// the digest mail that leaves the system with a tenant's readings in it.
 //
 // The contract (docs/tenant-isolation-matrix.md): a foreign resource answers
 // exactly like an unknown one, collections hold only the caller's records, a
@@ -12,6 +14,7 @@
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginAccountDeletion } from "../../src/control-plane/account-delete";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
@@ -678,5 +681,246 @@ describe("tenant guards", () => {
       expect(mail, `${to} never sees the other tenant's`).not.toContain(foreign);
       expect(mail, `${to} never goes to EMAIL_TO`).not.toContain(workerEnv.EMAIL_TO);
     }
+  });
+
+  const PROVIDER_SECRET = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+  const ANTHROPIC_URL = `https://api.anthropic.com/v1/models/${workerEnv.ANTHROPIC_MODEL}`;
+
+  it("refuses a bearer and a missing CSRF token on the Anthropic key routes", async () => {
+    const session = await signIn(FOUNDER_EMAIL, "clm_guards_anthropic_gate");
+    const providerEnv = { ...workerEnv, PROVIDER_KEY_SECRET: PROVIDER_SECRET };
+    const key = "sk-ant-guards-refused-4242";
+    const fetchImpl: typeof fetch = async () => {
+      throw new Error("provider called");
+    };
+    const refused: Array<[string, CallInit]> = [
+      ["POST bearer", { method: "POST", authorization: `Bearer ${TOKEN}`, body: { api_key: key } }],
+      ["DELETE bearer", { method: "DELETE", authorization: `Bearer ${TOKEN}` }],
+      ["POST without CSRF", { method: "POST", cookie: session.cookie, body: { api_key: key } }],
+      ["DELETE without CSRF", { method: "DELETE", cookie: session.cookie }],
+      ["POST with a wrong CSRF", { method: "POST", cookie: session.cookie, csrf: "0".repeat(64), body: { api_key: key } }],
+    ];
+    for (const [label, init] of refused) {
+      const { res } = await call("/api/auth/provider/anthropic", { ...init, fetch: fetchImpl, env: providerEnv });
+      expect(res.status, label).toBe(403);
+      expect(await res.text(), label).toBe(JSON.stringify({ error: "forbidden" }));
+    }
+    expect(
+      await testControlPlane(workerEnv).all(
+        "SELECT provider FROM tenant_provider_credentials WHERE tenant_id = ?",
+        FOUNDER_TENANT_ID,
+      ),
+      "stored keys",
+    ).toEqual([]);
+  });
+
+  it("stores only the Anthropic key's mask, versions that key alone, and hides it from another tenant", async () => {
+    await insertSecondTenant(workerEnv);
+    const founder = await signIn(FOUNDER_EMAIL, "clm_guards_anthropic_store");
+    const other = await signIn(OTHER_EMAIL, "clm_guards_anthropic_other");
+    const providerEnv = { ...workerEnv, PROVIDER_KEY_SECRET: PROVIDER_SECRET };
+    const openaiKey = "sk-openai-guards-1111";
+    const firstKey = "sk-ant-guards-aaaa-2222";
+    const rejectedKey = "sk-ant-guards-bbbb-4444";
+    const replacementKey = "sk-ant-guards-cccc-3333";
+    const secrets = [firstKey, rejectedKey, replacementKey];
+    const bodies: string[] = [];
+    const logs: string[] = [];
+    const note = (...args: any[]) => {
+      logs.push(args.map((arg) => {
+        if (typeof arg === "string") return arg;
+        if (arg instanceof Error) return `${arg.name}: ${arg.message}\n${arg.stack ?? ""}`;
+        try {
+          return JSON.stringify(arg);
+        } catch {
+          return String(arg);
+        }
+      }).join(" "));
+    };
+    const spies = [
+      vi.spyOn(console, "debug").mockImplementation(note),
+      vi.spyOn(console, "error").mockImplementation(note),
+      vi.spyOn(console, "info").mockImplementation(note),
+      vi.spyOn(console, "log").mockImplementation(note),
+      vi.spyOn(console, "warn").mockImplementation(note),
+    ];
+    let anthropic: { key: string; status: number } = { key: firstKey, status: 200 };
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url === "https://api.openai.com/v1/models") {
+        return Response.json({
+          data: [{ id: workerEnv.OPENAI_SUMMARIZATION_MODEL }, { id: "text-embedding-3-small" }],
+        });
+      }
+      if (url !== ANTHROPIC_URL) throw new Error(`unexpected provider url ${url}`);
+      const headers = new Headers(init?.headers);
+      if (headers.get("x-api-key") !== anthropic.key) throw new Error("anthropic request carried the wrong key");
+      if (headers.get("anthropic-version") !== "2023-06-01") throw new Error("missing anthropic-version");
+      if (headers.get("authorization") !== null) throw new Error("authorization header was sent to Anthropic");
+      if (init?.redirect !== "manual" || init.cache !== "no-store") {
+        throw new Error("anthropic request was not redirect-manual and uncached");
+      }
+      if (anthropic.status !== 200) return new Response("nope", { status: anthropic.status });
+      return Response.json({ type: "model", id: workerEnv.ANTHROPIC_MODEL });
+    };
+    const read = async (pending: ReturnType<typeof call>) => {
+      const { res } = await pending;
+      const text = await res.text();
+      bodies.push(text);
+      return { status: res.status, body: JSON.parse(text) as Record<string, unknown> };
+    };
+    const versions = () =>
+      testControlPlane(workerEnv).all<{ provider: string; credential_version: number; last_four: string }>(
+        `SELECT provider, credential_version, last_four
+         FROM tenant_provider_credentials WHERE tenant_id = ? ORDER BY provider`,
+        FOUNDER_TENANT_ID,
+      );
+    const operatorCap = (await testControlPlane(workerEnv).first<{ daily_spend_microdollars: number }>(
+      "SELECT daily_spend_microdollars FROM tenant_limits WHERE tenant_id = ?",
+      FOUNDER_TENANT_ID,
+    ))!.daily_spend_microdollars;
+    const caps = {
+      effort: "high",
+      daily_spend_cap_microdollars: null,
+      effective_daily_spend_microdollars: operatorCap,
+      operator_daily_spend_microdollars: operatorCap,
+    };
+    try {
+      const connect = (path: string, apiKey: string) =>
+        read(call(path, {
+          method: "POST",
+          cookie: founder.cookie,
+          csrf: founder.csrf,
+          body: { api_key: apiKey },
+          fetch: fetchImpl,
+          env: providerEnv,
+        }));
+      const openai = await connect("/api/auth/provider", openaiKey);
+      expect(openai.status, "openai connect").toBe(200);
+      const before = Date.now();
+      const connected = await connect("/api/auth/provider/anthropic", firstKey);
+      const after = Date.now();
+      expect(connected.status, "anthropic connect").toBe(200);
+      const validatedAt = (connected.body.anthropic_credential as { validated_at_ms: number }).validated_at_ms;
+      expect(validatedAt).toBeGreaterThanOrEqual(before);
+      expect(validatedAt).toBeLessThanOrEqual(after);
+      expect(connected.body).toEqual({
+        credential: { provider: "openai", last_four: "1111", status: "active", validated_at_ms: expect.any(Number) },
+        anthropic_credential: { provider: "anthropic", last_four: "2222", status: "active", validated_at_ms: validatedAt },
+        summarization_provider: "openai",
+        ...caps,
+      });
+      expect(await versions(), "versions after connect").toEqual([
+        { provider: "anthropic", credential_version: 1, last_four: "2222" },
+        { provider: "openai", credential_version: 1, last_four: "1111" },
+      ]);
+
+      anthropic = { key: rejectedKey, status: 401 };
+      const rejected = await connect("/api/auth/provider/anthropic", rejectedKey);
+      expect(rejected.status, "rejected replace").toBe(400);
+      expect(rejected.body).toEqual({ error: "invalid key", code: "invalid_key" });
+      expect(await versions(), "versions after a rejected replace").toEqual([
+        { provider: "anthropic", credential_version: 1, last_four: "2222" },
+        { provider: "openai", credential_version: 1, last_four: "1111" },
+      ]);
+
+      anthropic = { key: replacementKey, status: 200 };
+      const replaced = await connect("/api/auth/provider/anthropic", replacementKey);
+      expect(replaced.status, "anthropic replace").toBe(200);
+      expect(replaced.body).toMatchObject({
+        credential: { last_four: "1111" },
+        anthropic_credential: { provider: "anthropic", last_four: "3333", status: "active" },
+      });
+      expect(await versions(), "replace bumps only the Anthropic credential version").toEqual([
+        { provider: "anthropic", credential_version: 2, last_four: "3333" },
+        { provider: "openai", credential_version: 1, last_four: "1111" },
+      ]);
+
+      const selected = await read(call("/api/auth/provider/preferences", {
+        method: "POST",
+        cookie: founder.cookie,
+        csrf: founder.csrf,
+        body: { summarization_provider: "anthropic" },
+        env: providerEnv,
+      }));
+      expect(selected.status, "select anthropic").toBe(200);
+      expect(selected.body.summarization_provider).toBe("anthropic");
+
+      const hidden = await read(call("/api/auth/provider", { cookie: other.cookie, env: providerEnv }));
+      expect(hidden.status, "other tenant").toBe(200);
+      expect(hidden.body).toMatchObject({
+        credential: null,
+        anthropic_credential: null,
+        summarization_provider: "openai",
+      });
+
+      const removed = await read(call("/api/auth/provider/anthropic", {
+        method: "DELETE",
+        cookie: founder.cookie,
+        csrf: founder.csrf,
+        env: providerEnv,
+      }));
+      expect(removed.status, "remove").toBe(200);
+      expect(removed.body).toMatchObject({
+        credential: { provider: "openai", last_four: "1111", status: "active" },
+        anthropic_credential: null,
+        summarization_provider: "openai",
+      });
+      expect(await versions(), "anthropic row removed").toEqual([
+        { provider: "openai", credential_version: 1, last_four: "1111" },
+      ]);
+
+      const again = await read(call("/api/auth/provider/preferences", {
+        method: "POST",
+        cookie: founder.cookie,
+        csrf: founder.csrf,
+        body: { summarization_provider: "anthropic" },
+        env: providerEnv,
+      }));
+      expect(again.status, "anthropic without a key").toBe(400);
+      expect(again.body).toEqual({ error: "anthropic key required", code: "anthropic_key_required" });
+
+      const leaked = secrets.filter((secret) => bodies.some((body) => body.includes(secret)) || logs.some((line) => line.includes(secret)));
+      expect(leaked, "anthropic keys in a response or log").toEqual([]);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it("does not store an Anthropic key when account deletion lands during validation", async () => {
+    const session = await signIn(FOUNDER_EMAIL, "clm_guards_anthropic_delete");
+    const providerEnv = { ...workerEnv, PROVIDER_KEY_SECRET: PROVIDER_SECRET };
+    const key = "sk-ant-guards-race-5555";
+    const db = testControlPlane(workerEnv);
+    const fetchImpl: typeof fetch = async (input) => {
+      if (String(input) !== ANTHROPIC_URL) throw new Error(`unexpected provider url ${String(input)}`);
+      const deleted = await beginAccountDeletion(db, { userId: FOUNDER_TENANT_ID, nowMs: Date.now() });
+      if (deleted.kind !== "started") throw new Error(`account deletion ${deleted.kind}`);
+      const status = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID);
+      if (status?.status !== "deleting") throw new Error(`user status ${status?.status ?? "missing"}`);
+      const left = await db.all("SELECT provider FROM tenant_provider_credentials WHERE tenant_id = ?", FOUNDER_TENANT_ID);
+      if (left.length !== 0) throw new Error("credentials survived deletion");
+      return Response.json({ type: "model", id: workerEnv.ANTHROPIC_MODEL });
+    };
+    const { res } = await call("/api/auth/provider/anthropic", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { api_key: key },
+      fetch: fetchImpl,
+      env: providerEnv,
+    });
+    const text = await res.text();
+    expect(text.includes(key), "response body").toBe(false);
+    expect(res.status, text).toBe(403);
+    expect(JSON.parse(text)).toEqual({ error: "forbidden" });
+    expect(await db.first("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID)).toEqual({ status: "deleting" });
+    expect(
+      await db.all(
+        "SELECT provider, last_four FROM tenant_provider_credentials WHERE tenant_id = ?",
+        FOUNDER_TENANT_ID,
+      ),
+      "credential rows",
+    ).toEqual([]);
   });
 });
