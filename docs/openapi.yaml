@@ -850,8 +850,10 @@ paths:
         Session cookie, `X-CSRF-Token`, and recent sign-in. Bearer 403.
         Validates the key with OpenAI's free model-list endpoint and stores
         it only when the fixed summarization model and `text-embedding-3-small`
-        are listed. A failed check stores nothing. The response is the masked
-        settings view. The key is never returned.
+        are listed. A failed check stores nothing. The write locks the user
+        row and stores nothing when the user is missing or not `active`,
+        answering 403. The response is the masked settings view. The key is
+        never returned.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
         - $ref: "#/components/parameters/ExpectedTenant"
@@ -879,7 +881,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          description: Forbidden origin, CSRF, bearer, recent authentication required, or the account is not active
           content:
             application/json:
               schema:
@@ -947,8 +949,9 @@ paths:
         discarded on any non-200) and stores it only when that call returns
         200. 401 is `invalid_key`; 403 or 404 is `model_access`; anything else,
         including a timeout or network failure, is `provider_unavailable`.
-        A failed check stores nothing. The response is the masked settings
-        view. The key is never returned.
+        A failed check stores nothing. The write locks the user row and stores
+        nothing when the user is missing or not `active`, answering 403. The
+        response is the masked settings view. The key is never returned.
       parameters:
         - $ref: "#/components/parameters/CsrfToken"
         - $ref: "#/components/parameters/ExpectedTenant"
@@ -976,7 +979,7 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
-          description: Forbidden origin, CSRF, bearer, or recent authentication required
+          description: Forbidden origin, CSRF, bearer, recent authentication required, or the account is not active
           content:
             application/json:
               schema:

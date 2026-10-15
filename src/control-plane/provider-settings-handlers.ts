@@ -16,8 +16,9 @@ import {
   PROVIDER_ANTHROPIC,
   PROVIDER_OPENAI,
   upsertProviderCredential,
+  type ProviderName,
 } from "./provider-credentials";
-import { readProviderKeyRoots } from "./provider-key-crypto";
+import { readProviderKeyRoots, type ProviderKeyRoot } from "./provider-key-crypto";
 import { loadProviderSettings, loadSpendCaps, updateProviderPreferences, type ProviderSettingsLoad } from "./provider-settings";
 import { fetchTenantSpendStatus } from "./spend-status";
 
@@ -37,6 +38,27 @@ function keyRejection(code: ProviderKeyRejection): Response {
   const rejection = KEY_REJECTION[code];
   const body: ProviderSettingsError = { error: rejection.error, code };
   return jsonAuth(body, rejection.status);
+}
+
+async function storeValidatedProviderKey(
+  c: Context<AppBindings>,
+  nowMs: number,
+  provider: ProviderName,
+  plaintext: string,
+  root: ProviderKeyRoot,
+): Promise<Response> {
+  const userId = String(c.get("principal").userId);
+  const db = fromSql(c.get("sql"));
+  const stored = await upsertProviderCredential(db, {
+    tenantId: userId,
+    plaintext,
+    root,
+    nowMs,
+    validatedAtMs: nowMs,
+    provider,
+  });
+  if (stored.kind === "inactive") return jsonAuth({ error: "forbidden" }, 403);
+  return settingsResponse(await loadProviderSettings(db, userId));
 }
 
 function summarizationModel(env: AppBindings["Bindings"]): string {
@@ -94,16 +116,7 @@ export async function handleConnectProviderKey(
   });
   if (!check.ok) return keyRejection(check.code);
 
-  const userId = String(c.get("principal").userId);
-  const db = fromSql(c.get("sql"));
-  await upsertProviderCredential(db, {
-    tenantId: userId,
-    plaintext: parsed.data.api_key,
-    root: roots.providerKeyRoot,
-    nowMs,
-    validatedAtMs: nowMs,
-  });
-  return settingsResponse(await loadProviderSettings(db, userId));
+  return storeValidatedProviderKey(c, nowMs, PROVIDER_OPENAI, parsed.data.api_key, roots.providerKeyRoot);
 }
 
 export async function handleDeleteProviderKey(c: Context<AppBindings>): Promise<Response> {
@@ -136,17 +149,7 @@ export async function handleConnectAnthropicKey(
   });
   if (!check.ok) return keyRejection(check.code);
 
-  const userId = String(c.get("principal").userId);
-  const db = fromSql(c.get("sql"));
-  await upsertProviderCredential(db, {
-    tenantId: userId,
-    plaintext: parsed.data.api_key,
-    root: roots.providerKeyRoot,
-    nowMs,
-    validatedAtMs: nowMs,
-    provider: PROVIDER_ANTHROPIC,
-  });
-  return settingsResponse(await loadProviderSettings(db, userId));
+  return storeValidatedProviderKey(c, nowMs, PROVIDER_ANTHROPIC, parsed.data.api_key, roots.providerKeyRoot);
 }
 
 export async function handleDeleteAnthropicKey(c: Context<AppBindings>): Promise<Response> {

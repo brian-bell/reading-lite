@@ -60,6 +60,10 @@ export async function readProviderCredential(
   return row ? toCredential(row) : null;
 }
 
+export type UpsertProviderCredentialResult =
+  | { kind: "stored"; credential: ProviderCredential }
+  | { kind: "inactive" };
+
 export async function upsertProviderCredential(
   db: ControlPlaneDb,
   input: {
@@ -70,7 +74,7 @@ export async function upsertProviderCredential(
     validatedAtMs: number | null;
     provider?: ProviderName;
   },
-): Promise<ProviderCredential> {
+): Promise<UpsertProviderCredentialResult> {
   const tenantId = requireTenant(input.tenantId);
   const provider = input.provider ?? PROVIDER_OPENAI;
   if (input.plaintext.length < 4) throw new Error("provider key must include its last four characters");
@@ -79,6 +83,12 @@ export async function upsertProviderCredential(
   const validatedAt = toTimestamp(input.validatedAtMs);
 
   return db.transaction(async (tx) => {
+    const user = await tx.first<{ status: string }>(
+      "SELECT status FROM users WHERE id = ? FOR UPDATE",
+      tenantId,
+    );
+    if (user?.status !== "active") return { kind: "inactive" };
+
     // The first insert has no row to lock. The advisory lock covers that race,
     // and FOR UPDATE covers a replace of a row that already exists.
     await lockKey(tx, `provider_credential:${tenantId}:${provider}`);
@@ -134,7 +144,7 @@ export async function upsertProviderCredential(
     if (!stored || stored.credentialVersion !== credentialVersion) {
       throw new Error("provider credential was not stored");
     }
-    return stored;
+    return { kind: "stored", credential: stored };
   });
 }
 
