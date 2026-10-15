@@ -14,6 +14,13 @@ export function libraryEmptinessOf(result: LibraryResult | undefined, failed: bo
 
 export type KeyStep = "needed" | "connected";
 
+export type KeyPresence = "unknown" | "absent" | "present";
+
+export function keyStepOf(step: KeyStep, presence: KeyPresence): KeyStep {
+  if (presence === "absent") return "needed";
+  return step;
+}
+
 export type DeskMode =
   | { kind: "deciding" }
   | { kind: "sections" }
