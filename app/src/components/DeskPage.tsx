@@ -1,9 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { accountViewOf, type AccountView } from "../account-state";
 import { clearDesk } from "../api/desk";
-import { deskInboxFold, deskQuietOf } from "../inbox";
+import { deskInboxFold, deskQuietOf, type DeskInboxFold } from "../inbox";
 import { inboxQueryOptions } from "../inbox-query";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import {
@@ -24,7 +24,16 @@ import { deskQueryOptions } from "../desk-query";
 import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryRow } from "../library";
+import { libraryQueryOptions } from "../library-query";
 import { libraryBadge } from "../library-card";
+import {
+  FIRST_LIBRARY_PAGE,
+  deskModeOf,
+  libraryEmptinessOf,
+  needsLibraryRead,
+  type DeskMode,
+  type KeyStep,
+} from "../onboarding";
 import { formatUsd, keyStateOf, type ProviderSettings, type ProviderUsage } from "../provider";
 import { providerQueryOptions, providerUsageQueryOptions } from "../provider-query";
 import { expectedLayoutOf } from "../reading";
@@ -38,6 +47,7 @@ import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { LandingPage } from "./LandingPage";
+import { Onboarding } from "./Onboarding";
 import { useStatusWatch } from "./use-status-watch";
 
 const HEADING = "Desk";
@@ -59,6 +69,7 @@ export function DeskHome({ visit }: { visit: VisitAt }) {
 
 function DeskPage({ visit, identity }: { visit: VisitAt; identity: Identity }) {
   const queryClient = useQueryClient();
+  const mode = useDeskMode(queryClient, identity);
   useVisitCookie(visit.next);
   const watch = useStatusWatch<DeskResult>({ keyOf: deskWatchKeyOf, schedule: librarySchedule });
   const { data, error, fetchStatus, refetch } = useQuery(deskQueryOptions(queryClient, visit, identity, watch.options));
@@ -70,14 +81,14 @@ function DeskPage({ visit, identity }: { visit: VisitAt; identity: Identity }) {
   const retry = () => void refetch();
   return (
     <PageStateFocus kind={view.kind}>
-      {pageFor(view, { visit, identity, retry, stoppedChecking })}
+      {pageFor(view, { visit, identity, mode, retry, stoppedChecking })}
     </PageStateFocus>
   );
 }
 
 function pageFor(
   view: AccountView<DeskRead>,
-  props: { visit: VisitAt; identity: Identity; retry: () => void; stoppedChecking: boolean },
+  props: { visit: VisitAt; identity: Identity; mode: DeskMode; retry: () => void; stoppedChecking: boolean },
 ) {
   switch (view.kind) {
     case "forbidden":
@@ -94,9 +105,11 @@ function pageFor(
           {view.kind === "ready" && props.stoppedChecking ? (
             <InlineNotice message="Couldn't check status." live={false} />
           ) : null}
-          {view.kind === "loading" ? (
+          {view.kind === "loading" || props.mode.kind === "deciding" ? (
             <LoadingRegion className="library-message" />
-          ) : view.value === undefined ? null : (
+          ) : view.value === undefined ? null : props.mode.kind === "onboarding" ? (
+            <NewReaderDesk keyStep={props.mode.keyStep} identity={props.identity} />
+          ) : (
             <DeskSections desk={view.value} visit={props.visit} identity={props.identity} />
           )}
         </div>
@@ -133,12 +146,56 @@ function useGraphRefreshOnSettle(data: DeskResult | undefined) {
   }, [data, queryClient]);
 }
 
+/**
+ * What this visit shows first (onboarding.ts). The library's first page is
+ * read only while the steps could be shown. `opened` is set by the first
+ * render that shows them and lasts for this mount, so a key connected on the
+ * steps leaves them up.
+ */
+function useDeskMode(queryClient: QueryClient, identity: Identity): DeskMode {
+  const keyNeeded = needsProviderKey(identity);
+  const [opened, setOpened] = useState(false);
+  const list = useQuery({
+    ...libraryQueryOptions(queryClient, FIRST_LIBRARY_PAGE, identity),
+    enabled: needsLibraryRead({ keyNeeded, opened }),
+  });
+  const mode = deskModeOf({
+    keyNeeded,
+    opened,
+    library: libraryEmptinessOf(list.data, list.isError),
+  });
+  useEffect(() => {
+    if (mode.kind === "onboarding") setOpened(true);
+  }, [mode.kind]);
+  return mode;
+}
+
+/** The inbox fold, shared by the steps and the ordinary sections. */
+function useDeskInbox(identity: Identity): { fold: DeskInboxFold; retry: () => void } {
+  const queryClient = useQueryClient();
+  const inbox = useQuery(inboxQueryOptions(queryClient, identity));
+  return {
+    fold: deskInboxFold(accountViewOf({ data: inbox.data, error: inbox.error, fetchStatus: inbox.fetchStatus })),
+    retry: () => void inbox.refetch(),
+  };
+}
+
+/** The steps, then the inbox. Staged Markdown is input, and the inbox has no other way in. */
+function NewReaderDesk({ keyStep, identity }: { keyStep: KeyStep; identity: Identity }) {
+  const inbox = useDeskInbox(identity);
+  return (
+    <>
+      <Onboarding keyStep={keyStep} identity={identity} />
+      <DeskInboxSection fold={inbox.fold} onRetry={inbox.retry} Section={DeskSection} />
+    </>
+  );
+}
+
 function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitAt; identity: Identity }) {
   const queryClient = useQueryClient();
   const provider = useQuery(providerQueryOptions(queryClient, identity));
   const usage = useQuery(providerUsageQueryOptions(queryClient, identity));
-  const inbox = useQuery(inboxQueryOptions(queryClient, identity));
-  const fold = deskInboxFold(accountViewOf({ data: inbox.data, error: inbox.error, fetchStatus: inbox.fetchStatus }));
+  const inbox = useDeskInbox(identity);
   const settings = provider.data?.state === "ready" ? provider.data.value : undefined;
   const keyRejected = settings?.credential?.status === "invalid";
   const now = visit.next.latest;
@@ -150,7 +207,7 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
       onDesk: desk.on_desk.length,
       readySince: desk.ready_since_total,
     },
-    fold,
+    inbox.fold,
   );
 
   return (
@@ -170,7 +227,7 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
           <MoreRow shown={desk.needs_you.length} total={desk.needs_you_total} />
         </DeskSection>
       ) : null}
-      <DeskInboxSection fold={fold} onRetry={() => void inbox.refetch()} Section={DeskSection} />
+      <DeskInboxSection fold={inbox.fold} onRetry={inbox.retry} Section={DeskSection} />
       {desk.processing_total > 0 ? (
         <DeskSection title="Processing" count={desk.processing_total}>
           {desk.processing.map((row) => (

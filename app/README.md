@@ -175,7 +175,8 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   desk), Ready since the visit's start (a Put on desk toggle on each), and
   the provider tile, read in the browser. "Nothing needs you." with Save a
   reading (Connect a key for a reader with none) and Library shows only when
-  the reading groups are empty and the inbox is empty. While that read is
+  the reading groups are empty and the inbox is empty. A keyless reader whose
+  library is empty sees the three steps instead. While that read is
   still pending and the reading groups are empty, the desk withholds that
   sentence and On your desk. "Ready since" comes from the
   `rl_visit` cookie (`src/desk.ts`, `visitAt`): a first-party
@@ -481,18 +482,26 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   samples and offers sign-in; it follows the shell's browser-only identity
   read and offers a signed-in reader their library instead. A slug that names
   no sample is "This sample doesn't exist."
-- **Onboarding.** (reading-lite-gh341.11) The signed-out `/` is the front
-  door: beside the sign-in form, a sentence says what the service does and
-  links the sample library. When tenant provider keys are on and the reader
-  has no active key, `GET /api/whoami` says `needs_provider_key: true`; the
-  empty desk and the empty library then offer "Connect a key" instead of a
-  save, and `/save` asks for a key above its form. A save, import, reprocess,
-  or inbox promote the backend refuses with 409 `provider_key_required` is
-  the capture refusal `key-required` (`src/capture-refusal.ts`): one sentence
-  with a link to the provider page and no Try again. Connecting a key there
-  clears the flag in the cached identity and offers "Save a reading"; a
-  removal reads identity again, since only the backend knows whether a key is
-  required.
+- **Onboarding.** (reading-lite-gh341.11, kl7y.9) The signed-out `/` is the
+  landing: what the service does, the sign-in form in place, and the bundled
+  sample library, linked card by card and as a whole at `/samples`. Signed in,
+  a reader whose `whoami` says `needs_provider_key: true` and whose library's
+  first unfiltered page has no readings opens the desk on three steps: open
+  the samples, connect a key (the provider page's own key section, embedded),
+  and save. The save step is an `aria-disabled` button until the key connects,
+  then a link to `/save` in the same document. The `/` loader reads that page
+  only for a keyless reader. A visit that opened on the steps keeps them while
+  the page stays empty, including after the key connects. A new visit with a
+  key and an empty library is the ordinary desk. The inbox still shows below
+  the steps when it holds anything. `/save` keeps an enabled Save. When tenant
+  provider keys are on and the reader has no active key, the empty library
+  offers "Connect a key" and `/save` asks for a key above its form. A save,
+  import, reprocess, or inbox promote the backend refuses with 409
+  `provider_key_required` is the capture refusal `key-required`
+  (`src/capture-refusal.ts`): one sentence with a link to the provider page
+  and no Try again. Connecting a key clears the flag in the cached identity.
+  A removal reads identity again, since only the backend knows whether a key
+  is required.
 - **Theme.** A `theme` cookie (`system`, `light`, `dark`; no identity) is read
   during the server render and sets `<html data-theme>`. System leaves the
   attribute off and follows `prefers-color-scheme`. Tokens in
@@ -521,9 +530,10 @@ light and dark, as one test per route and project: axe (WCAG 2.2 AA), a layout
 check that no positioned panel escapes the viewport, and the keyboard pass
 (skip link first, a visible focus indicator on every tab stop, no focus trap)
 fail the run. `e2e/specs/onboarding.spec.ts` (the `onboarding` project) walks a
-new reader from the signed-out front door through the samples, sign-in, the
-empty desk, and connecting a key to the first save, and checks on the way that the session
-cookie is out of page script's reach, the key never reaches browser storage,
+new reader from the signed-out landing through the samples, sign-in, the
+three steps, connecting a key inside those steps, and the first save, and
+checks on the way that the session cookie is out of page script's reach, the
+key never reaches browser storage,
 and each write carries the CSRF token and the tenant pin. Screenshots go to
 `e2e/screenshots/` and are attached to the HTML report, which CI uploads for
 three days of review; they are not pixel-diff

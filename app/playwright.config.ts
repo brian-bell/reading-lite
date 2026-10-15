@@ -41,10 +41,10 @@ const matrixProjects = Object.entries(VIEWPORTS).flatMap(([size, viewport]) =>
 const PROJECTS: NonNullable<PlaywrightTestConfig<EvidenceOptions>["projects"]> = [
   ...matrixProjects,
   {
-    // A new reader's way in, end to end (reading-lite-gh341.11): the
-    // signed-out front door, the samples, sign-in, connecting a key, and the
-    // first save, with the session cookie, the key, and each write's CSRF
-    // token and tenant pin checked on the way.
+    // A new reader's way in, end to end (reading-lite-kl7y.9): the
+    // signed-out landing, the samples, sign-in, the three steps, connecting
+    // a key there, and the first save, with the session cookie, the key, and
+    // each write's CSRF token and tenant pin checked on the way.
     name: "onboarding",
     testMatch: /onboarding\.spec\.ts/,
     use: { ...devices["Desktop Chrome"], viewport: VIEWPORTS.desktop, theme: "light", colorScheme: "light" },
