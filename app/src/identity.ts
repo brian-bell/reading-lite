@@ -16,10 +16,6 @@ export interface Identity {
    * older backend's body still reads as an identity.
    */
   needs_provider_key?: boolean;
-  /**
-   * The key `needs_provider_key` waits on. Null when that flag is false.
-   * Optional so an older backend still parses.
-   */
   provider_key_provider?: string | null;
   email: string;
   csrf_token?: string;

@@ -77,10 +77,6 @@ const RETRY: unique symbol = Symbol("retry");
  *                     failed after the rollback ran.
  * - `rate_limited` / `quota_exhausted` — tenant ingress ceilings (→ 429).
  * - `guard_unavailable` — missing limits or usage guard (→ 429, fail closed).
- * - `provider_key_required` — tenant provider keys are on and the named
- *                     provider's key is not active (OpenAI first), so nothing
- *                     is claimed (→ 409). Checked after the request-rate
- *                     admission, like every refusal.
  * - `tenant_inactive` — the account stopped being active between admission and
  *                     the claim transaction, which committed nothing (→ 403).
  * - `too_large`     — importMarkdown only, when the caller passed `fitsMessage`:
@@ -133,10 +129,6 @@ export interface ReadingIntakeDeps {
   principal: AuthenticatedPrincipal;
   /** Tenant-keyed ingress quotas. Missing/deny fails closed. */
   usage: TenantUsage;
-  /**
-   * The provider whose key is not active, OpenAI first, or null when the
-   * work can run. Nothing is claimed while a provider is named.
-   */
   providerKeyNeeded: () => Promise<ProviderName | null>;
 }
 

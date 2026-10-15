@@ -68,9 +68,6 @@ export const GetWhoamiResponseSchema = z.object({
   user_id: z.string(),
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
-  // True when tenant provider keys are on and a key the work needs is missing
-  // or invalid. provider_key_provider names it (null when the flag is false;
-  // OpenAI wins).
   needs_provider_key: z.boolean(),
   provider_key_provider: SummarizationProviderSchema.nullable(),
   email: z.string(),

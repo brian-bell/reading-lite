@@ -23,15 +23,6 @@ export function tenantProviderKeysEnabled(env: { TENANT_PROVIDER_KEYS?: string }
   return env.TENANT_PROVIDER_KEYS === "1";
 }
 
-/**
- * Whose key this tenant's reading work is waiting on, or null when the work
- * can run. With tenant keys off the deployment pays and this reads nothing.
- * With them on, OpenAI is first because embeddings need it, then Anthropic
- * when that provider summarizes. Intake asks before it claims anything, so a
- * reader missing a key is told to connect one rather than handed a reading
- * that fails at its first paid stage. Dispatch still resolves the key for
- * itself, because a key can be removed after intake admitted the work.
- */
 export async function providerKeyNeeded(
   env: { TENANT_PROVIDER_KEYS?: string },
   db: ControlPlaneDb,

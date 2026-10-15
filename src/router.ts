@@ -686,9 +686,6 @@ function toHttp(out: IntakeOutcome): {
         status: 429,
         headers: { "Retry-After": "5" },
       };
-    // Tenant provider keys are on and the named provider's key is not active
-    // (ADR 0004, OpenAI first): nothing was claimed. Not retryable until they
-    // connect or replace that key.
     case "provider_key_required":
       return {
         body: { error: "connect a key, then retry", code: "provider_key_required", provider: out.provider },
