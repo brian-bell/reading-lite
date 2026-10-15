@@ -16,6 +16,7 @@ import {
   E2E_PROVIDER,
   serveDeskInBrowser,
   serveExportInBrowser,
+  serveInboxInBrowser,
   serveLibraryInBrowser,
   serveProviderInBrowser,
   serveReadingsInBrowser,
@@ -74,12 +75,23 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     // check itself on the library's schedule; its links preload readings.
     stub: async (page) => {
       await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
+      await serveInboxInBrowser(page);
       await serveDeskInBrowser(page);
       await serveReadingsInBrowser(page);
     },
     prepare: async (page) => {
       const needsYou = page.getByRole("region", { name: "Needs you" });
       await expect(needsYou.getByText(/^Reprocess failed · /)).toBeVisible();
+      const inbox = page.getByRole("region", { name: "Inbox" });
+      await expect(inbox.getByRole("link", { name: "How to keep a reading log", exact: true })).toBeVisible();
+      await expect(
+        inbox.getByRole("link", { name: "https://small-hours.example/talks/attention-2026/transcript", exact: true }),
+      ).toBeVisible();
+      await expect(inbox.getByRole("link", { name: "Three questions to ask before saving", exact: true })).toBeVisible();
+      await expect(inbox.getByRole("link", { name: "A reading list for a slow winter", exact: true })).toBeVisible();
+      await expect(inbox.getByRole("link", { name: "Notes from the margins workshop", exact: true })).toBeVisible();
+      await expect(inbox.getByRole("link", { name: "Show all 6", exact: true })).toBeVisible();
+      await expect(inbox.getByText("What the archive forgot")).toHaveCount(0);
       const onDesk = page.getByRole("region", { name: "On your desk" });
       await expect(onDesk.getByRole("link", { name: "Start" })).toBeVisible();
       await expect(onDesk.getByRole("button", { name: "Take off desk" })).toHaveCount(2);

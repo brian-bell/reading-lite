@@ -9,12 +9,6 @@ import { ThemeControl } from "./ThemeControl";
 
 export type { AccountState } from "./AccountMenu";
 
-// Connected navigation shell (design spec, Layout and Components): an 80 px
-// column at desktop widths, a brand row plus horizontal bar at container width
-// ≤650 px. The account menu (or a sign-in link) follows the theme control.
-// The items are the design spec's (Decisions, 9) as far as their pages
-// exist: Catalog joins with its page (reading-lite-kl7y.4), and Inbox leaves
-// once the desk carries it (kl7y.8).
 export function AppShell({
   theme,
   onThemeChange,
@@ -72,12 +66,6 @@ export function AppShell({
                     <span>
                       Save <span className="nav-item-rest">reading</span>
                     </span>
-                  </Link>
-                </li>
-                <li>
-                  <Link to="/inbox" className="nav-item">
-                    <Icon name="inbox" size={22} />
-                    <span>Inbox</span>
                   </Link>
                 </li>
               </ul>

@@ -165,15 +165,19 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   be unavailable on their own.
 - **Desk.** (reading-lite-kl7y.7) Signed in, `/` reads `GET /api/desk?since=`
   during the server render through `BACKEND.desk` (`src/desk-query.ts`), and
-  renders its groups in the design spec's order, each omitted when empty:
-  Needs you (a rejected key from the provider read, then failed readings and
-  failed reprocesses with the failure's headline, `needsYouLine`), Processing
-  (stage and saved time, refreshed on the library's bounded schedule while
-  any row is pending), On your desk (slots, Start on the first, a take-off
-  control on each, Clear the desk), Ready since the visit's start (a Put on
-  desk toggle on each), and the provider tile, read in the browser. Nothing
-  in any group is "Nothing needs you." with Save a reading (Connect a key
-  for a reader with none) and Library. "Ready since" comes from the
+  renders its groups in order, each omitted when empty: Needs you (a rejected
+  key from the provider read, then failed readings and failed reprocesses with
+  the failure's headline, `needsYouLine`), Inbox (the five newest staged
+  items, read in the browser, then Show all when more are staged; a blocked
+  inbox read stays in that section), Processing (stage and saved time,
+  refreshed on the library's bounded schedule while any row is pending), On
+  your desk (slots, Start on the first, a take-off control on each, Clear the
+  desk), Ready since the visit's start (a Put on desk toggle on each), and
+  the provider tile, read in the browser. "Nothing needs you." with Save a
+  reading (Connect a key for a reader with none) and Library shows only when
+  the reading groups are empty and the inbox is empty. While that read is
+  still pending and the reading groups are empty, the desk withholds that
+  sentence and On your desk. "Ready since" comes from the
   `rl_visit` cookie (`src/desk.ts`, `visitAt`): a first-party
   `previous.latest` pair with no identity, like the theme, read on the
   server, a new visit after two hours away, seven days on a first visit and
@@ -442,10 +446,11 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   "This item isn't in your inbox." page, and its 413 a notice with nothing to
   retry. "Discard…" deletes the item after a confirm dialog and returns to
   the inbox; it is sent at once even offline, and a failed one's Retry opens
-  the dialog again rather than resending. Either write drops the item from the
-  cached list and marks the inbox stale without refetching the item on screen,
-  which would answer 404 under a page that is leaving. A promote never sends
-  `email`.
+  the dialog again rather than resending. A discarded item, one that is gone,
+  or a promote the server did not retain leaves the cached list. A row that
+  stays, including a refused promote and one the server retained, reads its
+  item again. Both writes invalidate the exact inbox list and the desk. The
+  open item query stays mounted. A promote never sends `email`.
 - **Threads.** `/threads` and `/threads/:id` (reading-lite-kl7y.3) group the
   library by the connections and tensions between its readings. Both are under
   `src/routes/_authed`, and their loaders read the tenant's relationship graph
