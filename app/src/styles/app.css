@@ -1422,6 +1422,61 @@ textarea {
   }
 }
 
+.landing-head {
+  max-width: 44rem;
+  margin: 0 0 var(--space-7);
+}
+
+.landing .page-title {
+  max-width: 24ch;
+  font-size: clamp(30px, 3.2cqw, 44px);
+}
+
+.landing-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 24rem) minmax(0, var(--measure));
+  gap: var(--space-9);
+  align-items: start;
+}
+
+.landing-signin {
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.landing-signin .form-hint:first-of-type {
+  margin: 0 0 var(--space-4);
+}
+
+.landing-signin > .form-hint:not(:first-of-type) {
+  margin-top: var(--space-4);
+}
+
+.landing-section-title {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-reading);
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.landing-samples > .button {
+  margin-top: var(--space-4);
+}
+
+@container shell (max-width: 1000px) {
+  .landing-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .onboarding-step {
+    padding: var(--space-4);
+  }
+}
+
 /* ---- Desk (reading-lite-kl7y.7) --------------------------------------- */
 
 /* Sections share a surface of rows; the danger section rules its left edge,
@@ -1826,6 +1881,77 @@ textarea {
   height: 100%;
   border-radius: 2px;
   background: var(--accent);
+}
+
+.onboarding {
+  max-width: 44rem;
+  margin: 0 0 var(--space-7);
+}
+
+.onboarding > .desk-section-title {
+  margin: 0 0 var(--space-3);
+}
+
+.onboarding-steps {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.onboarding-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+.onboarding-done {
+  background: transparent;
+  box-shadow: none;
+}
+
+.onboarding-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.onboarding-done .onboarding-mark {
+  background: var(--positive);
+  color: var(--bg);
+}
+
+.onboarding-title {
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 19px;
+  line-height: 1.3;
+}
+
+.onboarding-step .form-hint {
+  margin: 2px 0 var(--space-3);
+}
+
+.onboarding-step .account-section.provider-card {
+  padding: var(--space-4);
+  box-shadow: none;
+}
+
+.onboarding .form-status:empty {
+  margin: 0;
 }
 
 /* Above a reading on the desk: where it sits in the session, Done and Pause. */

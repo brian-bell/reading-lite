@@ -14,7 +14,9 @@ import {
   type DeskResult,
   type VisitAt,
 } from "./desk";
-import type { Identity } from "./identity";
+import { needsProviderKey, type Identity } from "./identity";
+import { libraryQueryOptions } from "./library-query";
+import { FIRST_LIBRARY_PAGE, needsLibraryRead } from "./onboarding";
 import { onDeskOf, onDeskQueryOptions } from "./on-desk-query";
 import { expectedLayoutOf } from "./reading";
 
@@ -77,18 +79,27 @@ const visitCookie = createIsomorphicFn()
   .server(() => getCookie(VISIT_COOKIE))
   .client(() => readVisitFromCookieHeader(document.cookie));
 
+function deskPageReads(queryClient: QueryClient, visit: VisitAt, identity: Identity): Promise<void>[] {
+  const reads = [queryClient.prefetchQuery(deskQueryOptions(queryClient, visit, identity))];
+  if (needsLibraryRead({ keyNeeded: needsProviderKey(identity), shownThisMount: false })) {
+    reads.push(queryClient.prefetchQuery(libraryQueryOptions(queryClient, FIRST_LIBRARY_PAGE, identity)));
+  }
+  return reads;
+}
+
 async function prefetchDeskPage(queryClient: QueryClient): Promise<VisitAt> {
   const visit = visitAt(visitCookie(), Date.now());
   const identity = await identityOf(queryClient);
-  if (identity) await queryClient.prefetchQuery(deskQueryOptions(queryClient, visit, identity));
+  if (identity) await Promise.all(deskPageReads(queryClient, visit, identity));
   return visit;
 }
 
 function startDeskPage(queryClient: QueryClient): VisitAt {
   const visit = visitAt(visitCookie(), Date.now());
-  void identityOf(queryClient).then((identity) =>
-    identity ? queryClient.prefetchQuery(deskQueryOptions(queryClient, visit, identity)) : undefined,
-  );
+  void identityOf(queryClient).then((identity) => {
+    if (!identity) return;
+    for (const read of deskPageReads(queryClient, visit, identity)) void read;
+  });
   return visit;
 }
 

@@ -35,7 +35,7 @@ export function SampleLibraryPage() {
       <SampleCallToAction />
       <ul className="library-list" aria-label="Sample readings">
         {SAMPLE_READINGS.map((reading) => (
-          <SampleCard key={reading.id} reading={reading} />
+          <SampleCard key={reading.id} reading={reading} level={2} />
         ))}
       </ul>
     </div>
@@ -47,15 +47,16 @@ export function SampleLibraryPage() {
  * library's is), the lead, and a line with the host and how many
  * relationships the reading has, which is what the samples are here to show.
  */
-function SampleCard({ reading }: { reading: Reading }) {
+export function SampleCard({ reading, level }: { reading: Reading; level: 2 | 3 }) {
   const related = relationshipCount(reading);
+  const Title = level === 2 ? "h2" : "h3";
   return (
     <li className="library-card">
-      <h2 className="library-card-title">
+      <Title className="library-card-title">
         <Link to="/samples/$id" params={{ id: reading.id }}>
           {reading.title ?? reading.url}
         </Link>
-      </h2>
+      </Title>
       {reading.tldr ? <p className="library-card-summary">{reading.tldr}</p> : null}
       <p className="library-card-meta">
         {hostnameOf(reading.url)}

@@ -10,16 +10,16 @@ import { readWhoamiFromBackend, whoamiQueryKey } from "./identity";
 // The runtime module is imported inside the server branch, which the Start
 // compiler removes from the client build.
 const loadIdentity = createIsomorphicFn()
-  .server(async () => {
+  .server(async (_signal?: AbortSignal) => {
     const { env } = await import("cloudflare:workers");
     return readWhoamiFromBackend(env.BACKEND, getRequest());
   })
-  .client(() => fetchIdentity());
+  .client((signal?: AbortSignal) => fetchIdentity(signal));
 
 export function whoamiQueryOptions() {
   return queryOptions({
     queryKey: whoamiQueryKey,
-    queryFn: () => loadIdentity(),
+    queryFn: ({ signal }) => loadIdentity(signal),
     // As the legacy SPA: identity changes only through sign-in and sign-out,
     // which invalidate it. No retry, so an unavailable backend never stalls a
     // server render.

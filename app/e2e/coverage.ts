@@ -49,18 +49,18 @@ export interface EvidenceCase {
 }
 
 export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
-  // Signed out, the desk renders the sign-in form in place (#369), so its
-  // heading is the form's.
   {
     name: "desk-signed-out",
     anyHost: true,
     path: "/",
     state: "signed-out",
-    heading: "Sign in",
-    // The front door (reading-lite-gh341.11): what the service is, and the samples.
+    heading: "Reading Lite summarizes what you save and connects it to what you have already read.",
     prepare: async (page) => {
-      const about = page.getByRole("complementary", { name: "About Reading Lite" });
-      await expect(about.getByRole("link", { name: "Browse samples" })).toBeVisible();
+      const signIn = page.getByRole("region", { name: "Sign in" });
+      await expect(signIn.getByRole("textbox", { name: "Email" })).toBeVisible();
+      const samples = page.getByRole("region", { name: "Sample library" });
+      await expect(samples.getByRole("link", { name: "Browse samples" })).toBeVisible();
+      await expect(samples.getByRole("link", { name: "A quieter internet is a choice we can make" })).toBeVisible();
     },
   },
   // Signed in, the pack's first-visit desk, rendered on the server

@@ -29,10 +29,12 @@ export async function apiFetch(queryClient: QueryClient, path: string, init: Req
   }
 }
 
-/** Browser path for the whoami query. */
-export async function fetchIdentity(): Promise<Identity | null> {
+export async function fetchIdentity(signal?: AbortSignal): Promise<Identity | null> {
   const response = await fetch(
-    new Request(new URL("/api/whoami", window.location.origin), { credentials: "include" }),
+    new Request(new URL("/api/whoami", window.location.origin), {
+      credentials: "include",
+      ...(signal === undefined ? {} : { signal }),
+    }),
   );
   let body: unknown = null;
   try {

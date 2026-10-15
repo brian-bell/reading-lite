@@ -1,5 +1,4 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { useId, useRef, useState, type FormEvent } from "react";
 import { getLoginOptions, requestLoginLink } from "../api/auth";
 import { rememberReturnPath } from "../auth/return-path";
@@ -10,13 +9,11 @@ import { TurnstileWidget } from "./TurnstileWidget";
 
 // Magic-link request (acceptance matrix, `/login`): Turnstile when configured,
 // `next` remembered for the tab that opens the link, and step-up with the
-// signed-in email locked. Rendered on /login and in place on a signed-out `/`,
-// where it is also the front door: what the service is, and the sample
-// library to look at before signing in (reading-lite-gh341.11).
+// signed-in email locked.
 
 const loginOptionsQueryKey = ["login-options"] as const;
 
-export function SignInPage({ next, stepUp, landing }: { next?: string; stepUp?: boolean; landing?: boolean }) {
+export function SignInPage({ next, stepUp }: { next?: string; stepUp?: boolean }) {
   const identity = useQuery(whoamiQueryOptions());
   // Identity could not be determined (a 403 or an unreadable body is never a
   // sign-out). Offering the form here would ask a signed-in reader to sign in
@@ -38,16 +35,6 @@ export function SignInPage({ next, stepUp, landing }: { next?: string; stepUp?: 
   return (
     <div className="page auth-page">
       <PageHeading>Sign in</PageHeading>
-      {landing ? (
-        <aside className="callout" aria-label="About Reading Lite">
-          <p>
-            Reading Lite saves the articles you read, summarizes each one, and connects it to what you’ve read before.
-          </p>
-          <Link to="/samples" className="button">
-            Browse samples
-          </Link>
-        </aside>
-      ) : null}
       {lockedEmail ? (
         <p className="auth-lede">Confirm it’s you. We’ll email a fresh sign-in link to this address.</p>
       ) : (
@@ -59,7 +46,7 @@ export function SignInPage({ next, stepUp, landing }: { next?: string; stepUp?: 
   );
 }
 
-function SignInForm({ next, lockedEmail }: { next?: string; lockedEmail?: string }) {
+export function SignInForm({ next, lockedEmail }: { next?: string; lockedEmail?: string }) {
   const queryClient = useQueryClient();
   const emailId = useId();
   const [email, setEmail] = useState("");

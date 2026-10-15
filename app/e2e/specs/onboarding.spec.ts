@@ -1,7 +1,3 @@
-// A new reader's way in, end to end (reading-lite-gh341.11): the signed-out
-// front door, the sample library, a sign-in link, connecting the OpenAI key
-// saving needs, and the first save landing on its pending reading.
-//
 // The magic link itself is mail, so the spec requests one and then holds the
 // session the link would have started: the stub's new reader, whose library is
 // empty and who has no key. Every write after that is answered in the browser.
@@ -43,9 +39,14 @@ test("goes from the front door through the samples and a key to the first save",
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1, name: "Sign in" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      level: 1,
+      name: "Reading Lite summarizes what you save and connects it to what you have already read.",
+    }),
+  ).toBeVisible();
   await page.waitForLoadState("networkidle");
-  await page.getByRole("complementary", { name: "About Reading Lite" }).getByRole("link", { name: "Browse samples" }).click();
+  await page.getByRole("region", { name: "Sample library" }).getByRole("link", { name: "Browse samples" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Sample library" })).toBeVisible();
   await page.getByRole("link", { name: "A quieter internet is a choice we can make" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "A quieter internet is a choice we can make" })).toBeVisible();
@@ -57,8 +58,6 @@ test("goes from the front door through the samples and a key to the first save",
   await expect(page.getByRole("status").filter({ hasText: "we sent a short-lived link" })).toBeVisible();
   expect(challenges).toEqual(["new-reader@example.com"]);
 
-  // The link signs the reader in and lands on the desk, which has nothing on
-  // it yet and says how to begin.
   await page.unroute("**/api/whoami");
   await signIn(page.context(), baseURL!, NEW_READER_SESSION);
   const saves = await serveSaveInBrowser(page, {
@@ -68,17 +67,18 @@ test("goes from the front door through the samples and a key to the first save",
   await serveReadingsInBrowser(page);
   const provider = await serveProviderInBrowser(page);
   await serveInboxInBrowser(page, []);
-  await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1, name: "Desk" })).toBeVisible();
-  await expect(page.getByText("Nothing needs you.")).toBeVisible();
-  await expect(page.getByRole("region", { name: "Provider" }).getByText("No key connected")).toBeVisible();
   await page.goto("/library");
   await expect(page.getByText("No readings yet. Connect your OpenAI key, then save your first reading.")).toBeVisible();
+
+  await page.goto("/");
+  const steps = page.getByRole("region", { name: "Three steps to your first reading" });
+  await expect(steps.getByRole("link", { name: "Open the samples" })).toHaveAttribute("href", "/samples");
+  await expect(steps.getByRole("button", { name: "Save a reading" })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByRole("region", { name: "Provider" }), "the steps replace the tiles").toHaveCount(0);
   await page.waitForLoadState("networkidle");
 
-  await page.getByRole("main").getByRole("link", { name: "Connect a key" }).click();
-  await expect(page.getByRole("heading", { level: 1, name: "Provider" })).toBeVisible();
-  const key = page.getByRole("region", { name: "OpenAI" });
+  const key = steps.getByRole("region", { name: "OpenAI" });
+  await expect(key.getByLabel("API key")).toBeVisible();
   await key.getByLabel("API key").fill(E2E_PROVIDER_API_KEY);
   await key.getByRole("button", { name: "Connect key" }).click();
   await expect(key.getByText("Connected", { exact: true })).toBeVisible();
@@ -87,7 +87,7 @@ test("goes from the front door through the samples and a key to the first save",
   const stored = await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }));
   expect(stored, "the key is not in browser storage").not.toContain(E2E_PROVIDER_API_KEY);
 
-  await page.getByRole("complementary", { name: "Next step" }).getByRole("link", { name: "Save a reading" }).click();
+  await steps.getByRole("link", { name: "Save a reading" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Save reading" })).toBeVisible();
   // The key is connected, so /save no longer asks for one.
   await expect(page.getByRole("link", { name: "Connect a key" })).toHaveCount(0);

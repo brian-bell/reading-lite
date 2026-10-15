@@ -68,7 +68,9 @@ describe("built Worker", () => {
     expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     expect(response.headers.get("Content-Security-Policy")).toBe("img-src 'self' https: data:");
-    expect(await response.text(), "signed out, the desk is the sign-in form").toContain(heading("Sign in"));
+    expect(await response.text(), "signed out, the desk is the landing").toContain(
+      heading("Reading Lite summarizes what you save and connects it to what you have already read."),
+    );
 
     for (const [method, path] of [
       ["GET", "/api/whoami"],
