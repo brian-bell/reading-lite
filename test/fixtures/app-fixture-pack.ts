@@ -23,6 +23,7 @@ import {
 } from "../../src/modules/relationship-targets";
 import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
+import { NEEDS_YOU_REPROCESS_AGE_OUT_MS } from "../../src/modules/stores/postgres/desk-store";
 import { manifestToRows } from "../../src/modules/stores/postgres/manifest-rows";
 import { TensionKindSchema } from "../../src/schemas/manifest";
 import {
@@ -214,6 +215,7 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     desk: deskRead(
       plan.listIndex.items.map((item) => applyStaleness(item, PENDING_TTL_SECONDS, nowIso)),
       new Date(Date.parse(nowIso) - APP_FIXTURE_PACK_FIRST_VISIT_MS).toISOString(),
+      nowIso,
     ),
     relationships: projectRelationshipGraph(
       {
@@ -232,14 +234,17 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
 
 // The groups PgDeskStore.read selects, over list rows that already carry
 // read-time staleness, newest first as the list is.
-function deskRead(items: readonly ListIndexItem[], since: string): GetDeskResponse {
+function deskRead(items: readonly ListIndexItem[], since: string, nowIso: string): GetDeskResponse {
   const reprocessFailed = (item: ListIndexItem) =>
     item.status === "ready" &&
     item.active_attempt?.status !== "running" &&
     item.last_attempt?.trigger === "reprocess" &&
     item.last_attempt.status === "failed";
+  const ageOutBefore = Date.parse(nowIso) - NEEDS_YOU_REPROCESS_AGE_OUT_MS;
+  const agedOut = (item: ListIndexItem) =>
+    item.last_attempt?.finished_at !== undefined && Date.parse(item.last_attempt.finished_at) < ageOutBefore;
   const bounded = (rows: ListIndexItem[], limit: number) => rows.slice(0, limit);
-  const needsYou = items.filter((item) => item.status === "failed" || reprocessFailed(item));
+  const needsYou = items.filter((item) => item.status === "failed" || (reprocessFailed(item) && !agedOut(item)));
   const processing = items.filter((item) => item.status === "pending");
   const readySince = items.filter(
     (item) => item.status === "ready" && item.created_at > since && item.desk_position === undefined,

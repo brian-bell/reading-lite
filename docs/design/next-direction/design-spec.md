@@ -286,7 +286,7 @@ Staleness is applied before grouping:
 | Group | Rows | Order and bound |
 | --- | --- | --- |
 | `on_desk` | Readings in `reading_desk`, any status | Position; at most 3 |
-| `needs_you` | `failed`, or ready with `last_attempt` a failed reprocess | Newest first; 20 rows, plus `needs_you_total` |
+| `needs_you` | `failed`, or ready with `last_attempt` a failed reprocess whose `finished_at` is not more than 7 days before the request. A missing `finished_at` stays, as does a running reprocess that has only passed the pending TTL. `failed` is not aged | Newest first; 20 rows, plus `needs_you_total` |
 | `processing` | `pending` after staleness | Newest first; 20 rows, plus `processing_total` |
 | `ready_since` | `ready`, `created_at > since`, not on the desk | Newest first; 10 rows, plus `ready_since_total` |
 
