@@ -1,10 +1,12 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { readRefusedBy, type AccountRefusal } from "./account-state";
 import { fetchProvider, fetchProviderUsage } from "./api/provider";
-import type { Identity } from "./identity";
+import { whoamiQueryKey, type Identity } from "./identity";
 import {
   providerQueryKey,
   providerUsageQueryKey,
   type ProviderResult,
+  type ProviderSettings,
   type ProviderUsageResult,
 } from "./provider";
 import { expectedLayoutOf } from "./reading";
@@ -36,4 +38,28 @@ export function providerUsageQueryOptions(queryClient: QueryClient, identity: Id
     refetchOnMount: "always",
     retry: false,
   });
+}
+
+/**
+ * A provider write's answer, stored as the read's: new settings, or a refusal
+ * the host then shows as a refused read. New settings may move the limit, so
+ * today's usage is read again. The one writer of the provider caches.
+ */
+export function useProviderStore(): {
+  saved(settings: ProviderSettings): void;
+  refused(refusal: AccountRefusal): void;
+} {
+  const queryClient = useQueryClient();
+  const userId = () => queryClient.getQueryData<Identity | null>(whoamiQueryKey)?.user_id ?? "";
+  return {
+    saved(settings: ProviderSettings) {
+      const id = userId();
+      const stored: ProviderResult = { state: "ready", value: settings };
+      queryClient.setQueryData<ProviderResult>(providerQueryKey(id), stored);
+      void queryClient.invalidateQueries({ queryKey: providerUsageQueryKey(id) });
+    },
+    refused(refusal: AccountRefusal) {
+      queryClient.setQueryData<ProviderResult>(providerQueryKey(userId()), readRefusedBy(refusal));
+    },
+  };
 }
