@@ -4,11 +4,6 @@ import type { DeskRead } from "./desk";
 import type { LibraryRow } from "./library";
 import { reprocessFailed } from "./reading-state";
 
-// Dismissals for the desk's Needs you section. One entry per reading, because
-// only that reading's latest attempt can be on screen: a newer failed attempt
-// misses the entry and the row returns. Dismissing that attempt replaces it.
-// The server render cannot read storage, so it shows every row.
-
 /** One Needs you row as the section renders it. */
 export interface NeedsYouRow {
   row: LibraryRow;
@@ -32,12 +27,6 @@ export interface NeedsYou {
 }
 
 const STORAGE_KEY = "reading-lite.needsYouDismissals";
-
-/**
- * A dismissal lasts this long from when it was made. Strictly more drops it.
- * The server's age-out runs from `finished_at`, so this stays a separate
- * constant.
- */
 const DISMISSAL_TTL_MS = 7 * 86_400_000;
 
 interface DismissalKey {
@@ -53,12 +42,7 @@ type StoredDismissal = z.infer<typeof StoredDismissalSchema>;
 
 type Dismissals = ReadonlyMap<string, StoredDismissal>;
 
-/**
- * Set only when a write threw. It wins over storage, because a stale stored
- * value would bring the row back on this page. A write storage takes clears
- * it. A reload starts without it.
- */
-let unstored: string | undefined;
+let rejectedStorageWrite: string | undefined;
 const listeners = new Set<() => void>();
 
 function dismissalKeyOf(row: LibraryRow): DismissalKey | undefined {
@@ -99,7 +83,6 @@ function serialize(dismissals: Dismissals): string {
   return JSON.stringify(Object.fromEntries(dismissals));
 }
 
-/** The stored JSON after a prune, or null when this value must be left alone. */
 function pruned(stored: string | null, now: number): string | null {
   const entries = storedEntries(stored);
   if (entries === undefined) return null;
@@ -117,7 +100,7 @@ function withDismissal(stored: string | null, key: DismissalKey, now: number): s
 }
 
 function read(): string | null {
-  if (unstored !== undefined) return unstored;
+  if (rejectedStorageWrite !== undefined) return rejectedStorageWrite;
   try {
     return window.localStorage.getItem(STORAGE_KEY);
   } catch {
@@ -128,9 +111,9 @@ function read(): string | null {
 function write(next: string): void {
   try {
     window.localStorage.setItem(STORAGE_KEY, next);
-    unstored = undefined;
+    rejectedStorageWrite = undefined;
   } catch {
-    unstored = next;
+    rejectedStorageWrite = next;
   }
   for (const listener of listeners) listener();
 }

@@ -717,7 +717,6 @@ describe("the desk read", () => {
     await seed("rd_aged_out", "19:10", { last_attempt: failedReprocess("2026-04-19T19:59:59.999Z") });
     await seed("rd_seven_days", "19:11", { last_attempt: failedReprocess("2026-04-19T20:00:00.000Z") });
     await seed("rd_unfinished", "19:12", { last_attempt: failedReprocess() });
-    // Expired as a reprocess; its stored last_attempt is the previous one.
     await seed("rd_expired_over_old", "19:13", {
       active_attempt: attempt("reprocess", "19:00"),
       last_attempt: failedReprocess("2026-03-01T00:00:10.000Z"),

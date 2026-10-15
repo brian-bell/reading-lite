@@ -25,6 +25,8 @@ import { LIST_COLUMNS, pgTenantId, present } from "./reading-store";
 
 type DeskGroup = "needs_you" | "processing" | "ready_since";
 
+export const NEEDS_YOU_REPROCESS_AGE_OUT_MS = 7 * 86_400_000;
+
 // Each row's status after src/modules/staleness.ts, in its order, and whether
 // its last attempt is then a failed reprocess. A batch-owned pending row is
 // never stale. A running attempt started before the cutoff ($2) has failed:
@@ -32,14 +34,9 @@ type DeskGroup = "needs_you" | "processing" | "ready_since";
 // attempt as its last. Otherwise a pending row last written before the cutoff
 // has failed. A failed reprocess under a live attempt is being retried, so it
 // no longer needs the reader.
-//
-// last_finished_at is when that effective attempt finished. An expired running
-// attempt finishes at the request clock ($7), so the age predicate cannot
-// treat it as the previous attempt.
-export const NEEDS_YOU_REPROCESS_AGE_OUT_MS = 7 * 86_400_000;
-
 const EFFECTIVE_ROWS = `base AS (
   SELECT id, created_at, updated_at, status, active_attempt, last_attempt,
+         $7::timestamptz AS request_clock,
          coalesce(status = 'pending' AND active_attempt->>'id' LIKE 'batch\\_%'
            AND active_attempt->>'trigger' IN ('import', 'reprocess')
            AND active_attempt->>'status' = 'running' AND active_attempt->>'stage' = 'summarize', false) AS batch_owned,
@@ -56,7 +53,7 @@ const EFFECTIVE_ROWS = `base AS (
               ELSE coalesce(active_attempt->>'status' IS DISTINCT FROM 'running'
                 AND last_attempt->>'trigger' = 'reprocess' AND last_attempt->>'status' = 'failed', false)
          END AS reprocess_failed,
-         CASE WHEN expired THEN $7::timestamptz
+         CASE WHEN expired THEN request_clock
               ELSE (last_attempt->>'finished_at')::timestamptz
          END AS last_finished_at
   FROM base
