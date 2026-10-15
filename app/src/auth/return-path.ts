@@ -27,8 +27,11 @@ const THREAD_PATH = /^\/threads\/[A-Za-z0-9_-]+$/;
 // the same way on the server and in the browser.
 const BASE = "https://return-path.invalid";
 
+const LIBRARY_PARAMS = ["q", "tag", "offset"] as const;
+
 function allowedParams(pathname: string): readonly string[] | undefined {
-  if (pathname === "/") return ["q", "tag", "offset"];
+  if (pathname === "/") return [];
+  if (pathname === "/library") return LIBRARY_PARAMS;
   if (READING_PATH.test(pathname)) return ["view"];
   if (pathname === "/save" || pathname === "/inbox" || INBOX_ITEM_PATH.test(pathname)) return [];
   if (pathname === "/threads" || THREAD_PATH.test(pathname)) return [];
@@ -47,6 +50,8 @@ export function safeReturnPath(raw: string | null | undefined): string | undefin
     return undefined;
   }
   if (url.origin !== BASE) return undefined;
+  // The library's old address: `/` with its parameters is the library now.
+  if (url.pathname === "/" && LIBRARY_PARAMS.some((name) => url.searchParams.get(name))) url.pathname = "/library";
   const allowed = allowedParams(url.pathname);
   if (!allowed) return undefined;
   const kept = new URLSearchParams();
@@ -65,7 +70,7 @@ export function loginHref(current: string): string {
 }
 
 // Storage can be unavailable (private modes, blocked site data). Sign-in still
-// works; only the new-tab return falls back to the library.
+// works; only the new-tab return falls back to the desk.
 function storage(): Storage | undefined {
   try {
     return typeof window === "undefined" ? undefined : window.localStorage;
@@ -93,7 +98,7 @@ export function clearReturnPath(): void {
   }
 }
 
-/** After sign-in: the query path, else the stored one, else the library. Always clears storage. */
+/** After sign-in: the query path, else the stored one, else the desk. Always clears storage. */
 export function consumeReturnPath(queryNext?: string | null): string {
   let stored: string | null = null;
   try {

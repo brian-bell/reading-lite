@@ -80,7 +80,10 @@ describe("frontend guards", () => {
   it("returns only to allowlisted same-origin paths, from the query or storage", () => {
     for (const [raw, expected] of [
       ["/readings/rd_ONE?view=source", "/readings/rd_ONE?view=source"],
-      ["/?q=a+b&tag=ai&offset=20", "/?q=a+b&tag=ai&offset=20"],
+      ["/library?q=a+b&tag=ai&offset=20", "/library?q=a+b&tag=ai&offset=20"],
+      ["/library?q=a&view=source", "/library?q=a"],
+      ["/?q=a+b&tag=ai&offset=20", "/library?q=a+b&tag=ai&offset=20"],
+      ["/?view=source", "/"],
       ["/account/provider?key=sk-proj-abc", "/account/provider"],
       ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
       ["/threads?view=source", "/threads"],
@@ -161,21 +164,38 @@ describe("frontend guards", () => {
     }
   });
 
-  // Acceptance matrix, Desk writes: a write refreshes the desk, the library
-  // and the reading; at the cap the toggle is disabled with visible text; a
-  // 404 frees the gone reading's slot; a 409 is said inline.
+  // Acceptance matrix, Desk writes: the toggle knows the cap from the desk
+  // read, before any write; a 404 frees the gone reading's slot; a 409 is
+  // said inline; a write refreshes the desk, the library and the reading.
   it("writes the desk, refreshes what it changed, and says why a toggle cannot add", async () => {
-    const answers = [
-      new Response(JSON.stringify({ desk: ["rd_b", "rd_c", "rd_a"] })),
-      new Response(JSON.stringify({ error: "not found" }), { status: 404 }),
-      new Response(JSON.stringify({ error: "nope", code: "not_ready" }), { status: 409 }),
+    let onDesk = ["rd_b", "rd_c", "rd_d"];
+    const writes: [answer: Response, after: string[]][] = [
+      [new Response(JSON.stringify({ error: "not found" }), { status: 404 }), ["rd_c", "rd_d"]],
+      [new Response(JSON.stringify({ error: "nope", code: "not_ready" }), { status: 409 }), ["rd_c", "rd_d"]],
+      [new Response(JSON.stringify({ desk: ["rd_c", "rd_d", "rd_a"] })), ["rd_c", "rd_d", "rd_a"]],
     ];
     const calls: Request[] = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (request: Request) => {
+        if (request.method === "GET" && new URL(request.url).pathname === "/api/desk") {
+          const rows = onDesk.map((id) => ({ id, url: `https://example.com/${id}`, status: "ready", title: id }));
+          return new Response(
+            JSON.stringify({
+              on_desk: rows,
+              needs_you: [],
+              needs_you_total: 0,
+              processing: [],
+              processing_total: 0,
+              ready_since: [],
+              ready_since_total: 0,
+            }),
+          );
+        }
         calls.push(request);
-        return answers.shift()!;
+        const [answer, after] = writes.shift()!;
+        onDesk = after;
+        return answer;
       }),
     );
     const queryClient = new QueryClient();
@@ -193,24 +213,32 @@ describe("frontend guards", () => {
     const put = screen.getAllByRole("button", { name: "Put on desk" });
     expect(screen.getByRole("button", { name: "Take off desk" }), "on the desk").toHaveAttribute("aria-pressed", "true");
     expect(put[0], "off the desk").toHaveAttribute("aria-pressed", "false");
-
-    fireEvent.click(put[0]!);
-    await waitFor(() => expect(put[1], "a fourth is held back").toBeDisabled());
-    expect(toggles.getByText("Three readings at a time"), "with the reason in text").toBeVisible();
-    expect(calls[0]!.method).toBe("POST");
-    expect(new URL(calls[0]!.url).pathname).toBe("/api/desk");
-    expect(await calls[0]!.json()).toEqual({ id: "rd_a" });
-    expect(calls[0]!.headers.get("x-expected-tenant"), "pinned to the rendered account").toBe("usr_a");
-    const invalidated = (key: unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
-    expect(
-      [invalidated(["library", { offset: 0 }]), invalidated(["reading", "rd_a"]), invalidated(["reading", "rd_x"])],
-      "the library and this reading, not another",
-    ).toEqual([true, true, false]);
+    await waitFor(() => expect(put[0], "a full desk is known from the read").toBeDisabled());
+    expect(put[1]).toBeDisabled();
+    expect(toggles.getAllByText("Three readings at a time"), "with the reason in text").toHaveLength(2);
 
     fireEvent.click(screen.getByRole("button", { name: "Take off desk" }));
     await waitFor(() => expect(put[1], "a reading purged elsewhere frees its slot").toBeEnabled());
     fireEvent.click(put[1]!);
     expect(await toggles.findByText("Only ready readings can go on the desk")).toBeVisible();
+
+    for (const key of [["library", { offset: 0 }], ["reading", "rd_a"], ["reading", "rd_x"]]) {
+      queryClient.setQueryData(key, {});
+    }
+    fireEvent.click(put[0]!);
+    await waitFor(() => expect(put[1], "a fourth is held back").toBeDisabled());
+    const post = calls[2]!;
+    expect(post.method).toBe("POST");
+    expect(new URL(post.url).pathname).toBe("/api/desk");
+    expect(await post.json()).toEqual({ id: "rd_a" });
+    expect(post.headers.get("x-expected-tenant"), "pinned to the rendered account").toBe("usr_a");
+    const invalidated = (key: unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
+    await waitFor(() =>
+      expect(
+        [invalidated(["library", { offset: 0 }]), invalidated(["reading", "rd_a"]), invalidated(["reading", "rd_x"])],
+        "the library and this reading, not another",
+      ).toEqual([true, true, false]),
+    );
   });
 
   // The captured page is untrusted and the summary is written from it.

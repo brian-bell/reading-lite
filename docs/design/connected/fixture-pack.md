@@ -99,6 +99,12 @@ before "Show all". `in_rd_FXNBX00002` has no title, and `in_rd_FXNBX00003` was
 re-staged, so its `updated_at` is later than its `created_at`. None shares a
 URL with a reading. `seed:local` replaces the founder's inbox rows with them.
 
+The desk holds `attention` then `commonplace`, two of its three slots, so the
+desk has a next reading and room for one more. `seed:local` writes them as
+`reading_desk` rows. The app snapshot's `desk` is the `GET /api/desk` body for a
+first visit, `since` seven days before its clock, so `reprocess-failed` is
+both in Needs you and in Ready since.
+
 ## Shape guarantees
 
 - Every manifest is built through `src/modules/manifest-drafting.ts` and
@@ -151,5 +157,6 @@ which intake never writes; a stalled submit reads as `stale_active_attempt`,
 as `stale-pending` does, and the frontend gives both the same category. The
 worker records each stage in the attempt log, never on the reading, so a
 reading mid-run still says `queued`; only `processing`'s diagnostics show its
-progress. The browser suite does not serve `GET /api/inbox` yet; the snapshot
-carries the items for the slice that does (reading-lite-kl7y.8).
+progress. The browser suite serves `GET /api/inbox` from this snapshot on the
+signed-in desk. The list response omits `markdown`, and `GET /api/inbox/:id`
+returns the body.

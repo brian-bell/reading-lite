@@ -93,6 +93,8 @@ export interface LocalSeedPlan {
   removedTargetId: string;
   /** Staged Markdown, newest first as the inbox lists it; seeded as inbox_items rows. */
   inbox: InboxItem[];
+  /** Reading ids on the desk, in position order; seeded as reading_desk rows. */
+  desk: string[];
 }
 
 // Reading ids are minted rd_<10 chars of the Crockford-ish alphabet
@@ -131,6 +133,9 @@ const IDS = {
 } as const;
 
 export const LOCAL_SEED_REMOVED_TARGET_ID = "rd_FXVANSHD01";
+
+/** Two of the desk's three slots, so the desk has a next reading and room for one more. */
+const LOCAL_SEED_DESK: string[] = [IDS.attention, IDS.commonplace];
 
 const FIXTURE_EMBEDDING_DIM = 1536;
 
@@ -1575,9 +1580,11 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
   for (const item of sorted) {
     objects.push(...item.objects);
   }
-  const items: ListIndexItem[] = sorted.map((item) =>
-    manifestToIndexItem(item.fixture.manifest, item.fixture.keyPrefix),
-  );
+  const items: ListIndexItem[] = sorted.map((item) => {
+    const position = LOCAL_SEED_DESK.indexOf(item.fixture.id);
+    const row = manifestToIndexItem(item.fixture.manifest, item.fixture.keyPrefix);
+    return position < 0 ? row : { ...row, desk_position: position + 1 };
+  });
   const listIndex: ListIndex = { version: 1, items };
 
   // One owner per URL, ranked the way the importer ranks duplicates. The pack
@@ -1598,5 +1605,6 @@ export function buildLocalSeed(nowIso: string): LocalSeedPlan {
     listIndex,
     removedTargetId: LOCAL_SEED_REMOVED_TARGET_ID,
     inbox: INBOX_ITEMS,
+    desk: LOCAL_SEED_DESK,
   };
 }

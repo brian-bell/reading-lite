@@ -25,13 +25,16 @@ import { applyStaleness } from "../../src/modules/staleness";
 import { r2KeyLayout } from "../../src/modules/stores/layout";
 import { manifestToRows } from "../../src/modules/stores/postgres/manifest-rows";
 import { TensionKindSchema } from "../../src/schemas/manifest";
-import type {
-  GetReadingDiagnosticsResponse,
-  GetReadingRelationshipsResponse,
-  GetReadingResponse,
-  InboxItem,
-  ListIndex,
-  RelationshipRow,
+import {
+  DESK_GROUP_LIMITS,
+  type GetDeskResponse,
+  type GetReadingDiagnosticsResponse,
+  type GetReadingRelationshipsResponse,
+  type GetReadingResponse,
+  type InboxItem,
+  type ListIndex,
+  type ListIndexItem,
+  type RelationshipRow,
 } from "../../src/schemas/api";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID, type LocalSeedFixture } from "./local-seed";
 
@@ -43,6 +46,9 @@ export const APP_FIXTURE_PACK_PATH = "app/e2e/fixtures/fixture-pack.json";
 
 /** Command that rewrites it. */
 export const APP_FIXTURE_PACK_COMMAND = "npm run fixtures:app";
+
+/** How far back a first visit's "Ready since" reaches (design-spec, The visit). */
+const APP_FIXTURE_PACK_FIRST_VISIT_MS = 7 * 86_400_000;
 
 /** PENDING_TTL_SECONDS as wrangler.toml sets it; read-time staleness only. */
 const PENDING_TTL_SECONDS = 900;
@@ -108,6 +114,11 @@ export interface AppFixturePack {
   /** Referenced by `attention` but never written: the removed-target card. */
   removed_target_id: string;
   /**
+   * The `GET /api/desk` body on a first visit: `since` is seven days before
+   * the clock, as the desk page asks when there is no visit cookie.
+   */
+  desk: GetDeskResponse;
+  /**
    * `GET /api/inbox/:id` bodies, newest first as `GET /api/inbox` lists
    * them; the list route serves each without its `markdown`.
    */
@@ -131,8 +142,10 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     const extracted = bodyByKey.get(layout.extractedKey(fixture.keyPrefix));
     if (typeof extracted === "string") contents[fixture.id] = extracted;
     const targetIds = relationshipTargetIds(fixture.manifest);
+    const deskIndex = plan.desk.indexOf(fixture.id);
     const body: GetReadingResponse = {
       ...applyStaleness(fixture.manifest, PENDING_TTL_SECONDS, nowIso),
+      ...(deskIndex < 0 ? {} : { desk_position: deskIndex + 1 }),
       relationship_targets:
         targetIds.length === 0
           ? {}
@@ -183,6 +196,12 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     if (raw) raws[fixture.id] = { content_type: raw.contentType, body: raw.body };
   }
 
+  const listItems = plan.listIndex.items.map((item) => ({
+    ...applyStaleness(item, PENDING_TTL_SECONDS, nowIso),
+    connection_count: rows.filter((row) => row.source_id === item.id && row.kind === "connection").length,
+    tension_count: rows.filter((row) => row.source_id === item.id && row.kind === "tension").length,
+  }));
+
   return {
     generated_at: nowIso,
     regenerate_with: APP_FIXTURE_PACK_COMMAND,
@@ -191,14 +210,11 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     contents,
     diagnostics,
     raws,
-    list_index: {
-      ...plan.listIndex,
-      items: plan.listIndex.items.map((item) => ({
-        ...applyStaleness(item, PENDING_TTL_SECONDS, nowIso),
-        connection_count: rows.filter((row) => row.source_id === item.id && row.kind === "connection").length,
-        tension_count: rows.filter((row) => row.source_id === item.id && row.kind === "tension").length,
-      })),
-    },
+    list_index: { ...plan.listIndex, items: listItems },
+    desk: deskRead(
+      plan.listIndex.items.map((item) => applyStaleness(item, PENDING_TTL_SECONDS, nowIso)),
+      new Date(Date.parse(nowIso) - APP_FIXTURE_PACK_FIRST_VISIT_MS).toISOString(),
+    ),
     relationships: projectRelationshipGraph(
       {
         readings: [...plan.listIndex.items]
@@ -211,6 +227,31 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
     ),
     removed_target_id: LOCAL_SEED_REMOVED_TARGET_ID,
     inbox: plan.inbox,
+  };
+}
+
+// The groups PgDeskStore.read selects, over list rows that already carry
+// read-time staleness, newest first as the list is.
+function deskRead(items: readonly ListIndexItem[], since: string): GetDeskResponse {
+  const reprocessFailed = (item: ListIndexItem) =>
+    item.status === "ready" &&
+    item.active_attempt?.status !== "running" &&
+    item.last_attempt?.trigger === "reprocess" &&
+    item.last_attempt.status === "failed";
+  const bounded = (rows: ListIndexItem[], limit: number) => rows.slice(0, limit);
+  const needsYou = items.filter((item) => item.status === "failed" || reprocessFailed(item));
+  const processing = items.filter((item) => item.status === "pending");
+  const readySince = items.filter(
+    (item) => item.status === "ready" && item.created_at > since && item.desk_position === undefined,
+  );
+  return {
+    on_desk: items.filter((item) => item.desk_position !== undefined).sort((a, b) => a.desk_position! - b.desk_position!),
+    needs_you: bounded(needsYou, DESK_GROUP_LIMITS.needs_you),
+    needs_you_total: needsYou.length,
+    processing: bounded(processing, DESK_GROUP_LIMITS.processing),
+    processing_total: processing.length,
+    ready_since: bounded(readySince, DESK_GROUP_LIMITS.ready_since),
+    ready_since_total: readySince.length,
   };
 }
 

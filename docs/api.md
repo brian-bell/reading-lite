@@ -146,6 +146,22 @@ concurrent reprocess compares. List rows and `GET /api/readings/:id` carry
 `desk_position` (1–3) only for a reading on the desk; it is response state, not
 part of the stored manifest, and the [archive](archive-export.md) carries it.
 
+`GET /api/desk?since=<ISO>` (`readings:read`, reading-lite-kl7y.7) is the desk
+page's one read: a READ ONLY snapshot whose rows are list items after read-time
+staleness, grouped by the status staleness leaves them with.
+
+| Group | Rows | Order and bound |
+|---|---|---|
+| `on_desk` | The desk, any status | Position; at most 3 |
+| `needs_you` | Failed, or ready with a failed reprocess as `last_attempt` and no attempt running | Newest first; 20, plus `needs_you_total` |
+| `processing` | Pending | Newest first; 20, plus `processing_total` |
+| `ready_since` | Ready, `created_at` after `since`, not on the desk | Newest first; 10, plus `ready_since_total` |
+
+Without `since`, `ready_since` is empty and its total 0; a `since` that is not
+an ISO date-time is 400. A ready reading whose reprocess failed is in both
+`needs_you` and `ready_since`. The frontend's server render reads it through
+`FrontendReads.desk`, with `since` from the reader's `rl_visit` cookie.
+
 ## Inbox routes
 
 Markdown staged for review before it becomes a reading (reading-lite-gh423).

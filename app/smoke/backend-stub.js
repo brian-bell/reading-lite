@@ -110,6 +110,27 @@ export class FrontendReads extends WorkerEntrypoint {
     return { status: 200, body: { readings: LIBRARIES[sessionKeyOf(cookie)], relationships: [] } };
   }
 
+  // The desk: the tenant's own row on it, and nothing else in any group.
+  async desk({ cookie, host }) {
+    if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };
+    if (cookie?.includes("__Host-session=backend-down")) throw new Error("backend unavailable");
+    const session = sessionOf(cookie);
+    if (!session) return { status: 401, body: { error: "unauthorized" } };
+    await new Promise((resolve) => setTimeout(resolve, session.delayMs));
+    return {
+      status: 200,
+      body: {
+        on_desk: LIBRARIES[sessionKeyOf(cookie)].map((row, i) => ({ ...row, desk_position: i + 1 })),
+        needs_you: [],
+        needs_you_total: 0,
+        processing: [],
+        processing_total: 0,
+        ready_since: [],
+        ready_since_total: 0,
+      },
+    };
+  }
+
   // One ready reading; any other id is a reading this tenant does not have.
   async reading({ cookie, host, id }) {
     if (host !== SMOKE_HOST) return { status: 400, body: { error: "invalid request" } };

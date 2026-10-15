@@ -785,5 +785,27 @@ export const DeskNotReadyResponseSchema = z
   .strict();
 export type DeskNotReadyResponse = z.infer<typeof DeskNotReadyResponseSchema>;
 
+// GET /api/desk?since= (reading-lite-kl7y.7): the desk page's one read, every
+// group after read-time staleness. `ready_since` is empty without `since`.
+export const DESK_GROUP_LIMITS = { needs_you: 20, processing: 20, ready_since: 10 } as const;
+
+export const GetDeskQuerySchema = z.object({
+  since: z.string().datetime().optional(),
+});
+export type GetDeskQuery = z.infer<typeof GetDeskQuerySchema>;
+
+export const GetDeskResponseSchema = z
+  .object({
+    on_desk: z.array(ListIndexItemSchema).max(DESK_CAP),
+    needs_you: z.array(ListIndexItemSchema).max(DESK_GROUP_LIMITS.needs_you),
+    needs_you_total: z.number().int().nonnegative(),
+    processing: z.array(ListIndexItemSchema).max(DESK_GROUP_LIMITS.processing),
+    processing_total: z.number().int().nonnegative(),
+    ready_since: z.array(ListIndexItemSchema).max(DESK_GROUP_LIMITS.ready_since),
+    ready_since_total: z.number().int().nonnegative(),
+  })
+  .strict();
+export type GetDeskResponse = z.infer<typeof GetDeskResponseSchema>;
+
 export const PostInboxPromoteExistingResponseSchema = ManifestSchema.extend(InboxPromoteFields);
 export type PostInboxPromoteExistingResponse = z.infer<typeof PostInboxPromoteExistingResponseSchema>;

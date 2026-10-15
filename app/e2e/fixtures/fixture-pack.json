@@ -682,6 +682,7 @@
         },
         "openai_embedding_tokens": 2349
       },
+      "desk_position": 1,
       "relationship_targets": {
         "rd_FXGARDEN01": {
           "url": "https://commonplace.example/libraries-are-gardens",
@@ -1668,6 +1669,7 @@
         },
         "openai_embedding_tokens": 1622
       },
+      "desk_position": 2,
       "relationship_targets": {
         "rd_FXSECBRN01": {
           "url": "https://adjacent.example/the-second-brain-is-a-filing-cabinet",
@@ -3775,7 +3777,8 @@
           "stage": "send_email",
           "started_at": "2026-09-07T09:30:04.000Z",
           "finished_at": "2026-09-07T09:30:47.000Z"
-        }
+        },
+        "desk_position": 1
       },
       "pointers": {
         "by_id": {
@@ -7448,7 +7451,8 @@
           "stage": "send_email",
           "started_at": "2026-08-18T09:20:04.000Z",
           "finished_at": "2026-08-18T09:20:47.000Z"
-        }
+        },
+        "desk_position": 2
       },
       "pointers": {
         "by_id": {
@@ -8600,6 +8604,7 @@
           "started_at": "2026-09-07T09:30:04.000Z",
           "finished_at": "2026-09-07T09:30:47.000Z"
         },
+        "desk_position": 1,
         "connection_count": 1,
         "tension_count": 1
       },
@@ -9109,6 +9114,7 @@
           "started_at": "2026-08-18T09:20:04.000Z",
           "finished_at": "2026-08-18T09:20:47.000Z"
         },
+        "desk_position": 2,
         "connection_count": 1,
         "tension_count": 1
       },
@@ -9176,6 +9182,611 @@
         "tension_count": 0
       }
     ]
+  },
+  "desk": {
+    "on_desk": [
+      {
+        "id": "rd_FXATTENT01",
+        "key_prefix": "readings/2026/09/07T093000Z-rd_FXATTENT01",
+        "url": "https://fieldnotes.example/2026/a-quieter-internet",
+        "status": "ready",
+        "created_at": "2026-09-07T09:30:00.000Z",
+        "updated_at": "2026-09-07T09:30:47.000Z",
+        "title": "A quieter internet is a choice we can make",
+        "tldr": "The best tools for thought give us somewhere to return, not another stream to keep up with. A personal library can turn the internet from a demand on our attention into a place for deliberate reading.",
+        "tags": [
+          "attention",
+          "design"
+        ],
+        "keywords": [
+          "attention",
+          "deliberate reading",
+          "personal library",
+          "return visit",
+          "tools for thought"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.61,
+          "mean": 0.58,
+          "computed_at": "2026-09-07T09:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXATTENT01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-07T09:30:04.000Z",
+          "finished_at": "2026-09-07T09:30:47.000Z"
+        },
+        "desk_position": 1
+      },
+      {
+        "id": "rd_FXCMMNBK01",
+        "key_prefix": "readings/2026/08/18T092000Z-rd_FXCMMNBK01",
+        "url": "https://commonplace.example/what-a-commonplace-book-is-for",
+        "status": "ready",
+        "created_at": "2026-08-18T09:20:00.000Z",
+        "updated_at": "2026-08-18T09:20:47.000Z",
+        "title": "What a commonplace book is for",
+        "tldr": "A commonplace book is not a filing system but a record of what moved you, kept so that rereading it changes what you notice next.",
+        "tags": [
+          "knowledge",
+          "notes"
+        ],
+        "keywords": [
+          "commonplace book",
+          "excerpts",
+          "rereading",
+          "memory"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 2,
+          "max": 0.63,
+          "mean": 0.59,
+          "computed_at": "2026-08-18T09:20:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCMMNBK01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-08-18T09:20:04.000Z",
+          "finished_at": "2026-08-18T09:20:47.000Z"
+        },
+        "desk_position": 2
+      }
+    ],
+    "needs_you": [
+      {
+        "id": "rd_FXSTPEND01",
+        "key_prefix": "readings/2026/09/11T092000Z-rd_FXSTPEND01",
+        "url": "https://adjacent.example/the-cost-of-convenience",
+        "status": "failed",
+        "created_at": "2026-09-11T09:20:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "last_attempt": {
+          "id": "at_FXSTPEND01",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:20:00.000Z",
+          "finished_at": "2026-09-11T10:00:00.000Z",
+          "error": {
+            "code": "stale_active_attempt",
+            "message": "active attempt > 900s",
+            "stage": "queued",
+            "failed_at": "2026-09-11T10:00:00.000Z",
+            "retryable": true
+          }
+        },
+        "error": {
+          "code": "stale_active_attempt",
+          "message": "active attempt > 900s",
+          "stage": "queued",
+          "failed_at": "2026-09-11T10:00:00.000Z",
+          "retryable": true
+        }
+      },
+      {
+        "id": "rd_FXERR00001",
+        "key_prefix": "readings/2026/09/10T141000Z-rd_FXERR00001",
+        "url": "https://registration-wall.example/members-only-report",
+        "status": "failed",
+        "created_at": "2026-09-10T14:10:00.000Z",
+        "updated_at": "2026-09-10T14:10:13.000Z",
+        "error": {
+          "code": "BadStatusError",
+          "message": "bad response status 403: https://registration-wall.example/members-only-report",
+          "stage": "fetch_source",
+          "failed_at": "2026-09-10T14:10:13.000Z",
+          "retryable": false,
+          "http_status": 403
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T14:10:03.000Z",
+          "finished_at": "2026-09-10T14:10:13.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 403: https://registration-wall.example/members-only-report",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T14:10:13.000Z",
+            "retryable": false,
+            "http_status": 403
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00002",
+        "key_prefix": "readings/2026/09/09T164200Z-rd_FXERR00002",
+        "url": "https://consent-walls.example/teaser-article",
+        "status": "failed",
+        "created_at": "2026-09-09T16:42:00.000Z",
+        "updated_at": "2026-09-09T16:42:37.000Z",
+        "error": {
+          "code": "SourceRejectedError",
+          "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T16:42:37.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-09T16:42:03.000Z",
+          "finished_at": "2026-09-09T16:42:37.000Z",
+          "error": {
+            "code": "SourceRejectedError",
+            "message": "the source did not contain a complete article; the page was a truncated teaser with a subscription prompt",
+            "stage": "summarize",
+            "failed_at": "2026-09-09T16:42:37.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00003",
+        "key_prefix": "readings/2026/09/09T090500Z-rd_FXERR00003",
+        "url": "https://fieldnotes.example/rate-limited-essay",
+        "status": "failed",
+        "created_at": "2026-09-09T09:05:00.000Z",
+        "updated_at": "2026-09-09T09:05:37.000Z",
+        "error": {
+          "code": "RateLimitedError",
+          "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+          "stage": "summarize",
+          "failed_at": "2026-09-09T09:05:37.000Z",
+          "retryable": true,
+          "http_status": 429
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-09T09:05:03.000Z",
+          "finished_at": "2026-09-09T09:05:37.000Z",
+          "error": {
+            "code": "RateLimitedError",
+            "message": "rate limited by https://api.openai.com/v1/responses (status 429, retry after 1200ms)",
+            "stage": "summarize",
+            "failed_at": "2026-09-09T09:05:37.000Z",
+            "retryable": true,
+            "http_status": 429
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00004",
+        "key_prefix": "readings/2026/09/08T221800Z-rd_FXERR00004",
+        "url": "https://commonplace.example/embedding-failure-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T22:18:00.000Z",
+        "updated_at": "2026-09-08T22:18:21.000Z",
+        "error": {
+          "code": "OpenAIError",
+          "message": "The server had an error while processing your request. Sorry about that!",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T22:18:21.000Z",
+          "retryable": true,
+          "http_status": 500
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T22:18:03.000Z",
+          "finished_at": "2026-09-08T22:18:21.000Z",
+          "error": {
+            "code": "OpenAIError",
+            "message": "The server had an error while processing your request. Sorry about that!",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T22:18:21.000Z",
+            "retryable": true,
+            "http_status": 500
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00005",
+        "key_prefix": "readings/2026/09/08T115500Z-rd_FXERR00005",
+        "url": "https://adjacent.example/expired-key-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T11:55:00.000Z",
+        "updated_at": "2026-09-08T11:55:37.000Z",
+        "error": {
+          "code": "provider_key_invalid",
+          "message": "the provider rejected the key; replace it, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-08T11:55:37.000Z",
+          "retryable": false,
+          "http_status": 401
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-08T11:55:03.000Z",
+          "finished_at": "2026-09-08T11:55:37.000Z",
+          "error": {
+            "code": "provider_key_invalid",
+            "message": "the provider rejected the key; replace it, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-08T11:55:37.000Z",
+            "retryable": false,
+            "http_status": 401
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00009",
+        "key_prefix": "readings/2026/09/08T102000Z-rd_FXERR00009",
+        "url": "https://fieldnotes.example/before-the-key-essay",
+        "status": "failed",
+        "created_at": "2026-09-08T10:20:00.000Z",
+        "updated_at": "2026-09-08T10:20:21.000Z",
+        "error": {
+          "code": "provider_key_required",
+          "message": "connect a key, then retry",
+          "stage": "embed_source",
+          "failed_at": "2026-09-08T10:20:21.000Z",
+          "retryable": false
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "embed_source",
+          "started_at": "2026-09-08T10:20:03.000Z",
+          "finished_at": "2026-09-08T10:20:21.000Z",
+          "error": {
+            "code": "provider_key_required",
+            "message": "connect a key, then retry",
+            "stage": "embed_source",
+            "failed_at": "2026-09-08T10:20:21.000Z",
+            "retryable": false
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00010",
+        "key_prefix": "readings/2026/09/07T184000Z-rd_FXERR00010",
+        "url": "https://margin.example/out-of-credit-essay",
+        "status": "failed",
+        "created_at": "2026-09-07T18:40:00.000Z",
+        "updated_at": "2026-09-07T18:40:37.000Z",
+        "error": {
+          "code": "provider_insufficient_quota",
+          "message": "the provider account is out of quota; check its billing, then retry",
+          "stage": "summarize",
+          "failed_at": "2026-09-07T18:40:37.000Z",
+          "retryable": false,
+          "http_status": 429
+        },
+        "last_attempt": {
+          "id": "at_FXERR00011",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-07T18:40:03.000Z",
+          "finished_at": "2026-09-07T18:40:37.000Z",
+          "error": {
+            "code": "provider_insufficient_quota",
+            "message": "the provider account is out of quota; check its billing, then retry",
+            "stage": "summarize",
+            "failed_at": "2026-09-07T18:40:37.000Z",
+            "retryable": false,
+            "http_status": 429
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00006",
+        "key_prefix": "readings/2026/09/05T213000Z-rd_FXERR00006",
+        "url": "https://margin.example/spend-capped-essay",
+        "status": "failed",
+        "created_at": "2026-09-05T21:30:00.000Z",
+        "updated_at": "2026-09-05T21:30:37.000Z",
+        "error": {
+          "code": "SpendAdmissionError",
+          "message": "paid spend admission: monthly budget exhausted",
+          "stage": "summarize",
+          "failed_at": "2026-09-05T21:30:37.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-05T21:30:03.000Z",
+          "finished_at": "2026-09-05T21:30:37.000Z",
+          "error": {
+            "code": "SpendAdmissionError",
+            "message": "paid spend admission: monthly budget exhausted",
+            "stage": "summarize",
+            "failed_at": "2026-09-05T21:30:37.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXREPROC01",
+        "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "status": "ready",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "updated_at": "2026-09-10T16:05:10.000Z",
+        "title": "The tab that never closes",
+        "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "browser tabs",
+          "saving",
+          "deferral",
+          "reading later"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.59,
+          "mean": 0.59,
+          "computed_at": "2026-09-05T08:40:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
+            "retryable": true,
+            "http_status": 503
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00007",
+        "key_prefix": "readings/2026/09/04T071200Z-rd_FXERR00007",
+        "url": "https://small-hours.example/queue-exhausted-essay",
+        "status": "failed",
+        "created_at": "2026-09-04T07:12:00.000Z",
+        "updated_at": "2026-09-04T07:27:03.000Z",
+        "error": {
+          "code": "QueueRetriesExhaustedError",
+          "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+          "stage": "summarize",
+          "failed_at": "2026-09-04T07:27:03.000Z",
+          "retryable": true
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "summarize",
+          "started_at": "2026-09-04T07:12:03.000Z",
+          "finished_at": "2026-09-04T07:27:03.000Z",
+          "error": {
+            "code": "QueueRetriesExhaustedError",
+            "message": "queue delivery retries exhausted (upstream stayed rate-limited)",
+            "stage": "summarize",
+            "failed_at": "2026-09-04T07:27:03.000Z",
+            "retryable": true
+          }
+        }
+      },
+      {
+        "id": "rd_FXERR00008",
+        "key_prefix": "readings/2026/08/30T194700Z-rd_FXERR00008",
+        "url": "https://working-notes.example/unexpected-failure-essay",
+        "status": "failed",
+        "created_at": "2026-08-30T19:47:00.000Z",
+        "updated_at": "2026-08-30T19:47:23.000Z",
+        "error": {
+          "code": "TypeError",
+          "message": "Cannot read properties of undefined (reading 'score')",
+          "stage": "query_similar",
+          "failed_at": "2026-08-30T19:47:23.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXERR00001",
+          "trigger": "submit",
+          "status": "failed",
+          "stage": "query_similar",
+          "started_at": "2026-08-30T19:47:03.000Z",
+          "finished_at": "2026-08-30T19:47:23.000Z",
+          "error": {
+            "code": "TypeError",
+            "message": "Cannot read properties of undefined (reading 'score')",
+            "stage": "query_similar",
+            "failed_at": "2026-08-30T19:47:23.000Z"
+          }
+        }
+      }
+    ],
+    "needs_you_total": 12,
+    "processing": [
+      {
+        "id": "rd_FXPENDNG01",
+        "key_prefix": "readings/2026/09/11T100000Z-rd_FXPENDNG01",
+        "url": "https://fieldnotes.example/making-room-for-slow-work",
+        "status": "pending",
+        "created_at": "2026-09-11T10:00:00.000Z",
+        "updated_at": "2026-09-11T10:00:00.000Z",
+        "active_attempt": {
+          "id": "at_FXPENDNG01",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T10:00:00.000Z"
+        }
+      },
+      {
+        "id": "rd_FXPRCSSNG1",
+        "key_prefix": "readings/2026/09/11T095200Z-rd_FXPRCSSNG1",
+        "url": "https://fieldnotes.example/why-we-skim",
+        "status": "pending",
+        "created_at": "2026-09-11T09:52:00.000Z",
+        "updated_at": "2026-09-11T09:52:00.000Z",
+        "active_attempt": {
+          "id": "at_FXPRCSSNG1",
+          "trigger": "submit",
+          "status": "running",
+          "stage": "queued",
+          "started_at": "2026-09-11T09:52:00.000Z"
+        }
+      }
+    ],
+    "processing_total": 2,
+    "ready_since": [
+      {
+        "id": "rd_FXCNVRSE01",
+        "key_prefix": "readings/2026/09/09T103000Z-rd_FXCNVRSE01",
+        "url": "https://commonplace.example/reading-as-conversation",
+        "status": "ready",
+        "created_at": "2026-09-09T10:30:00.000Z",
+        "updated_at": "2026-09-09T10:30:47.000Z",
+        "title": "Reading as conversation",
+        "tldr": "A book read twice is a conversation with the earlier reader. Park argues that a library should make the earlier reader easy to find.",
+        "tags": [
+          "knowledge",
+          "reading"
+        ],
+        "keywords": [
+          "conversation",
+          "rereading",
+          "annotation",
+          "dialogue"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.6,
+          "mean": 0.6,
+          "computed_at": "2026-09-09T10:30:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXCNVRSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-09T10:30:04.000Z",
+          "finished_at": "2026-09-09T10:30:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXSPARSE01",
+        "key_prefix": "readings/2026/09/06T182500Z-rd_FXSPARSE01",
+        "url": "https://small-hours.example/against-the-endless-queue",
+        "status": "ready",
+        "created_at": "2026-09-06T18:25:00.000Z",
+        "updated_at": "2026-09-06T18:25:47.000Z",
+        "title": "Against the endless queue",
+        "tldr": "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "reading queue",
+          "unread articles",
+          "archives",
+          "obligation"
+        ],
+        "novelty_verdict": "novel",
+        "similarity": {
+          "count": 0,
+          "computed_at": "2026-09-06T18:25:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXSPARSE01",
+          "trigger": "submit",
+          "status": "succeeded",
+          "stage": "send_email",
+          "started_at": "2026-09-06T18:25:04.000Z",
+          "finished_at": "2026-09-06T18:25:47.000Z"
+        }
+      },
+      {
+        "id": "rd_FXREPROC01",
+        "key_prefix": "readings/2026/09/05T084000Z-rd_FXREPROC01",
+        "url": "https://fieldnotes.example/the-tab-that-never-closes",
+        "status": "ready",
+        "created_at": "2026-09-05T08:40:00.000Z",
+        "updated_at": "2026-09-10T16:05:10.000Z",
+        "title": "The tab that never closes",
+        "tldr": "An open tab is a promise, not a plan. Saving a reading gives it somewhere to wait without asking for attention, so the tab can close and the piece can come back when it matters.",
+        "tags": [
+          "attention"
+        ],
+        "keywords": [
+          "browser tabs",
+          "saving",
+          "deferral",
+          "reading later"
+        ],
+        "novelty_verdict": "familiar",
+        "similarity": {
+          "count": 1,
+          "max": 0.59,
+          "mean": 0.59,
+          "computed_at": "2026-09-05T08:40:24.000Z"
+        },
+        "last_attempt": {
+          "id": "at_FXREPROC02",
+          "trigger": "reprocess",
+          "status": "failed",
+          "stage": "fetch_source",
+          "started_at": "2026-09-10T16:05:00.000Z",
+          "finished_at": "2026-09-10T16:05:10.000Z",
+          "error": {
+            "code": "BadStatusError",
+            "message": "bad response status 503: Service Unavailable",
+            "stage": "fetch_source",
+            "failed_at": "2026-09-10T16:05:10.000Z",
+            "retryable": true,
+            "http_status": 503
+          }
+        }
+      }
+    ],
+    "ready_since_total": 3
   },
   "relationships": {
     "readings": [

@@ -1,4 +1,4 @@
-import { skipToken, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useId, useRef, useState } from "react";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import { writeDesk } from "../api/desk";
@@ -6,12 +6,16 @@ import {
   DESK_FULL_COPY,
   DESK_NOT_READY_COPY,
   DESK_QUERY_ROOT,
-  deskIdsQueryKey,
   deskIsFullFor,
+  onDeskAfterWrite,
+  onDeskQueryKey,
   type DeskWriteOutcome,
+  type OnDeskEntry,
 } from "../desk";
+import { onDeskQueryOptions } from "../on-desk-query";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
+import { Icon } from "./Icon";
 
 // Put on desk / Take off desk (reading-lite-kl7y.6), on library cards and
 // above the reading's title. A `button` with `aria-pressed` (acceptance
@@ -21,10 +25,13 @@ import { expectedLayoutOf, readingQueryKey } from "../reading";
 // the desk, the library and the reading even when the reader has left.
 //
 // At the cap the toggle is disabled and says why in visible text. The cap is
-// known from the last write's answer (desk.ts), less a reading a 404 says is
-// gone; a 409 `desk_full` from a desk another tab filled says the same thing
-// inline. A desk another tab emptied stays full here until a write answers
-// (kl7y.7's GET /api/desk replaces this cache).
+// known from what is on the desk (on-desk-query.ts): GET /api/desk in the
+// browser, or the desk page's own read, then each write's answer, less a
+// reading a 404 says is gone. A 409 `desk_full` from a desk another tab filled says the
+// same thing inline, and the refetch that follows disables the rest.
+//
+// `compact` is the desk page's own control for a reading already there: an
+// icon button named "Take off desk", with no standing note.
 
 type Notice = Exclude<DeskWriteOutcome, { kind: "desk" | "not-found" }> | { kind: "failed" };
 
@@ -45,16 +52,26 @@ function noticeCopy(notice: Notice): string {
 
 export interface DeskToggleReading {
   id: string;
+  title?: string;
   desk_position?: number;
 }
 
-export function DeskToggle({ reading, className }: { reading: DeskToggleReading; className?: string }) {
+export function DeskToggle({
+  reading,
+  className,
+  compact = false,
+}: {
+  reading: DeskToggleReading;
+  className?: string;
+  compact?: boolean;
+}) {
   const queryClient = useQueryClient();
   const noteId = useId();
   const noticeId = useId();
   const sendingRef = useRef(false);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const { data: knownDesk } = useQuery<string[]>({ queryKey: deskIdsQueryKey, queryFn: skipToken, staleTime: Infinity });
+  const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+  const { data: knownDesk } = useQuery(onDeskQueryOptions(queryClient, identity));
   const on = reading.desk_position !== undefined;
   const full = !on && deskIsFullFor(reading.id, knownDesk);
 
@@ -63,11 +80,14 @@ export function DeskToggle({ reading, className }: { reading: DeskToggleReading;
       writeDesk(queryClient, reading.id, put, expectedLayoutOf(queryClient.getQueryData<Identity | null>(whoamiQueryKey))),
     retry: 0,
     onSuccess: (outcome) => {
-      if (outcome.kind === "desk") queryClient.setQueryData(deskIdsQueryKey, outcome.desk);
+      if (outcome.kind === "desk") {
+        const written: OnDeskEntry = reading.title === undefined ? { id: reading.id } : { id: reading.id, title: reading.title };
+        queryClient.setQueryData<OnDeskEntry[]>(onDeskQueryKey, (known) => onDeskAfterWrite(known, outcome.desk, written));
+      }
       // A reading purged elsewhere left the desk with it; a desk that still
       // counts it would hold every other toggle at the cap.
       if (outcome.kind === "not-found") {
-        queryClient.setQueryData<string[]>(deskIdsQueryKey, (desk) => desk?.filter((id) => id !== reading.id));
+        queryClient.setQueryData<OnDeskEntry[]>(onDeskQueryKey, (desk) => desk?.filter((entry) => entry.id !== reading.id));
       }
     },
     onSettled: (_outcome, error) => {
@@ -107,20 +127,23 @@ export function DeskToggle({ reading, className }: { reading: DeskToggleReading;
   // reliably announced (ReadingPage.tsx, SaveNoticeBanner). The standing note
   // gives way to it.
   const said = notice ? noticeCopy(notice) : null;
-  const note = said ? null : full ? DESK_FULL_COPY : on ? "On your desk" : null;
+  const note = said || (compact && on) ? null : full ? DESK_FULL_COPY : on ? "On your desk" : null;
   const describedBy = [note ? noteId : null, said ? noticeId : null].filter(Boolean).join(" ");
+  const label = on ? "Take off desk" : "Put on desk";
+  const iconOnly = compact && on;
   return (
     <div className={className ? `desk-toggle ${className}` : "desk-toggle"}>
       <button
         type="button"
-        className="button button-quiet"
+        className={iconOnly ? "button button-icon" : "button button-quiet"}
         aria-pressed={on}
+        aria-label={iconOnly ? label : undefined}
         disabled={full}
         aria-disabled={mutation.isPending || undefined}
         aria-describedby={describedBy || undefined}
         onClick={toggle}
       >
-        {on ? "Take off desk" : "Put on desk"}
+        {iconOnly ? <Icon name="close" size={14} strokeWidth={2} /> : label}
       </button>
       {note ? (
         <span id={noteId} className="desk-toggle-note">

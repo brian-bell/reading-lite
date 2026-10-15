@@ -4,15 +4,6 @@ import type { Identity } from "./identity";
 import { inboxItemQueryKey, inboxQueryKey, type InboxItemResult, type InboxListResult } from "./inbox";
 import { expectedLayoutOf } from "./reading";
 
-// Browser-only, like the sessions list (sessions-query.ts): no isomorphic
-// server branch and never a loader's prefetch, so the inbox is not part of the
-// server render. The keys are account-scoped, so sign-in and sign-out drop
-// them (src/auth/session.ts), and an item's key sits under the list's, so
-// invalidating the inbox after a write reaches both.
-//
-// No timed reads: an agent staging more Markdown shows up the next time the
-// page is opened or a write invalidates it (AGENTS.md, no other polling).
-
 export function inboxQueryOptions(queryClient: QueryClient, identity: Identity | null | undefined) {
   const expectedTenant = expectedLayoutOf(identity);
   return queryOptions({

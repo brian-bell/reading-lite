@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { flushSync } from "react-dom";
 import { NetworkError } from "../api/errors";
 import { importMarkdown, submitReading } from "../api/save";
+import { DESK_QUERY_ROOT } from "../desk";
 import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import {
@@ -261,6 +262,7 @@ export function SavePage() {
             // invalidated as the accepted path does, before the link exists.
             queryClient.removeQueries({ queryKey: readingQueryKey(outcome.id) });
             await queryClient.invalidateQueries({ queryKey: ["library"] });
+            await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
           }
           setRefused(outcome);
           setRefusedFor(request.kind);
@@ -279,6 +281,7 @@ export function SavePage() {
         );
         // The new reading belongs on every page of the library, filtered or not.
         await queryClient.invalidateQueries({ queryKey: ["library"] });
+        await queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
         // A failed owner is reprocessed in place under the same id, and the
         // reading query never goes stale on its own, so an answer this tab read
         // earlier would be what the reader lands on. Dropped rather than marked

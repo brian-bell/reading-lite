@@ -9,9 +9,6 @@ import { ThemeControl } from "./ThemeControl";
 
 export type { AccountState } from "./AccountMenu";
 
-// Connected navigation shell (design spec, Layout and Components): an 80 px
-// column at desktop widths, a brand row plus horizontal bar at container width
-// ≤650 px. The account menu (or a sign-in link) follows the theme control.
 export function AppShell({
   theme,
   onThemeChange,
@@ -46,6 +43,12 @@ export function AppShell({
               <ul className="nav-items">
                 <li>
                   <Link to="/" className="nav-item" activeOptions={{ exact: true, includeSearch: false }}>
+                    <Icon name="desk" size={22} />
+                    <span>Desk</span>
+                  </Link>
+                </li>
+                <li>
+                  <Link to="/library" className="nav-item" activeOptions={{ includeSearch: false }}>
                     <Icon name="library" size={22} />
                     <span>Library</span>
                   </Link>
@@ -63,12 +66,6 @@ export function AppShell({
                     <span>
                       Save <span className="nav-item-rest">reading</span>
                     </span>
-                  </Link>
-                </li>
-                <li>
-                  <Link to="/inbox" className="nav-item">
-                    <Icon name="inbox" size={22} />
-                    <span>Inbox</span>
                   </Link>
                 </li>
               </ul>

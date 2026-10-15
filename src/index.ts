@@ -1,4 +1,5 @@
-import { REFRESH_CRON, scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
+import { REFRESH_CRON } from "./refresh-period";
+import { scheduleRelationshipRefresh, consumeRelationshipRefresh, type RefreshEnvelope } from "./relationship-refresh";
 import type { TenantContext } from "./control-plane/ids";
 import { fromSql, type ControlPlaneDb } from "./control-plane/db";
 import { withSqlSession } from "./modules/db/sql";
@@ -58,7 +59,6 @@ export interface Env {
   // wrangler has no export queue; tests inject a stub. POST /api/exports
   // returns 503 when the binding is missing.
   ARCHIVE_EXPORT_JOBS?: Queue<ArchiveExportEnvelopeV1>;
-  // Dedicated nightly scan/judge queue, gated off until staging rollout.
   RELATIONSHIP_REFRESH_JOBS?: Queue<RefreshEnvelope>;
   RELATIONSHIP_REFRESH?: string;
   REFRESH_MAX_JUDGEMENTS?: string;

@@ -414,7 +414,7 @@ Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
 staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` is `low` locally
 and `medium` in staging/production, and is applied only when
 `SUMMARIZER_PROVIDER=anthropic`. Staging and production summarize, and run
-nightly relationship-refresh judgements, with Anthropic; local uses OpenAI. Claude Sonnet
+weekly relationship-refresh judgements, with Anthropic; local uses OpenAI. Claude Sonnet
 5.5 (`ANTHROPIC_MODEL=claude-sonnet-5-5`) accepts `low`, `medium`, or `high` on
 `output_config.effort` with `thinking: { type: "between_tools" }`. `xhigh` and
 `max` 400 with that setting. Invalid values, efforts the configured model
@@ -2907,7 +2907,7 @@ Hosted processing requires Workers Paid; `usage_model: standard` alone does not
 establish that subscription. Both hosted environments pin `limits.cpu_ms=30_000`.
 See the [CPU diagnosis and recovery procedure](relationship-refresh-recovery.md)
 before resuming a run interrupted by CPU terminations.
-The nightly pass is watched by the operator's RL Nightly Refresh scheduled task;
+The weekly pass is watched by RL OpsBot's routine on the shared box;
 [relationship refresh monitor](relationship-refresh-monitor.md) holds its prompt
 and status script and recreates it from scratch.
 
@@ -2928,7 +2928,7 @@ Gate-off queue deliveries acknowledge and discard without storage/provider
 access; the refresh cron also does nothing. DLQ deliveries log and acknowledge
 without changing readings.
 
-With the gate set to `1`, the separate `7 3 * * *` cron (03:07 UTC nightly)
+With the gate set to `1`, the separate `7 3 * * SUN` cron (Sunday 03:07 UTC)
 starts or resumes a full scan for the active account matching `FOUNDER_EMAIL`.
 `TENANT_DATA_PLANE=1` is required. The existing */15 digest/wipe cron is separate.
 Each queue shard reads at most 25 readings and runs the pgvector similarity
@@ -2937,17 +2937,17 @@ A ready target whose `active_attempt` is still running inside `PENDING_TTL_SECON
 is skipped at scan time; the same in-TTL running state on a judge delivery throws
 `DeferPaidWorkError` and re-enqueues that `(runAt, readingId, keyPrefix)` without
 a checkpoint row. A TTL-expired (zombie) running attempt is not a terminal skip:
-scan still flags the target, and the judge treats it as not running. The nightly
+scan still flags the target, and the judge treats it as not running. The weekly
 cap still counts a reserved judge identity, including identities later deferred
 for in-TTL running. The existing offline neighbourhood-drift rules select judge
 targets. All scan shards finish before any judge jobs are enqueued.
 
 Progress lives at `u/{tenantId}/index/refresh-cursor.json`: the scan's fixed target
-list, scan offset, flagged candidates, dispatch offset and nightly allowance.
+list, scan offset, flagged candidates, dispatch offset and weekly allowance.
 Cursor writes use CAS. `REFRESH_MAX_JUDGEMENTS` defaults to `100` and accepts
-integers 1–1000. The cap counts distinct reserved judge jobs per nightly budget,
-not delivery attempts. Remaining candidates carry into later nights without
-rescanning; a fresh full scan begins on a later night after dispatch completes.
+integers 1–1000. The cap counts distinct reserved judge jobs per weekly budget,
+not delivery attempts. Remaining candidates carry into later Sundays without
+rescanning. A fresh full scan begins on a later Sunday after dispatch completes.
 The scan does not read or update the offline refresh pass's run marker (the
 `corpus_refresh_state` row), or rewrite similarity snapshots, readings or
 vectors. The two markers are deliberately separate: this cursor is the hosted
@@ -2959,8 +2959,8 @@ that reservation; the next scheduled invocation recovers a lost continuation.
 Retries can deliver the same `(runAt, readingId)` judge identity more than once.
 The judge consumer deduplicates that identity before paid work and revalidates
 the tenant and reading. Pending batches keep their original allowance
-until their send is confirmed; a recorded new-night allowance then takes effect
-immediately so recovery does not skip that night. Invalid cursor data fails closed and is retained
+until their send is confirmed. A recorded allowance for the new period then takes effect
+immediately, so recovery does not skip that period. Invalid cursor data fails closed and is retained
 for diagnosis rather than silently restarting a run.
 
 Issue #175 slice 3 consumes judge jobs with the configured OpenAI or Anthropic
@@ -2996,7 +2996,7 @@ never create a failed reading. The checkpoint contains no article summary and
 is removed by reading purge, the tenant wipe, and the guarded account-teardown
 transaction.
 
-### Nightly tension pairs
+### Weekly tension pairs
 
 The same scan shards also collect tension pairs (reading-lite-mtdh): for each
 target, every reading in its floored ready neighbourhood whose pair clears the
@@ -3006,20 +3006,20 @@ judged on both sides since either was last rewritten, and has summary text on
 both sides. Each pair is recorded once, canonically (`a < b`). A pair whose side
 is running inside `PENDING_TTL_SECONDS` is skipped at scan time. Unlike the
 operator pass, which judges pairs of the readings its report flagged, the
-nightly scan considers every pair, so the first nights work through a backlog
-and later nights see only new or reprocessed readings.
+weekly scan considers every pair, so the first Sundays work through a backlog
+and later Sundays see only new or reprocessed readings.
 
 Pairs dispatch as `tension` jobs `(runAt, a, b)` after the connection judges,
 reserved in batches of 25 against `REFRESH_MAX_TENSION_JUDGEMENTS` (default 100),
 which is separate from the connection cap. Only one batch of either kind is
-reserved at a time. Pairs left when the night's allowance runs out are not
-carried forward: once the connection candidates are done, the next night starts
-a fresh scan, which finds the still-unjudged pairs again. When that night's
+reserved at a time. Pairs left when the period's allowance runs out are not
+carried forward. Once the connection candidates are done, the next Sunday starts
+a fresh scan, which finds the still-unjudged pairs again. When that Sunday's
 cron finds a batch of either kind still reserved, the fresh scan starts as soon
 as the batch's send is confirmed, so the new allowance is never spent on the old
 scan's pairs. A cursor written
 before these fields existed parses with no tension allowance, so that run
-dispatches no pairs and the next night's allowance starts them.
+dispatches no pairs and the next Sunday's allowance starts them.
 
 A tension job revalidates both readings and the pair's eligibility, so a pair
 judged since the scan (by the operator, say) or whose admitting citation the
@@ -3035,7 +3035,7 @@ directional `tensions` entry and `tensions_judged` record; if either reading
 changed since dispatch, neither is written. A pair is removed from the table by
 purging either reading, by the tenant wipe, and by account teardown.
 
-### Nightly tension repairs
+### Weekly tension repairs
 
 The scan also plans the free one-sided repairs `ops corpus refresh-tensions`
 performs (`findOneSided`, reading-lite-qxfh), for every pair a scanned reading
@@ -3044,8 +3044,8 @@ other side lost, drop a side a reprocess made stale, and purge a tension naming
 a partner that is no longer ready. A purge removes the purged reading's own
 rows but not its partners' entries naming it (`reading_relationships` cascades
 from the source only), and that dangling entry makes tier 1 flag the holder
-`stale_connection` every night; the connection judge rewrites connections, not
-tensions, so without the repair it would be paid for again each night.
+`stale_connection` on the operator's nightly pass. The hosted connection judge rewrites connections, not
+tensions, so without the repair it would be paid for again each Sunday.
 
 Repairs dispatch as `repair` jobs `(runAt, a, b)` before the connection judges,
 in batches of 25 and uncapped, since they call no provider. The consumer runs
@@ -3062,4 +3062,4 @@ locked and version-checked in the same transaction but not rewritten. If either
 side changed, nothing is written and the next scan plans again. An in-TTL running side defers the job like a judge.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
-keeps a two-judgement nightly cap; production uses one hundred.
+keeps a two-judgement weekly cap. Production uses one hundred.

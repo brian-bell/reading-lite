@@ -16,6 +16,7 @@ import { NEW_READER_SESSION } from "../sessions";
 import {
   E2E_PROVIDER_API_KEY,
   serveProviderInBrowser,
+  serveInboxInBrowser,
   serveReadingsInBrowser,
   serveSaveInBrowser,
   signIn,
@@ -56,7 +57,8 @@ test("goes from the front door through the samples and a key to the first save",
   await expect(page.getByRole("status").filter({ hasText: "we sent a short-lived link" })).toBeVisible();
   expect(challenges).toEqual(["new-reader@example.com"]);
 
-  // The link signs the reader in and lands on the library.
+  // The link signs the reader in and lands on the desk, which has nothing on
+  // it yet and says how to begin.
   await page.unroute("**/api/whoami");
   await signIn(page.context(), baseURL!, NEW_READER_SESSION);
   const saves = await serveSaveInBrowser(page, {
@@ -65,11 +67,16 @@ test("goes from the front door through the samples and a key to the first save",
   });
   await serveReadingsInBrowser(page);
   const provider = await serveProviderInBrowser(page);
+  await serveInboxInBrowser(page, []);
   await page.goto("/");
+  await expect(page.getByRole("heading", { level: 1, name: "Desk" })).toBeVisible();
+  await expect(page.getByText("Nothing needs you.")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Provider" }).getByText("No key connected")).toBeVisible();
+  await page.goto("/library");
   await expect(page.getByText("No readings yet. Connect your OpenAI key, then save your first reading.")).toBeVisible();
   await page.waitForLoadState("networkidle");
 
-  await page.getByRole("link", { name: "Connect a key" }).click();
+  await page.getByRole("main").getByRole("link", { name: "Connect a key" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Provider" })).toBeVisible();
   const key = page.getByRole("region", { name: "OpenAI" });
   await key.getByLabel("API key").fill(E2E_PROVIDER_API_KEY);

@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { NetworkError, isUnauthorized } from "../api/errors";
 import { reprocessReading } from "../api/reprocess";
+import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
 import type { ReprocessMarkdownBody } from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
@@ -102,6 +103,7 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
       return Promise.all([
         CHANGED_THE_READING.has(kind) ? queryClient.invalidateQueries({ queryKey: readingQueryKey(id) }) : undefined,
         kind === "started" ? queryClient.invalidateQueries({ queryKey: ["library"] }) : undefined,
+        kind === "started" ? queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT }) : undefined,
         kind === "started" ? queryClient.invalidateQueries({ queryKey: relationshipsQueryKey }) : undefined,
       ]);
     },

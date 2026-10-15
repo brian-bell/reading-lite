@@ -79,10 +79,11 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   returns a site key; `?step_up=1` locks the signed-in email). `/auth/verify`,
   the mailed path, and its `/login/verify` alias redeem the fragment credential
   only on Continue. Return paths go through `src/auth/return-path.ts`: an
-  allowlist of `/` (`q`, `tag`, `offset`), `/readings/:id` (`view`), `/save`,
-  `/inbox`, `/inbox/:id`, `/threads`, `/threads/:id`, `/account/security`,
-  and `/account/provider`, with
-  other parameters dropped. The path is stored in
+  allowlist of `/`, `/library` (`q`, `tag`, `offset`), `/readings/:id`
+  (`view`), `/save`, `/inbox`, `/inbox/:id`, `/threads`, `/threads/:id`,
+  `/account/security`, and `/account/provider`, with other parameters
+  dropped; a stored `/` with library parameters is rewritten to `/library`.
+  The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
   cleared whenever it is consumed. Pages under `src/routes/_authed` redirect a
   signed-out reader to `/login?next=<URL>`; signed out, `/` shows the form in
@@ -162,14 +163,51 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   as it changes, and the daily limit may only be lowered, through
   `POST /api/auth/provider/preferences`; today's charges sit beside it and can
   be unavailable on their own.
-- **Library.** Signed in, `/` reads the page `?offset=` names from `GET /api/readings`
+- **Desk.** (reading-lite-kl7y.7) Signed in, `/` reads `GET /api/desk?since=`
+  during the server render through `BACKEND.desk` (`src/desk-query.ts`), and
+  renders its groups in order, each omitted when empty: Needs you (a rejected
+  key from the provider read, then failed readings and failed reprocesses with
+  the failure's headline, `needsYouLine`), Inbox (the five newest staged
+  items, read in the browser, then Show all when more are staged; a blocked
+  inbox read stays in that section), Processing (stage and saved time,
+  refreshed on the library's bounded schedule while any row is pending), On
+  your desk (slots, Start on the first, a take-off control on each, Clear the
+  desk), Ready since the visit's start (a Put on desk toggle on each), and
+  the provider tile, read in the browser. "Nothing needs you." with Save a
+  reading (Connect a key for a reader with none) and Library shows only when
+  the reading groups are empty and the inbox is empty. While that read is
+  still pending and the reading groups are empty, the desk withholds that
+  sentence and On your desk. "Ready since" comes from the
+  `rl_visit` cookie (`src/desk.ts`, `visitAt`): a first-party
+  `previous.latest` pair with no identity, like the theme, read on the
+  server, a new visit after two hours away, seven days on a first visit and
+  never more than fourteen, written by the browser after hydration. The
+  loader's visit is dehydrated with the page, so the server render and
+  hydration name the same date and the same "saved … ago". Signed out, `/`
+  is the sign-in form in place. The library's old address,
+  `/?q=&tag=&offset=`, redirects to `/library` with the same parameters.
+- **Desk toggles and the session bar.** Put on desk / Take off desk sit on
+  library cards and above a ready reading's title (reading-lite-kl7y.6). What
+  is on the desk is its own query (`src/on-desk-query.ts`): read from
+  `GET /api/desk` wherever a toggle or the session bar shows, set by the desk
+  page's read, and replaced by each write's answer. So a toggle is disabled
+  with "Three readings at a time" as soon as the desk is full, not only after
+  a 409. On a reading that is on the desk the session bar takes the toggle's
+  place: "On your desk · n of m", the next reading's title, Done and next (or
+  Done, clear the desk on the last), and Pause back to the desk. The reading
+  route reads what is on the desk during the server render, so the bar
+  renders whole.
+- **Library.** Signed in, `/library` reads the page `?offset=` names from `GET /api/readings`
   during the server render through `BACKEND.list` (`src/library-query.ts`), so
   it is dehydrated and hydration makes no list request; a client-side visit
   calls same-origin `/api/readings`. Both paths map the response in
   `src/library.ts` as reading detail does (403 and 412 are values, 401 and
   anything else throw) and pin the read with `x-expected-tenant`. Only `q`,
   `tag`, and `offset` cross the binding; the 20-row page size is the backend's.
-  Signed out, the loader reads nothing and the sign-in form renders in place.
+  It is under `src/routes/_authed`, so signed out it redirects to sign-in. A
+  Cards / Rows switch beside the heading picks a denser layout of the same
+  cards, kept in localStorage (`src/library-layout.ts`); the server renders
+  Cards.
   `src/library-search.ts` snaps `offset` as the legacy SPA does (parseInt,
   down to a 20-row page, the first page written without it) but keeps the
   URL's own string, so no spelling redirects. Previous and Next are links to
@@ -179,7 +217,8 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   past the fixture pack's 19 for pages two and three (`e2e/library-page.js`);
   the pack is unchanged.
   Each card is a title link (the URL when there is no title) stretched over
-  the card, the summary lead clamped at three lines, and the hostname; a
+  the card, the summary lead clamped at three lines, the hostname, and on a
+  ready card its novelty verdict and relationship counts; a
   reading that is not simply ready carries a text badge above the title
   (`src/library-card.ts`, #415): "Processing" for pending rows and running
   attempts, "Failed" with the failure category's headline, and "Reprocess
@@ -407,10 +446,11 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   "This item isn't in your inbox." page, and its 413 a notice with nothing to
   retry. "Discard…" deletes the item after a confirm dialog and returns to
   the inbox; it is sent at once even offline, and a failed one's Retry opens
-  the dialog again rather than resending. Either write drops the item from the
-  cached list and marks the inbox stale without refetching the item on screen,
-  which would answer 404 under a page that is leaving. A promote never sends
-  `email`.
+  the dialog again rather than resending. A discarded item, one that is gone,
+  or a promote the server did not retain leaves the cached list. A row that
+  stays, including a refused promote and one the server retained, reads its
+  item again. Both writes invalidate the exact inbox list and the desk. The
+  open item query stays mounted. A promote never sends `email`.
 - **Threads.** `/threads` and `/threads/:id` (reading-lite-kl7y.3) group the
   library by the connections and tensions between its readings. Both are under
   `src/routes/_authed`, and their loaders read the tenant's relationship graph
@@ -445,7 +485,7 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   door: beside the sign-in form, a sentence says what the service does and
   links the sample library. When tenant provider keys are on and the reader
   has no active key, `GET /api/whoami` says `needs_provider_key: true`; the
-  empty library then offers "Connect a key" (with the samples) instead of a
+  empty desk and the empty library then offer "Connect a key" instead of a
   save, and `/save` asks for a key above its form. A save, import, reprocess,
   or inbox promote the backend refuses with 409 `provider_key_required` is
   the capture refusal `key-required` (`src/capture-refusal.ts`): one sentence
@@ -467,21 +507,22 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
 `e2e/`. It serves the built Worker through Wrangler's test harness — the same
 arrangement as `test:smoke`, so Workers Assets and the `BACKEND` service
 binding are real — with `e2e/backend-stub.js` standing in for the backend. The
-stub answers `whoami` for a canned session and serves reading detail and the
-relationship graph from `e2e/fixtures/fixture-pack.json`, the fixture pack
-(#366) projected the way `GET /api/readings/:id` and
-`GET /api/readings/relationships` project it. The browser clock is pinned to the
+stub answers `whoami` for a canned session and serves reading detail, the
+desk and the relationship graph from `e2e/fixtures/fixture-pack.json`, the
+fixture pack (#366) projected the way `GET /api/readings/:id`,
+`GET /api/desk` (for a first visit) and `GET /api/readings/relationships`
+project it. The browser clock is pinned to the
 snapshot's `generated_at`, so the `pending` fixture stays pending and evidence
 is reproducible.
 
-Every route in `e2e/coverage.ts` — the library signed out and signed in,
-`/save`, the account page, a ready reading, `/threads`, and one thread — runs at 390 px and 1440 px in
+Every route in `e2e/coverage.ts` — the desk signed out and signed in, the
+library, `/save`, the account page, a ready reading, `/threads`, and one thread — runs at 390 px and 1440 px in
 light and dark, as one test per route and project: axe (WCAG 2.2 AA), a layout
 check that no positioned panel escapes the viewport, and the keyboard pass
 (skip link first, a visible focus indicator on every tab stop, no focus trap)
 fail the run. `e2e/specs/onboarding.spec.ts` (the `onboarding` project) walks a
-new reader from the signed-out front door through the samples, sign-in, and
-connecting a key to the first save, and checks on the way that the session
+new reader from the signed-out front door through the samples, sign-in, the
+empty desk, and connecting a key to the first save, and checks on the way that the session
 cookie is out of page script's reach, the key never reaches browser storage,
 and each write carries the CSRF token and the tenant pin. Screenshots go to
 `e2e/screenshots/` and are attached to the HTML report, which CI uploads for

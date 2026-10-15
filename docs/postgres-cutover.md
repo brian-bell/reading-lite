@@ -228,7 +228,7 @@ Restore the crons and resume the queues:
 
 ```sh
 curl -s -X PUT -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" \
-  -d '[{"cron":"*/15 * * * *"},{"cron":"7 3 * * *"}]' \
+  -d '[{"cron":"*/15 * * * *"},{"cron":"7 3 * * SUN"}]' \
   https://api.cloudflare.com/client/v4/accounts/$ACCT/workers/scripts/reading-lite/schedules
 for q in reading-lite reading-lite-dlq reading-lite-digest reading-lite-digest-dlq \
          reading-lite-wipe reading-lite-wipe-dlq reading-lite-refresh reading-lite-refresh-dlq; do

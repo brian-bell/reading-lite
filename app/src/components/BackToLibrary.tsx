@@ -6,7 +6,7 @@ import { useRenderedLocation } from "./rendered-location";
 // this one in this document load it goes back through history to that entry,
 // so the library returns with its filters, page, and scroll position, as
 // browser Back would — past any readings followed since. Otherwise (a direct
-// link, a reload, the server render) it is a link to `/`.
+// link, a reload, the server render) it is a link to `/library`.
 //
 // Both values come from the page on screen (useRenderedLocation): while a
 // followed reading is in flight the history position is already the next
@@ -23,7 +23,7 @@ export function BackToLibrary({ className }: { className?: string }) {
     );
   }
   return (
-    <Link className={className} to="/">
+    <Link className={className} to="/library">
       Back to library
     </Link>
   );

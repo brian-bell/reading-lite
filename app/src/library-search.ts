@@ -1,6 +1,6 @@
 import type { LibraryParams } from "./library";
 
-// The library's URL state, `/?q=&tag=&offset=` (acceptance matrix, Routes),
+// The library's URL state, `/library?q=&tag=&offset=` (acceptance matrix, Routes),
 // its pages (#414), and its filters (#417). Parameters stay the plain strings
 // the legacy SPA writes: `q` and `tag` are passed through as they are (the
 // backend trims and lowercases them), and `offset` is read with parseInt and
@@ -38,14 +38,21 @@ export interface LibrarySearch {
   [other: string]: string | undefined;
 }
 
+const LIBRARY_PARAMS = ["q", "tag", "offset"] as const;
+
 /** The route's validateSearch: the library's own parameters, as strings. */
 export function validateLibrarySearch(search: Record<string, unknown>): LibrarySearch {
   const out: LibrarySearch = {};
-  for (const name of ["q", "tag", "offset"] as const) {
+  for (const name of LIBRARY_PARAMS) {
     const value = search[name];
     if (typeof value === "string") out[name] = value;
   }
   return out;
+}
+
+/** Whether a URL names a library page: `/` with any of these is the library's old address. */
+export function hasLibraryParams(search: Record<string, unknown>): boolean {
+  return LIBRARY_PARAMS.some((name) => typeof search[name] === "string");
 }
 
 /** The URL's offset as the SPA reads it: anything but a positive integer is the first page. */

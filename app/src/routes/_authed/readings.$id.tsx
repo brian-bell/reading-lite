@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ReadingPage } from "../../components/ReadingPage";
+import { prefetchOnDesk } from "../../desk-query";
 import { whoamiQueryKey, type Identity } from "../../identity";
+import { readingQueryKey, type ReadingResult } from "../../reading";
 import { readingQueryOptions } from "../../reading-query";
 import { readingViewOf, validateReadingSearch } from "../../reading-view";
 
@@ -15,9 +17,16 @@ export const Route = createFileRoute("/_authed/readings/$id")({
   // Taking it from the cache keeps the tenant pin free of an extra round trip.
   // prefetchQuery never throws, so a 404 or an unavailable backend renders its
   // state in the page instead of failing the route.
-  loader: ({ context, params }) => {
-    const identity = context.queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-    return context.queryClient.prefetchQuery(readingQueryOptions(context.queryClient, params.id, identity));
+  // A reading on the desk has the session bar above its title, so what is on
+  // the desk is read after it, during the same render.
+  loader: async ({ context, params }) => {
+    const { queryClient } = context;
+    const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
+    await queryClient.prefetchQuery(readingQueryOptions(queryClient, params.id, identity));
+    const result = queryClient.getQueryData<ReadingResult>(readingQueryKey(params.id));
+    if (result?.state === "ready" && result.reading.desk_position !== undefined) {
+      await prefetchOnDesk(queryClient, identity);
+    }
   },
   head: () => ({ meta: [{ title: "Reading · Reading Lite" }] }),
   component: ReadingRoute,

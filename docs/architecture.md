@@ -252,8 +252,8 @@ Session auth still refreshes `last_seen_at`, as on any authenticated GET.
 Every prototype method is RPC-callable, so add one only for an allowlisted read.
 
 `src/index.ts` dispatches fetch, queue, and scheduled events. Cron runs every
-15 minutes for digest, wipe, stalled-export, and export-expiry work, with a separate gated nightly relationship
-scan at 03:07 UTC. The job families have separate queues and DLQs:
+15 minutes for digest, wipe, stalled-export, and export-expiry work, with a separate gated weekly relationship
+scan at Sunday 03:07 UTC. The job families have separate queues and DLQs:
 
 | Job | Consumer and completion |
 |---|---|

@@ -152,7 +152,7 @@ function SampleCallToAction() {
           : "These are sample readings. Sign in to save your own and see how they connect."}
       </p>
       {signedIn ? (
-        <Link to="/" className="button">
+        <Link to="/library" className="button">
           Open your library
         </Link>
       ) : (
