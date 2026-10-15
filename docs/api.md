@@ -153,13 +153,16 @@ staleness, grouped by the status staleness leaves them with.
 | Group | Rows | Order and bound |
 |---|---|---|
 | `on_desk` | The desk, any status | Position; at most 3 |
-| `needs_you` | Failed, or ready with a failed reprocess as `last_attempt` and no attempt running | Newest first; 20, plus `needs_you_total` |
+| `needs_you` | Failed, or ready with a failed reprocess as `last_attempt` and no attempt running. A ready reading leaves when that reprocess `finished_at` is more than 7 days before the request | Newest first; 20, plus `needs_you_total` |
 | `processing` | Pending | Newest first; 20, plus `processing_total` |
 | `ready_since` | Ready, `created_at` after `since`, not on the desk | Newest first; 10, plus `ready_since_total` |
 
 Without `since`, `ready_since` is empty and its total 0; a `since` that is not
-an ISO date-time is 400. A ready reading whose reprocess failed is in both
-`needs_you` and `ready_since`. The frontend's server render reads it through
+an ISO date-time is 400. A ready reading leaves `needs_you` when its failed
+reprocess `finished_at` is more than 7 days before the request, and it can
+still be in `ready_since`. Exactly 7 days stays, a missing `finished_at`
+stays, a running reprocess that has only passed the pending TTL stays, and
+`status: failed` is not aged. The frontend's server render reads it through
 `FrontendReads.desk`, with `since` from the reader's `rl_visit` cookie.
 
 ## Inbox routes

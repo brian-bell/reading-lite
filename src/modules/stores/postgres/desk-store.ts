@@ -25,6 +25,8 @@ import { LIST_COLUMNS, pgTenantId, present } from "./reading-store";
 
 type DeskGroup = "needs_you" | "processing" | "ready_since";
 
+export const NEEDS_YOU_REPROCESS_AGE_OUT_MS = 7 * 86_400_000;
+
 // Each row's status after src/modules/staleness.ts, in its order, and whether
 // its last attempt is then a failed reprocess. A batch-owned pending row is
 // never stale. A running attempt started before the cutoff ($2) has failed:
@@ -34,6 +36,7 @@ type DeskGroup = "needs_you" | "processing" | "ready_since";
 // no longer needs the reader.
 const EFFECTIVE_ROWS = `base AS (
   SELECT id, created_at, updated_at, status, active_attempt, last_attempt,
+         $7::timestamptz AS request_clock,
          coalesce(status = 'pending' AND active_attempt->>'id' LIKE 'batch\\_%'
            AND active_attempt->>'trigger' IN ('import', 'reprocess')
            AND active_attempt->>'status' = 'running' AND active_attempt->>'stage' = 'summarize', false) AS batch_owned,
@@ -49,7 +52,10 @@ const EFFECTIVE_ROWS = `base AS (
          CASE WHEN expired THEN active_attempt->>'trigger' = 'reprocess'
               ELSE coalesce(active_attempt->>'status' IS DISTINCT FROM 'running'
                 AND last_attempt->>'trigger' = 'reprocess' AND last_attempt->>'status' = 'failed', false)
-         END AS reprocess_failed
+         END AS reprocess_failed,
+         CASE WHEN expired THEN request_clock
+              ELSE (last_attempt->>'finished_at')::timestamptz
+         END AS last_finished_at
   FROM base
 )`;
 
@@ -105,11 +111,13 @@ export class PgDeskStore {
    * Rows are grouped by their status after read-time staleness, which
    * EFFECTIVE_ROWS mirrors in SQL so the bounds and totals are counted in the
    * database; the returned rows then take applyStaleness itself. A ready
-   * reading whose reprocess failed is in both needs_you and ready_since.
+   * reading whose reprocess failed is in ready_since, and in needs_you until
+   * that failure's finished_at is more than seven days before the request.
    */
   async read(opts: { since?: string; ttlSeconds: number }): Promise<GetDeskResponse> {
     const now = this.clock.now();
     const cutoff = new Date(Date.parse(now) - opts.ttlSeconds * 1000).toISOString();
+    const needsYouCutoff = new Date(Date.parse(now) - NEEDS_YOU_REPROCESS_AGE_OUT_MS).toISOString();
     const { onDesk, grouped } = await this.sql.transaction(
       async (tx) => ({
         onDesk: await tx.query(
@@ -121,7 +129,9 @@ export class PgDeskStore {
         grouped: await tx.query<SqlRow & { desk_group: DeskGroup; group_total: number }>(
           `WITH ${EFFECTIVE_ROWS}, grouped AS (
              SELECT id, created_at, 'needs_you' AS desk_group FROM effective
-             WHERE status = 'failed' OR (status = 'ready' AND reprocess_failed)
+             WHERE status = 'failed'
+                OR (status = 'ready' AND reprocess_failed
+                    AND NOT coalesce(last_finished_at < $8::timestamptz, false))
              UNION ALL
              SELECT id, created_at, 'processing' FROM effective WHERE status = 'pending'
              UNION ALL
@@ -147,6 +157,8 @@ export class PgDeskStore {
             DESK_GROUP_LIMITS.needs_you,
             DESK_GROUP_LIMITS.processing,
             DESK_GROUP_LIMITS.ready_since,
+            now,
+            needsYouCutoff,
           ],
         ),
       }),

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
+import { useNeedsYou, type NeedsYou } from "../src/needs-you-dismissals";
 import {
   FIRST_VISIT_MS,
   agoLabel,
@@ -142,5 +144,70 @@ describe("the session", () => {
       { id: "rd_e" },
     ]);
     expect(onDeskAfterWrite(undefined, ["rd_a"])).toEqual([{ id: "rd_a" }]);
+  });
+});
+
+describe("dismissing a Needs you row", () => {
+  afterEach(() => localStorage.clear());
+  const T0 = Date.UTC(2026, 9, 15, 3);
+  const failedReprocess = (attemptId: string) =>
+    row({ id: "rd_45XAY3N8MM", last_attempt: { ...attempt("reprocess", "failed", keyInvalid), id: attemptId } });
+  const failedReading = row({ id: "rd_failed", status: "failed", error: unreachable });
+  const deskOf = (...rows: LibraryRow[]) => ({ needs_you: rows, needs_you_total: rows.length + 9 });
+  const shown = ({ rows, total }: NeedsYou) => ({ ids: rows.map(({ row }) => row.id), total });
+  const render = (desk: ReturnType<typeof deskOf>, now: number) =>
+    renderHook((props) => useNeedsYou(props.desk, props.now), { initialProps: { desk, now } });
+
+  it("offers Dismiss only on a failed reprocess, hides it, and counts what is left", () => {
+    const { result } = render(deskOf(failedReprocess("at_1"), failedReading), T0);
+    expect(result.current.rows.map(({ dismiss }) => dismiss !== undefined)).toEqual([true, false]);
+    act(() => result.current.rows[0].dismiss!(T0));
+    expect(shown(result.current)).toEqual({ ids: ["rd_failed"], total: 10 });
+  });
+
+  it("shows the reading again when a newer reprocess fails", () => {
+    const { result, rerender } = render(deskOf(failedReprocess("at_1")), T0);
+    act(() => result.current.rows[0].dismiss!(T0));
+    rerender({ desk: deskOf(failedReprocess("at_2")), now: T0 + HOUR });
+    expect(shown(result.current)).toEqual({ ids: ["rd_45XAY3N8MM"], total: 10 });
+  });
+
+  it.each([
+    ["exactly seven days on, still dismissed", 7 * DAY, { ids: [], total: 9 }],
+    ["past seven days, pruned", 7 * DAY + 1, { ids: ["rd_45XAY3N8MM"], total: 10 }],
+  ])("%s", (_case, later, expected) => {
+    const desk = deskOf(failedReprocess("at_1"));
+    const { result, rerender } = render(desk, T0);
+    act(() => result.current.rows[0].dismiss!(T0));
+    rerender({ desk, now: T0 + later });
+    expect(shown(result.current)).toEqual(expected);
+  });
+
+  it("keeps the first dismissal's time, and forgets a pruned one", () => {
+    const desk = deskOf(failedReprocess("at_1"));
+    const { result, rerender } = render(desk, T0);
+    const { dismiss } = result.current.rows[0];
+    act(() => dismiss!(T0));
+    act(() => dismiss!(T0 + 5 * DAY));
+    rerender({ desk, now: T0 + 7 * DAY + 1 });
+    expect(shown(result.current), "a second click does not extend the seven days").toEqual({
+      ids: ["rd_45XAY3N8MM"],
+      total: 10,
+    });
+    act(() => result.current.rows[0].dismiss!(T0 + 7 * DAY + 1));
+    expect(shown(result.current), "the pruned entry is gone, so this one starts fresh").toEqual({ ids: [], total: 9 });
+  });
+
+  it.each([
+    ["unparseable", "{", { ids: ["rd_45XAY3N8MM", "rd_failed"], total: 11 }],
+    ["not an object", "[]", { ids: ["rd_45XAY3N8MM", "rd_failed"], total: 11 }],
+    [
+      "a malformed entry beside a good one",
+      JSON.stringify({ rd_other: { attempt_id: 1 }, rd_45XAY3N8MM: { attempt_id: "at_1", dismissed_at: T0 } }),
+      { ids: ["rd_failed"], total: 10 },
+    ],
+  ])("reads %s storage without throwing", (_case, stored, expected) => {
+    localStorage.setItem("reading-lite.needsYouDismissals", stored);
+    expect(shown(render(deskOf(failedReprocess("at_1"), failedReading), T0).result.current)).toEqual(expected);
   });
 });
