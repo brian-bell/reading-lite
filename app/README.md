@@ -185,7 +185,7 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   never more than fourteen, written by the browser after hydration. The
   loader's visit is dehydrated with the page, so the server render and
   hydration name the same date and the same "saved … ago". Signed out, `/`
-  is the sign-in form in place. The library's old address,
+  is the landing. The library's old address,
   `/?q=&tag=&offset=`, redirects to `/library` with the same parameters.
 - **Desk toggles and the session bar.** Put on desk / Take off desk sit on
   library cards and above a ready reading's title (reading-lite-kl7y.6). What
