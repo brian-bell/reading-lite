@@ -26,6 +26,7 @@ import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryRow } from "../library";
 import { libraryQueryOptions } from "../library-query";
 import { libraryBadge } from "../library-card";
+import { useNeedsYou } from "../needs-you-dismissals";
 import {
   FIRST_LIBRARY_PAGE,
   deskModeOf,
@@ -44,7 +45,7 @@ import { ConnectKeyLink } from "./ConnectKey";
 import { DeskInboxSection } from "./DeskInbox";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
-import { PageHeading, PageStateFocus } from "./PageHeading";
+import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { LandingPage } from "./LandingPage";
 import { Onboarding } from "./Onboarding";
@@ -190,7 +191,8 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
   const settings = provider.data?.state === "ready" ? provider.data.value : undefined;
   const keyRejected = settings?.credential?.status === "invalid";
   const now = visit.next.latest;
-  const needsYouCount = desk.needs_you_total + (keyRejected ? 1 : 0);
+  const needsYou = useNeedsYou(desk, now);
+  const needsYouCount = needsYou.total + (keyRejected ? 1 : 0);
   const quiet = deskQuietOf(
     {
       needsYou: needsYouCount,
@@ -212,10 +214,23 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
               </Link>
             </DeskRow>
           ) : null}
-          {desk.needs_you.map((row) => (
-            <DeskRow key={row.id} title={titleOf(row)} note={needsYouLine(row)} to={row.id} />
+          {needsYou.rows.map(({ row, dismiss }) => (
+            <DeskRow key={row.id} title={titleOf(row)} note={needsYouLine(row)} to={row.id}>
+              {dismiss ? (
+                <button
+                  type="button"
+                  className="button button-quiet"
+                  onClick={() => {
+                    focusPageHeading({ preventScroll: true });
+                    dismiss(Date.now());
+                  }}
+                >
+                  Dismiss
+                </button>
+              ) : null}
+            </DeskRow>
           ))}
-          <MoreRow shown={desk.needs_you.length} total={desk.needs_you_total} />
+          <MoreRow shown={needsYou.rows.length} total={needsYou.total} />
         </DeskSection>
       ) : null}
       <DeskInboxSection fold={inbox.fold} onRetry={inbox.retry} Section={DeskSection} />
