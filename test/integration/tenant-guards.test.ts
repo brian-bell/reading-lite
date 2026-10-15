@@ -2,9 +2,9 @@
 // another tenant's readings, sessions, tokens, provider keys and account, over
 // HTTP, MCP and the FrontendReads entrypoint, plus the cookie guards (Origin,
 // session-bound CSRF, no bearer-to-cookie fallback) every browser write passes,
-// the Anthropic key routes (mask only, that key's own credential version, and
-// the selection reset on remove), and the digest mail that leaves the system
-// with a tenant's readings in it.
+// the Anthropic key routes (mask only, that key's own credential version, the
+// selection reset on remove, and a deletion that lands during validation), and
+// the digest mail that leaves the system with a tenant's readings in it.
 //
 // The contract (docs/tenant-isolation-matrix.md): a foreign resource answers
 // exactly like an unknown one, collections hold only the caller's records, a
@@ -14,6 +14,7 @@
 
 import { env, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beginAccountDeletion } from "../../src/control-plane/account-delete";
 import { SESSION_COOKIE_NAME } from "../../src/control-plane/constants";
 import { deriveHmacKey, hmacHex, parseAuthRootSecret } from "../../src/control-plane/crypto";
 import type { DigestEnvelopeV1 } from "../../src/control-plane/digest-envelope";
@@ -884,5 +885,42 @@ describe("tenant guards", () => {
     } finally {
       for (const spy of spies) spy.mockRestore();
     }
+  });
+
+  it("does not store an Anthropic key when account deletion lands during validation", async () => {
+    const session = await signIn(FOUNDER_EMAIL, "clm_guards_anthropic_delete");
+    const providerEnv = { ...workerEnv, PROVIDER_KEY_SECRET: PROVIDER_SECRET };
+    const key = "sk-ant-guards-race-5555";
+    const db = testControlPlane(workerEnv);
+    const fetchImpl: typeof fetch = async (input) => {
+      if (String(input) !== ANTHROPIC_URL) throw new Error(`unexpected provider url ${String(input)}`);
+      const deleted = await beginAccountDeletion(db, { userId: FOUNDER_TENANT_ID, nowMs: Date.now() });
+      if (deleted.kind !== "started") throw new Error(`account deletion ${deleted.kind}`);
+      const status = await db.first<{ status: string }>("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID);
+      if (status?.status !== "deleting") throw new Error(`user status ${status?.status ?? "missing"}`);
+      const left = await db.all("SELECT provider FROM tenant_provider_credentials WHERE tenant_id = ?", FOUNDER_TENANT_ID);
+      if (left.length !== 0) throw new Error("credentials survived deletion");
+      return Response.json({ type: "model", id: workerEnv.ANTHROPIC_MODEL });
+    };
+    const { res } = await call("/api/auth/provider/anthropic", {
+      method: "POST",
+      cookie: session.cookie,
+      csrf: session.csrf,
+      body: { api_key: key },
+      fetch: fetchImpl,
+      env: providerEnv,
+    });
+    const text = await res.text();
+    expect(text.includes(key), "response body").toBe(false);
+    expect(res.status, text).toBe(403);
+    expect(JSON.parse(text)).toEqual({ error: "forbidden" });
+    expect(await db.first("SELECT status FROM users WHERE id = ?", FOUNDER_TENANT_ID)).toEqual({ status: "deleting" });
+    expect(
+      await db.all(
+        "SELECT provider, last_four FROM tenant_provider_credentials WHERE tenant_id = ?",
+        FOUNDER_TENANT_ID,
+      ),
+      "credential rows",
+    ).toEqual([]);
   });
 });
