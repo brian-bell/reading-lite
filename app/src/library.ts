@@ -9,6 +9,7 @@ import {
   type Declared,
   messageOf,
 } from "./reading";
+import type { Facet } from "./catalog";
 import { forwardedFrom, type BackendReads } from "./server/backend-reads";
 
 // The library's rows from GET /api/readings (#413), read through the backend
@@ -60,11 +61,20 @@ export interface LibraryPage {
 export interface LibraryParams {
   q?: string;
   tag?: string;
+  facet?: Facet;
   offset: number;
 }
 
 export function libraryQueryKey(params: LibraryParams): readonly unknown[] {
-  return ["library", { q: params.q || undefined, tag: params.tag || undefined, offset: params.offset }];
+  return [
+    "library",
+    {
+      q: params.q || undefined,
+      tag: params.tag || undefined,
+      ...(params.facet ? { facet: params.facet } : {}),
+      offset: params.offset,
+    },
+  ];
 }
 
 /**
@@ -102,6 +112,7 @@ export async function readLibraryFromBackend(
       ...forwardedFrom(request),
       ...(params.q ? { q: params.q } : {}),
       ...(params.tag ? { tag: params.tag } : {}),
+      ...(params.facet ? { facet: params.facet } : {}),
       offset: params.offset,
       ...(expectedTenant === undefined ? {} : { expectedTenant }),
     });

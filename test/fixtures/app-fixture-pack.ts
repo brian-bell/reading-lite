@@ -32,11 +32,13 @@ import {
   type GetReadingDiagnosticsResponse,
   type GetReadingRelationshipsResponse,
   type GetReadingResponse,
+  type GetReadingTermsResponse,
   type InboxItem,
   type ListIndex,
   type ListIndexItem,
   type RelationshipRow,
 } from "../../src/schemas/api";
+import { catalogIndexOf } from "./catalog-index";
 import { buildLocalSeed, LOCAL_SEED_REMOVED_TARGET_ID, type LocalSeedFixture } from "./local-seed";
 
 /** Seed clock for the snapshot, and the browser clock the suite pins. */
@@ -112,6 +114,7 @@ export interface AppFixturePack {
    * ready readings plus any reading at either end of one.
    */
   relationships: GetReadingRelationshipsResponse;
+  catalog_index: GetReadingTermsResponse;
   /** Referenced by `attention` but never written: the removed-target card. */
   removed_target_id: string;
   /**
@@ -216,6 +219,16 @@ export function buildAppFixturePack(nowIso: string = APP_FIXTURE_PACK_CLOCK): Ap
       plan.listIndex.items.map((item) => applyStaleness(item, PENDING_TTL_SECONDS, nowIso)),
       new Date(Date.parse(nowIso) - APP_FIXTURE_PACK_FIRST_VISIT_MS).toISOString(),
       nowIso,
+    ),
+    catalog_index: catalogIndexOf(
+      plan.fixtures.map((fixture) => ({
+        id: fixture.manifest.id,
+        url: fixture.manifest.url,
+        status: fixture.manifest.status,
+        people: fixture.manifest.people,
+        orgs: fixture.manifest.orgs,
+        keywords: fixture.manifest.keywords,
+      })),
     ),
     relationships: projectRelationshipGraph(
       {

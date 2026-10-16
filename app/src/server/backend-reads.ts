@@ -6,6 +6,8 @@
 // backend cannot set cookies through this binding. Server renders only: browser
 // code calls same-origin /api/* (src/api/client.ts).
 
+import type { Facet } from "../catalog";
+
 export type BackendReadResult = { status: number; body: unknown };
 
 export interface BackendReads {
@@ -18,15 +20,18 @@ export interface BackendReads {
     id: string;
     expectedTenant?: string;
   }): Promise<BackendReadResult>;
-  /** GET /api/readings with the library's filters and offset, optionally pinned. No page size. */
+  /** GET /api/readings with the library's filters, one facet, and offset, optionally pinned. No page size. */
   list(input: {
     cookie: string | null;
     host: string;
     q?: string;
     tag?: string;
+    facet?: Facet;
     offset?: number;
     expectedTenant?: string;
   }): Promise<BackendReadResult>;
+  /** GET /api/readings/terms, optionally pinned. */
+  terms(input: { cookie: string | null; host: string; expectedTenant?: string }): Promise<BackendReadResult>;
   /** GET /api/readings/relationships, optionally pinned. */
   relationships(input: { cookie: string | null; host: string; expectedTenant?: string }): Promise<BackendReadResult>;
   /** GET /api/desk, with `since` as an ISO timestamp, optionally pinned. */

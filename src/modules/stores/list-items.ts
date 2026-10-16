@@ -2,8 +2,8 @@
 // decides which of several readings for one URL owns it. PostgreSQL serves the
 // list (PgReadingStore); these are the shared, storage-free pieces.
 
+import type { Facet, ListIndexItem } from "../../schemas/api";
 import type { ManifestStatus } from "../../schemas/manifest";
-import type { ListIndexItem } from "../../schemas/api";
 
 export interface ListManifestsResult {
   readings: ListIndexItem[];
@@ -15,6 +15,7 @@ export interface ListManifestsParams {
   limit: number;
   q?: string;
   tag?: string;
+  facet?: Facet;
 }
 
 // URL-ownership preference when duplicate readings exist for one URL: a

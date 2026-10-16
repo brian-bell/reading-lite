@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useId } from "react";
+import { carryReturn } from "../library-return";
 import {
   connectionsComputedOn,
   relationshipCards,
@@ -164,12 +165,6 @@ function RelationshipCardView({
   );
 }
 
-/**
- * Following a relationship pushes a hop onto the trail the current location
- * carries, so the destination can say where the reader came from and why.
- * The way back to the library (library-return.ts) is carried on as it is, and
- * nothing else: a save notice belongs to the reading it was left on.
- */
 function FollowLink({
   card,
   from,
@@ -185,7 +180,7 @@ function FollowLink({
     <Link
       to={route}
       params={{ id: card.id }}
-      state={(prev) => ({ libraryReturn: prev?.libraryReturn, trail: trailAfterFollowing(current, hop) })}
+      state={(prev) => ({ ...carryReturn(prev), trail: trailAfterFollowing(current, hop) })}
     >
       {card.target!.title}
     </Link>

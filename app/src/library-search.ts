@@ -84,11 +84,11 @@ export function offsetParam(offset: number): string | undefined {
   return offset <= 0 ? undefined : String(offset);
 }
 
-/** The search for another page of the same library: filters kept, the offset written as offsetParam does. */
-export function searchForPage(search: LibrarySearch, offset: number): LibrarySearch {
+/** The search for another page of the same list: filters kept, the offset written as offsetParam does. */
+export function searchForPage<S extends LibrarySearch>(search: S, offset: number): S {
   const { offset: _current, ...filters } = search;
   const param = offsetParam(offset);
-  return param === undefined ? filters : { ...filters, offset: param };
+  return (param === undefined ? filters : { ...filters, offset: param }) as S;
 }
 
 /** A change to the filters: a key present is set, and set to nothing or empty is removed. */

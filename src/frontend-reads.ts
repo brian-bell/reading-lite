@@ -21,7 +21,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { z } from "zod";
 import { trustFrontendRead } from "./control-plane/frontend-read-trust";
 import { createApp } from "./router";
-import { EXPECTED_TENANT_HEADER } from "./schemas/api";
+import { EXPECTED_TENANT_HEADER, FACET_PARAM, TERM_KINDS } from "./schemas/api";
 import type { Env } from "./index";
 
 export type FrontendReadResult = { status: number; body: unknown };
@@ -44,6 +44,13 @@ const ReadingInputSchema = z
   })
   .strict();
 
+const FacetInputSchema = z
+  .object({
+    kind: z.enum(TERM_KINDS),
+    term: z.string().min(1).max(2048),
+  })
+  .strict();
+
 // Only the library's own parameters cross the binding. The page size is not
 // one: the list handler's default is the library's 20-row page.
 const ListInputSchema = z
@@ -52,12 +59,21 @@ const ListInputSchema = z
     host: HostSchema,
     q: z.string().max(2048).optional(),
     tag: z.string().max(2048).optional(),
+    facet: FacetInputSchema.optional(),
     offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
     expectedTenant: z.string().min(1).max(200).optional(),
   })
   .strict();
 
 const RelationshipsInputSchema = z
+  .object({
+    cookie: z.string().max(16_384).nullable(),
+    host: HostSchema,
+    expectedTenant: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+
+const TermsInputSchema = z
   .object({
     cookie: z.string().max(16_384).nullable(),
     host: HostSchema,
@@ -78,6 +94,7 @@ export type FrontendWhoamiInput = z.infer<typeof WhoamiInputSchema>;
 export type FrontendReadingInput = z.infer<typeof ReadingInputSchema>;
 export type FrontendListInput = z.infer<typeof ListInputSchema>;
 export type FrontendRelationshipsInput = z.infer<typeof RelationshipsInputSchema>;
+export type FrontendTermsInput = z.infer<typeof TermsInputSchema>;
 export type FrontendDeskInput = z.infer<typeof DeskInputSchema>;
 
 const INVALID: FrontendReadResult = { status: 400, body: { error: "invalid request" } };
@@ -107,15 +124,16 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
     );
   }
 
-  /** GET /api/readings for the session in `cookie`, with `q`, `tag`, and `offset`, optionally pinned. */
+  /** GET /api/readings for the session in `cookie`, with `q`, `tag`, one facet, and `offset`, optionally pinned. */
   async list(input: FrontendListInput): Promise<FrontendReadResult> {
     const parsed = ListInputSchema.safeParse(input);
     if (!parsed.success) return INVALID;
-    const { host, cookie, q, tag, offset, expectedTenant } = parsed.data;
+    const { host, cookie, q, tag, facet, offset, expectedTenant } = parsed.data;
     const query = new URLSearchParams();
     // Empty filters are omitted, as the SPA writes them.
     if (q) query.set("q", q);
     if (tag) query.set("tag", tag);
+    if (facet) query.set(FACET_PARAM[facet.kind], facet.term);
     if (offset !== undefined) query.set("offset", String(offset));
     const search = query.toString();
     return dispatch(
@@ -126,6 +144,14 @@ export class FrontendReads extends WorkerEntrypoint<Env> {
       cookie,
       pinned(expectedTenant),
     );
+  }
+
+  /** GET /api/readings/terms for the session in `cookie`, optionally pinned. */
+  async terms(input: FrontendTermsInput): Promise<FrontendReadResult> {
+    const parsed = TermsInputSchema.safeParse(input);
+    if (!parsed.success) return INVALID;
+    const { host, cookie, expectedTenant } = parsed.data;
+    return dispatch(this.env, this.ctx, host, "/api/readings/terms", cookie, pinned(expectedTenant));
   }
 
   /** GET /api/readings/relationships for the session in `cookie`, optionally pinned. */

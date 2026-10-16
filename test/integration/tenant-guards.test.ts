@@ -304,6 +304,12 @@ describe("tenant guards", () => {
     expect((ownGraph.body as { readings: { id: string }[] }).readings.map((r) => r.id)).toEqual([id]);
     const otherGraph = await reads.relationships({ cookie: otherSession.cookie, host });
     expect(otherGraph.body, "FrontendReads relationships").toEqual({ readings: [], relationships: [] });
+    expect((await reads.terms({ cookie: otherSession.cookie, host })).body, "FrontendReads terms").toEqual({
+      people: [],
+      orgs: [],
+      keywords: [],
+      hosts: [],
+    });
     const since = "1970-01-01T00:00:00.000Z";
     const ownDesk = await reads.desk({ cookie: founderSession.cookie, host, since });
     expect(ownDesk.status, "FrontendReads desk as owner").toBe(200);

@@ -64,7 +64,8 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 |---|---|
 | `POST /api/readings` | `{ url, email? }`; notification defaults to true and goes to the current verified account address |
 | `POST /api/readings/import-markdown` | `{ source_url, markdown, title?, email? }`; uses the URL for ownership and supplied Markdown for content. Email defaults to false; send-time import is always silent |
-| `GET /api/readings` | Newest-first list; `q` matches title/TLDR/URL/keywords by case-insensitive substring; `tag` is an exact case-insensitive tag. `offset` defaults to 0, `limit` to 20 with range 1 to 100. Returns `{ readings, limit, offset, has_more }` |
+| `GET /api/readings` | Newest-first list; `q` matches title/TLDR/URL/keywords by case-insensitive substring; `tag` is an exact case-insensitive tag. `person`, `org`, `keyword`, and `host` each match one term exactly and case-insensitively. At most one of those four may be non-blank, and two or more is 400. A blank value is ignored. `offset` defaults to 0, `limit` to 20 with range 1 to 100. Returns `{ readings, limit, offset, has_more }` |
+| `GET /api/readings/terms` | Ready readings only, one read, no query. Returns `{ people, orgs, keywords, hosts }`, each an array of `{ term, count }` |
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No claims, repair writes, or scans |
 | `GET /api/readings/relationships` | The tenant's relationship graph in one read: `{ readings, relationships }`. See [the relationships read](#the-relationships-read) |
 | `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |

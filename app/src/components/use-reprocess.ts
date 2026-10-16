@@ -6,6 +6,7 @@ import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
 import type { ReprocessMarkdownBody } from "../import-markdown";
 import { expectedLayoutOf, readingQueryKey } from "../reading";
+import { catalogIndexQueryKey } from "../catalog";
 import { relationshipsQueryKey } from "../relationships";
 import type { ReprocessOutcome } from "../reprocess";
 
@@ -105,6 +106,7 @@ export function useReprocess(id: string, processing: boolean): Reprocess {
         kind === "started" ? queryClient.invalidateQueries({ queryKey: ["library"] }) : undefined,
         kind === "started" ? queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT }) : undefined,
         kind === "started" ? queryClient.invalidateQueries({ queryKey: relationshipsQueryKey }) : undefined,
+        kind === "started" ? queryClient.invalidateQueries({ queryKey: catalogIndexQueryKey }) : undefined,
       ]);
     },
   });

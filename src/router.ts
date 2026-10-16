@@ -32,6 +32,7 @@ import {
   type DeskWriteResponse,
   type GetDeskResponse,
   type GetReadingRelationshipsResponse,
+  type GetReadingTermsResponse,
   type GetReadingResponse,
   type ListInboxResponse,
   type PostInboxExistingResponse,
@@ -415,9 +416,9 @@ export function createApp(opts: AppOptions = {}) {
     if (!parsed.success) {
       return c.json({ error: "invalid query", details: parsed.error.message }, 400);
     }
-    const { q, tag, offset, limit } = parsed.data;
+    const { q, tag, facet, offset, limit } = parsed.data;
     const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
-    const out = await store.listManifests({ q, tag, offset, limit });
+    const out = await store.listManifests({ q, tag, facet, offset, limit });
     const annotated = out.readings.map((item) =>
       applyStaleness(item, pendingTtlSeconds(c.env), services.now()),
     );
@@ -438,6 +439,12 @@ export function createApp(opts: AppOptions = {}) {
     const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
     const owner = await store.findOwnerByUrl(url);
     return owner ? c.json({ id: owner.id }) : c.json({ error: "not found" }, 404);
+  });
+
+  app.get("/api/readings/terms", requireScope("readings:read"), async (c) => {
+    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const body: GetReadingTermsResponse = await store.termsIndex();
+    return c.json(body);
   });
 
   // One side-effect-free read of the tenant's whole relationship graph, for

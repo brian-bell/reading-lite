@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CSRF_HEADER, apiFetch } from "../src/api/client";
 import { ApiError } from "../src/api/errors";
 import { LOGIN_NEXT_STORAGE_KEY, consumeReturnPath, rememberReturnPath, safeReturnPath } from "../src/auth/return-path";
+import { catalogEmptyCopy, catalogSearchOf, catalogViewOf } from "../src/catalog";
 import { createQueryClient, sessionEndedQueryKey } from "../src/auth/session";
 import { DeskToggle } from "../src/components/DeskToggle";
 import { ReadingSummary } from "../src/components/ReadingSummary";
@@ -88,6 +89,14 @@ describe("frontend guards", () => {
       ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
       ["/threads?view=source", "/threads"],
       ["/threads/rd_ONE?offset=20", "/threads/rd_ONE"],
+      ["/catalog", "/catalog"],
+      ["/catalog?kind=hosts&q=focus&offset=20", "/catalog?kind=hosts&q=focus&offset=20"],
+      ["/catalog?person=+&org=Acme&tag=ai&limit=10&mode=text", "/catalog?org=Acme"],
+      [
+        "/catalog?org=Acme&person=Ada&q=focus&kind=hosts&offset=20&tag=x&limit=5&mode=meaning",
+        "/catalog?kind=hosts&q=focus&offset=20&person=Ada",
+      ],
+      ["/catalog?keyword=Attention&host=example.com", "/catalog?keyword=Attention"],
     ]) {
       expect(safeReturnPath(raw), raw).toBe(expected);
     }
@@ -112,6 +121,45 @@ describe("frontend guards", () => {
     localStorage.setItem(LOGIN_NEXT_STORAGE_KEY, "https://evil.example");
     expect(consumeReturnPath("https://evil.example"), "a tampered stored path goes home").toBe("/");
     expect(localStorage.getItem(LOGIN_NEXT_STORAGE_KEY), "and is cleared").toBeNull();
+  });
+
+  it("reads a catalog URL as one view and writes that view back", () => {
+    expect(catalogViewOf({})).toEqual({ mode: "index", kind: "people" });
+    expect(catalogSearchOf({ mode: "index", kind: "people" })).toEqual({});
+    expect(catalogViewOf({ kind: "nope" })).toEqual({ mode: "index", kind: "people" });
+    expect(catalogViewOf({ kind: "keywords" })).toEqual({ mode: "index", kind: "keywords" });
+    expect(catalogSearchOf({ mode: "index", kind: "keywords" })).toEqual({ kind: "keywords" });
+    expect(catalogViewOf({ person: "   " })).toEqual({ mode: "index", kind: "people" });
+    expect(catalogViewOf({ org: "Acme", person: " Ada " })).toEqual({
+      mode: "term",
+      facet: { kind: "people", term: "Ada" },
+      offset: 0,
+    });
+    expect(catalogSearchOf({ mode: "term", facet: { kind: "people", term: "Ada" }, offset: 0 })).toEqual({
+      person: "Ada",
+    });
+    expect(catalogViewOf({ person: "Ada", q: "focus", kind: "hosts", offset: "40" })).toEqual({
+      mode: "term",
+      facet: { kind: "people", term: "Ada" },
+      q: "focus",
+      offset: 40,
+    });
+    expect(
+      catalogSearchOf({ mode: "term", facet: { kind: "people", term: "Ada" }, q: "focus", offset: 40 }),
+    ).toEqual({ person: "Ada", q: "focus", offset: "40" });
+    const found = catalogViewOf({ q: "focus", kind: "hosts", person: "   ", offset: "40" });
+    expect(found).toEqual({ mode: "text", q: "focus", kind: "hosts", offset: 40 });
+    expect(catalogSearchOf(found)).toEqual({ q: "focus", kind: "hosts", offset: "40" });
+    expect(catalogSearchOf({ mode: "text", q: "focus", kind: "people", offset: 0 })).toEqual({ q: "focus" });
+    expect(catalogEmptyCopy({ mode: "term", facet: { kind: "people", term: "Ada" }, offset: 0 })).toBe(
+      "No readings mention “Ada”.",
+    );
+    expect(catalogEmptyCopy({ mode: "text", q: "focus", kind: "people", offset: 0 })).toBe(
+      "No readings match “focus”.",
+    );
+    expect(catalogEmptyCopy({ mode: "term", facet: { kind: "people", term: "Ada" }, q: "focus", offset: 0 })).toBe(
+      "No readings mention “Ada” and match “focus”.",
+    );
   });
 
   // A 403 or a 5xx with a live session must not throw the reader out.

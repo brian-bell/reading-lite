@@ -9788,6 +9788,308 @@
     ],
     "ready_since_total": 3
   },
+  "catalog_index": {
+    "people": [
+      {
+        "term": "Alex Rivera",
+        "count": 2
+      },
+      {
+        "term": "Ines Halvorsen",
+        "count": 2
+      },
+      {
+        "term": "Julian Park",
+        "count": 2
+      },
+      {
+        "term": "Leah Chen",
+        "count": 1
+      },
+      {
+        "term": "Mara Ellis",
+        "count": 2
+      },
+      {
+        "term": "Nora Vale",
+        "count": 1
+      },
+      {
+        "term": "Tomas Reyes",
+        "count": 1
+      }
+    ],
+    "orgs": [
+      {
+        "term": "Adjacent",
+        "count": 1
+      },
+      {
+        "term": "Commonplace Press",
+        "count": 3
+      },
+      {
+        "term": "Quiet Build Studio",
+        "count": 1
+      },
+      {
+        "term": "Small Hours",
+        "count": 1
+      }
+    ],
+    "keywords": [
+      {
+        "term": "annotation",
+        "count": 2
+      },
+      {
+        "term": "archives",
+        "count": 2
+      },
+      {
+        "term": "archiving",
+        "count": 1
+      },
+      {
+        "term": "attention",
+        "count": 1
+      },
+      {
+        "term": "browser tabs",
+        "count": 1
+      },
+      {
+        "term": "build log",
+        "count": 1
+      },
+      {
+        "term": "commonplace book",
+        "count": 1
+      },
+      {
+        "term": "conversation",
+        "count": 1
+      },
+      {
+        "term": "creative work",
+        "count": 1
+      },
+      {
+        "term": "deferral",
+        "count": 1
+      },
+      {
+        "term": "deliberate reading",
+        "count": 1
+      },
+      {
+        "term": "dialogue",
+        "count": 1
+      },
+      {
+        "term": "digital gardens",
+        "count": 1
+      },
+      {
+        "term": "distraction",
+        "count": 1
+      },
+      {
+        "term": "excerpts",
+        "count": 1
+      },
+      {
+        "term": "friction",
+        "count": 1
+      },
+      {
+        "term": "future questions",
+        "count": 1
+      },
+      {
+        "term": "interruption",
+        "count": 1
+      },
+      {
+        "term": "link rot",
+        "count": 1
+      },
+      {
+        "term": "long reads",
+        "count": 1
+      },
+      {
+        "term": "maintenance",
+        "count": 1
+      },
+      {
+        "term": "marginalia",
+        "count": 1
+      },
+      {
+        "term": "memory",
+        "count": 1
+      },
+      {
+        "term": "note systems",
+        "count": 1
+      },
+      {
+        "term": "note-taking",
+        "count": 2
+      },
+      {
+        "term": "obligation",
+        "count": 1
+      },
+      {
+        "term": "organization",
+        "count": 1
+      },
+      {
+        "term": "paper",
+        "count": 2
+      },
+      {
+        "term": "paywalls",
+        "count": 1
+      },
+      {
+        "term": "personal library",
+        "count": 1
+      },
+      {
+        "term": "preservation",
+        "count": 1
+      },
+      {
+        "term": "printing",
+        "count": 1
+      },
+      {
+        "term": "product design",
+        "count": 1
+      },
+      {
+        "term": "productivity",
+        "count": 1
+      },
+      {
+        "term": "reading app",
+        "count": 1
+      },
+      {
+        "term": "reading interfaces",
+        "count": 1
+      },
+      {
+        "term": "reading later",
+        "count": 1
+      },
+      {
+        "term": "reading log",
+        "count": 1
+      },
+      {
+        "term": "reading queue",
+        "count": 2
+      },
+      {
+        "term": "rereading",
+        "count": 4
+      },
+      {
+        "term": "retrieval",
+        "count": 1
+      },
+      {
+        "term": "return visit",
+        "count": 1
+      },
+      {
+        "term": "revisiting",
+        "count": 1
+      },
+      {
+        "term": "saved pages",
+        "count": 1
+      },
+      {
+        "term": "saving",
+        "count": 1
+      },
+      {
+        "term": "second brain",
+        "count": 1
+      },
+      {
+        "term": "single question",
+        "count": 1
+      },
+      {
+        "term": "slow reading",
+        "count": 1
+      },
+      {
+        "term": "source durability",
+        "count": 1
+      },
+      {
+        "term": "tags",
+        "count": 1
+      },
+      {
+        "term": "tools",
+        "count": 1
+      },
+      {
+        "term": "tools for thought",
+        "count": 1
+      },
+      {
+        "term": "unread articles",
+        "count": 1
+      },
+      {
+        "term": "user control",
+        "count": 1
+      }
+    ],
+    "hosts": [
+      {
+        "term": "adjacent.example",
+        "count": 3
+      },
+      {
+        "term": "commonplace.example",
+        "count": 4
+      },
+      {
+        "term": "fieldnotes.example",
+        "count": 2
+      },
+      {
+        "term": "margin.example",
+        "count": 1
+      },
+      {
+        "term": "notes.example",
+        "count": 1
+      },
+      {
+        "term": "small-hours.example",
+        "count": 2
+      },
+      {
+        "term": "working-notes.example",
+        "count": 1
+      },
+      {
+        "term": "youtube.com",
+        "count": 1
+      }
+    ]
+  },
   "relationships": {
     "readings": [
       {
