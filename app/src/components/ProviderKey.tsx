@@ -38,6 +38,16 @@ export function isRefusal(outcome: { kind: string }): outcome is AccountRefusal 
   return outcome.kind === "forbidden" || outcome.kind === "account-changed";
 }
 
+function gateAfterOpenAiConnect(settings: ProviderSettings): {
+  needs_provider_key: boolean;
+  provider_key_provider: "anthropic" | null;
+} {
+  if (settings.summarization_provider === "anthropic" && settings.anthropic_credential?.status !== "active") {
+    return { needs_provider_key: true, provider_key_provider: "anthropic" };
+  }
+  return { needs_provider_key: false, provider_key_provider: null };
+}
+
 const KEY_STATUS: Record<KeyState["kind"], string> = {
   missing: "Not connected",
   removed: "Removed",
@@ -102,11 +112,12 @@ export function ProviderKeySection({
       setApiKey("");
       const cached = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
       if (needsProviderKey(cached) && (cached?.provider_key_provider ?? "openai") === "openai") {
-        setFirstKey(true);
+        const gate = gateAfterOpenAiConnect(outcome.settings);
+        if (!gate.needs_provider_key) setFirstKey(true);
         // An in-flight whoami can land after this write and put the flag back.
         await queryClient.cancelQueries({ queryKey: whoamiQueryKey });
         queryClient.setQueryData<Identity | null>(whoamiQueryKey, (current) =>
-          current ? { ...current, needs_provider_key: false, provider_key_provider: null } : current,
+          current ? { ...current, ...gate } : current,
         );
       }
       setRemovedHere(false);

@@ -22,10 +22,19 @@ const CredentialSchema = z.looseObject({
   validated_at_ms: z.number().nullable(),
 });
 
+interface ProviderCredential {
+  provider: string;
+  last_four: string;
+  status: "active" | "invalid";
+  validated_at_ms: number | null;
+}
+
 const Microdollars = z.number().int().positive();
 
 export const ProviderSettingsSchema = z.looseObject({
   credential: CredentialSchema.nullable(),
+  anthropic_credential: CredentialSchema.nullable().optional(),
+  summarization_provider: z.enum(["openai", "anthropic"]).optional(),
   effort: EffortSchema,
   daily_spend_cap_microdollars: Microdollars.nullable(),
   effective_daily_spend_microdollars: Microdollars,
@@ -33,12 +42,9 @@ export const ProviderSettingsSchema = z.looseObject({
 });
 /** The fields this app reads; the schema lets the rest pass through. */
 export interface ProviderSettings {
-  credential: {
-    provider: string;
-    last_four: string;
-    status: "active" | "invalid";
-    validated_at_ms: number | null;
-  } | null;
+  credential: ProviderCredential | null;
+  anthropic_credential?: ProviderCredential | null;
+  summarization_provider?: "openai" | "anthropic";
   effort: Effort;
   /** The reader's own cap, or null when they have not lowered it. */
   daily_spend_cap_microdollars: number | null;
