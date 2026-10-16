@@ -814,13 +814,14 @@ describe("the terms index and facets", () => {
     { id: "rd_c", status: "ready", url: "http://www.www.blog.test/c", people: ["mara ellis", "ada"], orgs: ["acme"], keywords: ["attention"] },
     { id: "rd_d", status: "pending", url: "https://pending.test/d", people: ["Zed"] },
     { id: "rd_e", status: "failed", url: "https://failed.test/e", orgs: ["Initech"] },
+    { id: "rd_f", status: "ready", url: "https://padded.test/f", people: [" Ada ", "   ", "\tAda", "\u00A0Ada"], keywords: [" focus ", " "] },
   ];
 
   const TERMS_EXPECTED = {
-    people: [{ term: "ada", count: 1 }, { term: "Mara Ellis", count: 3 }],
+    people: [{ term: "Ada", count: 2 }, { term: "Mara Ellis", count: 3 }],
     orgs: [{ term: "Acme", count: 2 }],
-    keywords: [{ term: "attention", count: 3 }, { term: "Focus", count: 1 }],
-    hosts: [{ term: "example.com", count: 2 }, { term: "www.blog.test", count: 1 }],
+    keywords: [{ term: "attention", count: 3 }, { term: "Focus", count: 2 }],
+    hosts: [{ term: "example.com", count: 2 }, { term: "padded.test", count: 1 }, { term: "www.blog.test", count: 1 }],
   } satisfies GetReadingTermsResponse;
 
   const FACET_CASES = [
@@ -832,6 +833,9 @@ describe("the terms index and facets", () => {
     ["/api/readings?person=zed", 200, ["rd_d"]],
     ["/api/readings?person=&org=ACME", 200, ["rd_c", "rd_a"]],
     ["/api/readings?person=ada&org=acme", 400, []],
+    ["/api/readings?person=Ada", 200, ["rd_f", "rd_c"]],
+    ["/api/readings?person=%20Ada%20", 200, ["rd_f", "rd_c"]],
+    ["/api/readings?keyword=%20focus%20", 200, ["rd_f", "rd_b"]],
   ] as const;
 
   async function seedTerms() {

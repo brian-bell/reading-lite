@@ -140,7 +140,13 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       // A click would leave Chromium's tab sequence on the term page.
       await page.goto(href);
       await expect(page.getByRole("heading", { level: 2, name: term, exact: true })).toBeVisible();
-      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
+      const readings = page.getByRole("list", { name: "Readings" });
+      await expect(readings.getByRole("listitem").first()).toBeVisible();
+      await readings.getByRole("link").first().click();
+      await page.getByRole("button", { name: "Back to catalog" }).click();
+      await expect(page.getByRole("heading", { level: 2, name: term, exact: true })).toBeVisible();
+      await page.goto(href);
+      await expect(page.getByRole("heading", { level: 2, name: term, exact: true })).toBeVisible();
     },
   },
   { name: "save-signed-in", anyHost: true, path: "/save", state: "signed-in", heading: "Save reading" },
