@@ -9,7 +9,7 @@
 // `anyHost` only if it expects nothing the stub or the pack supplies, so it
 // also passes against a deployed host (E2E_BASE_URL, #392).
 
-import { expect, type Page } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { externalBaseUrl } from "./harness";
 import { hostSession } from "./sessions";
@@ -133,6 +133,34 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await serveDeskInBrowser(page);
     },
     prepare: async (page) => {
+      const searches: string[] = [];
+      const recordSearch = (request: Request) => {
+        if (request.method() === "POST" && new URL(request.url()).pathname === "/api/readings/search") {
+          searches.push(request.postData() ?? "");
+        }
+      };
+      page.on("request", recordSearch);
+      try {
+        await page.waitForLoadState("networkidle");
+        const find = page.getByRole("search", { name: "Find readings" });
+        await find.getByRole("radio", { name: "Meaning" }).check();
+        await find.getByRole("searchbox", { name: "Find" }).fill("why quiet tools hold attention");
+        await find.getByRole("button", { name: "Find" }).click();
+        await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem")).toHaveText([
+          /^A quieter internet is a choice we can make\s*Close$/,
+          /^The case for a little friction\s*Near$/,
+          /^Against the endless queue\s*Faint$/,
+        ]);
+        expect(searches).toEqual([JSON.stringify({ query: "why quiet tools hold attention" })]);
+        await page.reload();
+        await expect(find.getByRole("searchbox", { name: "Find" })).toHaveValue("");
+        await expect(find.getByRole("radio", { name: "Text" })).toBeChecked();
+        await page.waitForLoadState("networkidle");
+        expect(searches, "a reload does not ask again").toHaveLength(1);
+      } finally {
+        page.off("request", recordSearch);
+      }
+
       const term = pack.catalog_index.people[0].term;
       const href = await page.getByRole("tabpanel").getByRole("link", { name: term, exact: true }).getAttribute("href");
       if (!href) throw new Error(`${term} has no catalog link`);
@@ -180,12 +208,17 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     heading: "A quieter internet is a choice we can make",
     fixture: "attention",
     // The thread strip reads the relationship graph after hydration
-    // (reading-lite-kl7y.3), so the page is measured with it in place.
+    // (reading-lite-kl7y.3), and More like this its similar readings
+    // (reading-lite-kl7y.5), so the page is measured with both in place.
     stub: (page) => serveReadingsInBrowser(page),
     prepare: async (page) => {
       const strip = page.getByRole("navigation", { name: "Thread" });
       await expect(strip.getByRole("link", { name: /^Earlier/ })).toBeVisible();
       await expect(strip.getByRole("link", { name: /^Later/ })).toBeVisible();
+      await expect(page.getByRole("region", { name: "More like this" }).getByRole("link")).toHaveText([
+        "Against the endless queue",
+        "Reading on paper, again",
+      ]);
     },
   },
   // The pack's two threads, its tension pairs, and the readings standing

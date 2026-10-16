@@ -20,6 +20,7 @@ import { readingSchedule } from "../status-refresh";
 import type { TrailHop } from "../reading-trail";
 import { saveNoticeOf } from "../save-notice";
 import type { SaveNotice } from "../save";
+import { useMoreLikeThis } from "../similar-readings-query";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { DeskToggle } from "./DeskToggle";
 import { SessionBar } from "./SessionBar";
@@ -207,7 +208,8 @@ function ReadingSurface({
   const saved = savedOn(reading.created_at);
   const source = sourceLabel(reading.source_type);
   const thread = useThreadOf(reading.id);
-  const context = hasRelationships(reading) || thread !== undefined;
+  const similar = useMoreLikeThis(reading);
+  const context = hasRelationships(reading) || thread !== undefined || similar.length > 0;
   const [confirming, setConfirming] = useState(false);
   const [importing, setImporting] = useState(false);
   const reprocessRef = useRef<HTMLButtonElement>(null);
@@ -320,7 +322,7 @@ function ReadingSurface({
         <ReadingNovelty reading={reading} />
         <ReadingDetails key={`details-${reading.id}`} reading={reading} />
       </article>
-      {context ? <ReadingContext reading={reading} thread={thread} /> : null}
+      {context ? <ReadingContext reading={reading} thread={thread} similar={similar} /> : null}
       {confirming ? (
         <ConfirmDialog
           title="Reprocess this reading?"
