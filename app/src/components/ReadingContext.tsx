@@ -165,12 +165,6 @@ function RelationshipCardView({
   );
 }
 
-/**
- * Following a relationship pushes a hop onto the trail the current location
- * carries, so the destination can say where the reader came from and why.
- * The way back to the list (library-return.ts) is carried on as it is, and
- * nothing else: a save notice belongs to the reading it was left on.
- */
 function FollowLink({
   card,
   from,

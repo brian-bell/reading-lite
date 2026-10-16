@@ -1,24 +1,3 @@
-// The way back to the list the reader opened (#407; design spec, Routes and
-// navigation state). A library card records `libraryReturn` and the button
-// says "Back to library". A catalog card records `catalogReturn` and the
-// button says "Back to catalog". With no record from this load, the button
-// is a link to `/library`.
-//
-// Opening a reading from a card records that entry's history position. The
-// reading, every relationship followed from it, and the Summary/Source
-// switch carry the record on. The button then goes back through history to
-// that entry, whose URL is the list the reader left, rather than pushing
-// that URL again: scroll
-// restoration keys positions by history entry, so only the entry itself
-// brings the library back where the reader left it, as browser Back does. From
-// a hopped-to reading that one step skips the readings in between, because the
-// reader asked for the library they started from, not the previous reading.
-//
-// Like the trail (reading-trail.ts) the record names the document load that
-// wrote it. A reload or a shared link carries none from this load, and neither
-// does a server render, so both render the plain link to `/library` and hydration has
-// nothing to disagree about.
-
 import type { HistoryState, ParsedHistoryState } from "@tanstack/history";
 import { currentLoadId } from "./reading-trail";
 
@@ -48,7 +27,6 @@ declare module "@tanstack/history" {
   }
 }
 
-/** The state a reading opened from the library or the catalog carries. */
 export function originReturnState(origin: ReturnOrigin) {
   return (
     from: Partial<ParsedHistoryState> | undefined,
@@ -83,7 +61,6 @@ export function readingReturn(
   return undefined;
 }
 
-/** Copies whichever list entry a later hop should keep. */
 export function carryReturn(
   prev: Partial<HistoryState> | undefined,
 ): Pick<HistoryState, "libraryReturn" | "catalogReturn"> {

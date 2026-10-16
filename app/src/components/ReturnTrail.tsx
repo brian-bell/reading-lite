@@ -3,16 +3,6 @@ import { carryReturn } from "../library-return";
 import { previousHop, trailAfterReturning, trailOf, type ReadingRoute, type TrailHop } from "../reading-trail";
 import { useRenderedLocation } from "./rendered-location";
 
-// The return trail above a reading reached by following a relationship
-// (design spec, Return trail): the previous title and reason, and a way back.
-//
-// "Back to {title}" is the browser's Back when there is history to go back
-// through, so the previous reading comes back with its own trail and scroll
-// position, exactly as the Back button would. Without that history (the
-// reader arrived here by a link whose state was set elsewhere) it is a link to
-// the previous reading carrying the trail popped by one hop, and the way back
-// to the library or the catalog (library-return.ts) unchanged.
-
 /**
  * The trail of the page on screen (useRenderedLocation): while a followed
  * reading is in flight the page being left would otherwise show the trail

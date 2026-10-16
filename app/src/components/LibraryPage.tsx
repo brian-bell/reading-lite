@@ -522,7 +522,6 @@ function LibraryCard({ row, search, origin }: { row: LibraryRow; search: Library
         </p>
       ) : null}
       <h2 className="library-card-title">
-        {/* Records this list entry, so the reading's back button returns here, scrolled as it was (#407). */}
         <Link to="/readings/$id" params={{ id: row.id }} state={originReturnState(origin)}>
           {row.title ?? row.url}
         </Link>
