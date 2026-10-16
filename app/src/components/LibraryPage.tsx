@@ -25,7 +25,7 @@ import {
   type LibraryEmpty,
   type LibrarySearch,
 } from "../library-search";
-import { libraryReturnState } from "../library-return";
+import { originReturnState, type ReturnOrigin } from "../library-return";
 import { libraryViewOf, type LibraryView } from "../library-state";
 import { isProcessing } from "../reading";
 import { DESK_QUERY_ROOT } from "../desk";
@@ -130,7 +130,7 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
  * for the attempt it watches. Nothing is fetched until a page that reads
  * them is open.
  */
-function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
+export function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
   const queryClient = useQueryClient();
   const processing = useRef<ReadonlySet<string>>(new Set());
   useEffect(() => {
@@ -147,7 +147,7 @@ function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
 }
 
 /** What the library's status watch follows: the page's query, while any row on it is active. */
-function libraryWatchKeyOf(data: LibraryResult | undefined, queryHash: string): string | null {
+export function libraryWatchKeyOf(data: LibraryResult | undefined, queryHash: string): string | null {
   if (data?.state !== "ready" || !data.page.readings.some(isProcessing)) return null;
   return queryHash;
 }
@@ -253,12 +253,20 @@ export function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolea
   }, [loading, loaded, saved]);
 }
 
-export function LibraryRows({ rows, search }: { rows: readonly LibraryRow[]; search: LibrarySearch }) {
+export function LibraryRows({
+  rows,
+  search,
+  origin = "library",
+}: {
+  rows: readonly LibraryRow[];
+  search: LibrarySearch;
+  origin?: ReturnOrigin;
+}) {
   const [layout] = useLibraryLayout();
   return (
     <ul className={layout === "rows" ? "library-list library-list-rows" : "library-list"} aria-label="Readings">
       {rows.map((row) => (
-        <LibraryCard key={row.id} row={row} search={search} />
+        <LibraryCard key={row.id} row={row} search={search} origin={origin} />
       ))}
     </ul>
   );
@@ -499,7 +507,7 @@ function normalizeTag(tag: string): string {
  * A reading with no title yet (pending, failed) is named by its URL. Long
  * titles wrap and are never truncated.
  */
-function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }) {
+function LibraryCard({ row, search, origin }: { row: LibraryRow; search: LibrarySearch; origin: ReturnOrigin }) {
   const badge = libraryBadge(row);
   const focusAfterFilterChange = useFocusAfterFilterChange();
   const activeTag = search.tag === undefined ? undefined : normalizeTag(search.tag);
@@ -514,8 +522,8 @@ function LibraryCard({ row, search }: { row: LibraryRow; search: LibrarySearch }
         </p>
       ) : null}
       <h2 className="library-card-title">
-        {/* Records this library entry, so the reading's "Back to library" returns here, scrolled as it was (#407). */}
-        <Link to="/readings/$id" params={{ id: row.id }} state={libraryReturnState}>
+        {/* Records this list entry, so the reading's back button returns here, scrolled as it was (#407). */}
+        <Link to="/readings/$id" params={{ id: row.id }} state={originReturnState(origin)}>
           {row.title ?? row.url}
         </Link>
       </h2>

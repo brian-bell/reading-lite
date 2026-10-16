@@ -102,11 +102,18 @@ const GraphReadingRowSchema = ListIndexItemSchema.pick({
 
 const HOST_OF_URL = String.raw`regexp_replace(lower(substring(url FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]]*\]|[^:/?#]*)')), '^www\.', '')`;
 
+// String.prototype.trim's whitespace, so a term the catalog URL trims still matches.
+const TERM_TRIM_CHARS = String.raw`U&'\0009\000A\000B\000C\000D\0020\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF'`;
+
+function trimmedTerms(source: string): string {
+  return `ARRAY(SELECT btrim(term, ${TERM_TRIM_CHARS}) FROM unnest(${source}) AS term WHERE btrim(term, ${TERM_TRIM_CHARS}) <> '')`;
+}
+
 const TERM_SOURCES = {
-  people: "people",
-  orgs: "orgs",
-  keywords: "keywords",
-  hosts: `ARRAY[${HOST_OF_URL}]`,
+  people: trimmedTerms("people"),
+  orgs: trimmedTerms("orgs"),
+  keywords: trimmedTerms("keywords"),
+  hosts: trimmedTerms(`ARRAY[${HOST_OF_URL}]`),
 } as const satisfies Record<TermKind, string>;
 
 const FACET_TERMS = `CASE $4 ${TERM_KINDS.map((kind) => `WHEN '${kind}' THEN ${TERM_SOURCES[kind]}`).join(" ")} END`;

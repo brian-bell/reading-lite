@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent, type ReactNode } from "react";
+import { NetworkError } from "../api/errors";
 import { accountViewOf, type AccountView } from "../account-state";
 import {
   KINDS,
@@ -18,12 +19,15 @@ import {
 import { catalogIndexQueryOptions } from "../catalog-query";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
+import type { LibraryResult } from "../library";
 import { libraryQueryOptions } from "../library-query";
 import { libraryViewOf, type LibraryView } from "../library-state";
+import { librarySchedule } from "../status-refresh";
 import { PageHeading, PageStateFocus } from "./PageHeading";
-import { LibraryRows, useScrollRestoredOnceRowsArrive } from "./LibraryPage";
+import { LibraryRows, libraryWatchKeyOf, useGraphRefreshOnSettle, useScrollRestoredOnceRowsArrive } from "./LibraryPage";
 import { PAGE_LINK_ACTIVE, Pager } from "./Pager";
-import { AccountChanged, Forbidden, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
+import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
+import { useStatusWatch } from "./use-status-watch";
 import { ViewTabs } from "./ViewTabs";
 
 export function CatalogHome({ search }: { search: CatalogSearch }) {
@@ -128,17 +132,30 @@ function CatalogResults({ search, view }: { search: CatalogSearch; view: Catalog
   const params = catalogListParams(view);
   const queryClient = useQueryClient();
   const identity = queryClient.getQueryData<Identity | null>(whoamiQueryKey);
-  const { data, error, fetchStatus, refetch } = useQuery(libraryQueryOptions(queryClient, params, identity));
-  const list = libraryViewOf({ data, error, fetchStatus });
+  const watch = useStatusWatch<LibraryResult>({ keyOf: libraryWatchKeyOf, schedule: librarySchedule });
+  const { data, error, fetchStatus, refetch } = useQuery(
+    libraryQueryOptions(queryClient, params, identity, watch.options),
+  );
+  useGraphRefreshOnSettle(data);
+  const checkFailed =
+    (watch.status === "watching" || watch.status === "failures") && !(error instanceof NetworkError && error.offline);
+  const list = libraryViewOf({ data, error: checkFailed ? null : error, fetchStatus });
+  const stoppedChecking = watch.status === "failures" && error !== null;
   const retry = () => void refetch();
   return (
     <PageStateFocus kind={list.kind}>
-      {resultsPage(list, view, search, retry)}
+      {resultsPage(list, view, search, retry, stoppedChecking)}
     </PageStateFocus>
   );
 }
 
-function resultsPage(list: LibraryView, view: CatalogListView, search: CatalogSearch, retry: () => void) {
+function resultsPage(
+  list: LibraryView,
+  view: CatalogListView,
+  search: CatalogSearch,
+  retry: () => void,
+  stoppedChecking: boolean,
+) {
   switch (list.kind) {
     case "forbidden":
       return <Forbidden />;
@@ -151,7 +168,7 @@ function resultsPage(list: LibraryView, view: CatalogListView, search: CatalogSe
         <div className="page catalog">
           <PageHeading>Catalog</PageHeading>
           <CatalogFind search={search} />
-          <CatalogList view={view} search={search} list={list} onRetry={retry} />
+          <CatalogList view={view} search={search} list={list} onRetry={retry} stoppedChecking={stoppedChecking} />
         </div>
       );
   }
@@ -162,11 +179,13 @@ function CatalogList({
   search,
   list,
   onRetry,
+  stoppedChecking,
 }: {
   view: CatalogListView;
   search: CatalogSearch;
   list: Extract<LibraryView, { kind: "loading" | "offline" | "ready" }>;
   onRetry: () => void;
+  stoppedChecking: boolean;
 }) {
   const page = list.kind === "loading" ? undefined : list.page;
   const empty = page !== undefined && page.readings.length === 0;
@@ -175,11 +194,12 @@ function CatalogList({
     <div className="catalog-results">
       <h2 className="catalog-heading">{view.mode === "term" ? view.facet.term : `Matching “${view.q}”`}</h2>
       {list.kind === "offline" ? <OfflineNotice onRetry={onRetry} /> : null}
+      {list.kind === "ready" && stoppedChecking ? <InlineNotice message="Couldn't check status." live={false} /> : null}
       {list.kind === "loading" ? <LoadingRegion className="library-message" /> : null}
       {page === undefined ? null : empty ? (
         <EmptyCatalog view={view} />
       ) : (
-        <LibraryRows rows={page.readings} search={{}} />
+        <LibraryRows rows={page.readings} search={{}} origin="catalog" />
       )}
       <Pager
         to="/catalog"

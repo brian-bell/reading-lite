@@ -59,13 +59,16 @@ export function catalogIndexOf(manifests: readonly CatalogReading[]): GetReading
     for (const manifest of manifests) {
       if (manifest.status !== "ready") continue;
       const seen = new Set<string>();
-      for (const term of termsOf(manifest, kind)) {
-        if (term === "" || seen.has(term)) continue;
-        seen.add(term);
+      for (const raw of termsOf(manifest, kind)) {
+        const term = raw.trim();
+        if (term === "") continue;
         const folded = term.toLowerCase();
-        const ids = foldedIds.get(folded) ?? new Set<string>();
-        ids.add(manifest.id);
-        foldedIds.set(folded, ids);
+        if (!seen.has(folded)) {
+          seen.add(folded);
+          const ids = foldedIds.get(folded) ?? new Set<string>();
+          ids.add(manifest.id);
+          foldedIds.set(folded, ids);
+        }
         const byTerm = spellings.get(folded) ?? new Map<string, Set<string>>();
         const termIds = byTerm.get(term) ?? new Set<string>();
         termIds.add(manifest.id);
