@@ -12,7 +12,7 @@
 // smoke/worker.test.ts.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import pack from "./fixtures/fixture-pack.json";
-import { libraryItems, libraryPage } from "./library-page.js";
+import { libraryItems, libraryPage, withReadingTerms } from "./library-page.js";
 
 // Sessions the suite signs in with. e2e/sessions.ts holds the cookie names the
 // browser sets; keep the two in step.
@@ -57,7 +57,8 @@ function sessionOf(cookie) {
   return SESSIONS[key];
 }
 
-const LIBRARY_ITEMS = libraryItems(pack.list_index.items);
+const LIBRARY_ITEMS = withReadingTerms(libraryItems(pack.list_index.items), pack.readings);
+const EMPTY_TERMS = { people: [], orgs: [], keywords: [], hosts: [] };
 
 export class FrontendReads extends WorkerEntrypoint {
   async whoami({ cookie }) {
@@ -65,11 +66,18 @@ export class FrontendReads extends WorkerEntrypoint {
     return identity ? { status: 200, body: identity } : { status: 401, body: { error: "unauthorized" } };
   }
 
-  async list({ cookie, q, tag, offset }) {
+  async list({ cookie, q, tag, offset, facet }) {
     const identity = sessionOf(cookie);
     if (!identity) return { status: 401, body: { error: "unauthorized" } };
     if (identity === NEW_READER) return { status: 200, body: EMPTY_LIBRARY };
-    return { status: 200, body: libraryPage(LIBRARY_ITEMS, { q, tag, offset }) };
+    return { status: 200, body: libraryPage(LIBRARY_ITEMS, { q, tag, offset, facet }) };
+  }
+
+  async terms({ cookie }) {
+    const identity = sessionOf(cookie);
+    if (!identity) return { status: 401, body: { error: "unauthorized" } };
+    if (identity === NEW_READER) return { status: 200, body: EMPTY_TERMS };
+    return { status: 200, body: pack.catalog_index };
   }
 
   // The /threads pages' server render: the pack's graph, or the new reader's

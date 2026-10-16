@@ -5,6 +5,7 @@ import { DESK_QUERY_ROOT } from "../desk";
 import { whoamiQueryKey, type Identity } from "../identity";
 import { hostnameOf, publishedOn, savedOn, sourceLabel } from "../reading-presentation";
 import { readingQueryOptions } from "../reading-query";
+import { catalogIndexQueryKey, catalogSearchOf } from "../catalog";
 import { relationshipsQueryKey } from "../relationships";
 import { relationshipsQueryOptions } from "../relationships-query";
 import { threadFor, threadsOf, type Thread } from "../threads";
@@ -155,6 +156,7 @@ function useOutcomeAnnouncement(id: string, data: ReadingResult | undefined): Sa
     void queryClient.invalidateQueries({ queryKey: ["library"] });
     void queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
     void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
+    void queryClient.invalidateQueries({ queryKey: catalogIndexQueryKey });
     void queryClient.invalidateQueries({ queryKey: sourceQueryKey(id) });
     void queryClient.invalidateQueries({ queryKey: diagnosticsQueryKey(id) });
     if (data?.state === "ready") setAnnounced({ text: outcomeText(data.reading) });
@@ -287,6 +289,7 @@ function ReadingSurface({
           ) : null}
         </div>
         <ReadingTags tags={reading.tags} />
+        <ReadingMentions people={reading.people} orgs={reading.orgs} />
         {context ? <ContextJump /> : null}
         {/* Always here, so a change to its text is announced (see SaveNoticeBanner). */}
         <p className="visually-hidden" role="status">
@@ -473,6 +476,41 @@ function ReadingViews({
       )}
     </ViewTabs>
   );
+}
+
+function ReadingMentions({ people, orgs }: { people: string[] | undefined; orgs: string[] | undefined }) {
+  const mentions = [...mentionTerms("people", people), ...mentionTerms("orgs", orgs)];
+  if (mentions.length === 0) return null;
+  return (
+    <div className="mentions">
+      <span className="mentions-label" aria-hidden="true">
+        Mentions
+      </span>
+      <ul className="mentions-list" aria-label="Mentions">
+        {mentions.map((mention, index) => (
+          <li key={`${mention.kind}:${index}`}>
+            <Link
+              className={`mention mention-${mention.kind}`}
+              to="/catalog"
+              search={catalogSearchOf({ mode: "term", facet: mention, offset: 0 })}
+            >
+              {mention.term}
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function mentionTerms(kind: "people" | "orgs", values: string[] | undefined): { kind: "people" | "orgs"; term: string }[] {
+  if (!values) return [];
+  const terms: { kind: "people" | "orgs"; term: string }[] = [];
+  for (const term of values) {
+    if (term.trim() === "") continue;
+    terms.push({ kind, term });
+  }
+  return terms;
 }
 
 /**

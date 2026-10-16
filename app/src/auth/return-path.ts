@@ -8,6 +8,8 @@
 // remembered it whenever /login rendered, so a transient signed-out render
 // after redemption stored it again (#369).
 
+import { KINDS, TERM_KINDS } from "../catalog";
+
 export const LOGIN_NEXT_STORAGE_KEY = "reading-lite.loginNext";
 export const ACCOUNT_SECURITY_PATH = "/account/security";
 export const ACCOUNT_PROVIDER_PATH = "/account/provider";
@@ -28,6 +30,7 @@ const THREAD_PATH = /^\/threads\/[A-Za-z0-9_-]+$/;
 const BASE = "https://return-path.invalid";
 
 const LIBRARY_PARAMS = ["q", "tag", "offset"] as const;
+const CATALOG_PARAMS = ["kind", "q", "offset"] as const;
 
 function allowedParams(pathname: string): readonly string[] | undefined {
   if (pathname === "/") return [];
@@ -37,6 +40,14 @@ function allowedParams(pathname: string): readonly string[] | undefined {
   if (pathname === "/threads" || THREAD_PATH.test(pathname)) return [];
   if (pathname === ACCOUNT_SECURITY_PATH || pathname === ACCOUNT_PROVIDER_PATH) return [];
   return undefined;
+}
+
+function catalogParams(url: URL): readonly string[] {
+  for (const kind of TERM_KINDS) {
+    const name = KINDS[kind].param;
+    if (url.searchParams.get(name)?.trim()) return [...CATALOG_PARAMS, name];
+  }
+  return CATALOG_PARAMS;
 }
 
 export function safeReturnPath(raw: string | null | undefined): string | undefined {
@@ -52,7 +63,7 @@ export function safeReturnPath(raw: string | null | undefined): string | undefin
   if (url.origin !== BASE) return undefined;
   // The library's old address: `/` with its parameters is the library now.
   if (url.pathname === "/" && LIBRARY_PARAMS.some((name) => url.searchParams.get(name))) url.pathname = "/library";
-  const allowed = allowedParams(url.pathname);
+  const allowed = url.pathname === "/catalog" ? catalogParams(url) : allowedParams(url.pathname);
   if (!allowed) return undefined;
   const kept = new URLSearchParams();
   for (const name of allowed) {

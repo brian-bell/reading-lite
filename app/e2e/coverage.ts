@@ -10,6 +10,7 @@
 // also passes against a deployed host (E2E_BASE_URL, #392).
 
 import { expect, type Page } from "@playwright/test";
+import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { externalBaseUrl } from "./harness";
 import { hostSession } from "./sessions";
 import {
@@ -119,6 +120,27 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(list.getByRole("listitem").first()).toBeVisible();
       await expect(list.getByText("Reprocess failed")).toBeVisible();
       await expect(list.getByRole("link", { name: /^What we lose when every tool/ })).toBeVisible();
+    },
+  },
+  {
+    name: "catalog",
+    path: "/catalog",
+    state: "signed-in",
+    heading: "Catalog",
+    stub: async (page) => {
+      await serveReadingsInBrowser(page);
+      await serveLibraryInBrowser(page);
+      await serveDeskInBrowser(page);
+    },
+    prepare: async (page) => {
+      const term = pack.catalog_index.people[0].term;
+      const href = await page.getByRole("tabpanel").getByRole("link", { name: term, exact: true }).getAttribute("href");
+      if (!href) throw new Error(`${term} has no catalog link`);
+      // A document load, so the keyboard walk still starts at the skip link.
+      // A click would leave Chromium's tab sequence on the term page.
+      await page.goto(href);
+      await expect(page.getByRole("heading", { level: 2, name: term, exact: true })).toBeVisible();
+      await expect(page.getByRole("list", { name: "Readings" }).getByRole("listitem").first()).toBeVisible();
     },
   },
   { name: "save-signed-in", anyHost: true, path: "/save", state: "signed-in", heading: "Save reading" },

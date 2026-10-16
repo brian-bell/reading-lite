@@ -47,12 +47,43 @@ export function libraryItems(items) {
   return [...items, ...archive];
 }
 
-export function libraryPage(items, { q, tag, offset } = {}) {
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function matchesFacet(item, facet) {
+  if (facet == null) return true;
+  const term = typeof facet.term === "string" ? facet.term.trim().toLowerCase() : "";
+  if (term === "") return true;
+  if (facet.kind === "hosts") return hostOf(item.url) === term;
+  const values = item[facet.kind];
+  return Array.isArray(values) && values.some((value) => String(value).toLowerCase() === term);
+}
+
+export function withReadingTerms(items, readings) {
+  return items.map((item) => {
+    const reading = readings?.[item.id];
+    if (!reading) return item;
+    return {
+      ...item,
+      people: item.people ?? reading.people ?? [],
+      orgs: item.orgs ?? reading.orgs ?? [],
+      keywords: item.keywords ?? reading.keywords ?? [],
+    };
+  });
+}
+
+export function libraryPage(items, { q, tag, offset, facet } = {}) {
   const query = (q ?? "").trim().toLowerCase();
   const wanted = (tag ?? "").trim().toLowerCase();
   const start = offset ?? 0;
   const filtered = items
     .filter((item) => {
+      if (!matchesFacet(item, facet)) return false;
       if (query !== "") {
         const hay = [item.title ?? "", item.tldr ?? "", item.url, ...(item.keywords ?? [])].join("\n").toLowerCase();
         if (!hay.includes(query)) return false;

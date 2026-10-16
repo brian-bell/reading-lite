@@ -23,7 +23,19 @@ export interface LibraryPageBody<T> {
   has_more: boolean;
 }
 
+export interface CatalogFacet {
+  kind: "people" | "orgs" | "keywords" | "hosts";
+  term: string;
+}
+
+export declare function withReadingTerms<T extends { id: string }>(
+  items: readonly T[],
+  readings: Readonly<
+    Record<string, { id: string; people?: readonly string[]; orgs?: readonly string[]; keywords?: readonly string[] }>
+  >,
+): T[];
+
 export declare function libraryPage<T extends { url: string; created_at: string }>(
   items: readonly T[],
-  params?: { q?: string; tag?: string; offset?: number },
+  params?: { q?: string; tag?: string; offset?: number; facet?: CatalogFacet },
 ): LibraryPageBody<T>;

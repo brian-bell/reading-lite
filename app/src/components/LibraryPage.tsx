@@ -7,7 +7,6 @@ import {
   useLayoutEffect,
   useRef,
   useState,
-  type FocusEvent,
   type FormEvent,
   type RefObject,
 } from "react";
@@ -18,11 +17,9 @@ import type { LibraryResult, LibraryRow } from "../library";
 import { libraryBadge } from "../library-card";
 import { libraryQueryOptions } from "../library-query";
 import {
-  LIBRARY_PAGE_SIZE,
   libraryEmptyCopy,
   libraryEmptyOf,
   libraryParamsOf,
-  pageNumber,
   searchForFilters,
   searchForPage,
   type LibraryEmpty,
@@ -34,13 +31,15 @@ import { isProcessing } from "../reading";
 import { DESK_QUERY_ROOT } from "../desk";
 import { useLibraryLayout } from "../library-layout";
 import { hostnameOf, noveltyLabel } from "../reading-presentation";
+import { catalogIndexQueryKey } from "../catalog";
 import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
 import { relationshipCount } from "../threads";
 import { ConnectKeyLink } from "./ConnectKey";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
-import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
+import { PageHeading, PageStateFocus } from "./PageHeading";
+import { PAGE_LINK_ACTIVE, Pager } from "./Pager";
 import { AccountChanged, Forbidden, InlineNotice, LoadingRegion, OfflineNotice, ServerError } from "./ReadingStates";
 import { useStatusWatch } from "./use-status-watch";
 
@@ -126,10 +125,10 @@ export function LibraryPage({ search }: { search: LibrarySearch }) {
 
 /**
  * A row this page saw processing that has since settled may have joined the
- * relationship graph and moved between the desk's groups, neither of which
- * goes stale on its own (relationships-query.ts, desk-query.ts), so both are
- * invalidated, as the reading page does for the attempt it watches. Nothing
- * is fetched until a page that reads them is open.
+ * relationship graph, the catalog index, and the desk's groups, none of which
+ * goes stale on its own, so they are invalidated, as the reading page does
+ * for the attempt it watches. Nothing is fetched until a page that reads
+ * them is open.
  */
 function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
   const queryClient = useQueryClient();
@@ -141,6 +140,7 @@ function useGraphRefreshOnSettle(data: LibraryResult | undefined) {
     processing.current = new Set(rows.filter(isProcessing).map((row) => row.id));
     if (rows.some((row) => was.has(row.id) && !processing.current.has(row.id))) {
       void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: catalogIndexQueryKey });
       void queryClient.invalidateQueries({ queryKey: DESK_QUERY_ROOT });
     }
   }, [data, queryClient]);
@@ -224,7 +224,7 @@ function LibraryContent({
         <LibraryRows rows={page.readings} search={search} />
       )}
       {empty ? null : (
-        <Pager search={search} offset={offset} hasMore={page === undefined ? view.kind === "loading" : page.has_more} />
+        <Pager to="/library" search={search} offset={offset} hasMore={page === undefined ? view.kind === "loading" : page.has_more} />
       )}
     </>
   );
@@ -239,7 +239,7 @@ function LibraryContent({
  * applies the position saved for this history entry, if there is one. A new
  * navigation's entry has none and stays at the top.
  */
-function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolean): void {
+export function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolean): void {
   const saved = useElementScrollRestoration({ getElement: () => (typeof window === "undefined" ? undefined : window) });
   const waited = useRef(false);
   useLayoutEffect(() => {
@@ -253,7 +253,7 @@ function useScrollRestoredOnceRowsArrive(loading: boolean, loaded: boolean): voi
   }, [loading, loaded, saved]);
 }
 
-function LibraryRows({ rows, search }: { rows: readonly LibraryRow[]; search: LibrarySearch }) {
+export function LibraryRows({ rows, search }: { rows: readonly LibraryRow[]; search: LibrarySearch }) {
   const [layout] = useLibraryLayout();
   return (
     <ul className={layout === "rows" ? "library-list library-list-rows" : "library-list"} aria-label="Readings">
@@ -472,83 +472,6 @@ function EmptyLibrary({ empty, search }: { empty: LibraryEmpty; search: LibraryS
 }
 
 const NO_READINGS_NO_KEY = "No readings yet. Connect your OpenAI key, then save your first reading.";
-
-// Another page's link is never the current page. By default the router counts
-// `/` as active on every page of the library, since no search is a subset of
-// any, and marks Previous with aria-current.
-const PAGE_LINK_ACTIVE = { exact: true, includeSearch: true } as const;
-
-/**
- * Previous, the page number, and Next. The page number follows the snapped
- * offset asked for, and Next `hasMore`: the backend's `has_more`, or, while
- * the page is still being read, assumed, so a reader stepping forward keeps
- * the control they are on. Offline with nothing loaded, nothing is assumed.
- * A step that cannot be followed stays in place, disabled, so the pager
- * never shifts.
- *
- * The step a reader just followed is usually the one that becomes unavailable
- * on arrival: Next into the last page, Previous back to the first. Losing its
- * href makes the browser blur it, and their next Tab would start again at the
- * top of the document, so the page number takes the focus, naming the page
- * they landed on and leaving Tab where they were. Only that blur: focus
- * leaving for somewhere else carries a relatedTarget, and a step a reader can
- * still follow is not disabled.
- *
- * When the page that arrives has no rows at all, the pager goes with them.
- * If the step that led there still had focus, the heading takes it as the
- * pager unmounts, for the same reason: the layout cleanup runs while the step
- * is still in the document to ask.
- */
-function Pager({ search, offset, hasMore }: { search: LibrarySearch; offset: number; hasMore: boolean }) {
-  const nav = useRef<HTMLElement>(null);
-  const pageLabel = useRef<HTMLSpanElement>(null);
-  const keepFocusInPager = (event: FocusEvent<HTMLElement>) => {
-    if (event.relatedTarget === null && event.target.getAttribute("aria-disabled") === "true") {
-      pageLabel.current?.focus();
-    }
-  };
-  useLayoutEffect(
-    () => () => {
-      if (nav.current?.contains(document.activeElement)) focusPageHeading();
-    },
-    [],
-  );
-
-  return (
-    <nav className="library-pager" aria-label="Pagination" onBlur={keepFocusInPager} ref={nav}>
-      <PagerStep label="Previous" search={offset > 0 ? searchForPage(search, offset - LIBRARY_PAGE_SIZE) : null} />
-      <span className="library-pager-page" ref={pageLabel} tabIndex={-1}>
-        Page {pageNumber(offset)}
-      </span>
-      <PagerStep label="Next" search={hasMore ? searchForPage(search, offset + LIBRARY_PAGE_SIZE) : null} />
-    </nav>
-  );
-}
-
-/**
- * One step: a link while there is a page that way, and the same element
- * disabled when there isn't. Not preloaded: after a click, the pointer and
- * focus stay on Next, whose href then names the following page, and a
- * loading state's shorter pager can slide that control back under the
- * cursor. That pass is not intent to read the neighbour, same as a pointer
- * or Tab crossing a page of tag links.
- */
-function PagerStep({ label, search }: { label: string; search: LibrarySearch | null }) {
-  return (
-    <Link
-      to="/library"
-      // A disabled link has no href, so the search is only read for a step
-      // that can be followed.
-      search={search ?? {}}
-      disabled={search === null}
-      activeOptions={PAGE_LINK_ACTIVE}
-      preload={false}
-      className="button library-pager-step"
-    >
-      {label}
-    </Link>
-  );
-}
 
 /** A tag as the backend compares it (src/modules/stores/list-index.ts): trimmed, case-insensitive. */
 function normalizeTag(tag: string): string {

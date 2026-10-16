@@ -6,7 +6,7 @@ import { test as base, expect, type BrowserContext, type Page, type Request } fr
 import type { EvidenceCase } from "./coverage";
 import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { harnessBaseUrl } from "./harness";
-import { libraryItems, libraryPage } from "./library-page.js";
+import { libraryItems, libraryPage, withReadingTerms } from "./library-page.js";
 import { SESSION_COOKIE_VALUE, sessionCookieName } from "./sessions";
 
 export type ThemeOption = "system" | "light" | "dark";
@@ -61,8 +61,10 @@ export async function serveReadingsInBrowser(
 ): Promise<void> {
   await page.route("**/api/readings/*", async (route) => {
     const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
-    // The reading page's thread strip reads the graph after hydration; it is
-    // not a reading.
+    if (id === "terms") {
+      await route.fulfill({ status: 200, json: pack.catalog_index });
+      return;
+    }
     if (id === "relationships") {
       await route.fulfill({ status: 200, json: pack.relationships });
       return;
@@ -93,6 +95,23 @@ export async function serveReadingsInBrowser(
  * between calls, and it is given the request's URL to page by. `delayMs`
  * holds the answer back, so the page's loading state is on screen first.
  */
+const FACET_PARAMS = [
+  ["person", "people"],
+  ["org", "orgs"],
+  ["keyword", "keywords"],
+  ["host", "hosts"],
+] as const;
+
+function facetFromSearch(
+  params: URLSearchParams,
+): { kind: "people" | "orgs" | "keywords" | "hosts"; term: string } | undefined {
+  for (const [param, kind] of FACET_PARAMS) {
+    const term = params.get(param)?.trim();
+    if (term) return { kind, term };
+  }
+  return undefined;
+}
+
 export async function serveLibraryInBrowser(
   page: Page,
   requests: string[] = [],
@@ -108,10 +127,11 @@ export async function serveLibraryInBrowser(
       return;
     }
     const offset = url.searchParams.get("offset");
-    const body = libraryPage(libraryItems(pack.list_index.items), {
+    const body = libraryPage(withReadingTerms(libraryItems(pack.list_index.items), pack.readings), {
       q: url.searchParams.get("q") ?? undefined,
       tag: url.searchParams.get("tag") ?? undefined,
       offset: offset === null ? 0 : Number(offset),
+      facet: facetFromSearch(url.searchParams),
     });
     await route.fulfill({ status: 200, json: body });
   });

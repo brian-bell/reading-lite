@@ -60,6 +60,12 @@ export function AppShell({
                   </Link>
                 </li>
                 <li>
+                  <Link to="/catalog" className="nav-item" activeOptions={{ includeSearch: false }}>
+                    <Icon name="catalog" size={22} />
+                    <span>Catalog</span>
+                  </Link>
+                </li>
+                <li>
                   <Link to="/save" className="nav-item">
                     <Icon name="plus" size={22} />
                     {/* The column shows "Save"; the bar has room for the rest. */}

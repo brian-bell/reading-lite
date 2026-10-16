@@ -39,6 +39,7 @@ import { formatUsd, keyStateOf, type ProviderSettings, type ProviderUsage } from
 import { providerQueryOptions, providerUsageQueryOptions } from "../provider-query";
 import { expectedLayoutOf } from "../reading";
 import { dateOn, hostnameOf } from "../reading-presentation";
+import { catalogIndexQueryKey } from "../catalog";
 import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
 import { ConnectKeyLink } from "./ConnectKey";
@@ -141,6 +142,7 @@ function useGraphRefreshOnSettle(data: DeskResult | undefined) {
     processing.current = new Set(data.value.processing.map((row) => row.id));
     if ([...was].some((id) => !processing.current.has(id))) {
       void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
+      void queryClient.invalidateQueries({ queryKey: catalogIndexQueryKey });
       void queryClient.invalidateQueries({ queryKey: ["library"] });
     }
   }, [data, queryClient]);
