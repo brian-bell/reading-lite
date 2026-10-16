@@ -70,7 +70,8 @@ export interface PaidFetchDeps {
   tenantId: string;
   attemptId: string;
   // "operator" labels offline operator commands, which have no pipeline stage.
-  stage: "embed_source" | "summarize" | "embed_summary" | "operator";
+  // "embed_query" is a reader's meaning search, which has no reading.
+  stage: "embed_source" | "summarize" | "embed_summary" | "embed_query" | "operator";
   fetch: typeof fetch;
   rpc: SpendRpc;
   now: () => number;

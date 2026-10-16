@@ -620,6 +620,77 @@ describe("spend guards", () => {
     }
   });
 
+  // A question needs only an OpenAI key, whatever summarizer the reader chose,
+  // so each row selects Anthropic and holds the other provider's key.
+  it.each<{
+    name: string;
+    openaiKey: string | null;
+    anthropicKey: string | null;
+    status: number;
+    body: unknown;
+    events: string[];
+  }>([
+    {
+      name: "meaning search with an Anthropic key and no OpenAI key is refused before the lease or any reservation",
+      openaiKey: null,
+      anthropicKey: "sk-ant-search-1111",
+      status: 409,
+      body: { error: "connect a key, then retry", code: "provider_key_required" },
+      events: [],
+    },
+    {
+      name: "meaning search with an OpenAI key and no Anthropic key pays once under its lease, then reads above the floor",
+      openaiKey: "sk-openai-search-2222",
+      anthropicKey: null,
+      status: 200,
+      body: { items: ["rd_near"] },
+      events: ["acquire_lease", "renew_lease", "reserve_spend", "mark_spend_dispatched", "fetch", "settle_spend", "release_lease"],
+    },
+  ])("$name", async (row) => {
+    const { tenantId, token } = await newTenant();
+    await sql("UPDATE user_settings SET summarization_provider = 'anthropic' WHERE user_id = ?", tenantId);
+    if (row.openaiKey) await storeKey(tenantId, row.openaiKey);
+    if (row.anthropicKey) await storeKey(tenantId, row.anthropicKey, "anthropic");
+    const readings = testReadingsFor(tenantOf(tenantId));
+    await readings.seedListItems(["rd_near", "rd_far"].map((id) => ({
+      id,
+      key_prefix: buildKeyPrefix(id, CREATED_AT),
+      url: `https://search.example/${id}`,
+      status: "ready" as const,
+      created_at: CREATED_AT,
+    })));
+    // One axis against embeddingResponse's uniform vector scores about 0.03.
+    await readings.putEmbedding("rd_far", Array.from({ length: 1536 }, (_, i) => (i === 0 ? 1 : 0)));
+    const events: string[] = [];
+    const restore = interceptGuard("GLOBAL_USAGE_GUARD", async (body, next) => {
+      events.push(String(body.kind));
+      // Written only as the spend settles, so a read made before settlement
+      // cannot find it.
+      if (body.kind === "settle_spend") await readings.putEmbedding("rd_near", new Array(1536).fill(0.1));
+      return next();
+    });
+    const fetchFn = vi.fn<typeof fetch>(async () => {
+      events.push("fetch");
+      return embeddingResponse();
+    });
+    try {
+      const res = await createApp({ services: services(fetchFn) }).request(
+        "/api/readings/search",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ query: "why quiet tools hold attention" }),
+        },
+        keysOn(),
+      );
+      const json = (await res.json()) as { items?: { id: string }[] };
+      const body = json.items ? { items: json.items.map((item) => item.id) } : json;
+      expect({ status: res.status, body, events }).toEqual({ status: row.status, body: row.body, events: row.events });
+    } finally {
+      restore();
+    }
+  });
+
   it("intake refuses paid work it cannot admit and claims nothing", async () => {
     const rows: Array<{
       name: string;

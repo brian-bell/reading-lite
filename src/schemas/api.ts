@@ -327,6 +327,14 @@ export const PostReadingsSimilarBodySchema = z.object({
 });
 export type PostReadingsSimilarBody = z.infer<typeof PostReadingsSimilarBodySchema>;
 
+// POST /api/readings/search: a reader's question, embedded once and compared
+// with their readings. The frontend mirrors the cap for the field's maxLength.
+export const MEANING_QUERY_MAX = 500;
+export const PostReadingsSearchBodySchema = z.object({
+  query: z.string().trim().min(1).max(MEANING_QUERY_MAX),
+});
+export type PostReadingsSearchBody = z.infer<typeof PostReadingsSearchBodySchema>;
+
 const intParam = (label: string) =>
   z
     .union([z.string(), z.number()])

@@ -53,6 +53,7 @@ import { pgDeskStoreFor } from "./modules/stores/postgres/desk-store";
 import { inboxMessageBytes, stageInboxItem, type InboxStageOutcome } from "./inbox/stage";
 import { promoteInboxItem, type InboxPromoteOutcome } from "./inbox/promote";
 import { pgSimilarityStoreFor } from "./modules/stores/postgres/similarity-store";
+import { handleMeaningSearch, handleSimilarReadings } from "./similar-readings";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
@@ -469,6 +470,10 @@ export function createApp(opts: AppOptions = {}) {
     const items = await similarity.query(parsed.data.query_embedding, parsed.data.k);
     return c.json({ items });
   });
+
+  app.post("/api/readings/search", requireScope("readings:write"), (c) => handleMeaningSearch(c, services));
+
+  app.get("/api/readings/:id/similar", requireScope("readings:read"), (c) => handleSimilarReadings(c));
 
   app.get("/api/readings/:id/diagnostics", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");

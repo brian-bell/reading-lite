@@ -1451,6 +1451,87 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:write
 
+  /api/readings/search:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    post:
+      tags: [readings]
+      operationId: searchReadingsByMeaning
+      summary: Readings close in meaning to a question
+      description: |
+        Embeds `query` with one paid OpenAI request (paid-dispatch stage
+        `embed_query`), then compares the vector with the tenant's reading
+        embeddings by exact cosine similarity. Returns at most 10 readings
+        scoring at or above the similarity floor (0.55), nearest first.
+
+        The OpenAI key pays whatever summarizer the reader chose. With tenant
+        provider keys on, the tenant needs an active OpenAI key; otherwise the
+        deployment key pays. The key check runs first, then the processing
+        lease, and both refuse before any spend is reserved. A search takes no
+        request-rate admission and no reading slot; the daily spend cap applies.
+        See `docs/paid-provider-spend.md`.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PostReadingsSearchBody"
+      responses:
+        "200":
+          description: Readings at or above the floor, nearest first; empty when none
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostReadingsSimilarResponse"
+        "400":
+          $ref: "#/components/responses/InvalidBody"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: |
+            The reader's provider account must change before a retry can
+            succeed. `provider_key_required` means no active OpenAI key; the
+            other codes are the provider's or the stored key's refusal, as on
+            `ManifestError.code`.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/ProviderKeyRequiredError"
+                  - $ref: "#/components/schemas/MeaningSearchAccountError"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+        "429":
+          description: |
+            A limit to wait out. `SpendAdmissionError` is a refused spend
+            reservation, usually the daily spend cap. `hosted_provider_quota`
+            is the deployment key's provider quota. `DeferPaidWorkError` is
+            the concurrent-work limit. Unlike `QuotaDenied`, the body names no
+            `limit` and the response carries no `Retry-After`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeaningSearchLimitError"
+        "503":
+          description: |
+            The provider did not answer: rate limited after retries, an error
+            response, a malformed embedding, or no response at all. Nothing
+            about the reader's account needs to change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+              example:
+                error: meaning search unavailable; retry
+      x-required-scope: readings:write
+
   /api/readings/{id}:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -1540,6 +1621,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/GetReadingDiagnosticsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
+
+  /api/readings/{id}/similar:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+      - $ref: "#/components/parameters/ReadingId"
+    get:
+      tags: [readings]
+      operationId: getMoreLikeThis
+      summary: Readings close to this one that no judgement links yet
+      description: |
+        Compares the reading's stored embedding with the tenant's other
+        reading embeddings. No provider call. The reading itself and every
+        target of its `connections` and `tensions` are excluded before the
+        limit, so a judged neighbour never displaces an unjudged one. Returns
+        at most 5 readings scoring at or above the similarity floor (0.55),
+        nearest first. A reading with no embedding returns an empty list.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Unjudged neighbours at or above the floor, nearest first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostReadingsSimilarResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -3544,6 +3660,43 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SimilarItem"
+
+    PostReadingsSearchBody:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: The question, trimmed before the length check
+
+    MeaningSearchAccountError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum:
+            - provider_key_invalid
+            - provider_key_undecryptable
+            - provider_model_access
+            - provider_insufficient_quota
+
+    MeaningSearchLimitError:
+      type: object
+      additionalProperties: false
+      required: [error, code]
+      properties:
+        error:
+          type: string
+        code:
+          type: string
+          enum: [SpendAdmissionError, hosted_provider_quota, DeferPaidWorkError]
 
     DeleteReadingResponse:
       type: object
