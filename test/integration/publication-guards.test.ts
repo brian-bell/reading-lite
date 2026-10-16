@@ -30,7 +30,9 @@ import {
 import { pgSimilarityStoreFor } from "../../src/modules/stores/postgres/similarity-store";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { createApp } from "../../src/router";
+import type { GetReadingTermsResponse } from "../../src/schemas/api";
 import type { Manifest } from "../../src/schemas/manifest";
+import { catalogIndexOf } from "../fixtures/catalog-index";
 import { sha256Hex } from "../../src/services";
 import { axisVector, mintTenant, mintTenantWithoutUser, readyManifest, seedManifest, testSql } from "../helpers/pg-fixtures";
 import { interceptSql, TENANT_STATUS_LOCK } from "../helpers/sql-faults";
@@ -794,6 +796,85 @@ describe("the relationships read", () => {
     const tool = JSON.parse((mcp.result as { content: { text: string }[] }).content[0]!.text) as Record<string, unknown>;
     expect(tool.id).toBe("rd_source");
     expect(tool, "MCP strips the web UI's target map").not.toHaveProperty("relationship_targets");
+  });
+});
+
+describe("the terms index and facets", () => {
+  const TERMS_SEED: readonly {
+    id: string;
+    status: "ready" | "pending" | "failed";
+    url: string;
+    title?: string;
+    people?: readonly string[];
+    orgs?: readonly string[];
+    keywords?: readonly string[];
+  }[] = [
+    { id: "rd_a", status: "ready", url: "https://WWW.Example.com:8443/a?x=1#y", people: ["Mara Ellis", "mara ellis"], orgs: ["Acme"], keywords: ["Attention"] },
+    { id: "rd_b", status: "ready", url: "https://user:pw@www.example.com/b", title: "On focus", people: ["Mara Ellis"], keywords: ["attention", "Focus"] },
+    { id: "rd_c", status: "ready", url: "http://www.www.blog.test/c", people: ["mara ellis", "ada"], orgs: ["acme"], keywords: ["attention"] },
+    { id: "rd_d", status: "pending", url: "https://pending.test/d", people: ["Zed"] },
+    { id: "rd_e", status: "failed", url: "https://failed.test/e", orgs: ["Initech"] },
+  ];
+
+  const TERMS_EXPECTED = {
+    people: [{ term: "ada", count: 1 }, { term: "Mara Ellis", count: 3 }],
+    orgs: [{ term: "Acme", count: 2 }],
+    keywords: [{ term: "attention", count: 3 }, { term: "Focus", count: 1 }],
+    hosts: [{ term: "example.com", count: 2 }, { term: "www.blog.test", count: 1 }],
+  } satisfies GetReadingTermsResponse;
+
+  const FACET_CASES = [
+    ["/api/readings?person=MARA%20ELLIS", 200, ["rd_c", "rd_b", "rd_a"]],
+    ["/api/readings?person=mara", 200, []],
+    ["/api/readings?host=Example.com", 200, ["rd_b", "rd_a"]],
+    ["/api/readings?host=www.example.com", 200, []],
+    ["/api/readings?keyword=attention&q=focus", 200, ["rd_b"]],
+    ["/api/readings?person=zed", 200, ["rd_d"]],
+    ["/api/readings?person=&org=ACME", 200, ["rd_c", "rd_a"]],
+    ["/api/readings?person=ada&org=acme", 400, []],
+  ] as const;
+
+  async function seedTerms() {
+    const s = sql();
+    const tenant = founderTenant();
+    const seeded = [];
+    for (const [i, row] of TERMS_SEED.entries()) {
+      const created_at = `2026-04-26T10:0${i}:00.000Z`;
+      const manifest = await readyManifest(row.id, {
+        status: row.status,
+        url: row.url,
+        ...("title" in row ? { title: row.title } : {}),
+        ...(row.people ? { people: [...row.people] } : {}),
+        ...(row.orgs ? { orgs: [...row.orgs] } : {}),
+        ...(row.keywords ? { keywords: [...row.keywords] } : {}),
+        created_at,
+        updated_at: created_at,
+      });
+      await seedManifest(s, tenant, manifest);
+      seeded.push(manifest);
+    }
+    return seeded;
+  }
+
+  it("groups each kind over ready readings, once per reading, in the spelling most readings use", async () => {
+    const seeded = await seedTerms();
+    const res = await api("/api/readings/terms");
+    expect(res.status).toBe(200);
+    expect({ http: res.body, pack: catalogIndexOf(seeded) }).toEqual({
+      http: TERMS_EXPECTED,
+      pack: TERMS_EXPECTED,
+    });
+  });
+
+  it.each(FACET_CASES)("%s", async (path, status, ids) => {
+    await seedTerms();
+    const res = await api(path);
+    expect(res.status, path).toBe(status);
+    if (status === 200) {
+      expect((res.body.readings as { id: string }[]).map((reading) => reading.id), path).toEqual([...ids]);
+    } else {
+      expect(res.body.error, path).toBe("invalid query");
+    }
   });
 });
 

@@ -339,13 +339,66 @@ const intParam = (label: string) =>
       return n;
     });
 
-export const ListReadingsQuerySchema = z.object({
-  q: z.string().optional(),
-  tag: z.string().optional(),
-  offset: intParam("offset").pipe(z.number().int().min(0)).default(0),
-  limit: intParam("limit").pipe(z.number().int().min(1).max(100)).default(20),
-});
-export type ListReadingsQuery = z.infer<typeof ListReadingsQuerySchema>;
+export const TERM_KINDS = ["people", "orgs", "keywords", "hosts"] as const;
+export type TermKind = (typeof TERM_KINDS)[number];
+
+export const FACET_PARAM = {
+  people: "person",
+  orgs: "org",
+  keywords: "keyword",
+  hosts: "host",
+} as const satisfies Record<TermKind, string>;
+export type FacetParam = (typeof FACET_PARAM)[TermKind];
+
+export interface Facet {
+  kind: TermKind;
+  term: string;
+}
+
+const FacetParamsShape = {
+  [FACET_PARAM.people]: z.string().optional(),
+  [FACET_PARAM.orgs]: z.string().optional(),
+  [FACET_PARAM.keywords]: z.string().optional(),
+  [FACET_PARAM.hosts]: z.string().optional(),
+} satisfies Record<FacetParam, z.ZodOptional<z.ZodString>>;
+
+export interface ListReadingsQuery {
+  q?: string;
+  tag?: string;
+  facet?: Facet;
+  offset: number;
+  limit: number;
+}
+
+export const ListReadingsQuerySchema = z
+  .object({
+    q: z.string().optional(),
+    tag: z.string().optional(),
+    offset: intParam("offset").pipe(z.number().int().min(0)).default(0),
+    limit: intParam("limit").pipe(z.number().int().min(1).max(100)).default(20),
+    ...FacetParamsShape,
+  })
+  .transform((query, ctx): ListReadingsQuery => {
+    const named = TERM_KINDS.flatMap((kind) => {
+      const term = query[FACET_PARAM[kind]]?.trim();
+      return term ? [{ kind, term }] : [];
+    });
+    if (named.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `at most one of ${TERM_KINDS.map((kind) => FACET_PARAM[kind]).join(", ")}`,
+      });
+      return z.NEVER;
+    }
+    const facet = named[0];
+    return {
+      q: query.q,
+      tag: query.tag,
+      offset: query.offset,
+      limit: query.limit,
+      ...(facet ? { facet } : {}),
+    };
+  });
 
 // Readings on the desk at once: a product rule, and the bound
 // db/migrations/0012 checks.
@@ -451,6 +504,17 @@ export const GetReadingRelationshipsResponseSchema = z
   })
   .strict();
 export type GetReadingRelationshipsResponse = z.infer<typeof GetReadingRelationshipsResponseSchema>;
+
+export const TermCountSchema = z
+  .object({
+    term: z.string().min(1),
+    count: z.number().int().positive(),
+  })
+  .strict();
+export type TermCount = z.infer<typeof TermCountSchema>;
+
+export const GetReadingTermsResponseSchema = z.record(z.enum(TERM_KINDS), z.array(TermCountSchema));
+export type GetReadingTermsResponse = z.infer<typeof GetReadingTermsResponseSchema>;
 
 export const SimilarItemSchema = z.object({
   id: z.string(),

@@ -11,10 +11,14 @@ import type { TenantContext } from "../../../control-plane/ids";
 import { parseTenantId } from "../../../control-plane/ids";
 import {
   DeskPositionSchema,
+  GetReadingTermsResponseSchema,
   ListIndexItemSchema,
   RelationshipRowSchema,
+  TERM_KINDS,
+  type GetReadingTermsResponse,
   type ListIndexItem,
   type RelationshipRow,
+  type TermKind,
 } from "../../../schemas/api";
 import { ManifestSchema, type Manifest, type ManifestStatus } from "../../../schemas/manifest";
 import { sha256Hex } from "../../../services";
@@ -96,6 +100,19 @@ const GraphReadingRowSchema = ListIndexItemSchema.pick({
   last_attempt: true,
 });
 
+const HOST_OF_URL = String.raw`regexp_replace(lower(substring(url FROM '^[A-Za-z][A-Za-z0-9+.-]*://(?:[^/?#]*@)?(\[[^]]*\]|[^:/?#]*)')), '^www\.', '')`;
+
+const TERM_SOURCES = {
+  people: "people",
+  orgs: "orgs",
+  keywords: "keywords",
+  hosts: `ARRAY[${HOST_OF_URL}]`,
+} as const satisfies Record<TermKind, string>;
+
+const FACET_TERMS = `CASE $4 ${TERM_KINDS.map((kind) => `WHEN '${kind}' THEN ${TERM_SOURCES[kind]}`).join(" ")} END`;
+
+const TERM_ROWS = TERM_KINDS.map((kind) => `('${kind}', ${TERM_SOURCES[kind]})`).join(", ");
+
 // The list search: a case-insensitive substring over
 // title, tldr, url and keywords, and a case-insensitive exact tag. strpos, not
 // LIKE, so q needs no wildcard escaping. Stored tags keep their case. No
@@ -103,7 +120,27 @@ const GraphReadingRowSchema = ListIndexItemSchema.pick({
 const LIST_FILTER = `tenant_id = $1
   AND ($2 = '' OR strpos(lower(coalesce(title, '') || E'\\n' || coalesce(tldr, '') || E'\\n' || url || E'\\n'
     || array_to_string(coalesce(keywords, '{}'), E'\\n')), $2) > 0)
-  AND ($3 = '' OR $3 = ANY (SELECT lower(t) FROM unnest(tags) AS t))`;
+  AND ($3 = '' OR $3 = ANY (SELECT lower(t) FROM unnest(tags) AS t))
+  AND ($4 = '' OR lower($5) = ANY (SELECT lower(t) FROM unnest(${FACET_TERMS}) AS t))`;
+
+function listFilterBinds(
+  tenantId: string,
+  params: ListManifestsParams,
+): readonly [string, string, string, string, string] {
+  return [
+    tenantId,
+    params.q?.trim().toLowerCase() ?? "",
+    params.tag?.trim().toLowerCase() ?? "",
+    params.facet?.kind ?? "",
+    params.facet?.term ?? "",
+  ];
+}
+
+const TermRowSchema = z.object({
+  kind: z.enum(TERM_KINDS),
+  term: z.string().min(1),
+  count: z.number().int().positive(),
+});
 
 // NULL columns are absent manifest fields, never nulls.
 export function present(row: SqlRow): Record<string, unknown> {
@@ -118,16 +155,15 @@ export class PgReadingStore {
   ) {}
 
   async listManifests(params: ListManifestsParams): Promise<ListManifestsResult> {
-    const q = params.q?.trim().toLowerCase() ?? "";
-    const tag = params.tag?.trim().toLowerCase() ?? "";
+    const filter = listFilterBinds(this.tenantId, params);
     // The page and its unpaged count come from one statement, so they are one
     // snapshot, as the single index/list.json read was. The id tiebreak is
     // deliberate: today's sort is stable on created_at alone.
     const rows = await this.sql.query<SqlRow & { total_filtered: number }>(
       `SELECT ${LIST_COLUMNS}, ${RELATIONSHIP_COUNTS}, count(*) OVER ()::int AS total_filtered
        FROM readings WHERE ${LIST_FILTER}
-       ORDER BY created_at DESC, id DESC OFFSET $4 LIMIT $5`,
-      [this.tenantId, q, tag, params.offset, params.limit],
+       ORDER BY created_at DESC, id DESC OFFSET $6 LIMIT $7`,
+      [...filter, params.offset, params.limit],
     );
     // An empty page carries no window count: either nothing matched or the
     // offset is past the end, and only a count tells those apart.
@@ -135,12 +171,48 @@ export class PgReadingStore {
       ? rows[0]!.total_filtered
       : (await this.sql.query<{ total: number }>(
           `SELECT count(*)::int AS total FROM readings WHERE ${LIST_FILTER}`,
-          [this.tenantId, q, tag],
+          [...filter],
         ))[0]!.total;
     return {
       readings: rows.map(({ total_filtered: _total, ...row }) => ListIndexItemSchema.parse(present(row))),
       total_filtered: total,
     };
+  }
+
+  async termsIndex(): Promise<GetReadingTermsResponse> {
+    const rows = await this.sql.query(
+      `WITH uses AS (
+         SELECT DISTINCT k.kind, readings.id, t.term
+         FROM readings
+         CROSS JOIN LATERAL (VALUES ${TERM_ROWS}) AS k(kind, terms)
+         CROSS JOIN LATERAL unnest(k.terms) AS t(term)
+         WHERE readings.tenant_id = $1 AND readings.status = 'ready' AND t.term <> ''
+       ),
+       grouped AS (
+         SELECT kind, lower(term) AS folded, count(DISTINCT id)::int AS count
+         FROM uses GROUP BY kind, lower(term)
+       ),
+       spelling AS (
+         SELECT DISTINCT ON (kind, lower(term)) kind, lower(term) AS folded, term
+         FROM uses GROUP BY kind, term
+         ORDER BY kind, lower(term), count(*) DESC, term COLLATE "C"
+       )
+       SELECT g.kind, s.term, g.count
+       FROM grouped g JOIN spelling s USING (kind, folded)
+       ORDER BY g.kind, g.folded COLLATE "C"`,
+      [this.tenantId],
+    );
+    const index: Record<TermKind, { term: string; count: number }[]> = {
+      people: [],
+      orgs: [],
+      keywords: [],
+      hosts: [],
+    };
+    for (const row of rows) {
+      const parsed = TermRowSchema.parse(row);
+      index[parsed.kind].push({ term: parsed.term, count: parsed.count });
+    }
+    return GetReadingTermsResponseSchema.parse(index);
   }
 
   // Every list row the tenant has, newest first: what index/list.json held.

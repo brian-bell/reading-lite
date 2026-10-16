@@ -1138,7 +1138,11 @@ paths:
       description: |
         Server-side filter over the tenant's reading rows. `q` is a
         case-insensitive substring across title, tldr, url, and keywords.
-        `tag` is an exact case-insensitive match on tags only.
+        `tag` is an exact case-insensitive match on tags only. `person`,
+        `org`, `keyword`, and `host` each name one term. A blank value is
+        ignored. Two or more non-blank facet parameters are 400. A facet
+        matches one array element, or the derived host, exactly and
+        case-insensitively, and it combines with `q` and `tag`.
       security:
         - bearerAuth: []
         - sessionCookie: []
@@ -1149,6 +1153,26 @@ paths:
             type: string
         - name: tag
           in: query
+          schema:
+            type: string
+        - name: person
+          in: query
+          description: One person, matched exactly and case-insensitively.
+          schema:
+            type: string
+        - name: org
+          in: query
+          description: One organization, matched exactly and case-insensitively.
+          schema:
+            type: string
+        - name: keyword
+          in: query
+          description: One keyword, matched exactly and case-insensitively.
+          schema:
+            type: string
+        - name: host
+          in: query
+          description: One host, matched exactly and case-insensitively.
           schema:
             type: string
         - name: offset
@@ -1230,6 +1254,38 @@ paths:
         "503":
           $ref: "#/components/responses/Unavailable"
       x-required-scope: readings:write
+
+  /api/readings/terms:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [readings]
+      operationId: getReadingTerms
+      summary: List the tenant's catalog terms
+      description: |
+        One side-effect-free read of the tenant's ready readings. `people`,
+        `orgs`, `keywords`, and `hosts` are each an array of `{ term, count }`,
+        sorted by the lowercased term. A reading counts once per term. The
+        displayed spelling is the one most readings use, and ties break by
+        code-point order. A host is the URL hostname, lowercased, with one
+        leading `www.` removed. There is no query.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: Term lists for all four kinds
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetReadingTermsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
 
   /api/readings/import-markdown:
     parameters:
@@ -4189,6 +4245,40 @@ components:
               $ref: "#/components/schemas/TensionKind"
             reason:
               type: string
+
+    TermCount:
+      type: object
+      additionalProperties: false
+      required: [term, count]
+      properties:
+        term:
+          type: string
+          minLength: 1
+        count:
+          type: integer
+          minimum: 1
+
+    GetReadingTermsResponse:
+      type: object
+      additionalProperties: false
+      required: [people, orgs, keywords, hosts]
+      properties:
+        people:
+          type: array
+          items:
+            $ref: "#/components/schemas/TermCount"
+        orgs:
+          type: array
+          items:
+            $ref: "#/components/schemas/TermCount"
+        keywords:
+          type: array
+          items:
+            $ref: "#/components/schemas/TermCount"
+        hosts:
+          type: array
+          items:
+            $ref: "#/components/schemas/TermCount"
 
     GetReadingRelationshipsResponse:
       type: object
