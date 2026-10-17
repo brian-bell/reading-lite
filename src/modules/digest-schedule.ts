@@ -37,10 +37,11 @@ export type DigestDue =
       reason: "cadence_off" | "invalid_time_zone" | "hour_mismatch" | "weekday_mismatch";
     };
 
-export type DigestPeriodDelivery = "open" | "closed";
+export type DigestPeriodDelivery = "none" | "pending" | "closed";
 
 export function periodDeliveryForStatus(status: DigestDeliveryStatus | null): DigestPeriodDelivery {
-  if (status === null || status === "pending") return "open";
+  if (status === null) return "none";
+  if (status === "pending") return "pending";
   return "closed";
 }
 
@@ -148,7 +149,7 @@ export function nextDigestSendAt(
   const current = currentPeriodKey(settings, now);
   if (!current.ok) return null;
   const nowMs = now.getTime();
-  const recoverable = delivery === "open" && digestDueAt(settings, now).due;
+  const dueNow = digestDueAt(settings, now).due;
   for (let delta = 0; delta <= 8; delta++) {
     const day = addUtcCalendarDays(current.local.year, current.local.month, current.local.day, delta);
     for (const ms of utcInstantsForLocalTime(
@@ -162,8 +163,11 @@ export function nextDigestSendAt(
     )) {
       const due = digestDueAt(settings, new Date(ms));
       if (!due.due) continue;
-      if (due.period_key === current.period_key && delivery === "closed") continue;
-      if (ms > nowMs || (recoverable && due.period_key === current.period_key)) return new Date(ms);
+      const thisPeriod = due.period_key === current.period_key;
+      if (thisPeriod && delivery === "closed") continue;
+      if (ms > nowMs) return new Date(ms);
+      if (thisPeriod && delivery === "pending") return new Date(ms);
+      if (thisPeriod && delivery === "none" && dueNow) return new Date(ms);
     }
   }
   return null;

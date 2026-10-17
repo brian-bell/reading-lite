@@ -81,7 +81,7 @@ export async function claimPendingDigestDelivery(
   );
   if (inserted.changes === 1) return "inserted";
   const existing = await getDigestDelivery(db, key);
-  if (existing && periodDeliveryForStatus(existing.status) === "open") return "pending";
+  if (existing && periodDeliveryForStatus(existing.status) === "pending") return "pending";
   return "terminal";
 }
 

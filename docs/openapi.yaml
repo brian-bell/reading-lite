@@ -1956,10 +1956,10 @@ paths:
         What the next digest mail would carry if it went out now. READ ONLY.
         `next_send_at` is the next local `digest_hour_local`:00 the cron can
         still send (on `digest_weekday` for weekly). That instant is the
-        earliest UTC match for the local time. While this period is still
-        open and the request falls in the configured hour, it is today's
-        instant, including after that minute has passed. A sent, skipped, or
-        failed period advances to the next one.
+        earliest UTC match for the local time. With no delivery row yet, a
+        request inside the configured hour keeps today's instant, including
+        after that minute has passed. A pending row keeps that period. A
+        sent, skipped, or failed period advances to the next one.
         `window` runs from that send's exclusive window start to now, and
         `items` are selected from it by the mail's own rule: ready readings
         with a title and tl;dr whose `updated_at`, else `created_at`, falls

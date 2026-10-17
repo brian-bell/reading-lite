@@ -331,10 +331,10 @@ will cover, from its exclusive start to now.
 - `next_send_at` comes from the same schedule rule as `digestDueAt`: the
   next local hour equal to `digest_hour_local`, and for weekly, on
   `digest_weekday`. The instant is the earliest UTC match, so a fallback of
-  more than one hour stays on the occurrence the cron sees first. While the
-  period is still open and the request is inside the configured hour, that
-  instant is today's, even after the scheduled minute. A sent, skipped, or
-  failed period advances. A shared helper computes it, and both callers test
+  more than one hour stays on the occurrence the cron sees first. With no
+  delivery row yet, a request inside the configured hour keeps today's
+  instant, even after the scheduled minute. A pending row keeps that period.
+  A sent, skipped, or failed period advances. A shared helper computes it, and both callers test
   against it.
 - `cadence: "off"` returns `next_send_at: null` and no items. The page says
   digests are off and links to the account settings.
