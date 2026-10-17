@@ -14,7 +14,7 @@ The table lists application defaults and checked-in overrides.
 | `FETCH_MAX_BYTES` | `10485760` | Hard cap of 10 MiB on source response size. |
 | `SUMMARIZER_PROVIDER` | `openai` locally; `anthropic` in staging and production | Summarization backend: `openai` or `anthropic`. Invalid values fail closed; there is no automatic fallback. |
 | `OPENAI_SUMMARIZATION_MODEL` | `gpt-5.6-terra` | OpenAI Responses model used when the selected provider is OpenAI. |
-| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging and production | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
+| `OPENAI_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `high` in staging; `medium` in production | OpenAI reasoning effort: `none`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` | `low` locally; `medium` in staging and production | Anthropic `output_config.effort` when the selected provider is Anthropic. Claude Sonnet 5.5 accepts `low`, `medium`, or `high` with `thinking: { type: "between_tools" }`. Invalid values, including OpenAI-only `none`, efforts the configured model cannot take, and pairs that 400 with that thinking setting (`xhigh` and `max` on Sonnet 5.5), fail closed. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Model passed to `messages.create` when the selected provider is Anthropic. |
 | `EMAIL_FROM` | `""` | Sender for notification emails on a verified Resend domain. Empty skips send. May include a display name (`Reading Lite <noreply@readinglite.app>`). Production uses that form; staging uses `RL Staging <noreply@staging.readinglite.app>`. |
