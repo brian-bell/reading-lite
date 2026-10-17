@@ -27,12 +27,14 @@ export async function providerKeyNeeded(
   env: { TENANT_PROVIDER_KEYS?: string },
   db: ControlPlaneDb,
   tenantId: string,
+  providers?: readonly ProviderName[],
 ): Promise<ProviderName | null> {
   if (!tenantProviderKeysEnabled(env)) return null;
-  const settings = await readSummarizationSettings(db, tenantId);
-  const needed = settings?.provider === "anthropic"
-    ? [PROVIDER_OPENAI, PROVIDER_ANTHROPIC]
-    : [PROVIDER_OPENAI];
+  const needed = providers ?? (
+    (await readSummarizationSettings(db, tenantId))?.provider === "anthropic"
+      ? [PROVIDER_OPENAI, PROVIDER_ANTHROPIC]
+      : [PROVIDER_OPENAI]
+  );
   for (const provider of needed) {
     const row = await readProviderCredential(db, tenantId, provider);
     if (row?.status !== "active") return provider;

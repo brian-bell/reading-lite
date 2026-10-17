@@ -35,8 +35,6 @@ function meaningSearchOptions(
     // No AbortSignal: an answer already paid for lands in the cache even when
     // the reader has opened a reading meanwhile.
     queryFn: (): Promise<MeaningOutcome> => {
-      // "always" runs this while offline. Fail before the post, or the default
-      // "online" mode pauses the fetch and embeds when the network returns.
       if (!onlineManager.isOnline()) throw new NetworkError(new Error("offline"), true);
       return postCapture(queryClient, "/api/readings/search", { query: question }, expectedTenant, meaningOutcomeFromResponse);
     },

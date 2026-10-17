@@ -73,9 +73,8 @@ export async function handleMeaningSearch(c: AppContext, services: Services): Pr
   const tenantId = String(principal.tenantId);
   const sql = c.get("sql");
   const db = fromSql(sql);
-  // providerKeyNeeded names OpenAI first. A missing Anthropic key does not block a search.
-  const needed = await providerKeyNeeded(env, db, tenantId);
-  if (needed === PROVIDER_OPENAI) return respond(c, { kind: "key_required", provider: needed });
+  const needed = await providerKeyNeeded(env, db, tenantId, [PROVIDER_OPENAI]);
+  if (needed) return respond(c, { kind: "key_required", provider: needed });
 
   const clock = () => nowMs(services);
   // Not services.newId, which mints reading ids: the lease and every
