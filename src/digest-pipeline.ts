@@ -48,6 +48,7 @@ import { redactEmailsInText } from "./control-plane/email";
 import { resolveDigestRecipient } from "./control-plane/reading-notification";
 import {
   buildTitleById,
+  digestSubject,
   selectDigestReadings,
   sendDigestEmail,
 } from "./modules/digest-email";
@@ -55,11 +56,13 @@ import {
   currentPeriodKey,
   digestDueAt,
   digestWindow,
+  nextDigestSendAt,
   type DigestScheduleSettings,
 } from "./modules/digest-schedule";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import { sqlSessionFor, withSqlSession, type Sql } from "./modules/db/sql";
 import { pgReadingStoreFor } from "./modules/stores/postgres/reading-store";
+import type { DigestCadence, GetDigestPreviewResponse, ListIndexItem } from "./schemas/api";
 
 export const DIGEST_QUEUE_NAMES = ["reading-lite-digest", "reading-lite-staging-digest"] as const;
 export const DIGEST_DLQ_NAMES = ["reading-lite-digest-dlq", "reading-lite-staging-digest-dlq"] as const;
@@ -257,6 +260,40 @@ async function fanOutWith(
 
 // One session for the job: the ledger, the recipient and the library all read
 // through it, and it survives the mail send between them (see sqlSession).
+/**
+ * The next digest as it stands at `now` (reading-lite-kl7y.10): the window
+ * the next send will cover, cut off at `now`, selected by the mail's own rule.
+ * The library is loaded only when a send is scheduled.
+ */
+export async function digestPreview(
+  settings: DigestScheduleSettings & { digest_cadence: DigestCadence },
+  now: Date,
+  library: () => Promise<ListIndexItem[]>,
+): Promise<GetDigestPreviewResponse> {
+  const unscheduled = {
+    cadence: settings.digest_cadence,
+    time_zone: settings.time_zone,
+    next_send_at: null,
+    window: null,
+    subject: null,
+    items: [],
+  };
+  if (settings.digest_cadence === "off") return unscheduled;
+  const next = nextDigestSendAt(settings, now);
+  const window = next && digestWindow(settings.digest_cadence, settings.time_zone, next);
+  if (!next || !window) return unscheduled;
+  const items = selectDigestReadings(await library(), { startMs: window.startMs, endMs: now.getTime() }).flatMap(
+    ({ id, title, tldr, url }) => (title && tldr ? [{ id, title, tldr, url }] : []),
+  );
+  return {
+    ...unscheduled,
+    next_send_at: next.toISOString(),
+    window: { start: new Date(window.startMs).toISOString(), end: now.toISOString() },
+    subject: digestSubject(settings.digest_cadence, items.length),
+    items,
+  };
+}
+
 export async function processDigestJob(
   envelope: DigestEnvelopeV1,
   env: DigestEnv,

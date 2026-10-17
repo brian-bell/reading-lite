@@ -132,6 +132,29 @@ export function digestDueAt(settings: DigestScheduleSettings, now: Date): Digest
   };
 }
 
+/**
+ * The first local `digest_hour_local`:00 strictly after `now` that
+ * `digestDueAt` accepts, so it agrees with the cron by construction. A day
+ * whose due hour falls in a DST gap is skipped, as the cron skips it. When the
+ * hour repeats, the cron sends in the first one, and
+ * `zonedLocalTimeToUtcMs` resolves to the second. Null when the digest is off
+ * or the time zone is invalid.
+ */
+export function nextDigestSendAt(settings: DigestScheduleSettings, now: Date): Date | null {
+  const current = currentPeriodKey(settings, now);
+  if (!current.ok) return null;
+  const { local } = current;
+  const due = (ms: number) => ms > now.getTime() && digestDueAt(settings, new Date(ms)).due;
+  for (let delta = 0; delta <= 8; delta++) {
+    const day = addUtcCalendarDays(local.year, local.month, local.day, delta);
+    const ms = zonedLocalTimeToUtcMs(settings.time_zone, day.year, day.month, day.day, settings.digest_hour_local, 0, 0);
+    if (ms === null) continue;
+    if (due(ms - 3_600_000)) return new Date(ms - 3_600_000);
+    if (due(ms)) return new Date(ms);
+  }
+  return null;
+}
+
 export interface DigestWindow {
   startMs: number;
   endMs: number;

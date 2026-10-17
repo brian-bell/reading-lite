@@ -4,7 +4,8 @@
 // session-bound CSRF, no bearer-to-cookie fallback) every browser write passes,
 // the Anthropic key routes (mask only, that key's own credential version, the
 // selection reset on remove, and a deletion that lands during validation), and
-// the digest mail that leaves the system with a tenant's readings in it.
+// the digest mail that leaves the system with a tenant's readings in it, and
+// its preview.
 //
 // The contract (docs/tenant-isolation-matrix.md): a foreign resource answers
 // exactly like an unknown one, collections hold only the caller's records, a
@@ -648,8 +649,11 @@ describe("tenant guards", () => {
   });
 
   // Mail cannot be recalled: a digest built from the wrong tenant's list, or
-  // sent to the deployment's EMAIL_TO, leaks titles for good.
-  it("sends each tenant's digest only to that tenant, with only its own readings", async () => {
+  // sent to the deployment's EMAIL_TO, leaks titles for good. The preview read
+  // half an hour before must name the send the cron then makes, and carry only
+  // what that mail carries.
+  it("previews and sends each tenant's digest only to that tenant, with only its own readings", async () => {
+    const PREVIEW_AT = "2026-09-02T08:30:00.000Z";
     const NOW_MS = Date.parse("2026-09-02T09:00:00.000Z");
     const IN_WINDOW = "2026-09-02T08:00:00.000Z";
     await insertSecondTenant(workerEnv);
@@ -657,7 +661,10 @@ describe("tenant guards", () => {
     workerEnv.DIGEST_JOBS = {
       send: async (msg: DigestEnvelopeV1) => void queued.push(msg),
     } as unknown as Queue<DigestEnvelopeV1>;
-    await testControlPlane(env).run("UPDATE user_settings SET digest_cadence = 'daily', time_zone = 'UTC', digest_hour_local = 9");
+    // Wednesday 10:00 in London is 09:00Z.
+    await testControlPlane(env).run(
+      "UPDATE user_settings SET digest_cadence = 'weekly', time_zone = 'Europe/London', digest_hour_local = 10, digest_weekday = 3",
+    );
     const item = (id: string, title: string) => ({
       id,
       key_prefix: `readings/${id}`,
@@ -670,6 +677,25 @@ describe("tenant guards", () => {
     });
     await testReadingsFor(founderTenant()).seedListItems([item("rd_FNDR01", "Founder Only Title")]);
     await testReadingsFor(otherTenant()).seedListItems([item("rd_OTHR01", "Other Only Title")]);
+
+    const previewApp = createApp({ services: makeServices(makeStubFetch(), { n: 0 }, PREVIEW_AT) });
+    const preview = async (token: string) => (await bearer(previewApp, token, "/api/digest/preview")).json();
+    const scheduled = {
+      cadence: "weekly",
+      time_zone: "Europe/London",
+      next_send_at: new Date(NOW_MS).toISOString(),
+      window: { start: "2026-08-26T09:00:00.000Z", end: PREVIEW_AT },
+      subject: "Weekly digest · 1 reading",
+    };
+    const previewItem = (id: string, title: string) => ({ id, title, tldr: `${title} tldr`, url: `https://example.com/${id}` });
+    expect(await preview(TOKEN), "founder's preview").toEqual({
+      ...scheduled,
+      items: [previewItem("rd_FNDR01", "Founder Only Title")],
+    });
+    expect(await preview(OTHER_TOKEN_SECRET), "other tenant's preview").toEqual({
+      ...scheduled,
+      items: [previewItem("rd_OTHR01", "Other Only Title")],
+    });
 
     expect(await fanOutDueDigests(workerEnv, { nowMs: NOW_MS }), "fan-out").toEqual({ enqueued: 2 });
     let sent = 0;

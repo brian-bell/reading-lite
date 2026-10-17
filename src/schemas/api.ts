@@ -877,5 +877,30 @@ export const GetDeskResponseSchema = z
   .strict();
 export type GetDeskResponse = z.infer<typeof GetDeskResponseSchema>;
 
+// GET /api/digest/preview (reading-lite-kl7y.10): what the next digest mail
+// would carry if it went out now. `window` runs from the next send's exclusive
+// start to now. Off (or an unusable time zone) has no send, window, or subject.
+export const DigestPreviewItemSchema = z
+  .object({
+    id: z.string().min(1),
+    title: z.string().min(1),
+    tldr: z.string().min(1),
+    url: z.string().url(),
+  })
+  .strict();
+export type DigestPreviewItem = z.infer<typeof DigestPreviewItemSchema>;
+
+export const GetDigestPreviewResponseSchema = z
+  .object({
+    cadence: DigestCadenceSchema,
+    time_zone: z.string().min(1),
+    next_send_at: z.string().datetime().nullable(),
+    window: z.object({ start: z.string().datetime(), end: z.string().datetime() }).strict().nullable(),
+    subject: z.string().min(1).nullable(),
+    items: z.array(DigestPreviewItemSchema),
+  })
+  .strict();
+export type GetDigestPreviewResponse = z.infer<typeof GetDigestPreviewResponseSchema>;
+
 export const PostInboxPromoteExistingResponseSchema = ManifestSchema.extend(InboxPromoteFields);
 export type PostInboxPromoteExistingResponse = z.infer<typeof PostInboxPromoteExistingResponseSchema>;

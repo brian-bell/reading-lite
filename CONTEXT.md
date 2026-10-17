@@ -188,6 +188,9 @@ item and promotes ("Add to library") or discards it (reading-lite-fy8t).
   `{ tenantId, userId, period_key, cadence }` only. The consumer re-reads
   settings immediately before send. B1 stub-sends by marking the ledger `sent`
   without calling Resend.
+- **Digest preview** — `GET /api/digest/preview`: the next digest as it stands
+  now. The next send time comes from the cron's due rule, and the readings from
+  that send's window, cut off at now, by the mail's own selection.
 
 ## Relationship refresh
 
