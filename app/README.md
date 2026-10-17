@@ -81,7 +81,7 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   only on Continue. Return paths go through `src/auth/return-path.ts`: an
   allowlist of `/`, `/library` (`q`, `tag`, `offset`), `/readings/:id`
   (`view`), `/save`, `/inbox`, `/inbox/:id`, `/threads`, `/threads/:id`,
-  `/account/security`, and `/account/provider`, with other parameters
+  `/digest`, `/account/security`, and `/account/provider`, with other parameters
   dropped; a stored `/` with library parameters is rewritten to `/library`.
   The path is stored in
   localStorage when a link is requested, for the tab that opens the link, and
@@ -173,7 +173,8 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   refreshed on the library's bounded schedule while any row is pending), On
   your desk (slots, Start on the first, a take-off control on each, Clear the
   desk), Ready since the visit's start (a Put on desk toggle on each), and
-  the provider tile, read in the browser. "Nothing needs you." with Save a
+  the Next digest and provider tiles, each read in the browser and each
+  failing on its own. "Nothing needs you." with Save a
   reading (Connect a key for a reader with none) and Library shows only when
   the reading groups are empty and the inbox is empty. A keyless reader whose
   library is empty sees the three steps instead. While that read is
@@ -468,6 +469,17 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
   the cards, comes from `relationship_targets[].created_at` alone. A finished
   attempt and a started reprocess invalidate the graph. Library cards show
   their `connection_count` and `tension_count`.
+- **Digest preview.** `/digest` (reading-lite-kl7y.10), under
+  `src/routes/_authed` with no nav item, reads `GET /api/digest/preview` in
+  the browser (`src/digest-preview.ts`, `src/api/digest.ts`): the next digest
+  mail as it stands now, only what the mail sends. Scheduled, it says when the
+  mail goes out, told in the reader's digest time zone rather than the
+  browser's, then the subject and each reading's title, host, and tl;dr. An
+  empty period says nothing has arrived and no mail is sent; off links to
+  account settings. The desk's Next digest tile reads the same query. It sits
+  under the desk's query root, so whatever refreshes the desk refreshes it, a
+  digest settings save invalidates it, and each visit reads it again, since
+  the send time moves on.
 - **Sample library.** `/samples` and `/samples/:id` (reading-lite-gh341.10)
   show a few readings to anyone, signed in or not, before they have a key.
   The readings are bundled: `src/samples/sample-library.json` is generated

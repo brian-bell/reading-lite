@@ -652,6 +652,57 @@ export async function serveProviderInBrowser(
   return { connects, removes, saves };
 }
 
+/**
+ * A weekly digest on Mondays at 08:00 in Europe/London, seen from the pack's
+ * clock (a Friday): the next send, and the pack's ready readings updated since
+ * the last one, newest first, as the backend's preview selects them.
+ */
+interface DigestCandidate {
+  id: string;
+  url: string;
+  status: string;
+  title?: string;
+  tldr?: string;
+  created_at: string;
+  updated_at?: string;
+}
+const DIGEST_NEXT_SEND = "2026-09-14T07:00:00.000Z";
+const DIGEST_WINDOW_START = "2026-09-07T07:00:00.000Z";
+const DIGEST_ITEMS = (pack.list_index.items as readonly DigestCandidate[])
+  .map((row) => ({ row, at: Date.parse(row.updated_at ?? row.created_at) }))
+  .filter(({ row, at }) => row.status === "ready" && row.title && row.tldr && at > Date.parse(DIGEST_WINDOW_START))
+  .sort((a, b) => b.at - a.at)
+  .map(({ row }) => ({ id: row.id, title: row.title!, tldr: row.tldr!, url: row.url }));
+const DIGEST_SCHEDULED = {
+  cadence: "weekly",
+  time_zone: "Europe/London",
+  next_send_at: DIGEST_NEXT_SEND,
+  window: { start: DIGEST_WINDOW_START, end: pack.generated_at },
+  subject: `Weekly digest · ${DIGEST_ITEMS.length} readings`,
+  items: DIGEST_ITEMS,
+};
+
+/** GET /api/digest/preview bodies, one per state the page shows (reading-lite-kl7y.10). */
+export const E2E_DIGEST_PREVIEW = {
+  scheduled: DIGEST_SCHEDULED,
+  empty: { ...DIGEST_SCHEDULED, subject: "Weekly digest · 0 readings", items: [] },
+  off: { cadence: "off", time_zone: "Europe/London", next_send_at: null, window: null, subject: null, items: [] },
+};
+
+/** GET /api/digest/preview, read in the browser by the desk's Next digest tile and /digest. */
+export async function serveDigestPreviewInBrowser(
+  page: Page,
+  json: unknown = E2E_DIGEST_PREVIEW.scheduled,
+): Promise<void> {
+  await page.route("**/api/digest/preview", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ status: 200, json });
+  });
+}
+
 export async function serveInboxInBrowser(
   page: Page,
   items: readonly ServedInboxItem[] = pack.inbox,

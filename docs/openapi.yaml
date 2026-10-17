@@ -47,6 +47,8 @@ tags:
     description: Staged Markdown awaiting review before it becomes a reading
   - name: desk
     description: Up to three readings the reader means to read next
+  - name: digest
+    description: The scheduled digest mail
 security:
   - bearerAuth: []
   - sessionCookie: []
@@ -1943,6 +1945,46 @@ paths:
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:write
 
+  /api/digest/preview:
+    parameters:
+      - $ref: "#/components/parameters/ExpectedTenant"
+    get:
+      tags: [digest]
+      operationId: getDigestPreview
+      summary: Preview the next digest
+      description: |
+        What the next digest mail would carry if it went out now. READ ONLY.
+        `next_send_at` is the next local `digest_hour_local`:00 the cron can
+        still send (on `digest_weekday` for weekly). That instant is the
+        earliest UTC match for the local time. With no delivery row yet, a
+        request inside the configured hour keeps today's instant, including
+        after that minute has passed. A pending row keeps that period. A
+        sent, skipped, or failed period advances to the next one.
+        `window` runs from that send's exclusive window start to now, and
+        `items` are selected from it by the mail's own rule: ready readings
+        with a title and tl;dr whose `updated_at`, else `created_at`, falls
+        in the window, newest first. A reprocessed reading can appear again.
+        With the digest off, `next_send_at`, `window` and `subject` are null
+        and `items` is empty.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      responses:
+        "200":
+          description: The next digest so far
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetDigestPreviewResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:read
   /api/inbox:
     parameters:
       - $ref: "#/components/parameters/ExpectedTenant"
@@ -2407,6 +2449,58 @@ components:
           items:
             type: string
 
+    GetDigestPreviewResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - cadence
+        - time_zone
+        - next_send_at
+        - window
+        - subject
+        - items
+      properties:
+        cadence:
+          $ref: "#/components/schemas/DigestCadence"
+        time_zone:
+          type: string
+          description: IANA time zone the schedule is kept in
+        next_send_at:
+          type: [string, "null"]
+          format: date-time
+        window:
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [start, end]
+              properties:
+                start:
+                  type: string
+                  format: date-time
+                  description: Exclusive
+                end:
+                  type: string
+                  format: date-time
+            - type: "null"
+        subject:
+          type: [string, "null"]
+          description: The mail's subject, as in "Weekly digest · 4 readings"
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, title, tldr, url]
+            properties:
+              id:
+                type: string
+              title:
+                type: string
+              tldr:
+                type: string
+              url:
+                type: string
+                format: uri
     GetDeskResponse:
       type: object
       additionalProperties: false

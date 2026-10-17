@@ -8,6 +8,7 @@
  * a repeated hour shares a period_key, so the delivery ledger is what stops a
  * second send.
  */
+import type { DigestDeliveryStatus } from "../control-plane/digest-ledger";
 import { isIanaTimeZone } from "./time-zone";
 
 export type DigestEnabledCadence = "daily" | "weekly";
@@ -35,6 +36,14 @@ export type DigestDue =
       due: false;
       reason: "cadence_off" | "invalid_time_zone" | "hour_mismatch" | "weekday_mismatch";
     };
+
+export type DigestPeriodDelivery = "none" | "pending" | "closed";
+
+export function periodDeliveryForStatus(status: DigestDeliveryStatus | null): DigestPeriodDelivery {
+  if (status === null) return "none";
+  if (status === "pending") return "pending";
+  return "closed";
+}
 
 const WEEKDAY_FROM_JS: readonly number[] = [7, 1, 2, 3, 4, 5, 6];
 
@@ -132,6 +141,38 @@ export function digestDueAt(settings: DigestScheduleSettings, now: Date): Digest
   };
 }
 
+export function nextDigestSendAt(
+  settings: DigestScheduleSettings,
+  now: Date,
+  delivery: DigestPeriodDelivery,
+): Date | null {
+  const current = currentPeriodKey(settings, now);
+  if (!current.ok) return null;
+  const nowMs = now.getTime();
+  const dueNow = digestDueAt(settings, now).due;
+  for (let delta = 0; delta <= 8; delta++) {
+    const day = addUtcCalendarDays(current.local.year, current.local.month, current.local.day, delta);
+    for (const ms of utcInstantsForLocalTime(
+      settings.time_zone,
+      day.year,
+      day.month,
+      day.day,
+      settings.digest_hour_local,
+      0,
+      0,
+    )) {
+      const due = digestDueAt(settings, new Date(ms));
+      if (!due.due) continue;
+      const thisPeriod = due.period_key === current.period_key;
+      if (thisPeriod && delivery === "closed") continue;
+      if (ms > nowMs) return new Date(ms);
+      if (thisPeriod && delivery === "pending") return new Date(ms);
+      if (thisPeriod && delivery === "none" && dueNow) return new Date(ms);
+    }
+  }
+  return null;
+}
+
 export interface DigestWindow {
   startMs: number;
   endMs: number;
@@ -174,23 +215,53 @@ export function zonedLocalTimeToUtcMs(
   minute: number,
   second: number,
 ): number | null {
-  if (!isIanaTimeZone(timeZone)) return null;
-  const targetKey = civilTimeKey(year, month, day, hour, minute, second);
-  let utc = Date.UTC(year, month - 1, day, hour, minute, second, 0);
-  for (let i = 0; i < 8; i++) {
-    const local = localCivilTime(new Date(utc), timeZone);
-    if (!local) return null;
-    if (
-      civilTimeKey(local.year, local.month, local.day, local.hour, local.minute, local.second) ===
-      targetKey
-    ) {
-      return utc;
-    }
-    utc +=
-      Date.UTC(year, month - 1, day, hour, minute, second) -
-      Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second);
+  return utcInstantsForLocalTime(timeZone, year, month, day, hour, minute, second)[0] ?? null;
+}
+
+const OFFSET_SAMPLE_STEP_MINUTES = 15;
+const MAX_UTC_OFFSET_MINUTES = 14 * 60;
+
+function utcInstantsForLocalTime(
+  timeZone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+  second: number,
+): number[] {
+  if (!isIanaTimeZone(timeZone)) return [];
+  const nominal = Date.UTC(year, month - 1, day, hour, minute, second);
+  const offsets = new Set<number>();
+  for (
+    let delta = -MAX_UTC_OFFSET_MINUTES;
+    delta <= MAX_UTC_OFFSET_MINUTES;
+    delta += OFFSET_SAMPLE_STEP_MINUTES
+  ) {
+    const offset = offsetMsAt(timeZone, nominal + delta * 60_000);
+    if (offset !== null) offsets.add(offset);
   }
-  return null;
+  const target = civilTimeKey(year, month, day, hour, minute, second);
+  const matches: number[] = [];
+  for (const offset of offsets) {
+    const utc = nominal - offset;
+    const local = localCivilTime(new Date(utc), timeZone);
+    if (!local) continue;
+    if (
+      civilTimeKey(local.year, local.month, local.day, local.hour, local.minute, local.second) !== target
+    ) {
+      continue;
+    }
+    matches.push(utc);
+  }
+  matches.sort((a, b) => a - b);
+  return matches;
+}
+
+function offsetMsAt(timeZone: string, utcMs: number): number | null {
+  const local = localCivilTime(new Date(utcMs), timeZone);
+  if (!local) return null;
+  return Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second) - utcMs;
 }
 
 function addUtcCalendarDays(

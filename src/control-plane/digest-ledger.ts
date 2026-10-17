@@ -3,6 +3,7 @@
  * idempotency key: the cron inserts pending, the consumer flips pending to
  * sent or skipped, and a redelivered job seeing sent/skipped/failed acks.
  */
+import { periodDeliveryForStatus } from "../modules/digest-schedule";
 import type { ControlPlaneDb } from "./db";
 import { fromTimestamp, toTimestamp } from "./pg-time";
 
@@ -80,7 +81,7 @@ export async function claimPendingDigestDelivery(
   );
   if (inserted.changes === 1) return "inserted";
   const existing = await getDigestDelivery(db, key);
-  if (existing?.status === "pending") return "pending";
+  if (existing && periodDeliveryForStatus(existing.status) === "pending") return "pending";
   return "terminal";
 }
 

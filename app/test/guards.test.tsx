@@ -89,6 +89,7 @@ describe("frontend guards", () => {
       ["/readings/rd_ONE?next=https://evil.example", "/readings/rd_ONE"],
       ["/threads?view=source", "/threads"],
       ["/threads/rd_ONE?offset=20", "/threads/rd_ONE"],
+      ["/digest?offset=20", "/digest"],
       ["/catalog", "/catalog"],
       ["/catalog?kind=hosts&q=focus&offset=20", "/catalog?kind=hosts&q=focus&offset=20"],
       ["/catalog?person=+&org=Acme&tag=ai&limit=10&mode=text", "/catalog?org=Acme"],
@@ -112,6 +113,7 @@ describe("frontend guards", () => {
       "/readings/%2F%2Fevil.example",
       "/readings/rd_ONE@evil.example",
       "/threads/rd_ONE/more",
+      "/digest/rd_ONE",
     ]) {
       expect(safeReturnPath(raw), raw).toBeUndefined();
     }

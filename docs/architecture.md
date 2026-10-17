@@ -268,6 +268,9 @@ windows close without mail. Resend 429 retains pending state for retry;
 fan-out redrives pending deliveries only after 15 minutes. Each send uses
 `digestDeliveryKeyId` as its idempotency key. Digest delivery ignores `EMAIL_TO`
 and `LOCAL_MAIL_SINK`. See [mail configuration](operations.md#secrets).
+The [digest preview](api.md#digest-preview) runs the same due rule and
+selection over the next send's window up to now, so it shows what that mail
+would carry.
 
 Account deletion first suppresses access and revokes credentials. Wipe starts
 after seven days, or with an explicit forced job, and deletes the tenant's

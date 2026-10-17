@@ -31,6 +31,7 @@ import {
   type DeskNotReadyResponse,
   type DeskWriteResponse,
   type GetDeskResponse,
+  type GetDigestPreviewResponse,
   type GetReadingRelationshipsResponse,
   type GetReadingTermsResponse,
   type GetReadingResponse,
@@ -58,6 +59,10 @@ import { handleMeaningSearch, handleSimilarReadings } from "./similar-readings";
 import { defaultServices, type Services } from "./services";
 import { readingIntakeFor, type IntakeOutcome, type ReadingIntake } from "./intake";
 import { purgeReading } from "./reading-purge";
+import { digestPreview } from "./digest-pipeline";
+import { getDigestDelivery } from "./control-plane/digest-ledger";
+import { getUserSettings } from "./control-plane/user-settings";
+import { currentPeriodKey, periodDeliveryForStatus } from "./modules/digest-schedule";
 import type { AuthenticatedPrincipal } from "./control-plane/principal";
 import { applyStaleness, pendingTtlSeconds as parsePendingTtlSeconds } from "./modules/staleness";
 import {
@@ -246,6 +251,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/inbox/*", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/desk", requirePrincipal(authNowMs), requireExpectedTenant());
   app.use("/api/desk/*", requirePrincipal(authNowMs), requireExpectedTenant());
+  app.use("/api/digest/*", requirePrincipal(authNowMs), requireExpectedTenant());
 
   // The principal's own identity — no scope gate: every authenticated caller
   // may learn who it is. Operator tooling uses this to verify that a bearer
@@ -405,6 +411,32 @@ export function createApp(opts: AppOptions = {}) {
 
   app.delete("/api/desk", requireScope("readings:write"), async (c) => {
     return c.json(deskBody(await deskFor(c.get("principal"), services, c.get("sql")).clear()));
+  });
+
+  // The next digest so far (reading-lite-kl7y.10), from the same schedule and
+  // selection the mail uses; see digestPreview.
+  app.get("/api/digest/preview", requireScope("readings:read"), async (c) => {
+    const principal = c.get("principal");
+    const sql = c.get("sql");
+    const db = fromSql(sql);
+    const now = new Date(services.now());
+    const settings = await getUserSettings(db, String(principal.userId));
+    if (!settings) return c.json({ error: "not found" }, 404);
+    const current = currentPeriodKey(settings, now);
+    const row = current.ok
+      ? await getDigestDelivery(db, {
+          userId: String(principal.userId),
+          cadence: current.cadence,
+          periodKey: current.period_key,
+        })
+      : null;
+    const body: GetDigestPreviewResponse = await digestPreview(
+      settings,
+      now,
+      () => pgReadingStoreFor(sql, { tenantId: principal.tenantId }).allListItems(),
+      periodDeliveryForStatus(row?.status ?? null),
+    );
+    return c.json(body);
   });
 
   app.get("/api/readings", requireScope("readings:read"), async (c) => {
