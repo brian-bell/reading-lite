@@ -1,4 +1,7 @@
 import { isPublicPath } from "../public-paths";
+import { strictTransportSecurity } from "./http-upgrade.ts";
+
+export { httpsRedirect } from "./http-upgrade.ts";
 
 // Request rules from ADR 0003 (Routing, Rendering and caching).
 //
@@ -41,7 +44,7 @@ export function backendPathResponse(): Response {
   });
 }
 
-export function withResponsePolicy(response: Response, pathname = ""): Response {
+export function withResponsePolicy(response: Response, pathname = "", requestUrl = ""): Response {
   const headers = new Headers(response.headers);
   if (isPublicPath(pathname)) {
     // Do not mark public HTML private/no-store (ADR 0003). Drop a
@@ -51,6 +54,8 @@ export function withResponsePolicy(response: Response, pathname = ""): Response 
     headers.set("Cache-Control", HTML_CACHE_CONTROL);
   }
   headers.set("Content-Security-Policy", CONTENT_SECURITY_POLICY);
+  const hsts = strictTransportSecurity(requestUrl);
+  if (hsts) headers.set("Strict-Transport-Security", hsts);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

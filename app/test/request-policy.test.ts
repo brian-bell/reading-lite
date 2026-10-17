@@ -13,6 +13,7 @@ describe("public HTTP", () => {
     expect(httpsRedirect("http://localhost:8787/health")).toBeNull();
     expect(httpsRedirect("http://[::1]/api/auth/login-options")).toBeNull();
     expect(httpsRedirect("http://next.readinglite.test/library?tag=ai")).toBeNull();
+    expect(httpsRedirect("https://readinglite.ai/login?next=%2F")).toBeNull();
   });
 
   it("sends HSTS on public https responses and not on local or http ones", () => {
