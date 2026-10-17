@@ -16,6 +16,7 @@ export interface Identity {
    * older backend's body still reads as an identity.
    */
   needs_provider_key?: boolean;
+  provider_key_provider?: string | null;
   email: string;
   csrf_token?: string;
 }
@@ -61,6 +62,7 @@ function isIdentity(body: unknown): body is Identity {
     (value.principal === "session" || value.principal === "token") &&
     typeof value.tenant_data_plane === "boolean" &&
     (value.needs_provider_key === undefined || typeof value.needs_provider_key === "boolean") &&
+    (value.provider_key_provider === undefined || value.provider_key_provider === null || typeof value.provider_key_provider === "string") &&
     typeof value.email === "string" &&
     (value.csrf_token === undefined || typeof value.csrf_token === "string")
   );

@@ -34,6 +34,7 @@ import {
   type GetReadingRelationshipsResponse,
   type GetReadingTermsResponse,
   type GetReadingResponse,
+  type GetWhoamiResponse,
   type ListInboxResponse,
   type PostInboxExistingResponse,
   type PostInboxStagedResponse,
@@ -97,7 +98,7 @@ import {
 import { readAuthRoots } from "./control-plane/auth-root";
 import { mintCsrfToken } from "./control-plane/csrf";
 import { fromSql } from "./control-plane/db";
-import { providerKeyReady } from "./control-plane/tenant-provider-keys";
+import { providerKeyNeeded } from "./control-plane/tenant-provider-keys";
 import { tenantUsageFor } from "./control-plane/tenant-usage-guard";
 
 export interface AppOptions {
@@ -125,7 +126,7 @@ function intakeFor(env: Env, principal: AuthenticatedPrincipal, services: Servic
     pendingTtlSeconds: pendingTtlSeconds(env),
     principal,
     usage: tenantUsageFor(env, String(principal.tenantId)),
-    providerKeyReady: () => providerKeyReady(env, fromSql(sql), String(principal.tenantId)),
+    providerKeyNeeded: () => providerKeyNeeded(env, fromSql(sql), String(principal.tenantId)),
   });
 }
 
@@ -256,20 +257,14 @@ export function createApp(opts: AppOptions = {}) {
       "SELECT email_display FROM users WHERE id = ?",
       String(principal.userId),
     );
-    const body: {
-      tenant_id: string;
-      user_id: string;
-      principal: AuthenticatedPrincipal["kind"];
-      tenant_data_plane: boolean;
-      needs_provider_key: boolean;
-      email: string;
-      csrf_token?: string;
-    } = {
+    const keyNeeded = await providerKeyNeeded(c.env, db, String(principal.tenantId));
+    const body: GetWhoamiResponse = {
       tenant_id: String(principal.tenantId),
       user_id: String(principal.userId),
       principal: principal.kind,
       tenant_data_plane: c.env.TENANT_DATA_PLANE === "1",
-      needs_provider_key: !(await providerKeyReady(c.env, db, String(principal.tenantId))),
+      needs_provider_key: keyNeeded !== null,
+      provider_key_provider: keyNeeded,
       email: user?.email_display ?? "",
     };
     if (principal.kind === "session") {
@@ -698,11 +693,9 @@ function toHttp(out: IntakeOutcome): {
         status: 429,
         headers: { "Retry-After": "5" },
       };
-    // Tenant provider keys are on and this reader has no active key (ADR
-    // 0004): nothing was claimed. Not retryable until they connect one.
     case "provider_key_required":
       return {
-        body: { error: "connect a key, then retry", code: "provider_key_required" },
+        body: { error: "connect a key, then retry", code: "provider_key_required", provider: out.provider },
         status: 409,
       };
     // The account was marked deleting after this request authenticated; the
