@@ -2148,6 +2148,75 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.find-mode {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--control-border);
+  border-radius: 7px;
+}
+
+.find-mode-option {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border-radius: 5px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.find-mode-option input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.find-mode-option:has(input:checked) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.find-mode-option:has(input:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.meaning-results .catalog-term {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.closeness {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.closeness-close {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.closeness-near {
+  background: var(--soft);
+  color: var(--ink);
+}
+
+.closeness-faint {
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
 /* ---- Controls --------------------------------------------------------- */
 
 .button {
@@ -3903,6 +3972,11 @@ a.thread-step:hover {
 
 .relationship-card-revisit .relationship-kind {
   color: var(--positive);
+}
+
+/* More like this: no accent rule, since no judge has made it a connection. */
+.relationship-card-similar {
+  border-left-color: var(--control-border);
 }
 
 /* ---- Compact bar at container width ≤650 px --------------------------- */

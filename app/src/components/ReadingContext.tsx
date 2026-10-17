@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import { carryReturn } from "../library-return";
 import {
   connectionsComputedOn,
@@ -10,6 +10,7 @@ import {
 import { trailAfterFollowing, type ReadingRoute, type TrailHop } from "../reading-trail";
 import type { Reading } from "../reading";
 import { savedOn } from "../reading-presentation";
+import type { SimilarReading } from "../similar-readings";
 import { revisitPrompts, type Thread } from "../threads";
 import { Icon } from "./Icon";
 import { jumpTo } from "./jump-to";
@@ -28,7 +29,9 @@ import { useTrail } from "./ReturnTrail";
 // once the relationship graph has loaded in the browser and the reading is in
 // a thread; until then, and when the read fails, there is no strip. After the
 // cards, Worth revisiting lists the connections saved long before this
-// reading.
+// reading, and More like this the nearest readings no judge has placed beside
+// it yet (reading-lite-kl7y.5). The reading page passes `similar` once it has
+// loaded in the browser; the sample pages never do.
 
 export const CONTEXT_HEADING_ID = "context-heading";
 export const CONTEXT_JUMP_ID = "context-jump";
@@ -55,10 +58,12 @@ export function ReadingContext({
   reading,
   route = "/readings/$id",
   thread,
+  similar = [],
 }: {
   reading: Reading;
   route?: ReadingRoute;
   thread?: Thread;
+  similar?: readonly SimilarReading[];
 }) {
   const { connections, tensions } = relationshipCards(reading);
   const computed = connectionsComputedOn(reading);
@@ -85,6 +90,13 @@ export function ReadingContext({
       {revisits.length > 0 ? (
         <RelationshipGroup heading="Worth revisiting" cards={revisits} from={from} route={route} revisit />
       ) : null}
+      {similar.length > 0 ? (
+        <ContextGroup heading="More like this" note="By similarity alone, not yet judged for a connection.">
+          {similar.map((item) => (
+            <SimilarCard key={item.id} reading={item} />
+          ))}
+        </ContextGroup>
+      ) : null}
       <a className="context-return" href={`#${CONTEXT_JUMP_ID}`} onClick={(event) => jumpTo(event, CONTEXT_JUMP_ID)}>
         Back to the reading
       </a>
@@ -107,15 +119,40 @@ function RelationshipGroup({
   route: ReadingRoute;
   revisit?: boolean;
 }) {
+  return (
+    <ContextGroup heading={heading} note={note}>
+      {cards.map((card) => (
+        <RelationshipCardView key={`${card.kind}:${card.id}`} card={card} from={from} route={route} revisit={revisit} />
+      ))}
+    </ContextGroup>
+  );
+}
+
+function ContextGroup({ heading, note, children }: { heading: string; note?: string; children: ReactNode }) {
   const headingId = useId();
   return (
     <section className="relationship-group" aria-labelledby={headingId}>
       <h3 id={headingId}>{heading}</h3>
       {note ? <p className="relationship-note">{note}</p> : null}
-      {cards.map((card) => (
-        <RelationshipCardView key={`${card.kind}:${card.id}`} card={card} from={from} route={route} revisit={revisit} />
-      ))}
+      {children}
     </section>
+  );
+}
+
+/**
+ * A plain link that keeps the way back to the list, not a FollowLink: a
+ * similarity is not a relationship, so it is no hop on the return trail.
+ */
+function SimilarCard({ reading }: { reading: SimilarReading }) {
+  return (
+    <article className="relationship-card relationship-card-similar">
+      <p className="relationship-title">
+        <Link to="/readings/$id" params={{ id: reading.id }} state={carryReturn}>
+          {reading.title}
+        </Link>
+      </p>
+      {reading.tldr ? <p className="relationship-reason">{reading.tldr}</p> : null}
+    </article>
   );
 }
 

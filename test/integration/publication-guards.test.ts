@@ -799,6 +799,35 @@ describe("the relationships read", () => {
   });
 });
 
+describe("more like this", () => {
+  // rd_a's five connections and one tension all sit closer to it (0.95) than
+  // rd_d (0.71), so excluding them after LIMIT 5 would leave nothing. rd_e
+  // (0.45) is under the floor; rd_p has no vector.
+  it("excludes the reading and its judged targets before the limit, then floors the rest", async () => {
+    const s = sql();
+    const tenant = founderTenant();
+    const connected = ["rd_c1", "rd_c2", "rd_c3", "rd_c4", "rd_c5"];
+    await seedManifest(s, tenant, await readyManifest("rd_a", {
+      connections: connected.map((id) => ({ id, reason: "same ground" })),
+      tensions: [{ id: "rd_t1", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
+    }), { embedding: axisVector(0) });
+    for (const [i, id] of [...connected, "rd_t1"].entries()) {
+      await seedManifest(s, tenant, await readyManifest(id), { embedding: axisVector(i + 1, 3) });
+    }
+    await seedManifest(s, tenant, await readyManifest("rd_d"), { embedding: axisVector(10, 1) });
+    await seedManifest(s, tenant, await readyManifest("rd_e"), { embedding: axisVector(11, 0.5) });
+    await seedManifest(s, tenant, await readyManifest("rd_p"));
+
+    const similar = async (id: string) => {
+      const { status, body } = await api(`/api/readings/${id}/similar`);
+      return [status, status === 200 ? (body.items as { id: string }[]).map((item) => item.id) : body];
+    };
+    expect(await similar("rd_a")).toEqual([200, ["rd_d"]]);
+    expect(await similar("rd_p"), "no vector").toEqual([200, []]);
+    expect(await similar("rd_missing")).toEqual([404, { error: "not found" }]);
+  });
+});
+
 describe("the terms index and facets", () => {
   const TERMS_SEED: readonly {
     id: string;

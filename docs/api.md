@@ -70,16 +70,18 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 | `GET /api/readings/relationships` | The tenant's relationship graph in one read: `{ readings, relationships }`. See [the relationships read](#the-relationships-read) |
 | `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |
 | `GET /api/readings/:id/diagnostics` | Manifest, list row, URL ownership (reported in the `pointers` shape), the R2 objects under its key prefix, and up to 20 recent attempt records |
+| `GET /api/readings/:id/similar` | More like this: `{ items }`, at most 5 readings scoring at or above the 0.55 similarity floor against this reading's stored embedding. The reading and its connection and tension targets are excluded before the limit. No provider call. Empty when the reading has no embedding; 404 for an unknown ID |
 | `POST /api/readings/:id/reprocess` | Fresh attempt on the same ID; optional `force` bypasses an active-attempt conflict, and optional `source: { kind: "markdown", markdown, title? }` supplies replacement text |
 | `GET /api/readings/:id/content` | Streams the extracted Markdown; 404 if content is not captured |
 | `GET /api/readings/:id/content/raw` | Raw bytes with their stored content type |
 | `DELETE /api/readings/:id` | Requires `readings:delete`; 409 while a non-stale attempt runs, 404 for unknown ID. Returns `{ id, vector_delete_requested, list_row_removed, by_url_released, objects_deleted }` |
 | `POST /api/readings/similar` | `{ query_embedding: number[1536], k? }` (`k` defaults to 10, max 50); returns `{ items }`, an exact cosine scan over the caller's ready readings' embeddings |
+| `POST /api/readings/search` | Meaning search: `{ query }`, trimmed, 1 to 500 characters. Embeds the question with one paid OpenAI request and returns `{ items }`, at most 10 readings at or above the 0.55 floor. 409 `provider_key_required` with `provider`, or another `provider_*` code, when the reader's OpenAI key must change. 429 with `code` `SpendAdmissionError`, `hosted_provider_quota`, or `DeferPaidWorkError`, and no `Retry-After`. 503 when the provider did not answer. See [meaning search spend](paid-provider-spend.md#meaning-search) |
 
-Read routes require `readings:read`; submit/reprocess/similar require
-`readings:write`, and Markdown import requires `readings:import`.
+Read routes require `readings:read`; submit, reprocess, similar, and search
+require `readings:write`, and Markdown import requires `readings:import`.
 List filtering is one query over the tenant's `readings` rows in PostgreSQL;
-text search does not use embeddings.
+`q` text search does not use embeddings.
 
 Supplied Markdown reprocessing takes precedence over stored text. Only success
 changes `source_type` to `markdown`, enabling later source-less reuse. Each

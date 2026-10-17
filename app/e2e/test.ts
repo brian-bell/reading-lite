@@ -52,13 +52,62 @@ export { expect };
  * reading the browser asked for, and `answer`, when given, replaces the answer
  * for a request with a canned one (#406): a reading's status checks. It may
  * change between calls.
+ *
+ * Meaning search (POST /api/readings/search) answers E2E_MEANING_RESULTS, one
+ * reading in each closeness band, and More like this
+ * (GET /api/readings/:id/similar) answers E2E_SIMILAR without the reading
+ * itself (reading-lite-kl7y.5). Neither is recorded in `requests`.
  */
+export const E2E_MEANING_RESULTS = {
+  items: [
+    {
+      id: "rd_FXATTENT01",
+      url: "https://fieldnotes.example/2026/a-quieter-internet",
+      title: "A quieter internet is a choice we can make",
+      score: 0.71,
+    },
+    {
+      id: "rd_FXFRICTN01",
+      url: "https://adjacent.example/the-case-for-a-little-friction",
+      title: "The case for a little friction",
+      score: 0.62,
+    },
+    {
+      id: "rd_FXSPARSE01",
+      url: "https://small-hours.example/against-the-endless-queue",
+      title: "Against the endless queue",
+      score: 0.56,
+    },
+  ],
+};
+
+export const E2E_SIMILAR = [
+  {
+    id: "rd_FXSPARSE01",
+    url: "https://small-hours.example/against-the-endless-queue",
+    title: "Against the endless queue",
+    tldr: "A reading queue can become a list of obligations. Rivera proposes keeping a small set of active interests and allowing the rest to remain an archive.",
+    score: 0.68,
+  },
+  {
+    id: "rd_FXPAPER001",
+    url: "https://small-hours.example/reading-on-paper-again",
+    title: "Reading on paper, again",
+    tldr: "A month of printing every long read. Rivera reports slower reading, fewer saves, and a surprising number of finished pieces.",
+    score: 0.61,
+  },
+];
+
 export async function serveReadingsInBrowser(
   page: Page,
   overrides: Record<string, unknown> = {},
   requests: string[] = [],
   answer?: (id: string) => { status: number; body: unknown } | undefined,
 ): Promise<void> {
+  await page.route("**/api/readings/*/similar", async (route) => {
+    const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2) ?? "");
+    await route.fulfill({ status: 200, json: { items: E2E_SIMILAR.filter((item) => item.id !== id) } });
+  });
   await page.route("**/api/readings/*", async (route) => {
     const id = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1) ?? "");
     if (id === "terms") {
@@ -67,6 +116,10 @@ export async function serveReadingsInBrowser(
     }
     if (id === "relationships") {
       await route.fulfill({ status: 200, json: pack.relationships });
+      return;
+    }
+    if (id === "search" && route.request().method() === "POST") {
+      await route.fulfill({ status: 200, json: E2E_MEANING_RESULTS });
       return;
     }
     requests.push(id);

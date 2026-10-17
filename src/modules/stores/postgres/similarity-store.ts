@@ -65,26 +65,30 @@ export class PgSimilarityStore {
     return this.nearest(vectorLiteral(embedding), topK);
   }
 
-  // Neighbours of a stored vector, self included (callers excludeSelf). Null
-  // when the reading has no vector, which is distinct from no neighbours.
-  async queryByVectorId(id: string, topK: number): Promise<SimilarityMatch[] | null> {
+  // Neighbours of a stored vector, self included unless `exclude` names it
+  // (otherwise callers excludeSelf). Null when the reading has no vector,
+  // which is distinct from no neighbours. `exclude` applies before LIMIT, so
+  // a reading with many judged targets still gets `topK` candidates.
+  async queryByVectorId(id: string, topK: number, exclude: readonly string[] = []): Promise<SimilarityMatch[] | null> {
     const [row] = await this.sql.query<{ embedding: string }>(
       "SELECT embedding::text AS embedding FROM reading_embeddings WHERE tenant_id = $1 AND reading_id = $2",
       [this.tenantId, id],
     );
-    return row ? this.nearest(row.embedding, topK) : null;
+    return row ? this.nearest(row.embedding, topK, exclude) : null;
   }
 
-  private async nearest(vector: string, topK: number): Promise<SimilarityMatch[]> {
+  // $4 is always bound, `[]` by default, so there is one statement and no
+  // NULL case: `<> ALL('{}')` is true.
+  private async nearest(vector: string, topK: number, exclude: readonly string[] = []): Promise<SimilarityMatch[]> {
     const limit = Math.min(MAX_SIMILARITY_TOP_K, Math.max(MIN_TOP_K, Math.trunc(topK)));
     const rows = await this.sql.query<MatchRow>(
       `SELECT r.id, 1 - (e.embedding <=> $2::vector) AS score, r.url, r.title, r.tldr, r.tags, r.created_at
        FROM reading_embeddings e
        JOIN readings r ON (r.tenant_id, r.id) = (e.tenant_id, e.reading_id)
-       WHERE e.tenant_id = $1 AND r.status = 'ready'
+       WHERE e.tenant_id = $1 AND r.status = 'ready' AND r.id <> ALL($4::text[])
        ORDER BY e.embedding <=> $2::vector, r.id
        LIMIT $3`,
-      [this.tenantId, vector, limit],
+      [this.tenantId, vector, limit, [...exclude]],
     );
     return rows.map((row) => {
       const match: SimilarityMatch = { id: row.id, score: row.score, url: row.url };

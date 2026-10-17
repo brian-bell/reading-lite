@@ -125,6 +125,50 @@ after the cap is lowered. The cap comes from PostgreSQL and the total from the
 guard; they are separate observations, and an unreachable guard answers 503
 with no figure.
 
+## Meaning search
+
+`POST /api/readings/search` (`src/similar-readings.ts`) makes one paid OpenAI
+embedding of the reader's question, paid-dispatch stage `embed_query`. It wraps
+`embed`'s fetch in `createPaidFetch` inside the HTTP retry loop, as the
+consumer does, so the daily caps, the payer, and the settlement rules on this
+page apply unchanged. More like this (`GET /api/readings/:id/similar`) reads
+stored vectors and pays nothing.
+
+The handler decides in this order, and reserves nothing until the first two
+steps pass:
+
+1. The OpenAI key check. With `TENANT_PROVIDER_KEYS=1` the tenant needs an
+   active OpenAI credential, whatever summarizer the reader chose, because a
+   search embeds and never summarizes. Without one the answer is 409
+   `provider_key_required` with `provider: openai`. With tenant keys off, the
+   deployment key pays.
+2. The processing lease. The search acquires the tenant and global leases
+   under the attempt id `search:<uuid>`, so it shares the concurrent-work limit
+   with reading processing. Contention answers 429 `DeferPaidWorkError`. A
+   search never defers or requeues; the reader retries.
+3. Each dispatch attempt presents the lease, then calls `reserve_spend`,
+   `mark_spend_dispatched`, the provider, and `settle_spend`.
+
+The handler releases the lease when the embedding returns or fails, and only
+then reads PostgreSQL. No database transaction is open during the provider
+call.
+
+A search takes no request-rate admission (`admitRequest`) and no reading slot
+(`reserveReading`). Those windows count saves, and a search creates no reading,
+attempt, or job. The daily spend cap still bounds it: a reader who keeps
+searching reaches the cap and gets 429 `SpendAdmissionError` until the UTC day
+resets.
+
+Meaning search keeps only results at or above `SIMILARITY_FLOOR` (0.55), the
+floor calibrated for reading-to-reading neighbours. A short question compared
+with a whole reading's embedding may score lower than two readings do. The test
+fixtures use pseudo-random vectors, so this slice did not measure that, and no
+separate floor exists until a measurement on real questions justifies one. The
+frontend labels results in three provisional bands above the floor: Close from
+0.65, Near from 0.60, and Faint below that. Their 0.05 step is the gap
+between the two floors the calibration compared, 0.55 and 0.60.
+`app/src/similar-readings.ts` owns them, and the reader never sees the score.
+
 ## Operator policy and accounting
 
 Use `npm run ops -- system status --env staging` (or explicit `production`) to

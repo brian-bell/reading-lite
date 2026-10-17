@@ -198,6 +198,7 @@ describe("tenant guards", () => {
         path: `/api/readings/${id}/diagnostics`,
         unknown: `/api/readings/${UNKNOWN_ID}/diagnostics`,
       },
+      { label: "GET similar", path: `/api/readings/${id}/similar`, unknown: `/api/readings/${UNKNOWN_ID}/similar` },
       {
         label: "GET lookup",
         path: `/api/readings/lookup?url=${encodeURIComponent(url)}`,
