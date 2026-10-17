@@ -15,7 +15,9 @@ const ANTHROPIC_PRICES: Record<
   string,
   { input: number; cacheWrite: number; cached: number; output: number }
 > = {
-  "claude-sonnet-5-5": { input: 2, cacheWrite: 2.5, cached: 0.2, output: 10 },
+  "claude-sonnet-5-5": { input: 2, cacheWrite: 2.5, cached: 0.1, output: 10 },
+  // Prompts up to 100,000 tokens; longer prompts bill higher.
+  "claude-haiku-5-5": { input: 0.1, cacheWrite: 0.125, cached: 0.01, output: 0.5 },
   "claude-sonnet-5": { input: 2, cacheWrite: 2.5, cached: 0.2, output: 10 },
   "claude-sonnet-4-6": { input: 3, cacheWrite: 3.75, cached: 0.3, output: 15 },
   "claude-opus-5": { input: 5, cacheWrite: 6.25, cached: 0.5, output: 25 },
