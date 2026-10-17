@@ -57,6 +57,7 @@ import {
   digestDueAt,
   digestWindow,
   nextDigestSendAt,
+  type DigestPeriodDelivery,
   type DigestScheduleSettings,
 } from "./modules/digest-schedule";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
@@ -269,6 +270,7 @@ export async function digestPreview(
   settings: DigestScheduleSettings & { digest_cadence: DigestCadence },
   now: Date,
   library: () => Promise<ListIndexItem[]>,
+  delivery: DigestPeriodDelivery,
 ): Promise<GetDigestPreviewResponse> {
   const unscheduled = {
     cadence: settings.digest_cadence,
@@ -279,7 +281,7 @@ export async function digestPreview(
     items: [],
   };
   if (settings.digest_cadence === "off") return unscheduled;
-  const next = nextDigestSendAt(settings, now);
+  const next = nextDigestSendAt(settings, now, delivery);
   const window = next && digestWindow(settings.digest_cadence, settings.time_zone, next);
   if (!next || !window) return unscheduled;
   const items = selectDigestReadings(await library(), { startMs: window.startMs, endMs: now.getTime() }).flatMap(

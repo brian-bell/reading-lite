@@ -173,7 +173,8 @@ stays, a running reprocess that has only passed the pending TTL stays, and
 `GET /api/digest/preview` (`readings:read`, reading-lite-kl7y.10) answers what
 the next digest mail would carry if it went out now. It reads the caller's
 digest settings, finds the next send the cron would make (`nextDigestSendAt`,
-which tests each candidate hour with the cron's own `digestDueAt`), and selects
+which tests each candidate with the cron's own `digestDueAt` and the same
+open-or-closed period state the ledger uses), and selects
 from that send's window, cut off at now, with the mail's own
 `selectDigestReadings`. The answer is `{ cadence, time_zone, next_send_at,
 window: { start, end }, subject, items: [{ id, title, tldr, url }] }`, newest
