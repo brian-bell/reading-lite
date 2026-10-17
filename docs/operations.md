@@ -410,8 +410,8 @@ Public widget key `TURNSTILE_SITE_KEY` is a `[vars]` value, not a secret.
 `invite_only` (`signupModeForEnv`); do not flip staging to open by default.
 
 Checked-in summarizer effort vars in `wrangler.toml` (and the dotenv examples):
-`OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally and `high` in
-staging/production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` is `low` locally
+`OPENAI_SUMMARIZATION_REASONING_EFFORT` is `low` locally, `high` in staging
+and `medium` in production. `ANTHROPIC_SUMMARIZATION_REASONING_EFFORT` is `low` locally
 and `medium` in staging/production, and is applied only when
 `SUMMARIZER_PROVIDER=anthropic`. Staging and production summarize, and run
 weekly relationship-refresh judgements, with Anthropic; local uses OpenAI. Claude Sonnet
