@@ -53,6 +53,9 @@ export const PostReadingReprocessBodySchema = z
   .default({ force: false });
 export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;
 
+export const SummarizationProviderSchema = z.enum(["openai", "anthropic"]);
+export type SummarizationProvider = z.infer<typeof SummarizationProviderSchema>;
+
 // GET /api/whoami: the authenticated principal's own identity, so operator
 // tooling can verify which tenant a bearer token acts as before submitting
 // writes through the API (reading-lite-1xk). `tenant_data_plane` reports
@@ -65,10 +68,8 @@ export const GetWhoamiResponseSchema = z.object({
   user_id: z.string(),
   principal: z.enum(["api_token", "session"]),
   tenant_data_plane: z.boolean(),
-  // True when tenant provider keys are on and the tenant has no active key:
-  // save, import and reprocess answer 409 provider_key_required until one is
-  // connected. The frontend reads it to ask for a key before the first save.
   needs_provider_key: z.boolean(),
+  provider_key_provider: SummarizationProviderSchema.nullable(),
   email: z.string(),
   // Session principals only. Bearer whoami must omit this field.
   csrf_token: z
@@ -226,9 +227,6 @@ export type PostAuthSettingsBody = z.infer<typeof PostAuthSettingsBodySchema>;
 
 export const SummarizationEffortSchema = z.enum(["low", "medium", "high"]);
 export type SummarizationEffort = z.infer<typeof SummarizationEffortSchema>;
-
-export const SummarizationProviderSchema = z.enum(["openai", "anthropic"]);
-export type SummarizationProvider = z.infer<typeof SummarizationProviderSchema>;
 
 export const ProviderCredentialViewSchema = z.object({
   provider: SummarizationProviderSchema,

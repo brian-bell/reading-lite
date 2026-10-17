@@ -52,12 +52,12 @@ function installDialog() {
   };
 }
 
-async function renderCard() {
+async function renderCard(identity: Identity = reader(true)) {
   installDialog();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  queryClient.setQueryData(whoamiQueryKey, reader(true));
+  queryClient.setQueryData(whoamiQueryKey, identity);
   queryClient.setQueryData(providerQueryKey("usr_a"), { state: "ready", value: MISSING });
   const rootRoute = createRootRoute({ component: () => <Outlet /> });
   const indexRoute = createRoute({
@@ -148,5 +148,70 @@ describe("new reader card", () => {
     expect(screen.queryByText("Your key is connected. You can save readings now.")).not.toBeInTheDocument();
     expect(screen.getByText("Connect your OpenAI key").closest("li")).not.toHaveClass("onboarding-done");
     expect(queryClient.getQueryData<Identity>(whoamiQueryKey)?.needs_provider_key).toBe(false);
+    expect(queryClient.getQueryData<Identity>(whoamiQueryKey)?.provider_key_provider).toBe(null);
+  });
+
+  it("keeps an Anthropic gate when an OpenAI key connects", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: Request) => {
+        const request = input instanceof Request ? input : new Request(input);
+        const path = new URL(request.url).pathname;
+        if (request.method === "POST" && path === "/api/auth/provider") {
+          return Response.json(CONNECTED);
+        }
+        return new Response("unexpected", { status: 500 });
+      }),
+    );
+
+    const { queryClient } = await renderCard({ ...reader(true), provider_key_provider: "anthropic" });
+    await user.type(screen.getByLabelText("API key"), "sk-testkey");
+    await user.click(screen.getByRole("button", { name: "Connect key" }));
+    await screen.findByRole("button", { name: "Replace key" });
+
+    const cached = queryClient.getQueryData<Identity>(whoamiQueryKey);
+    expect(cached?.needs_provider_key).toBe(true);
+    expect(cached?.provider_key_provider).toBe("anthropic");
+    expect(screen.queryByRole("link", { name: "Save a reading" })).not.toBeInTheDocument();
+  });
+
+  it("advances an OpenAI gate to Anthropic when that key is still invalid", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: Request) => {
+        const request = input instanceof Request ? input : new Request(input);
+        const path = new URL(request.url).pathname;
+        if (request.method === "POST" && path === "/api/auth/provider") {
+          return Response.json({
+            ...CONNECTED,
+            summarization_provider: "anthropic",
+            anthropic_credential: {
+              provider: "anthropic",
+              last_four: "bad1",
+              status: "invalid",
+              validated_at_ms: 1,
+            },
+          });
+        }
+        return new Response("unexpected", { status: 500 });
+      }),
+    );
+
+    const { queryClient } = await renderCard({ ...reader(true), provider_key_provider: "openai" });
+    await user.type(screen.getByLabelText("API key"), "sk-testkey");
+    await user.click(screen.getByRole("button", { name: "Connect key" }));
+    await screen.findByRole("button", { name: "Replace key" });
+
+    const cached = queryClient.getQueryData<Identity>(whoamiQueryKey);
+    expect({
+      needs_provider_key: cached?.needs_provider_key,
+      provider_key_provider: cached?.provider_key_provider,
+    }).toEqual({ needs_provider_key: true, provider_key_provider: "anthropic" });
+    expect(screen.getByRole("button", { name: "Save a reading" })).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("link", { name: "Save a reading" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Your key is connected. You can save readings now.")).not.toBeInTheDocument();
+    expect(screen.getByText("Connect your OpenAI key").closest("li")).not.toHaveClass("onboarding-done");
   });
 });

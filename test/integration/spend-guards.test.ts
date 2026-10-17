@@ -30,6 +30,7 @@ import { actualPaidCost, quotePaidRequest } from "../../src/modules/paid-pricing
 import { buildKeyPrefix } from "../../src/modules/stores/layout";
 import { processReading, type ProcessReadingArgs } from "../../src/process-reading";
 import { createApp } from "../../src/router";
+import { GetWhoamiResponseSchema } from "../../src/schemas/api";
 import type { Manifest } from "../../src/schemas/manifest";
 import { mintReadingId, sha256Hex, type Services } from "../../src/services";
 import { testControlPlane } from "../helpers/control-plane-db";
@@ -190,6 +191,31 @@ async function storeKey(tenantId: string, plaintext: string, provider: "openai" 
   });
 }
 
+async function arrangeSelection(tenantId: string, selection: "openai" | "anthropic" | "unset"): Promise<void> {
+  if (selection === "anthropic") {
+    await sql("UPDATE user_settings SET summarization_provider = 'anthropic' WHERE user_id = ?", tenantId);
+  } else if (selection === "unset") {
+    await sql("DELETE FROM user_settings WHERE user_id = ?", tenantId);
+  }
+}
+
+async function arrangeKey(
+  tenantId: string,
+  provider: "openai" | "anthropic",
+  state: "none" | "invalid" | "active",
+): Promise<void> {
+  if (state === "none") return;
+  await storeKey(tenantId, `sk-${provider}-gate-4242`, provider);
+  if (state === "invalid") {
+    await markProviderCredentialInvalid(testControlPlane(env), {
+      tenantId,
+      credentialVersion: 1,
+      nowMs: Date.parse(CREATED_AT),
+      provider,
+    });
+  }
+}
+
 function keysOn(): Env {
   return {
     ...env,
@@ -222,6 +248,55 @@ function interceptGuard(
     bindings[binding] = original;
   };
 }
+
+const PROVIDER_KEY_GATE: Array<{
+  name: string;
+  keys: boolean;
+  selection: "openai" | "anthropic" | "unset";
+  openai: "none" | "invalid" | "active";
+  anthropic: "none" | "invalid" | "active";
+  needed: "openai" | "anthropic" | null;
+}> = [
+  { name: "keys on, openai, openai none, anthropic none -> openai", keys: true, selection: "openai", openai: "none", anthropic: "none", needed: "openai" },
+  { name: "keys on, openai, openai none, anthropic invalid -> openai", keys: true, selection: "openai", openai: "none", anthropic: "invalid", needed: "openai" },
+  { name: "keys on, openai, openai none, anthropic active -> openai", keys: true, selection: "openai", openai: "none", anthropic: "active", needed: "openai" },
+  { name: "keys on, openai, openai invalid, anthropic none -> openai", keys: true, selection: "openai", openai: "invalid", anthropic: "none", needed: "openai" },
+  { name: "keys on, openai, openai invalid, anthropic invalid -> openai", keys: true, selection: "openai", openai: "invalid", anthropic: "invalid", needed: "openai" },
+  { name: "keys on, openai, openai invalid, anthropic active -> openai", keys: true, selection: "openai", openai: "invalid", anthropic: "active", needed: "openai" },
+  { name: "keys on, openai, openai active, anthropic none -> null", keys: true, selection: "openai", openai: "active", anthropic: "none", needed: null },
+  { name: "keys on, openai, openai active, anthropic invalid -> null", keys: true, selection: "openai", openai: "active", anthropic: "invalid", needed: null },
+  { name: "keys on, openai, openai active, anthropic active -> null", keys: true, selection: "openai", openai: "active", anthropic: "active", needed: null },
+  { name: "keys on, anthropic, openai none, anthropic none -> openai", keys: true, selection: "anthropic", openai: "none", anthropic: "none", needed: "openai" },
+  { name: "keys on, anthropic, openai none, anthropic invalid -> openai", keys: true, selection: "anthropic", openai: "none", anthropic: "invalid", needed: "openai" },
+  { name: "keys on, anthropic, openai none, anthropic active -> openai", keys: true, selection: "anthropic", openai: "none", anthropic: "active", needed: "openai" },
+  { name: "keys on, anthropic, openai invalid, anthropic none -> openai", keys: true, selection: "anthropic", openai: "invalid", anthropic: "none", needed: "openai" },
+  { name: "keys on, anthropic, openai invalid, anthropic invalid -> openai", keys: true, selection: "anthropic", openai: "invalid", anthropic: "invalid", needed: "openai" },
+  { name: "keys on, anthropic, openai invalid, anthropic active -> openai", keys: true, selection: "anthropic", openai: "invalid", anthropic: "active", needed: "openai" },
+  { name: "keys on, anthropic, openai active, anthropic none -> anthropic", keys: true, selection: "anthropic", openai: "active", anthropic: "none", needed: "anthropic" },
+  { name: "keys on, anthropic, openai active, anthropic invalid -> anthropic", keys: true, selection: "anthropic", openai: "active", anthropic: "invalid", needed: "anthropic" },
+  { name: "keys on, anthropic, openai active, anthropic active -> null", keys: true, selection: "anthropic", openai: "active", anthropic: "active", needed: null },
+  { name: "keys on, unset, openai none, anthropic none -> openai", keys: true, selection: "unset", openai: "none", anthropic: "none", needed: "openai" },
+  { name: "keys on, unset, openai invalid, anthropic none -> openai", keys: true, selection: "unset", openai: "invalid", anthropic: "none", needed: "openai" },
+  { name: "keys on, unset, openai active, anthropic none -> null", keys: true, selection: "unset", openai: "active", anthropic: "none", needed: null },
+  { name: "keys off, openai, openai none, anthropic none -> null", keys: false, selection: "openai", openai: "none", anthropic: "none", needed: null },
+  { name: "keys off, openai, openai none, anthropic invalid -> null", keys: false, selection: "openai", openai: "none", anthropic: "invalid", needed: null },
+  { name: "keys off, openai, openai none, anthropic active -> null", keys: false, selection: "openai", openai: "none", anthropic: "active", needed: null },
+  { name: "keys off, openai, openai invalid, anthropic none -> null", keys: false, selection: "openai", openai: "invalid", anthropic: "none", needed: null },
+  { name: "keys off, openai, openai invalid, anthropic invalid -> null", keys: false, selection: "openai", openai: "invalid", anthropic: "invalid", needed: null },
+  { name: "keys off, openai, openai invalid, anthropic active -> null", keys: false, selection: "openai", openai: "invalid", anthropic: "active", needed: null },
+  { name: "keys off, openai, openai active, anthropic none -> null", keys: false, selection: "openai", openai: "active", anthropic: "none", needed: null },
+  { name: "keys off, openai, openai active, anthropic invalid -> null", keys: false, selection: "openai", openai: "active", anthropic: "invalid", needed: null },
+  { name: "keys off, openai, openai active, anthropic active -> null", keys: false, selection: "openai", openai: "active", anthropic: "active", needed: null },
+  { name: "keys off, anthropic, openai none, anthropic none -> null", keys: false, selection: "anthropic", openai: "none", anthropic: "none", needed: null },
+  { name: "keys off, anthropic, openai none, anthropic invalid -> null", keys: false, selection: "anthropic", openai: "none", anthropic: "invalid", needed: null },
+  { name: "keys off, anthropic, openai none, anthropic active -> null", keys: false, selection: "anthropic", openai: "none", anthropic: "active", needed: null },
+  { name: "keys off, anthropic, openai invalid, anthropic none -> null", keys: false, selection: "anthropic", openai: "invalid", anthropic: "none", needed: null },
+  { name: "keys off, anthropic, openai invalid, anthropic invalid -> null", keys: false, selection: "anthropic", openai: "invalid", anthropic: "invalid", needed: null },
+  { name: "keys off, anthropic, openai invalid, anthropic active -> null", keys: false, selection: "anthropic", openai: "invalid", anthropic: "active", needed: null },
+  { name: "keys off, anthropic, openai active, anthropic none -> null", keys: false, selection: "anthropic", openai: "active", anthropic: "none", needed: null },
+  { name: "keys off, anthropic, openai active, anthropic invalid -> null", keys: false, selection: "anthropic", openai: "active", anthropic: "invalid", needed: null },
+  { name: "keys off, anthropic, openai active, anthropic active -> null", keys: false, selection: "anthropic", openai: "active", anthropic: "active", needed: null },
+];
 
 describe("spend guards", () => {
   it("paid work is admitted only under the tenant and global caps, and a lost dispatch keeps its charge", async () => {
@@ -722,23 +797,6 @@ describe("spend guards", () => {
         body: { code: "quota_exhausted", limit: "monthly" },
         retryAfter: /^[1-9][0-9]*$/,
       },
-      {
-        name: "tenant keys on, no key stored",
-        arrange: async () => {},
-        keys: true,
-        status: 409,
-        body: { error: "connect a key, then retry", code: "provider_key_required" },
-      },
-      {
-        name: "tenant keys on, key marked invalid",
-        arrange: async (tenantId) => {
-          await storeKey(tenantId, "sk-tenant-intake-7777");
-          await markProviderCredentialInvalid(testControlPlane(env), { tenantId, credentialVersion: 1, nowMs: Date.parse(CREATED_AT) });
-        },
-        keys: true,
-        status: 409,
-        body: { error: "connect a key, then retry", code: "provider_key_required" },
-      },
     ];
 
     for (const row of rows) {
@@ -763,6 +821,60 @@ describe("spend guards", () => {
       await expect(readings.urlOwnerId(url), `${row.name}: URL claim`).resolves.toBeNull();
       const [{ n }] = await readings.sql.query<{ n: number }>("SELECT count(*)::int AS n FROM readings WHERE tenant_id = $1", [tenantId]);
       expect(n, `${row.name}: reading rows`).toBe(0);
+    }
+  });
+
+  it.each(PROVIDER_KEY_GATE.map((row) => [row.name, row] as const))("%s", async (_name, row) => {
+    const queued = installQueueStub();
+    const { tenantId, token } = await newTenant();
+    await arrangeSelection(tenantId, row.selection);
+    await arrangeKey(tenantId, "openai", row.openai);
+    await arrangeKey(tenantId, "anthropic", row.anthropic);
+    const kinds: string[] = [];
+    const restore = row.needed === null
+      ? undefined
+      : interceptGuard("TENANT_USAGE_GUARD", async (body, next) => {
+          kinds.push(String(body.kind));
+          return next();
+        });
+    const runEnv = row.keys ? keysOn() : env;
+    const app = createApp({ services: services(vi.fn<typeof fetch>()) });
+    try {
+      const whoami = await app.request("/api/whoami", { headers: { authorization: `Bearer ${token}` } }, runEnv);
+      expect(whoami.status, row.name).toBe(200);
+      const identity = GetWhoamiResponseSchema.parse(await whoami.json());
+      expect(identity.needs_provider_key, row.name).toBe(row.needed !== null);
+      expect(identity.provider_key_provider, row.name).toBe(row.needed);
+
+      const url = `https://intake.example/${tenantId}`;
+      const res = await app.request(
+        "/api/readings",
+        {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: JSON.stringify({ url, email: false }),
+        },
+        runEnv,
+      );
+      if (row.needed === null) {
+        expect(res.status, row.name).toBe(202);
+        await expect(testReadingsFor(tenantOf(tenantId)).urlOwnerId(url), row.name).resolves.not.toBeNull();
+      } else {
+        expect(res.status, row.name).toBe(409);
+        expect(await res.json(), row.name).toEqual({
+          error: "connect a key, then retry",
+          code: "provider_key_required",
+          provider: row.needed,
+        });
+        expect(queued, row.name).toHaveLength(0);
+        const readings = testReadingsFor(tenantOf(tenantId));
+        await expect(readings.urlOwnerId(url), row.name).resolves.toBeNull();
+        const [{ n }] = await readings.sql.query<{ n: number }>("SELECT count(*)::int AS n FROM readings WHERE tenant_id = $1", [tenantId]);
+        expect(n, row.name).toBe(0);
+        expect(kinds, row.name).toEqual(["admit_request"]);
+      }
+    } finally {
+      restore?.();
     }
   });
 });

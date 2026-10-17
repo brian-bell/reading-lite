@@ -2161,9 +2161,9 @@ paths:
           $ref: "#/components/responses/NotFound"
         "409":
           description: |
-            The reading has an active attempt, or the tenant has no active
-            provider key while tenant provider keys are on
-            (`code: provider_key_required`). The item is kept.
+            The reading has an active attempt, or tenant provider keys are on
+            and the body names `provider` (`code: provider_key_required`).
+            The item is kept.
           content:
             application/json:
               schema:
@@ -2341,9 +2341,10 @@ components:
       description: |
         Active attempt in progress, markdown content unavailable for the
         requested operation, or (`code: provider_key_required`) tenant provider
-        keys are on and the tenant has no active key. The last is decided after
-        the request-rate admission and before anything is claimed; it is not
-        retryable until the reader connects a key.
+        keys are on and the body names `provider`, the key that is missing or
+        invalid. The last is decided after the request-rate admission and
+        before anything is claimed; it is not retryable until the reader
+        connects or replaces that key.
       content:
         application/json:
           schema:
@@ -2484,13 +2485,16 @@ components:
     ProviderKeyRequiredError:
       type: object
       additionalProperties: false
-      required: [error, code]
+      required: [error, code, provider]
       properties:
         error:
           type: string
         code:
           type: string
           const: provider_key_required
+        provider:
+          description: The key to connect or replace.
+          $ref: "#/components/schemas/SummarizationProvider"
 
     ValidationError:
       type: object
@@ -2566,7 +2570,7 @@ components:
     WhoamiResponse:
       type: object
       additionalProperties: false
-      required: [tenant_id, user_id, principal, tenant_data_plane, needs_provider_key, email]
+      required: [tenant_id, user_id, principal, tenant_data_plane, needs_provider_key, provider_key_provider, email]
       properties:
         tenant_id:
           type: string
@@ -2580,9 +2584,18 @@ components:
         needs_provider_key:
           type: boolean
           description: |
-            True when tenant provider keys are on and the tenant has no active
-            key. Save, import and reprocess then answer 409
-            `provider_key_required` until the reader connects one.
+            True when tenant provider keys are on and a key the work needs is
+            missing or invalid. `provider_key_provider` names that key, and is
+            null when this flag is false. A missing or invalid OpenAI key wins.
+        provider_key_provider:
+          description: |
+            Null when needs_provider_key is false. Otherwise the provider the
+            reader must connect or replace. A missing or invalid OpenAI key is
+            openai even when summarization is anthropic, because embeddings
+            need it.
+          oneOf:
+            - $ref: "#/components/schemas/SummarizationProvider"
+            - type: "null"
         email:
           type: string
           description: Verified display email for the authenticated user
@@ -3489,13 +3502,16 @@ components:
       allOf:
         - $ref: "#/components/schemas/InboxPromoteItemId"
         - type: object
-          required: [error, code]
+          required: [error, code, provider]
           properties:
             error:
               type: string
             code:
               type: string
               const: provider_key_required
+            provider:
+              description: The key to connect or replace.
+              $ref: "#/components/schemas/SummarizationProvider"
       unevaluatedProperties: false
 
     InboxPromoteUnavailable:
