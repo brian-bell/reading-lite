@@ -37,7 +37,7 @@ function allowedParams(pathname: string): readonly string[] | undefined {
   if (pathname === "/library") return LIBRARY_PARAMS;
   if (READING_PATH.test(pathname)) return ["view"];
   if (pathname === "/save" || pathname === "/inbox" || INBOX_ITEM_PATH.test(pathname)) return [];
-  if (pathname === "/threads" || THREAD_PATH.test(pathname)) return [];
+  if (pathname === "/threads" || THREAD_PATH.test(pathname) || pathname === "/digest") return [];
   if (pathname === ACCOUNT_SECURITY_PATH || pathname === ACCOUNT_PROVIDER_PATH) return [];
   return undefined;
 }

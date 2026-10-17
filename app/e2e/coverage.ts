@@ -14,8 +14,10 @@ import pack from "./fixtures/fixture-pack.json" with { type: "json" };
 import { externalBaseUrl } from "./harness";
 import { hostSession } from "./sessions";
 import {
+  E2E_DIGEST_PREVIEW,
   E2E_PROVIDER,
   serveDeskInBrowser,
+  serveDigestPreviewInBrowser,
   serveExportInBrowser,
   serveInboxInBrowser,
   serveLibraryInBrowser,
@@ -72,9 +74,10 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     path: "/",
     state: "signed-in",
     heading: "Desk",
-    // The provider tile reads in the browser; the pending rows make the page
-    // check itself on the library's schedule; its links preload readings.
+    // The digest and provider tiles read in the browser; the pending rows make
+    // the page check itself on the library's schedule; its links preload readings.
     stub: async (page) => {
+      await serveDigestPreviewInBrowser(page);
       await serveProviderInBrowser(page, { json: E2E_PROVIDER.connected });
       await serveInboxInBrowser(page);
       await serveDeskInBrowser(page);
@@ -99,6 +102,9 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       const readySince = page.getByRole("region", { name: /^Ready since / });
       await expect(readySince.getByRole("button", { name: "Put on desk" }).first()).toBeEnabled();
       await expect(page.getByRole("region", { name: "Provider" }).getByText("OpenAI key ending c0de")).toBeVisible();
+      const digest = page.getByRole("region", { name: "Next digest" });
+      await expect(digest.getByText(`${E2E_DIGEST_PREVIEW.scheduled.items.length} readings so far`)).toBeVisible();
+      await expect(digest.getByText("Goes out Monday 14 September at 08:00, Europe/London.")).toBeVisible();
     },
   },
   // Signed in, the first page of the pack's list index, rendered on the server
@@ -235,6 +241,27 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
       await expect(threads.getByRole("link")).toHaveText(["Attention", "Knowledge"]);
       await expect(page.getByRole("list", { name: "Tensions" }).getByRole("listitem")).toHaveCount(2);
       await expect(page.getByRole("list", { name: "Readings standing alone" }).getByRole("listitem")).toHaveCount(4);
+    },
+  },
+  // The next weekly digest as it stands, read in the browser (reading-lite-kl7y.10),
+  // told on the reader's digest clock whatever the browser's zone.
+  {
+    name: "digest-signed-in",
+    path: "/digest",
+    state: "signed-in",
+    heading: "Digest preview",
+    stub: async (page) => {
+      await serveDigestPreviewInBrowser(page);
+      await serveReadingsInBrowser(page);
+      await serveDeskInBrowser(page);
+    },
+    prepare: async (page) => {
+      await expect(page.getByText("Goes out Monday 14 September at 08:00, Europe/London.")).toBeVisible();
+      const mail = page.getByRole("article", { name: "Digest mail" });
+      await expect(mail.getByText(E2E_DIGEST_PREVIEW.scheduled.subject)).toBeVisible();
+      await expect(mail.getByRole("heading", { level: 2 })).toHaveText(
+        E2E_DIGEST_PREVIEW.scheduled.items.map((item) => item.title),
+      );
     },
   },
   // One thread, found by a member that is not its oldest reading.

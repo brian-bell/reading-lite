@@ -18,6 +18,7 @@ import { Route as PrivacyRouteImport } from './routes/privacy'
 import { Route as SamplesRouteImport } from './routes/samples'
 import { Route as TermsRouteImport } from './routes/terms'
 import { Route as AuthedCatalogRouteImport } from './routes/_authed/catalog'
+import { Route as AuthedDigestRouteImport } from './routes/_authed/digest'
 import { Route as AuthedInboxRouteImport } from './routes/_authed/inbox'
 import { Route as AuthedLibraryRouteImport } from './routes/_authed/library'
 import { Route as AuthedSaveRouteImport } from './routes/_authed/save'
@@ -73,6 +74,11 @@ const TermsRoute = TermsRouteImport.update({
 const AuthedCatalogRoute = AuthedCatalogRouteImport.update({
   id: '/catalog',
   path: '/catalog',
+  getParentRoute: () => AuthedRoute,
+} as any)
+const AuthedDigestRoute = AuthedDigestRouteImport.update({
+  id: '/digest',
+  path: '/digest',
   getParentRoute: () => AuthedRoute,
 } as any)
 const AuthedInboxRoute = AuthedInboxRouteImport.update({
@@ -145,6 +151,7 @@ export interface FileRoutesByFullPath {
   '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/catalog': typeof AuthedCatalogRoute
+  '/digest': typeof AuthedDigestRoute
   '/inbox': typeof AuthedInboxRoute
   '/library': typeof AuthedLibraryRoute
   '/save': typeof AuthedSaveRoute
@@ -167,6 +174,7 @@ export interface FileRoutesByTo {
   '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/catalog': typeof AuthedCatalogRoute
+  '/digest': typeof AuthedDigestRoute
   '/inbox': typeof AuthedInboxRoute
   '/library': typeof AuthedLibraryRoute
   '/save': typeof AuthedSaveRoute
@@ -191,6 +199,7 @@ export interface FileRoutesById {
   '/samples': typeof SamplesRoute
   '/terms': typeof TermsRoute
   '/_authed/catalog': typeof AuthedCatalogRoute
+  '/_authed/digest': typeof AuthedDigestRoute
   '/_authed/inbox': typeof AuthedInboxRoute
   '/_authed/library': typeof AuthedLibraryRoute
   '/_authed/save': typeof AuthedSaveRoute
@@ -215,6 +224,7 @@ export interface FileRouteTypes {
     | '/samples'
     | '/terms'
     | '/catalog'
+    | '/digest'
     | '/inbox'
     | '/library'
     | '/save'
@@ -237,6 +247,7 @@ export interface FileRouteTypes {
     | '/samples'
     | '/terms'
     | '/catalog'
+    | '/digest'
     | '/inbox'
     | '/library'
     | '/save'
@@ -260,6 +271,7 @@ export interface FileRouteTypes {
     | '/samples'
     | '/terms'
     | '/_authed/catalog'
+    | '/_authed/digest'
     | '/_authed/inbox'
     | '/_authed/library'
     | '/_authed/save'
@@ -353,6 +365,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthedCatalogRouteImport
       parentRoute: typeof AuthedRoute
     }
+    '/_authed/digest': {
+      id: '/_authed/digest'
+      path: '/digest'
+      fullPath: '/digest'
+      preLoaderRoute: typeof AuthedDigestRouteImport
+      parentRoute: typeof AuthedRoute
+    }
     '/_authed/inbox': {
       id: '/_authed/inbox'
       path: '/inbox'
@@ -442,6 +461,7 @@ declare module '@tanstack/react-router' {
 
 interface AuthedRouteChildren {
   AuthedCatalogRoute: typeof AuthedCatalogRoute
+  AuthedDigestRoute: typeof AuthedDigestRoute
   AuthedInboxRoute: typeof AuthedInboxRoute
   AuthedLibraryRoute: typeof AuthedLibraryRoute
   AuthedSaveRoute: typeof AuthedSaveRoute
@@ -455,6 +475,7 @@ interface AuthedRouteChildren {
 
 const AuthedRouteChildren: AuthedRouteChildren = {
   AuthedCatalogRoute: AuthedCatalogRoute,
+  AuthedDigestRoute: AuthedDigestRoute,
   AuthedInboxRoute: AuthedInboxRoute,
   AuthedLibraryRoute: AuthedLibraryRoute,
   AuthedSaveRoute: AuthedSaveRoute,

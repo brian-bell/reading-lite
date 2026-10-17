@@ -22,6 +22,7 @@ import {
   type DigestDraft,
   type DigestSchedule,
 } from "../digest";
+import { digestPreviewQueryKey } from "../digest-preview";
 import type { EmailChangeOutcome } from "../email-change";
 import type { ExportLatest } from "../archive-export";
 import { exportsQueryOptions } from "../exports-query";
@@ -187,6 +188,7 @@ export function AccountPage() {
       // A draft exists only while the digest is off, so a save that leaves it
       // on is the draft's own (or its Retry): the draft is now the settings.
       if (outcome.kind === "saved" && outcome.settings.digest_cadence !== "off") setDigestDraft(null);
+      if (outcome.kind === "saved") void queryClient.invalidateQueries({ queryKey: digestPreviewQueryKey });
     },
   });
 

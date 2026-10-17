@@ -21,6 +21,7 @@ import {
   type VisitAt,
 } from "../desk";
 import { deskQueryOptions } from "../desk-query";
+import { digestPreviewQueryKey } from "../digest-preview";
 import { needsProviderKey, whoamiQueryKey, type Identity } from "../identity";
 import { whoamiQueryOptions } from "../identity-query";
 import type { LibraryRow } from "../library";
@@ -44,6 +45,7 @@ import { relationshipsQueryKey } from "../relationships";
 import { librarySchedule } from "../status-refresh";
 import { ConnectKeyLink } from "./ConnectKey";
 import { DeskInboxSection } from "./DeskInbox";
+import { NextDigestTile } from "./DigestPage";
 import { DeskToggle } from "./DeskToggle";
 import { Icon } from "./Icon";
 import { PageHeading, PageStateFocus, focusPageHeading } from "./PageHeading";
@@ -132,7 +134,7 @@ function deskWatchKeyOf(data: DeskResult | undefined, queryHash: string): string
   return queryHash;
 }
 
-/** A processing row that settled may have joined the graph and the library's other pages. */
+/** A processing row that settled may have joined the graph, the library's other pages, and the next digest. */
 function useGraphRefreshOnSettle(data: DeskResult | undefined) {
   const queryClient = useQueryClient();
   const processing = useRef<ReadonlySet<string>>(new Set());
@@ -144,6 +146,7 @@ function useGraphRefreshOnSettle(data: DeskResult | undefined) {
       void queryClient.invalidateQueries({ queryKey: relationshipsQueryKey });
       void queryClient.invalidateQueries({ queryKey: catalogIndexQueryKey });
       void queryClient.invalidateQueries({ queryKey: ["library"] });
+      void queryClient.invalidateQueries({ queryKey: digestPreviewQueryKey });
     }
   }, [data, queryClient]);
 }
@@ -267,6 +270,7 @@ function DeskSections({ desk, visit, identity }: { desk: DeskRead; visit: VisitA
         </DeskSection>
       ) : null}
       <div className="desk-tiles">
+        <NextDigestTile />
         <ProviderTile
           settings={settings}
           usage={usage.data?.state === "ready" ? usage.data.value : undefined}

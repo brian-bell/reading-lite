@@ -28,7 +28,10 @@ export const DESK_CAP = 3;
 export const DESK_FULL_COPY = "Three readings at a time";
 export const DESK_NOT_READY_COPY = "Only ready readings can go on the desk";
 
-/** Everything the desk writes refresh; what is on the desk and the home page's read sit under it. */
+/**
+ * Everything the desk writes refresh; what is on the desk, the home page's
+ * read and the digest preview (digest-preview.ts) sit under it.
+ */
 export const DESK_QUERY_ROOT = ["desk"] as const;
 export const onDeskQueryKey = ["desk", "on"] as const;
 
