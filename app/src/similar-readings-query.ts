@@ -1,4 +1,4 @@
-import { queryOptions, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { onlineManager, queryOptions, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { postCapture } from "./api/capture";
 import { apiFetch } from "./api/client";
 import { NetworkError } from "./api/errors";
@@ -34,9 +34,14 @@ function meaningSearchOptions(
     queryKey: ["meaning-search", question ?? ""] as const,
     // No AbortSignal: an answer already paid for lands in the cache even when
     // the reader has opened a reading meanwhile.
-    queryFn: (): Promise<MeaningOutcome> =>
-      postCapture(queryClient, "/api/readings/search", { query: question }, expectedTenant, meaningOutcomeFromResponse),
+    queryFn: (): Promise<MeaningOutcome> => {
+      // "always" runs this while offline. Fail before the post, or the default
+      // "online" mode pauses the fetch and embeds when the network returns.
+      if (!onlineManager.isOnline()) throw new NetworkError(new Error("offline"), true);
+      return postCapture(queryClient, "/api/readings/search", { query: question }, expectedTenant, meaningOutcomeFromResponse);
+    },
     enabled: false,
+    networkMode: "always",
     staleTime: Infinity,
     gcTime: Infinity,
     retry: false,
