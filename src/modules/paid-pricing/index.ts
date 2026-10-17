@@ -78,6 +78,11 @@ const OPENAI_RESPONSE_RATES: Record<string, OpenAIRates> = {
 // to Sonnet 4 / 4.5 under the context-1m beta header, which this service never
 // sends.  Re-check both pages before adding a model here.
 const ANTHROPIC_MESSAGE_RATES: Record<string, AnthropicRates> = {
+  // Ceiling, not the list price. Haiku 5.5 bills $0.10 in / $0.50 out up to
+  // 100,000 prompt tokens and 5x that above it; this table has no tiers, so
+  // these are the over-100k rates (5-minute write rounded up from 62.5).
+  // https://platform.claude.com/docs/en/about-claude/pricing
+  "claude-haiku-5-5": { input: 50, cacheRead: 5, cacheWrite: 63, cacheWrite1h: 100, output: 250 },
   // Same published rates as claude-sonnet-5, confirmed 2026-09-29:
   // https://platform.claude.com/docs/en/models/sonnet-5-5/overview
   "claude-sonnet-5-5": { input: 200, cacheRead: 20, cacheWrite: 250, cacheWrite1h: 400, output: 1000 },

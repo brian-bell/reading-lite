@@ -324,7 +324,14 @@ export const EVALUATION_CANDIDATES: EvaluationCandidate[] = [
     label: "Anthropic Sonnet 5.5",
     provider: "anthropic",
     model: "claude-sonnet-5-5",
-    anthropicEffort: "low",
+    anthropicEffort: "medium",
+  },
+  {
+    id: "haiku",
+    label: "Anthropic Haiku 5.5",
+    provider: "anthropic",
+    model: "claude-haiku-5-5",
+    anthropicEffort: "medium",
   },
   {
     id: "terra-none",

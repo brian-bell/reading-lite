@@ -4,6 +4,9 @@ import type { AnthropicReasoningEffort } from "./types";
 // https://platform.claude.com/docs/en/models/sonnet-5-5/overview
 export const CLAUDE_SONNET_5_5 = "claude-sonnet-5-5";
 
+// https://platform.claude.com/docs/en/models/haiku-5-5/migration-guide
+export const CLAUDE_HAIKU_5_5 = "claude-haiku-5-5";
+
 const ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH = [
   "low",
   "medium",
@@ -38,6 +41,8 @@ export const ANTHROPIC_EFFORTS_BY_MODEL: Record<
 > = {
   [CLAUDE_SONNET_5_5]: ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
   "claude-sonnet-5": ANTHROPIC_EFFORT_ALL,
+  // Haiku 5.5 rejects thinking disabled at xhigh|max.
+  [CLAUDE_HAIKU_5_5]: ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
   "claude-opus-5": ANTHROPIC_EFFORT_LOW_MEDIUM_HIGH,
   "claude-opus-4-8": ANTHROPIC_EFFORT_ALL,
   "claude-opus-4-7": ANTHROPIC_EFFORT_ALL,
