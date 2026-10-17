@@ -21,7 +21,7 @@ describe("meaningOutcomeFromResponse", () => {
     [
       "a missing key is the capture refusal, never categorize's",
       409,
-      { error: "connect a key, then retry", code: "provider_key_required" },
+      { error: "connect a key, then retry", code: "provider_key_required", provider: "openai" },
       { kind: "refusal", refusal: { kind: "key-required" } },
     ],
     [

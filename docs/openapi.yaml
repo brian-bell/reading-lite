@@ -1497,9 +1497,9 @@ paths:
         "409":
           description: |
             The reader's provider account must change before a retry can
-            succeed. `provider_key_required` means no active OpenAI key; the
-            other codes are the provider's or the stored key's refusal, as on
-            `ManifestError.code`.
+            succeed. `provider_key_required` means no active OpenAI key, and
+            the body names `provider`. The other codes are the provider's or
+            the stored key's refusal, as on `ManifestError.code`.
           content:
             application/json:
               schema:

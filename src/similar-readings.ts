@@ -11,9 +11,8 @@
 
 import type { Context } from "hono";
 import type { AppBindings } from "./middleware";
-import type { Env } from "./index";
 import type { Services } from "./services";
-import { fromSql, type ControlPlaneDb } from "./control-plane/db";
+import { fromSql } from "./control-plane/db";
 import {
   createPaidFetch,
   ProviderAccountError,
@@ -28,8 +27,13 @@ import {
   releaseProcessingLeases,
   StaleProcessingLeaseError,
 } from "./control-plane/processing-leases";
-import { readProviderCredential } from "./control-plane/provider-credentials";
-import { paidAuthorizationFor, tenantProviderKeysEnabled, TenantProviderKeyError } from "./control-plane/tenant-provider-keys";
+import { PROVIDER_OPENAI, type ProviderName } from "./control-plane/provider-credentials";
+import {
+  paidAuthorizationFor,
+  providerKeyNeeded,
+  tenantProviderKeysEnabled,
+  TenantProviderKeyError,
+} from "./control-plane/tenant-provider-keys";
 import { BadEmbeddingResponseError, embed, OpenAIError } from "./modules/embeddings";
 import { RateLimitedError, retryDepsFromEnv } from "./modules/http-retry";
 import { relationshipTargetIds } from "./modules/relationship-targets";
@@ -46,7 +50,7 @@ const MEANING_SEARCH_TOP_K = 10;
 type AccountCode = Exclude<ProviderAccountErrorCode, "hosted_provider_quota"> | "provider_key_undecryptable";
 
 type Refusal =
-  | { kind: "key_required" }
+  | { kind: "key_required"; provider: ProviderName }
   | { kind: "account"; code: AccountCode; message: string }
   | { kind: "limit"; code: "SpendAdmissionError" | "hosted_provider_quota" | "DeferPaidWorkError"; message: string }
   | { kind: "unavailable" };
@@ -69,7 +73,9 @@ export async function handleMeaningSearch(c: AppContext, services: Services): Pr
   const tenantId = String(principal.tenantId);
   const sql = c.get("sql");
   const db = fromSql(sql);
-  if (!(await openAIKeyActive(env, db, tenantId))) return respond(c, { kind: "key_required" });
+  // providerKeyNeeded names OpenAI first. A missing Anthropic key does not block a search.
+  const needed = await providerKeyNeeded(env, db, tenantId);
+  if (needed === PROVIDER_OPENAI) return respond(c, { kind: "key_required", provider: needed });
 
   const clock = () => nowMs(services);
   // Not services.newId, which mints reading ids: the lease and every
@@ -124,19 +130,12 @@ export async function handleSimilarReadings(c: AppContext): Promise<Response> {
   return c.json(body);
 }
 
-// OpenAI only, whatever summarizer the reader chose: a search embeds and never
-// summarizes. With tenant keys off the deployment key pays, as at intake.
-async function openAIKeyActive(env: Env, db: ControlPlaneDb, tenantId: string): Promise<boolean> {
-  if (!tenantProviderKeysEnabled(env)) return true;
-  return (await readProviderCredential(db, tenantId, "openai"))?.status === "active";
-}
-
 /** What a thrown error means for the reader, or null to leave it to onError as a 500. */
 function refusalOf(error: unknown): Refusal | null {
   if (error instanceof TenantProviderKeyError) {
     // Required here means the key went away between the gate and dispatch.
     return error.code === "provider_key_required"
-      ? { kind: "key_required" }
+      ? { kind: "key_required", provider: error.provider }
       : { kind: "account", code: error.code, message: error.message };
   }
   if (error instanceof ProviderAccountError) {
@@ -165,7 +164,10 @@ function refusalOf(error: unknown): Refusal | null {
 function respond(c: AppContext, refusal: Refusal): Response {
   switch (refusal.kind) {
     case "key_required":
-      return c.json({ error: "connect a key, then retry", code: "provider_key_required" }, 409);
+      return c.json(
+        { error: "connect a key, then retry", code: "provider_key_required", provider: refusal.provider },
+        409,
+      );
     case "account":
       return c.json({ error: refusal.message, code: refusal.code }, 409);
     case "limit":

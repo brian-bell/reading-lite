@@ -140,7 +140,8 @@ steps pass:
 1. The OpenAI key check. With `TENANT_PROVIDER_KEYS=1` the tenant needs an
    active OpenAI credential, whatever summarizer the reader chose, because a
    search embeds and never summarizes. Without one the answer is 409
-   `provider_key_required`. With tenant keys off, the deployment key pays.
+   `provider_key_required` with `provider: openai`. With tenant keys off, the
+   deployment key pays.
 2. The processing lease. The search acquires the tenant and global leases
    under the attempt id `search:<uuid>`, so it shares the concurrent-work limit
    with reading processing. Contention answers 429 `DeferPaidWorkError`. A

@@ -710,7 +710,7 @@ describe("spend guards", () => {
       openaiKey: null,
       anthropicKey: "sk-ant-search-1111",
       status: 409,
-      body: { error: "connect a key, then retry", code: "provider_key_required" },
+      body: { error: "connect a key, then retry", code: "provider_key_required", provider: "openai" },
       events: [],
     },
     {
