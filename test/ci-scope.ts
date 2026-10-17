@@ -7,6 +7,7 @@ export const ESSENTIAL_WORKERS_FILES = [
 
 export const ESSENTIAL_NODE_FILES = [
   "test/unit/control-plane-guards.test.ts",
+  "test/unit/digest-schedule.test.ts",
   "test/unit/operator-guards.test.ts",
   "test/unit/pipeline-guards.test.ts",
 ] as const;
