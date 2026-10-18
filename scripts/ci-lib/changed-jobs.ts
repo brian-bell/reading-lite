@@ -48,6 +48,7 @@ const RULES: Rule[] = [
   // headers, sign-in redirects), so browser evidence waits for a rendering
   // change.
   [/^app\/(test|smoke|scripts)\/|^app\/(wrangler\.jsonc|vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
+  [/^app\/src\/server\/http-upgrade\.ts$/, ["worker", "app", "appBrowser"]],
   [/^app\//, ["app", "appBrowser"]],
 
   // The root Worker and operator scripts. The node pool's operator guards

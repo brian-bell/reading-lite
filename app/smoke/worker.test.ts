@@ -60,6 +60,54 @@ const B = {
 };
 
 describe("built Worker", () => {
+  it("redirects public http to the same https url and sends HSTS only on https", async () => {
+    // The dev proxy rewrites a same-host Location back to the request scheme.
+    // The runtime worker is the response a deployed Worker returns.
+    const worker = server.getWorker("reading-lite-app-dev");
+    const moved = await worker.fetch(new URL("http://readinglite.ai/login?next=%2Flibrary&x=1"), {
+      redirect: "manual",
+    });
+    expect(moved.status).toBe(301);
+    expect(moved.headers.get("Location")).toBe("https://readinglite.ai/login?next=%2Flibrary&x=1");
+
+    const api = await worker.fetch(new URL("http://readinglite.ai/api/auth/login-options?x=1"), {
+      redirect: "manual",
+    });
+    expect(api.status).toBe(301);
+    expect(api.headers.get("Location")).toBe("https://readinglite.ai/api/auth/login-options?x=1");
+
+    const secure = await worker.fetch(new URL("https://readinglite.ai/"));
+    expect(secure.status).toBe(200);
+    expect(secure.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");
+
+    const local = await worker.fetch(new URL("http://127.0.0.1:5174/login?next=%2F"), { redirect: "manual" });
+    expect(local.status).toBe(200);
+    expect(local.headers.get("Location")).toBeNull();
+    expect(local.headers.get("Strict-Transport-Security")).toBeNull();
+
+    const dev = await worker.fetch(new URL("http://next.readinglite.test/"));
+    expect(dev.status).toBe(200);
+    expect(dev.headers.get("Strict-Transport-Security")).toBeNull();
+  });
+
+  it("sends HSTS on a public host's assets through the asset proxy", async () => {
+    const page = await request("/");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const assetPath = html.match(/\/assets\/[A-Za-z0-9._-]+/)?.[0] ?? "";
+    expect(assetPath).toMatch(/^\/assets\/[A-Za-z0-9._-]+$/);
+
+    const secure = await server.fetch(new URL(assetPath, "https://readinglite.ai"), { redirect: "manual" });
+    expect(secure.status).toBe(200);
+    expect(secure.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(secure.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");
+
+    const local = await server.fetch(new URL(assetPath, origin), { redirect: "manual" });
+    expect(local.status).toBe(200);
+    expect(local.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(local.headers.get("Strict-Transport-Security")).toBeNull();
+  });
+
   // Rendered pages carry a session's identity and CSRF token, so no cache may
   // keep one; /api/* belongs to the backend's host (ADR 0003), never this one.
   it("renders private, uncacheable HTML and never serves or proxies backend paths", async () => {

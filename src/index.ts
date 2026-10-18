@@ -35,6 +35,7 @@ import {
   isDigestDlq,
   isDigestQueue,
 } from "./digest-pipeline";
+import { httpsRedirect } from "../app/src/server/http-upgrade";
 import { createApp } from "./router";
 import { processReading, markDeadLettered, type ProcessReadingArgs } from "./process-reading";
 import { RateLimitedError } from "./modules/http-retry";
@@ -245,6 +246,8 @@ function rateLimitedDelaySeconds(e: RateLimitedError, attempts: number): number 
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
+    const redirect = httpsRedirect(request.url);
+    if (redirect) return redirect;
     return app.fetch(request, env, ctx);
   },
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
