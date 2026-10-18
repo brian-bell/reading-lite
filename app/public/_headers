@@ -2,3 +2,12 @@
 # cacheable; every rendered HTML response is `private, no-store` (src/start.ts).
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+
+https://readinglite.ai/assets/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+https://staging.readinglite.ai/assets/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+https://readinglite.app/assets/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+https://staging.readinglite.app/assets/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains

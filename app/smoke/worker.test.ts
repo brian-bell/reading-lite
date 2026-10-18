@@ -90,9 +90,6 @@ describe("built Worker", () => {
     expect(dev.headers.get("Strict-Transport-Security")).toBeNull();
   });
 
-  // Workers Assets serves /assets/* before the Worker. server.fetch is that
-  // path; getWorker() skips it. The zone's Always Use HTTPS 301s an http
-  // asset, and this harness has no zone.
   it("sends HSTS on a public host's assets through the asset proxy", async () => {
     const page = await request("/");
     expect(page.status).toBe(200);
