@@ -90,6 +90,27 @@ describe("built Worker", () => {
     expect(dev.headers.get("Strict-Transport-Security")).toBeNull();
   });
 
+  // Workers Assets serves /assets/* before the Worker. server.fetch is that
+  // path; getWorker() skips it. The zone's Always Use HTTPS 301s an http
+  // asset, and this harness has no zone.
+  it("sends HSTS on a public host's assets through the asset proxy", async () => {
+    const page = await request("/");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const assetPath = html.match(/\/assets\/[A-Za-z0-9._-]+/)?.[0] ?? "";
+    expect(assetPath).toMatch(/^\/assets\/[A-Za-z0-9._-]+$/);
+
+    const secure = await server.fetch(new URL(assetPath, "https://readinglite.ai"), { redirect: "manual" });
+    expect(secure.status).toBe(200);
+    expect(secure.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(secure.headers.get("Strict-Transport-Security")).toBe("max-age=31536000; includeSubDomains");
+
+    const local = await server.fetch(new URL(assetPath, origin), { redirect: "manual" });
+    expect(local.status).toBe(200);
+    expect(local.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(local.headers.get("Strict-Transport-Security")).toBeNull();
+  });
+
   // Rendered pages carry a session's identity and CSRF token, so no cache may
   // keep one; /api/* belongs to the backend's host (ADR 0003), never this one.
   it("renders private, uncacheable HTML and never serves or proxies backend paths", async () => {
