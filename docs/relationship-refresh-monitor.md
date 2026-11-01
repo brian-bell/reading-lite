@@ -194,7 +194,7 @@ Since #555 (tension pairs) and #556 (free repairs), one pass for the founder ten
    - tension pairs: floored neighbour pairs that clear the overlap pre-filter and aren't judged yet;
    - repairs: one-sided or dangling tension entries, fixed with no provider call.
 2. **Repairs.** Sent first. No cap and no spend. Each job recomputes on the live pair and writes all affected sides in one transaction. A repeated delivery does nothing.
-3. **Connection judges.** Paid, capped by `REFRESH_MAX_JUDGEMENTS=100`. Because repairs run first, a judge whose only drift was a dangling tension now finds nothing to do: an empty-diff noop with no checkpoint row.
+3. **Connection judges.** Paid, capped by `REFRESH_MAX_JUDGEMENTS=150`. Because repairs run first, a judge whose only drift was a dangling tension now finds nothing to do: an empty-diff noop with no checkpoint row.
 4. **Tension pairs.** Paid, capped separately by `REFRESH_MAX_TENSION_JUDGEMENTS=100`, and sent after the connection judges. Pairs over the cap are not carried over. The next Sunday's fresh scan finds them again, so a large "remaining" count while the backlog clears is normal.
 
 A fresh full scan starts on a Sunday when the previous scan's connection candidates are all dispatched. A new `run_at` with the scan in progress is normal then.
@@ -210,7 +210,7 @@ Every paid call first reserves its maximum possible cost against the tenant's da
   - `tension_refresh_jobs`: one row per pair `(reading_a < reading_b)`, from migration 0009.
   - In both tables, `result_json IS NULL` means the provider may have been called and no result was saved (an uncertain dispatch). It is not retried until a later run.
 - Ships: #555 (119950ba) deployed to production 2026-09-28 02:00 UTC with migration 0009. #556 (ce853c76) deployed 2026-09-28 02:53 UTC. The 2026-09-28 03:07 UTC pass was the first with both.
-- Spend: the founder tenant's daily budget is $10.00 (raised from $1.00 on 2026-09-28, tenant policy version 3). A full pass costs about $1.50: about $0.80 for 100 connection judges and $0.72 for 100 tension pairs. Each call reserves about $0.03 up front. Under the old $1.00 cap, the first pass had 75 tension pairs deferred for the rest of the day, and new saves would have stayed pending too.
+- Spend: the founder tenant's daily budget is $10.00 (raised from $1.00 on 2026-09-28, tenant policy version 3). A full pass costs about $1.92: about $1.20 for 150 connection judges and $0.72 for 100 tension pairs. Each call reserves about $0.03 up front. Under the old $1.00 cap, the first pass had 75 tension pairs deferred for the rest of the day, and new saves would have stayed pending too.
 - History:
   - Before the ships: 156 tension rows across 101 readings, 0 dangling, 4 one-sided.
   - After the first pass (2026-09-28): 4 repairs, 100 connection judges, 25 of 100 tension pairs judged (the other 75 deferred on the $1.00 cap). Corpus: 166 tension rows across 108 readings, 0 dangling, 0 one-sided, 0 dangling judged records. 229 tension pairs still to come.
@@ -226,7 +226,7 @@ Every paid call first reserves its maximum possible cost against the tenant's da
 2. Confirm what production is running:
    - Find the newest successful "Deploy production worker" run on main: `gh run list --branch main --workflow deploy-worker.yml --limit 5 --json headSha,conclusion,createdAt`.
    - Check that its `headSha` contains both ships: `git merge-base --is-ancestor 119950ba <sha>` and `git merge-base --is-ancestor ce853c76 <sha>`.
-   - Check `wrangler.toml` production vars: `RELATIONSHIP_REFRESH = "1"`, `REFRESH_MAX_JUDGEMENTS = "100"`, `REFRESH_MAX_TENSION_JUDGEMENTS = "100"`.
+   - Check `wrangler.toml` production vars: `RELATIONSHIP_REFRESH = "1"`, `REFRESH_MAX_JUDGEMENTS = "150"`, `REFRESH_MAX_TENSION_JUDGEMENTS = "100"`.
 3. Run the read-only status script. Never print secrets.
 
        cd <workspace> && <load-secrets> && mise exec node@22 -- npx tsx <status-script>
