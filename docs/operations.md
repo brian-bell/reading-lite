@@ -2919,7 +2919,7 @@ Worker deployment; the production DLQ must be created separately, like the other
 production DLQs (`wrangler queues create reading-lite-refresh-dlq`).
 
 `RELATIONSHIP_REFRESH=1` is configured in staging and production. Staging uses
-`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=100`.
+`REFRESH_MAX_JUDGEMENTS=2`; production uses `REFRESH_MAX_JUDGEMENTS=150`.
 `REFRESH_MAX_TENSION_JUDGEMENTS` caps tension pairs the same way: 2 in staging,
 100 in production. The
 owner-authorized single actual staging run passed on 2026-09-08 before
@@ -3062,4 +3062,4 @@ locked and version-checked in the same transaction but not rewritten. If either
 side changed, nothing is written and the next scan plans again. An in-TTL running side defers the job like a judge.
 
 The slice-4 single-night staging acceptance check passed on 2026-09-08. Staging
-keeps a two-judgement weekly cap. Production uses one hundred.
+keeps a two-judgement weekly cap. Production uses one hundred fifty connection judgements.
