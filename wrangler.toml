@@ -458,7 +458,7 @@ ANTHROPIC_SUMMARIZATION_REASONING_EFFORT = "medium"
 # or by uncommenting and editing here before deploying.
 # EMAIL_TO is unused; send-time recipient is users.email_display.
 EMAIL_FROM = "Reading Lite <noreply@readinglite.app>"
-EMAIL_TO = "bellbm@gmail.com"
+EMAIL_TO = ""
 # Domain cutover (issue #265, S4): emitted links point at readinglite.ai. Every
 # queue-side link — digest, notification, MCP public_url — follows this base,
 # and so does magic-link mail for a request whose host is not a recognised

@@ -13,11 +13,18 @@ permissions:
 
 jobs:
   claude:
+    # Only the owner, org members and collaborators can start a run, so a
+    # stranger's @claude comment never starts a runner.
     if: |
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude'))
-    runs-on: [self-hosted, linux, x64]
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association))
+    # GitHub-hosted: a self-hosted runner is unsafe once the repo is public,
+    # because a fork PR can retarget any workflow at it.
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write # required: lets Claude create branches and push commits
@@ -31,8 +38,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # The self-hosted runner's own Node is not 22; this also keeps the
-      # global bd install out of the host's Node.
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
