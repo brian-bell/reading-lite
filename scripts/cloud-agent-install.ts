@@ -17,19 +17,14 @@ export interface CloudAgentInstallDeps {
   founderBootstrap?: typeof runFounderBootstrap;
 }
 
-const DEFAULT_FOUNDER_EMAIL = "bellbm@gmail.com";
 export const BEADS_VERSION = "1.3.0";
-
-export function resolveFounderEmail(env: Record<string, string | undefined>): string {
-  return env.FOUNDER_EMAIL?.trim() || DEFAULT_FOUNDER_EMAIL;
-}
 
 export function renderStgVars(env: Record<string, string | undefined>): string | null {
   const authRoot = env.AUTH_ROOT_SECRET?.trim();
   const readerToken = env.READER_API_TOKEN?.trim();
-  if (!authRoot || !readerToken) return null;
+  const founderEmail = env.FOUNDER_EMAIL?.trim();
+  if (!authRoot || !readerToken || !founderEmail) return null;
 
-  const founderEmail = resolveFounderEmail(env);
   return [
     `AUTH_ROOT_SECRET=${authRoot}`,
     `FOUNDER_EMAIL=${founderEmail}`,
@@ -120,7 +115,7 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
     log("[cloud-agent-install] wrote .stg.vars from environment secrets");
   } else {
     log(
-      "[cloud-agent-install] skipping .stg.vars (set AUTH_ROOT_SECRET and READER_API_TOKEN in environment secrets)",
+      "[cloud-agent-install] skipping .stg.vars (set AUTH_ROOT_SECRET, READER_API_TOKEN and FOUNDER_EMAIL in environment secrets)",
     );
   }
 
@@ -156,10 +151,7 @@ export async function runCloudAgentInstall(deps: CloudAgentInstallDeps = {}): Pr
     const result = await founderBootstrap(
       { execute: true, env: "staging", confirmProduction: false },
       {
-        envVars: {
-          ...envVars,
-          FOUNDER_EMAIL: resolveFounderEmail(envVars),
-        },
+        envVars,
         nowMs: Date.now(),
         write: (line) => log(`[founder-bootstrap] ${line.trimEnd()}`),
         openDb: async (databaseUrl) => {
