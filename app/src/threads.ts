@@ -102,11 +102,60 @@ function splitByTag(component: GraphReading[]): GraphReading[][] {
   return kept;
 }
 
-function threadName(readings: readonly GraphReading[]): string {
-  const [top] = tagsByCount(readings);
-  if (top === undefined) return readings[0]!.title ?? readings[0]!.url;
-  const [tag] = top;
-  return tag.charAt(0).toUpperCase() + tag.slice(1);
+/** Tag words whose written form is not lowercase. */
+const TAG_WORDS: Record<string, string> = {
+  agi: "AGI",
+  ai: "AI",
+  api: "API",
+  apis: "APIs",
+  cli: "CLI",
+  cpu: "CPU",
+  css: "CSS",
+  gpu: "GPU",
+  html: "HTML",
+  http: "HTTP",
+  ios: "iOS",
+  javascript: "JavaScript",
+  llm: "LLM",
+  llms: "LLMs",
+  macos: "macOS",
+  ml: "ML",
+  nlp: "NLP",
+  rag: "RAG",
+  sql: "SQL",
+  typescript: "TypeScript",
+  ui: "UI",
+  ux: "UX",
+};
+
+/** A canonical tag as a reader would write it: "developer-tools" is "Developer tools", "ai-safety" is "AI safety". */
+function tagLabel(tag: string): string {
+  return tag
+    .toLowerCase()
+    .split(/[-\s]+/)
+    .filter((word) => word !== "")
+    .map((word, i) => TAG_WORDS[word] ?? (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(" ");
+}
+
+/**
+ * The thread's tags, best name first. A tag that more than half its readings
+ * share comes first; then the tag most particular to the thread, the one with
+ * the largest share of its library readings inside the thread, so a broad tag
+ * such as "ai" does not name every thread. Shares compare by cross-multiplying
+ * integers, so the server render and the browser rank alike.
+ */
+function namingTags(readings: readonly GraphReading[], libraryCounts: ReadonlyMap<string, number>): string[] {
+  const majority = (count: number) => (count * 2 > readings.length ? 1 : 0);
+  return tagsByCount(readings)
+    .sort(
+      ([xt, xc], [yt, yc]) =>
+        majority(yc) - majority(xc) ||
+        yc * libraryCounts.get(xt)! - xc * libraryCounts.get(yt)! ||
+        yc - xc ||
+        byCodePoint(xt, yt),
+    )
+    .map(([tag]) => tag);
 }
 
 /**
@@ -116,23 +165,32 @@ function threadName(readings: readonly GraphReading[]): string {
  */
 export function threadsOf(graph: RelationshipGraph): Thread[] {
   const pairs = tensionPairs(graph);
-  const threads: Thread[] = [];
+  const libraryCounts = new Map(tagsByCount(graph.readings.filter((reading) => reading.status === "ready")));
+  const threads: (Thread & { tags: string[] })[] = [];
   for (const component of components(graph)) {
     if (component.length < 2) continue;
     const groups = component.length > THREAD_SPLIT_ABOVE ? splitByTag(component) : [component];
     for (const group of groups) {
       const readings = [...group].sort(oldestFirst);
       const ids = new Set(readings.map((reading) => reading.id));
+      const tags = namingTags(readings, libraryCounts);
       threads.push({
         id: readings[0]!.id,
-        name: threadName(readings),
+        name: tags[0] === undefined ? (readings[0]!.title ?? readings[0]!.url) : tagLabel(tags[0]),
+        tags,
         readings,
         tensions: pairs.filter((pair) => ids.has(pair.a.id) && ids.has(pair.b.id)).length,
         updatedAt: readings.at(-1)!.created_at,
       });
     }
   }
-  return threads.sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt) || byCodePoint(x.id, y.id));
+  // Threads that share a name take their next tag too: "AI · Evaluation" and "AI · Agents".
+  const named = new Map<string, number>();
+  for (const thread of threads) named.set(thread.name, (named.get(thread.name) ?? 0) + 1);
+  const result = threads.map(({ tags, ...thread }) =>
+    named.get(thread.name)! > 1 && tags[1] !== undefined ? { ...thread, name: `${thread.name} · ${tagLabel(tags[1])}` } : thread,
+  );
+  return result.sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt) || byCodePoint(x.id, y.id));
 }
 
 /** Ready readings in no thread, newest first. */

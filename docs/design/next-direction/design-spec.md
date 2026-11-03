@@ -364,9 +364,16 @@ From the relationships list (`app/src/threads.ts`):
    joins the largest group. A group with only one reading also merges into
    the largest group. Groups are not split again.
 4. A thread's readings are ordered oldest first by `created_at`, then by id.
-   The thread is named by the tag most of its readings share, capitalized,
-   with ties broken alphabetically. A thread with no tags is named by its
-   oldest reading's title.
+   The thread is named by a tag, written for a reader: hyphens become
+   spaces, the first word is capitalized, and known acronyms keep their
+   capitals ("developer-tools" is "Developer tools", "ai" is "AI"). A tag
+   that more than half of the thread's readings share ranks first. Among
+   those, the tag most particular to the thread wins: the one with the
+   largest share of its library readings inside the thread, so a broad tag
+   does not name every thread. Ties go to the more common tag, then
+   alphabetically. Two threads that would share a name each add their
+   next-ranked tag ("AI · Evaluation"). A thread with no tags is named by
+   its oldest reading's title.
 5. A thread's id is its oldest reading's id. `/threads/$id` shows the thread
    that contains reading `$id`, so a link stays valid when a split or a new
    reading changes which reading is oldest. It returns 404 when that reading

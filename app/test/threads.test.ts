@@ -65,6 +65,38 @@ describe("threadsOf", () => {
       [{ id: "k", name: "Title k", readings: ["k", "m", "q"], tensions: 0 }],
     ],
     [
+      "a tag is named as a reader writes it, with its acronyms",
+      graph(
+        [r("a", 0, ["developer-tools"]), r("b", 1, ["developer-tools"]), r("c", 2, ["ai-safety"]), r("d", 3, ["ai-safety"])],
+        [conn("b", "a"), conn("d", "c")],
+      ),
+      [
+        { id: "c", name: "AI safety", readings: ["c", "d"], tensions: 0 },
+        { id: "a", name: "Developer tools", readings: ["a", "b"], tensions: 0 },
+      ],
+    ],
+    [
+      "the shared tag most particular to the thread names it, not the library's broadest",
+      graph([r("a", 0, ["ai", "evaluation"]), r("b", 1, ["ai", "evaluation"]), r("c", 2, ["ai"])], [conn("b", "a")]),
+      [{ id: "a", name: "Evaluation", readings: ["a", "b"], tensions: 0 }],
+    ],
+    [
+      "a tag most of the thread shares outranks a rarer one only some share",
+      graph([r("a", 0, ["ai", "evaluation"]), r("b", 1, ["ai"]), r("c", 2, ["ai"])], [conn("b", "a")]),
+      [{ id: "a", name: "AI", readings: ["a", "b"], tensions: 0 }],
+    ],
+    [
+      "threads that would share a name add their next tag",
+      graph(
+        [r("a", 0, ["evaluation", "agents"]), r("b", 1, ["evaluation"]), r("c", 2, ["evaluation", "benchmarks"]), r("d", 3, ["evaluation"])],
+        [conn("b", "a"), conn("d", "c")],
+      ),
+      [
+        { id: "c", name: "Evaluation · Benchmarks", readings: ["c", "d"], tensions: 0 },
+        { id: "a", name: "Evaluation · Agents", readings: ["a", "b"], tensions: 0 },
+      ],
+    ],
+    [
       "the name's tag tie goes to the alphabetically first tag",
       graph([r("a", 0, ["zebra", "apple"]), r("b", 1, ["zebra", "apple"])], [conn("a", "b")]),
       [{ id: "a", name: "Apple", readings: ["a", "b"], tensions: 0 }],
