@@ -238,7 +238,7 @@ export const ALL_EVIDENCE_CASES: EvidenceCase[] = [
     stub: (page) => serveReadingsInBrowser(page),
     prepare: async (page) => {
       const threads = page.getByRole("list", { name: "Threads" });
-      await expect(threads.getByRole("link")).toHaveText(["Attention", "Knowledge"]);
+      await expect(threads.getByRole("link")).toHaveText(["Attention", "Notes"]);
       await expect(page.getByRole("list", { name: "Tensions" }).getByRole("listitem")).toHaveCount(2);
       await expect(page.getByRole("list", { name: "Readings standing alone" }).getByRole("listitem")).toHaveCount(4);
     },
