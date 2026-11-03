@@ -102,31 +102,31 @@ function splitByTag(component: GraphReading[]): GraphReading[][] {
   return kept;
 }
 
-/** Tag words whose written form is not lowercase. */
-const TAG_WORDS: Record<string, string> = {
-  agi: "AGI",
-  ai: "AI",
-  api: "API",
-  apis: "APIs",
-  cli: "CLI",
-  cpu: "CPU",
-  css: "CSS",
-  gpu: "GPU",
-  html: "HTML",
-  http: "HTTP",
-  ios: "iOS",
-  javascript: "JavaScript",
-  llm: "LLM",
-  llms: "LLMs",
-  macos: "macOS",
-  ml: "ML",
-  nlp: "NLP",
-  rag: "RAG",
-  sql: "SQL",
-  typescript: "TypeScript",
-  ui: "UI",
-  ux: "UX",
-};
+/** Tag words whose written form is not lowercase. A Map, so "constructor" is not read off Object.prototype. */
+const TAG_WORDS = new Map<string, string>([
+  ["agi", "AGI"],
+  ["ai", "AI"],
+  ["api", "API"],
+  ["apis", "APIs"],
+  ["cli", "CLI"],
+  ["cpu", "CPU"],
+  ["css", "CSS"],
+  ["gpu", "GPU"],
+  ["html", "HTML"],
+  ["http", "HTTP"],
+  ["ios", "iOS"],
+  ["javascript", "JavaScript"],
+  ["llm", "LLM"],
+  ["llms", "LLMs"],
+  ["macos", "macOS"],
+  ["ml", "ML"],
+  ["nlp", "NLP"],
+  ["rag", "RAG"],
+  ["sql", "SQL"],
+  ["typescript", "TypeScript"],
+  ["ui", "UI"],
+  ["ux", "UX"],
+]);
 
 /** A canonical tag as a reader would write it: "developer-tools" is "Developer tools", "ai-safety" is "AI safety". */
 function tagLabel(tag: string): string {
@@ -134,7 +134,7 @@ function tagLabel(tag: string): string {
     .toLowerCase()
     .split(/[-\s]+/)
     .filter((word) => word !== "")
-    .map((word, i) => TAG_WORDS[word] ?? (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .map((word, i) => TAG_WORDS.get(word) ?? (i === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
     .join(" ");
 }
 
