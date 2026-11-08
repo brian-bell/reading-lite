@@ -34,6 +34,11 @@ import { PROCESSING_DEFER_MAX_AGE_MS } from "./control-plane/constants";
 import { z } from "zod";
 import type { Env } from "./index";
 import { opensNewRefreshBudget } from "./refresh-period";
+import {
+  REFRESH_SCAN_SIZE,
+  RefreshCursorSchema as CursorSchema,
+  type RefreshCursor as Cursor,
+} from "./refresh-cursor";
 import { fromSql, withControlPlane, type ControlPlaneDb } from "./control-plane/db";
 import { canonicalizeEmail } from "./control-plane/email";
 import { parseTenantId, type TenantContext } from "./control-plane/ids";
@@ -47,14 +52,8 @@ import { orderPair, pairTensionRepairs, tensionPairEligible, tensionPartnerIds, 
 import type { Manifest } from "./schemas/manifest";
 import { effectivelyRunning, pendingTtlSeconds } from "./modules/staleness";
 
-export const REFRESH_SCAN_SIZE = 25;
 const DEFAULT_MAX_JUDGEMENTS = 100;
 const TargetSchema = z.object({ id: z.string().min(1), key_prefix: z.string().startsWith("readings/") });
-// A tension pair, canonical: a.id < b.id.
-const PairSchema = z.object({ a: TargetSchema, b: TargetSchema }).refine(p => p.a.id < p.b.id);
-// A pair a repair job reconciles, by id alone: one side may be purged.
-const IdPairSchema = z.object({ a: z.string().min(1), b: z.string().min(1) }).refine(p => p.a < p.b);
-const Cap = z.number().int().min(1).max(1000);
 const BaseEnvelope = z.object({ version: z.literal(1), tenantId: z.string().refine(v => parseTenantId(v) === v) });
 export const RefreshEnvelopeSchema = z.discriminatedUnion("kind", [
   BaseEnvelope.extend({ kind: z.literal("scan"), token: z.string().min(1) }),
@@ -63,33 +62,6 @@ export const RefreshEnvelopeSchema = z.discriminatedUnion("kind", [
   BaseEnvelope.extend({ kind: z.literal("repair"), deferredAt: z.string().datetime().optional(), runAt: z.string().datetime(), a: z.string().min(1), b: z.string().min(1) }),
 ]);
 export type RefreshEnvelope = z.infer<typeof RefreshEnvelopeSchema>;
-const CursorSchema = z.object({
-  version: z.literal(1), token: z.string().min(1), run_at: z.string().datetime(),
-  budget_at: z.string().datetime(), limit: Cap,
-  dispatched: z.number().int().nonnegative(),
-  targets: z.array(TargetSchema), scan_offset: z.number().int().nonnegative(),
-  candidates: z.array(TargetSchema), judge_offset: z.number().int().nonnegative(),
-  pending: z.array(TargetSchema).max(REFRESH_SCAN_SIZE),
-  // The tension fields default so a cursor written before them still parses.
-  // With no tension_limit, that period dispatches no tension pairs. The next
-  // period's allowance sets one.
-  tension_limit: Cap.optional(),
-  tension_dispatched: z.number().int().nonnegative().default(0),
-  tension_candidates: z.array(PairSchema).default([]),
-  tension_offset: z.number().int().nonnegative().default(0),
-  tension_pending: z.array(PairSchema).max(REFRESH_SCAN_SIZE).default([]),
-  // Free repairs are uncapped. Every one a scan collects dispatches that period.
-  repair_candidates: z.array(IdPairSchema).default([]),
-  repair_offset: z.number().int().nonnegative().default(0),
-  repair_pending: z.array(IdPairSchema).max(REFRESH_SCAN_SIZE).default([]),
-  // A new period can arrive while an old reservation is awaiting confirmation.
-  rollover: z.object({ budget_at: z.string().datetime(), limit: Cap, tension_limit: Cap.optional() }).optional(),
-}).refine(c => c.scan_offset <= c.targets.length && c.judge_offset <= c.candidates.length && c.dispatched <= c.limit &&
-  c.tension_offset <= c.tension_candidates.length && c.tension_dispatched <= (c.tension_limit ?? 0) &&
-  c.repair_offset <= c.repair_candidates.length &&
-  // One reservation at a time: a batch of any kind confirms before the next is reserved.
-  [c.pending, c.tension_pending, c.repair_pending].filter(p => p.length > 0).length <= 1);
-type Cursor = z.infer<typeof CursorSchema>;
 type StoredCursor = { cursor: Cursor; etag: string };
 
 function maxJudgements(name: "REFRESH_MAX_JUDGEMENTS" | "REFRESH_MAX_TENSION_JUDGEMENTS", raw: string | undefined): number {
