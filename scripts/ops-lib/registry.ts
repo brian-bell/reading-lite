@@ -28,6 +28,7 @@ import { stagingSetupCommand } from "./commands/staging-setup";
 import { stagingSmokeCommand } from "./commands/staging-smoke";
 import { stagingTeardownCommand } from "./commands/staging-teardown";
 import { corpusRefreshNeighboursCommand } from "./commands/corpus-refresh-neighbours";
+import { corpusRefreshStatusCommand } from "./commands/corpus-refresh-status";
 import { corpusRefreshConnectionsCommand } from "./commands/corpus-refresh-connections";
 import { corpusRefreshTensionsCommand } from "./commands/corpus-refresh-tensions";
 import { corpusDropCommand } from "./commands/corpus-drop";
@@ -79,6 +80,7 @@ export const defaultRegistry: Registry = {
     corpusDropCommand,
     corpusSweepCommand,
     corpusRefreshNeighboursCommand,
+    corpusRefreshStatusCommand,
     corpusRefreshConnectionsCommand,
     corpusRefreshTensionsCommand,
     corpusPurgeConnectionsCommand,

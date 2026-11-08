@@ -11,6 +11,9 @@ import type { PersistedSidecar } from "../../scripts/corpus-lib/batch/types";
 import { checkWipeDeployGate } from "../../scripts/lib/wipe-deploy-gate";
 import { spawnWrangler } from "../../scripts/lib/wrangler-cli";
 import { runCli } from "../../scripts/ops-lib/cli";
+import { corpusRefreshStatusCommand, type RefreshStatusDeps, type RefreshStatusSql } from "../../scripts/ops-lib/commands/corpus-refresh-status";
+import { assertRefreshStatusRead } from "../../scripts/ops-lib/refresh-status";
+import { LOCAL_DATABASE_URL } from "../../scripts/pg-lib/local-postgres";
 import { deployWorkerCommand, type DeployWorkerDeps } from "../../scripts/ops-lib/commands/deploy-worker";
 import type { CommandIo } from "../../scripts/ops-lib/contract";
 import { defaultRegistry } from "../../scripts/ops-lib/registry";
@@ -57,6 +60,7 @@ describe("ops registry", () => {
       "corpus redact-key-echoes",
       "corpus refresh-connections",
       "corpus refresh-neighbours",
+      "corpus refresh-status",
       "corpus refresh-tensions",
       "corpus sweep",
       "export cancel",
@@ -267,6 +271,423 @@ describe("corpus provider batches", () => {
       expect(h.r2.put, phase).not.toHaveBeenCalled();
       expect(h.deps.embed.embedMany, phase).not.toHaveBeenCalled();
     }
+  });
+});
+
+const REFRESH_TENANT = "usr_1700450b-c2df-4421-8805-c308a63b4dea";
+const CURSOR_TOKEN = "cursor-token-secret";
+const DATABASE_SECRET = "postgres://reading:super-secret-value@db.example/reading_lite";
+
+function refreshTarget(id = "rd_a") {
+  return { id, key_prefix: `readings/${id}` };
+}
+
+function refreshCursor(extra: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    version: 1,
+    token: CURSOR_TOKEN,
+    run_at: "2026-11-01T03:07:13.000Z",
+    budget_at: "2026-11-01T03:07:13.000Z",
+    limit: 100,
+    dispatched: 1,
+    targets: [refreshTarget()],
+    scan_offset: 1,
+    candidates: [refreshTarget()],
+    judge_offset: 1,
+    pending: [],
+    tension_limit: 100,
+    tension_dispatched: 0,
+    tension_candidates: [],
+    tension_offset: 0,
+    tension_pending: [],
+    repair_candidates: [],
+    repair_offset: 0,
+    repair_pending: [],
+    ...extra,
+  });
+}
+
+function refreshDeps(options: {
+  body?: string | null;
+  etag?: string;
+  lastModified?: string;
+  present?: boolean;
+  failQuery?: boolean;
+  env?: Record<string, string | undefined>;
+  r2Error?: Error;
+}): { queries: string[]; r2Calls: string[]; opened: string[]; io: ReturnType<typeof captureIo>; key: string; deps: RefreshStatusDeps } {
+  const queries: string[] = [];
+  const r2Calls: string[] = [];
+  const opened: string[] = [];
+  const io = captureIo();
+  const key = `u/${REFRESH_TENANT}/index/refresh-cursor.json`;
+  return {
+    queries,
+    r2Calls,
+    opened,
+    io,
+    key,
+    deps: {
+      io: io.io,
+      env: options.env ?? { PRODUCTION_DATABASE_URL: DATABASE_SECRET },
+      loadVars: () => ({ CORPUS_R2_SECRET_KEY: "r2-secret-value-not-printed" }),
+      openSql: (url: string): RefreshStatusSql => {
+        opened.push(url);
+        return {
+          async query<Row extends Record<string, unknown>>(text: string): Promise<Row[]> {
+            queries.push(text);
+            if (options.failQuery) throw new Error(`connect failed ${DATABASE_SECRET}`);
+            if (!/^\s*(select|with)\b/i.test(text)) throw new Error(`write attempted: ${text}`);
+            let rows: Record<string, unknown>[];
+            if (text.includes("to_regclass")) rows = [{ present: options.present !== false }];
+            else if (text.includes("FROM relationship_refresh_jobs") && text.includes("AS total")) {
+              rows = [{ total: 2, with_result: 1, no_result: 1, recent_retry: 0 }];
+            } else if (text.includes("FROM relationship_refresh_jobs") && text.includes("GROUP BY")) {
+              rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 2, with_result: 1 }];
+            } else if (text.includes("FROM relationship_refresh_jobs")) {
+              rows = [{ reading_id: "rd_a", run_at: "2026-11-01T03:07:13.000Z", retry_at: null }];
+            } else if (text.includes("FROM tension_refresh_jobs") && text.includes("AS total")) {
+              rows = [{ total: 1, with_result: 1, no_result: 0, recent_retry: 0 }];
+            } else if (text.includes("FROM tension_refresh_jobs") && text.includes("GROUP BY run_at")) {
+              rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 1, with_result: 1 }];
+            } else if (text.includes("AS verdict")) rows = [{ verdict: "none", n: 1 }];
+            else if (text.includes("FROM tension_refresh_jobs")) rows = [];
+            else if (text.includes("tension_rows")) {
+              rows = [{ tension_rows: 1, readings_with_tensions: 1, dangling: 1, one_sided: 0 }];
+            } else if (text.includes("tensions_judged")) rows = [{ n: 0 }];
+            else if (text.includes("kind = 'tension'")) rows = [{ source_id: "rd_a", target_id: "rd_missing" }];
+            else throw new Error(`unexpected sql: ${text}`);
+            return rows as Row[];
+          },
+          async end() {},
+        };
+      },
+      openR2: () => {
+        if (options.r2Error) throw options.r2Error;
+        return {
+          async get(objectKey: string) {
+            r2Calls.push(`get ${objectKey}`);
+            return options.body === undefined ? refreshCursor() : options.body;
+          },
+          async listObjects(prefix?: string) {
+            r2Calls.push(`list ${prefix}`);
+            if (options.body === null) return [];
+            return [{
+              key: prefix ?? key,
+              etag: options.etag ?? "abc12345",
+              lastModified: options.lastModified ?? "2026-11-01T03:07:20.000Z",
+            }];
+          },
+        };
+      },
+    },
+  };
+}
+
+describe("corpus refresh-status", () => {
+  const argv = ["--tenant", REFRESH_TENANT, "--bucket", "reading-lite"];
+
+  it("prints the cursor, checkpoints, verdict mix, and corpus counts, and only reads", async () => {
+    const { deps, io, queries, r2Calls, opened } = refreshDeps({});
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(0);
+    expect(opened).toEqual([DATABASE_SECRET]);
+    expect(r2Calls).toEqual([
+      `get u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+      `list u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+    ]);
+    expect(queries.map((sql) => sql.trim().split("\n")[0])).toEqual([
+      "SELECT count(*)::int AS total,",
+      "SELECT run_at, count(*)::int AS n, count(result_json)::int AS with_result",
+      "SELECT reading_id, run_at, retry_at",
+      "SELECT to_regclass('public.tension_refresh_jobs') IS NOT NULL AS present",
+      "SELECT count(*)::int AS total,",
+      "SELECT run_at, count(*)::int AS n, count(result_json)::int AS with_result",
+      "SELECT coalesce(result_json->'judgement'->>'verdict', '(no result)') AS verdict,",
+      "SELECT reading_a, reading_b, run_at, retry_at",
+      "WITH ready AS (",
+      "SELECT count(*)::int AS n",
+      "SELECT source_id, target_id",
+    ]);
+    const report = JSON.parse(io.out.join("\n"));
+    expect(report).toEqual({
+      tenant_id: REFRESH_TENANT,
+      bucket: "reading-lite",
+      local: false,
+      cursor: {
+        key: `u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+        status: "ok",
+        value: {
+          version: 1,
+          run_at: "2026-11-01T03:07:13.000Z",
+          budget_at: "2026-11-01T03:07:13.000Z",
+          rollover: null,
+          token_present: true,
+          phase: "idle until next Sunday",
+          fields: { tensions_555: true, repairs_556: true },
+          scan: { targets: 1, offset: 1, remaining: 0 },
+          repairs: { candidates: 0, offset: 0, pending: 0, remaining: 0 },
+          judges: { candidates: 1, offset: 1, limit: 100, dispatched: 1, pending: 0, remaining: 0 },
+          tensions: {
+            candidates: 0, offset: 0, limit: 100, dispatched: 0, pending: 0, remaining_unsent: 0,
+          },
+          object: { status: "ok", etag: "abc12345", last_modified: "2026-11-01T03:07:20.000Z" },
+        },
+      },
+      checkpoints: {
+        connection: {
+          status: "ok",
+          value: {
+            counts: { total: 2, with_result: 1, no_result: 1, recent_retry: 0 },
+            by_run_at: [{ run_at: "2026-11-01T03:07:13.000Z", n: 2, with_result: 1 }],
+            uncertain: [{ reading_id: "rd_a", run_at: "2026-11-01T03:07:13.000Z", retry_at: null }],
+          },
+        },
+        tension: {
+          status: "ok",
+          value: {
+            counts: { total: 1, with_result: 1, no_result: 0, recent_retry: 0 },
+            by_run_at: [{ run_at: "2026-11-01T03:07:13.000Z", n: 1, with_result: 1 }],
+            verdicts: [{ verdict: "none", n: 1 }],
+            uncertain: [],
+          },
+        },
+      },
+      corpus: {
+        status: "ok",
+        value: {
+          tension_rows: 1,
+          readings_with_tensions: 1,
+          dangling: 1,
+          one_sided: 0,
+          dangling_judged_records: 0,
+          dangling_sample: [{ source_id: "rd_a", target_id: "rd_missing" }],
+        },
+      },
+    });
+    expect(JSON.stringify(report)).not.toContain(CURSOR_TOKEN);
+    expect(JSON.stringify(report)).not.toContain("super-secret-value");
+    expect(JSON.stringify(report)).not.toContain("r2-secret-value-not-printed");
+
+    const text = refreshDeps({});
+    expect(await corpusRefreshStatusCommand.run(argv, text.deps)).toBe(0);
+    expect(text.io.out.join("\n")).toBe([
+      `tenant ${REFRESH_TENANT}`,
+      "bucket reading-lite",
+      "local false",
+      `cursor ok key=u/${REFRESH_TENANT}/index/refresh-cursor.json phase=idle until next Sunday run_at=2026-11-01T03:07:13.000Z budget_at=2026-11-01T03:07:13.000Z scan=1/1 repairs=0/0 repair_pending=0 judges=1/1 dispatched=1/100 judge_pending=0 tensions=0/0 tension_dispatched=0/100 tension_pending=0 tensions_555=true repairs_556=true etag=abc12345 last_modified=2026-11-01T03:07:20.000Z`,
+      "checkpoints.connection ok total=2 with_result=1 no_result=1 recent_retry=0",
+      "checkpoints.connection run_at=2026-11-01T03:07:13.000Z n=2 with_result=1",
+      "checkpoints.connection uncertain reading_id=rd_a run_at=2026-11-01T03:07:13.000Z retry_at=null",
+      "checkpoints.tension ok total=1 with_result=1 no_result=0 recent_retry=0 verdicts=none=1",
+      "checkpoints.tension run_at=2026-11-01T03:07:13.000Z n=1 with_result=1",
+      "corpus ok tension_rows=1 readings_with_tensions=1 dangling=1 one_sided=0 dangling_judged_records=0",
+      "corpus dangling source_id=rd_a target_id=rd_missing",
+    ].join("\n"));
+  });
+
+  it("keeps a missing cursor and a zero corpus distinct, and reports an unreadable cursor without failing the counts", async () => {
+    const missing = refreshDeps({ body: null });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], missing.deps)).toBe(0);
+    const missingReport = JSON.parse(missing.io.out.join("\n"));
+    expect(missingReport.cursor).toEqual({
+      key: `u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+      status: "missing",
+      reason: "object not found",
+    });
+    expect(missingReport.corpus.value.tension_rows).toBe(1);
+    expect(missing.r2Calls).toEqual([`get u/${REFRESH_TENANT}/index/refresh-cursor.json`]);
+
+    const zeros = refreshDeps({
+      body: null,
+      present: true,
+    });
+    zeros.deps.openSql = (): RefreshStatusSql => ({
+      async query<Row extends Record<string, unknown>>(text: string): Promise<Row[]> {
+        let rows: Record<string, unknown>[];
+        if (text.includes("to_regclass")) rows = [{ present: true }];
+        else if (text.includes("AS total")) rows = [{ total: 0, with_result: 0, no_result: 0, recent_retry: 0 }];
+        else if (text.includes("tension_rows")) {
+          rows = [{ tension_rows: 0, readings_with_tensions: 0, dangling: 0, one_sided: 0 }];
+        } else if (text.includes("tensions_judged")) rows = [{ n: 0 }];
+        else rows = [];
+        return rows as Row[];
+      },
+      async end() {},
+    });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], zeros.deps)).toBe(0);
+    const zeroReport = JSON.parse(zeros.io.out.join("\n"));
+    expect(zeroReport.cursor.status).toBe("missing");
+    expect(zeroReport.checkpoints.connection).toEqual({
+      status: "ok",
+      value: {
+        counts: { total: 0, with_result: 0, no_result: 0, recent_retry: 0 },
+        by_run_at: [],
+        uncertain: [],
+      },
+    });
+    expect(zeroReport.corpus.value).toEqual({
+      tension_rows: 0,
+      readings_with_tensions: 0,
+      dangling: 0,
+      one_sided: 0,
+      dangling_judged_records: 0,
+      dangling_sample: [],
+    });
+
+    const invalid = refreshDeps({ body: "not-json" });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], invalid.deps)).toBe(0);
+    expect(JSON.parse(invalid.io.out.join("\n")).cursor).toEqual({
+      key: `u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+      status: "invalid",
+      reason: "cursor is not JSON",
+    });
+
+    const schema = refreshDeps({ body: JSON.stringify({ version: 2, token: CURSOR_TOKEN }) });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], schema.deps)).toBe(0);
+    expect(JSON.parse(schema.io.out.join("\n")).cursor).toEqual({
+      key: `u/${REFRESH_TENANT}/index/refresh-cursor.json`,
+      status: "invalid",
+      reason: "cursor does not match the refresh cursor schema",
+    });
+    expect(schema.io.out.join("\n")).not.toContain(CURSOR_TOKEN);
+  });
+
+  it("reports a pre-ship cursor as parsed with the new field groups absent", async () => {
+    const body = JSON.parse(refreshCursor()) as Record<string, unknown>;
+    delete body.tension_candidates;
+    delete body.tension_offset;
+    delete body.tension_pending;
+    delete body.tension_dispatched;
+    delete body.tension_limit;
+    delete body.repair_candidates;
+    delete body.repair_offset;
+    delete body.repair_pending;
+    const { deps, io } = refreshDeps({ body: JSON.stringify(body) });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(0);
+    const cursor = JSON.parse(io.out.join("\n")).cursor.value;
+    expect(cursor.fields).toEqual({ tensions_555: false, repairs_556: false });
+    expect(cursor.phase).toBe("idle until next Sunday");
+    expect(cursor.tensions.limit).toBeNull();
+    expect(cursor.tensions.candidates).toBe(0);
+  });
+
+  it.each([
+    ["sending connection judges", { pending: [refreshTarget()] }],
+    ["scanning", { targets: [refreshTarget(), refreshTarget("rd_b")], scan_offset: 0, candidates: [], judge_offset: 0, dispatched: 0 }],
+    ["reserving repairs", { repair_candidates: [{ a: "rd_a", b: "rd_b" }], repair_offset: 0 }],
+  ])("names the cursor phase %s", async (phase, extra) => {
+    const { deps, io } = refreshDeps({ body: refreshCursor(extra) });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(0);
+    expect(JSON.parse(io.out.join("\n")).cursor.value.phase).toBe(phase);
+  });
+
+  it("rejects global scope, a mismatched database, and an unknown bucket before any read", async () => {
+    const opened: string[] = [];
+    const io = captureIo();
+    const depsFor = () => ({
+      io: io.io,
+      env: { PRODUCTION_DATABASE_URL: DATABASE_SECRET, STAGING_DATABASE_URL: "postgres://staging:staging-secret@db.example/staging" },
+      loadVars: () => ({}),
+      openSql: (url: string) => {
+        opened.push(url);
+        throw new Error("opened");
+      },
+      openR2: () => {
+        opened.push("r2");
+        throw new Error("opened");
+      },
+    });
+    expect(await runCli(["corpus", "refresh-status", "--tenant", "global"], { io: io.io, depsFor })).toBe(2);
+    expect(io.err.join("\n")).toContain("--tenant global addresses the pre-tenant R2 layout");
+    expect(opened).toEqual([]);
+
+    const mismatch = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--database-url-env", "STAGING_DATABASE_URL"],
+      { io: mismatch.io, depsFor: () => depsFor() },
+    )).toBe(2);
+    expect(mismatch.err.join("\n")).toContain("names the staging database");
+    expect(mismatch.err.join("\n")).not.toContain("staging-secret");
+    expect(opened).toEqual([]);
+
+    const bucket = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--bucket", "not-a-bucket"],
+      { io: bucket.io, depsFor: () => depsFor() },
+    )).toBe(2);
+    expect(bucket.err.join("\n")).toContain("no database is mapped to bucket 'not-a-bucket'");
+
+    const local = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--local", "--database-url-env", "PRODUCTION_DATABASE_URL"],
+      { io: local.io, depsFor: () => depsFor() },
+    )).toBe(2);
+    expect(local.err.join("\n")).toContain("--local must never reach");
+    expect(opened).toEqual([]);
+  });
+
+  it("reports an unset database and a failed read without printing secrets, and a missing tension table without zeroing it", async () => {
+    const unset = refreshDeps({ env: {} });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], unset.deps)).toBe(1);
+    const unsetReport = JSON.parse(unset.io.out.join("\n"));
+    expect(unsetReport.cursor.status).toBe("ok");
+    expect(unsetReport.checkpoints.connection.status).toBe("unavailable");
+    expect(unsetReport.checkpoints.tension.status).toBe("unavailable");
+    expect(unsetReport.corpus.status).toBe("unavailable");
+    expect(unsetReport.checkpoints.connection.reason).toContain("PRODUCTION_DATABASE_URL");
+    expect(unset.opened).toEqual([]);
+    expect(unset.io.out.join("\n")).not.toContain("r2-secret-value-not-printed");
+
+    const failed = refreshDeps({ failQuery: true });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], failed.deps)).toBe(1);
+    const failedReport = JSON.parse(failed.io.out.join("\n"));
+    expect(failedReport.cursor.status).toBe("ok");
+    expect(failedReport.checkpoints.connection.status).toBe("failed");
+    expect(failedReport.checkpoints.tension.status).toBe("failed");
+    expect(failedReport.corpus.status).toBe("failed");
+    const failedText = failed.io.out.join("\n");
+    expect(failedText).not.toContain("super-secret-value");
+    expect(failedText).not.toContain("postgres://");
+    expect(failedReport.checkpoints.connection.reason).toContain("[redacted]");
+
+    const r2 = refreshDeps({
+      r2Error: new Error(`R2 GET failed ${DATABASE_SECRET}`),
+    });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], r2.deps)).toBe(1);
+    const r2Report = JSON.parse(r2.io.out.join("\n"));
+    expect(r2Report.cursor.status).toBe("unavailable");
+    expect(r2Report.checkpoints.connection.status).toBe("ok");
+    expect(r2.io.out.join("\n")).not.toContain("super-secret-value");
+
+    const table = refreshDeps({ present: false });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], table.deps)).toBe(0);
+    const tableReport = JSON.parse(table.io.out.join("\n"));
+    expect(tableReport.checkpoints.connection.status).toBe("ok");
+    expect(tableReport.checkpoints.tension).toEqual({
+      status: "missing",
+      reason: "tension_refresh_jobs is not installed",
+    });
+    expect(tableReport.corpus.status).toBe("ok");
+    expect(table.queries.some((sql) => sql.includes("FROM tension_refresh_jobs"))).toBe(false);
+  });
+
+  it("uses the unprefixed cursor key and the local database for --local", async () => {
+    const { deps, io, r2Calls, opened } = refreshDeps({ env: {} });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--local", "--json"], deps)).toBe(0);
+    expect(r2Calls[0]).toBe("get index/refresh-cursor.json");
+    expect(opened).toEqual([LOCAL_DATABASE_URL]);
+    const report = JSON.parse(io.out.join("\n"));
+    expect(report.local).toBe(true);
+    expect(report.cursor.key).toBe("index/refresh-cursor.json");
+    expect(io.out.join("\n")).not.toContain("reading_lite:reading_lite");
+    expect(io.out.join("\n")).not.toContain("127.0.0.1");
+  });
+
+  it("refuses a statement that is not a read", () => {
+    expect(() => assertRefreshStatusRead("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1")).toThrow(
+      "refresh status refused a statement that is not a read",
+    );
+    expect(assertRefreshStatusRead("SELECT 1")).toBeUndefined();
   });
 });
 

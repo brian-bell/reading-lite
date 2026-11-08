@@ -8,7 +8,7 @@ never runs `ops corpus` commands, and never changes policy.
 
 What it watches is documented in [relationship refresh queue
 plumbing](operations.md#relationship-refresh-queue-plumbing). One founder-tenant
-pass at `7 3 * * SUN` (Sunday 03:07 UTC, Saturday 11:07 PM ET) scans every ready
+pass at `7 3 * * SUN` (Sunday 03:07 UTC, Saturday 10:07 PM EST or 11:07 PM EDT) scans every ready
 reading, then sends free tension repairs, connection judges
 (`REFRESH_MAX_JUDGEMENTS`) and tension pairs (`REFRESH_MAX_TENSION_JUDGEMENTS`).
 The budget is granted once per week. It is not the offline
@@ -17,18 +17,20 @@ The budget is granted once per week. It is not the offline
 
 ## What it needs
 
-The routine is three files and a set of secrets. Where each lives is up to the
-host. The prompt and script below name them only through these placeholders,
-which you fill in when you install the routine.
+The routine is the prompt and a set of secrets. The status read is
+`corpus refresh-status` in the checkout, not a script saved on the host.
+Where the prompt and the secrets live is up to the host. The prompt below
+names them only through these placeholders, which you fill in when you install
+the routine.
 
 | Placeholder | What it stands for |
 |---|---|
-| `<workspace>` | A checkout of this repository that tracks `main` and is used for nothing else. The routine pulls `main` into it before every run and imports the repository's R2 client and SQL seam from it, so a development checkout on another branch won't do. Install its dependencies with `mise exec node@22 -- npm ci --no-audit --no-fund`. |
-| `<status-script>` | Where the [status script](#status-script) is saved. |
+| `<workspace>` | A checkout of this repository that tracks `main` and is used for nothing else. The routine pulls `main` into it before every run and runs `corpus refresh-status` from it, so a development checkout on another branch won't do. Install its dependencies with `mise exec node@22 -- npm ci --no-audit --no-fund`. |
 | `<load-secrets>` | A shell command that exports the [secrets](#secrets) into the current shell, for example sourcing one or more env files between `set -a` and `set +a`. |
 
-The third file is the prompt OpsBot runs. Store it on the shared box when you
-[install the routine](#install-the-routine).
+The prompt is the file OpsBot runs. Store it on the shared box when you
+[install the routine](#install-the-routine). Reapplying that saved prompt is a
+host change. Merging this page does not do it.
 
 The host also needs `mise` (Node 22) and `gh`.
 
@@ -44,130 +46,72 @@ The host also needs `mise` (Node 22) and `gh`.
 The routine never prints any of them. Keep them out of the repository and take
 them from the operator's secure store.
 
-## Status script
+## Status command
 
-The script prints the cursor's progress through all three kinds of work, both
-checkpoint tables, and the corpus's tension health (dangling and one-sided
-entries). It prints ids and counts, never secrets or summary text. Save it at
-`<status-script>`, with `<workspace>` in the two imports replaced by the
-checkout's absolute path (the TypeScript loader does not expand `~`).
+`corpus refresh-status` prints the cursor's progress through scan, repairs,
+connection judges, and tension pairs, both checkpoint tables, and the corpus
+tension counts. It prints ids and counts. It does not print the cursor token,
+summary text, or secrets.
 
-```ts
-// Read-only status of the production weekly relationship refresh, for rl-weekly-refresh.
-// Covers all three kinds of weekly work since #555 (tension pairs) and #556 (free repairs):
-// the R2 cursor, both checkpoint tables in PostgreSQL, and the corpus's tension health.
-// Prints ids and counts only, never secrets or summary text.
-// Run from <workspace> with the secrets loaded (docs/relationship-refresh-monitor.md). Replace <workspace>
-// in the two imports with the checkout's absolute path.
-import { makeR2Client } from "<workspace>/scripts/lib/cf-clients";
-import { sqlFromConnectionString } from "<workspace>/src/modules/db/sql";
+The command is read-only. It does not accept `--execute`. `--tenant` is
+required. `--tenant global` is rejected. The tenant id is an argument. The
+command does not embed a founder id, a bucket name, or a host path.
 
-const T = "usr_1700450b-c2df-4421-8805-c308a63b4dea";
-const e = process.env;
-const out = (label: string, value: unknown) => console.log(`${label}: ${JSON.stringify(value)}`);
+Text:
 
-// ---- Cursor (R2) ----------------------------------------------------------
-const r2 = makeR2Client({ accountId: e.CORPUS_R2_ACCOUNT_ID!, accessKeyId: e.CORPUS_R2_ACCESS_KEY!, secretAccessKey: e.CORPUS_R2_SECRET_KEY!, bucket: "reading-lite" });
-const key = `u/${T}/index/refresh-cursor.json`;
-const body = await r2.get(key);
-const meta = (await r2.listObjects(`u/${T}/index/refresh-cursor`)).find(o => o.key === key);
-if (body == null) {
-  console.log("CURSOR: MISSING at", key);
-} else {
-  let c: Record<string, any> | null = null;
-  try { c = JSON.parse(body); } catch { console.log("CURSOR: UNPARSEABLE at", key); }
-  if (c) {
-    const len = (v: unknown) => Array.isArray(v) ? v.length : 0;
-    const scan = { targets: len(c.targets), offset: c.scan_offset ?? 0 };
-    const repairs = { candidates: len(c.repair_candidates), offset: c.repair_offset ?? 0, pending: len(c.repair_pending) };
-    const judges = { candidates: len(c.candidates), offset: c.judge_offset ?? 0, limit: c.limit, dispatched: c.dispatched, pending: len(c.pending) };
-    const tensions = { candidates: len(c.tension_candidates), offset: c.tension_offset ?? 0, limit: c.tension_limit ?? null, dispatched: c.tension_dispatched ?? 0, pending: len(c.tension_pending) };
-    // Where the state machine is: sends first, then scan, repairs, judges, tension pairs.
-    const phase =
-      judges.pending ? "sending connection judges" : tensions.pending ? "sending tension pairs" : repairs.pending ? "sending repairs"
-      : scan.offset < scan.targets ? "scanning"
-      : repairs.offset < repairs.candidates ? "reserving repairs"
-      : judges.offset < judges.candidates && judges.dispatched < judges.limit ? "reserving connection judges"
-      : tensions.offset < tensions.candidates && tensions.dispatched < (tensions.limit ?? 0) ? "reserving tension pairs"
-      : "idle until next Sunday";
-    console.log("CURSOR lastModified:", meta?.lastModified, "etag:", meta?.etag?.slice(0, 8));
-    out("CURSOR", {
-      version: c.version, run_at: c.run_at, budget_at: c.budget_at, rollover: c.rollover ?? null, token_present: !!c.token, phase,
-      // A missing field means the cursor was last written by code from before that ship.
-      fields: { tensions_555: "tension_candidates" in c, repairs_556: "repair_candidates" in c },
-      scan, repairs: { ...repairs, remaining: repairs.candidates - repairs.offset },
-      judges: { ...judges, remaining: judges.candidates - judges.offset },
-      tensions: { ...tensions, remaining_unsent: tensions.candidates - tensions.offset },
-    });
-  }
-}
-
-// ---- PostgreSQL -------------------------------------------------------------
-const sql = sqlFromConnectionString(e.NEON_MAIN_DATABASE_URL!);
-try {
-  const q = <R = Record<string, unknown>>(text: string, params: unknown[] = [T]) => sql.query<R>(text, params);
-
-  // Connection judge checkpoints. A judge that noops (empty diff, e.g. after a
-  // repair removed its only drift) writes no row, so rows <= judge offset.
-  out("PG connection counts", (await q(`SELECT count(*)::int total, count(result_json)::int with_result,
-      (count(*)-count(result_json))::int no_result, count(*) FILTER (WHERE retry_at > now() - interval '2 days')::int recent_retry
-    FROM relationship_refresh_jobs WHERE tenant_id=$1`))[0]);
-  out("PG connection by run_at", await q(`SELECT run_at, count(*)::int n, count(result_json)::int with_result
-    FROM relationship_refresh_jobs WHERE tenant_id=$1 GROUP BY run_at ORDER BY run_at DESC LIMIT 5`));
-  out("PG connection no_result", await q(`SELECT reading_id, run_at, retry_at FROM relationship_refresh_jobs
-    WHERE tenant_id=$1 AND result_json IS NULL ORDER BY run_at DESC, reading_id LIMIT 15`));
-
-  // Tension pair checkpoints (#555, migration 0009). Only pairs that passed
-  // admission and dispatched have a row, so rows <= tension offset.
-  const [{ present }] = await q<{ present: boolean }>(`SELECT to_regclass('public.tension_refresh_jobs') IS NOT NULL AS present`, []);
-  if (!present) {
-    console.log("PG tension_refresh_jobs: TABLE MISSING (migration 0009 not applied)");
-  } else {
-    out("PG tension counts", (await q(`SELECT count(*)::int total, count(result_json)::int with_result,
-        (count(*)-count(result_json))::int no_result, count(*) FILTER (WHERE retry_at > now() - interval '2 days')::int recent_retry
-      FROM tension_refresh_jobs WHERE tenant_id=$1`))[0]);
-    out("PG tension by run_at", await q(`SELECT run_at, count(*)::int n, count(result_json)::int with_result
-      FROM tension_refresh_jobs WHERE tenant_id=$1 GROUP BY run_at ORDER BY run_at DESC LIMIT 5`));
-    out("PG tension verdicts (latest run_at)", await q(`SELECT coalesce(result_json->'judgement'->>'verdict', '(no result)') verdict, count(*)::int n
-      FROM tension_refresh_jobs WHERE tenant_id=$1 AND run_at = (SELECT max(run_at) FROM tension_refresh_jobs WHERE tenant_id=$1)
-      GROUP BY 1 ORDER BY 2 DESC`));
-    out("PG tension no_result", await q(`SELECT reading_a, reading_b, run_at, retry_at FROM tension_refresh_jobs
-      WHERE tenant_id=$1 AND result_json IS NULL ORDER BY run_at DESC, reading_a LIMIT 15`));
-  }
-
-  // Corpus tension health: what #556's repairs exist to drive to zero. A
-  // dangling tension names a reading that is no longer ready. Tier 1 flags its
-  // holder stale_connection on the operator neighbourhood pass, and a hosted connection judge is paid each Sunday
-  // until it is repaired. A one-sided tension has no inverse on its partner.
-  out("CORPUS tensions", (await q(`
-    WITH ready AS (SELECT id FROM readings WHERE tenant_id=$1 AND status='ready'),
-    t AS (SELECT source_id, target_id FROM reading_relationships
-          WHERE tenant_id=$1 AND kind='tension' AND source_id IN (SELECT id FROM ready))
-    SELECT count(*)::int tension_rows,
-      count(DISTINCT source_id)::int readings_with_tensions,
-      count(*) FILTER (WHERE target_id NOT IN (SELECT id FROM ready))::int dangling,
-      count(*) FILTER (WHERE target_id IN (SELECT id FROM ready)
-        AND NOT EXISTS (SELECT 1 FROM t b WHERE b.source_id = t.target_id AND b.target_id = t.source_id))::int one_sided
-    FROM t`))[0]);
-  out("CORPUS dangling judged records", (await q(`
-    SELECT count(*)::int n FROM readings rd
-    JOIN reading_revisions v ON (v.tenant_id, v.reading_id, v.id) = (rd.tenant_id, rd.id, rd.current_revision_id)
-    CROSS JOIN LATERAL jsonb_array_elements(coalesce(v.tensions_judged, '[]'::jsonb)) j
-    WHERE rd.tenant_id=$1 AND rd.status='ready'
-      AND NOT EXISTS (SELECT 1 FROM readings p WHERE p.tenant_id=$1 AND p.id = j->>'id' AND p.status='ready')`))[0]);
-  out("CORPUS dangling tensions (sample)", await q(`
-    SELECT r.source_id, r.target_id FROM reading_relationships r
-    WHERE r.tenant_id=$1 AND r.kind='tension'
-      AND NOT EXISTS (SELECT 1 FROM readings p WHERE p.tenant_id=$1 AND p.id=r.target_id AND p.status='ready')
-    ORDER BY r.source_id LIMIT 10`));
-} finally {
-  await sql.end();
-}
+```sh
+cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite
 ```
+
+JSON, one document:
+
+```sh
+cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite --json
+```
+
+`--bucket` defaults to `reading-lite` and selects the database. Production
+accepts `PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL`. Staging is
+`--bucket reading-lite-staging`, which accepts `STAGING_DATABASE_URL` or
+`NEON_REHEARSAL_DATABASE_URL`. `--database-url-env` picks one of the names for
+that bucket. A name for the other environment is a usage error.
+
+`--local` reads this checkout's PostgreSQL and the unprefixed cursor key
+`index/refresh-cursor.json`. It refuses a deployed connection string. The
+hosted key is `u/{tenantId}/index/refresh-cursor.json`.
+
+R2 credentials are `CORPUS_R2_ACCOUNT_ID` with `CORPUS_R2_ACCESS_KEY` and
+`CORPUS_R2_SECRET_KEY`, or `CLOUDFLARE_API_TOKEN` / `CORPUS_CF_API_TOKEN`.
+The same names as the other corpus commands. Put them in the environment or
+`.corpus.vars`. The command prints the names only when one is missing.
+
+Each of `cursor`, `checkpoints.connection`, `checkpoints.tension`, and `corpus`
+is `ok`, `missing`, `invalid`, `unavailable`, or `failed`. A count of zero is
+`ok`. `missing` means the cursor object or `tension_refresh_jobs` is absent.
+`invalid` means the cursor bytes are not the refresh cursor schema.
+`unavailable` means a credential or connection variable is unset. `failed`
+means the read threw. Exit 0 for `ok`, `missing`, and `invalid`. Exit 1 when
+any section is `unavailable` or `failed`. Exit 2 for usage errors.
+
+`cursor.value.phase` is one of `sending connection judges`, `sending tension
+pairs`, `sending repairs`, `scanning`, `reserving repairs`, `reserving
+connection judges`, `reserving tension pairs`, or `idle until next Sunday`.
+Sends come first, then the scan, then repairs, then connection judges, then
+tension pairs. `cursor.value.fields.tensions_555` is true when the stored
+object has `tension_candidates`. `repairs_556` is the same check for
+`repair_candidates`. A cursor written before those ships still parses, and the
+flag stays false. `token_present` is true. The token itself is not printed.
+
+`checkpoints.connection.value.uncertain` and `checkpoints.tension.value.uncertain`
+are rows with `result_json` null, the uncertain dispatches. `recent_retry`
+counts rows whose `retry_at` is inside the last two days. Tension `verdicts`
+is the mix for the latest `run_at`. Corpus `value` has `tension_rows`,
+`readings_with_tensions`, `dangling`, `one_sided`, `dangling_judged_records`,
+and up to ten `dangling_sample` pairs. A dangling tension names a target that
+is not ready. A one-sided tension has no inverse on a ready partner.
 
 ## Install the routine
 
-Fill in the three placeholders in the prompt first. Then install the routine as
+Fill in the two placeholders in the prompt first. Then install the routine as
 a cron job on the shared box with these settings.
 
 | Setting | Value |
@@ -175,13 +119,13 @@ a cron job on the shared box with these settings.
 | Routine id | `rl-weekly-refresh` |
 | Title | `RL Weekly Refresh` |
 | Description | `Monitor the Worker's weekly refresh: repairs, connection judges, and tension pairs (#555, #556).` |
-| Schedule | `CRON_TZ=America/New_York 30 23 * * 6` (Saturday 11:30 PM ET). The Worker pass is `7 3 * * SUN` (Sunday 03:07 UTC = Saturday 11:07 PM ET). The budget is granted once per week. |
+| Schedule | `CRON_TZ=America/New_York 30 23 * * 6` (Saturday 11:30 PM America/New_York). The Worker pass is `7 3 * * SUN` (Sunday 03:07 UTC, Saturday 10:07 PM EST or 11:07 PM EDT). The budget is granted once per week. |
 | Enabled | yes |
 
 Prompt:
 
 ````text
-You are RL OpsBot, reading-lite production ops. Each Saturday at 11:30 PM ET, report on the Cloudflare Worker's weekly relationship refresh. The Worker pass is wrangler cron `7 3 * * SUN` (Sunday 03:07 UTC = Saturday 11:07 PM ET). This routine fires at Saturday 11:30 PM ET (`CRON_TZ=America/New_York 30 23 * * 6`). The budget is granted once per week. Report on the most recent Sunday 03:07 UTC pass. You only observe. Never run a mutating command, never run `ops corpus` commands, never change policy, and never touch the queue. Every command below is read-only.
+You are RL OpsBot, reading-lite production ops. Each Saturday at 11:30 PM America/New_York, report on the Cloudflare Worker's weekly relationship refresh. The Worker pass is wrangler cron `7 3 * * SUN` (Sunday 03:07 UTC, Saturday 10:07 PM EST or 11:07 PM EDT). This routine fires at Saturday 11:30 PM America/New_York (`CRON_TZ=America/New_York 30 23 * * 6`). The budget is granted once per week. Report on the most recent Sunday 03:07 UTC pass. You only observe. Never run a mutating command, never change policy, and never touch the queue. The only corpus command you run is `corpus refresh-status`, and it only reads. Every command below is read-only.
 
 This routine is reconstituted from docs/relationship-refresh-monitor.md in the reading-lite repo, with its placeholders filled in for this host. If this prompt and that runbook disagree beyond those placeholders, the runbook on main wins. Say so in the report.
 
@@ -227,11 +171,11 @@ Every paid call first reserves its maximum possible cost against the tenant's da
    - Find the newest successful "Deploy production worker" run on main: `gh run list --branch main --workflow deploy-worker.yml --limit 5 --json headSha,conclusion,createdAt`.
    - Check that its `headSha` contains both ships: `git merge-base --is-ancestor 119950ba <sha>` and `git merge-base --is-ancestor ce853c76 <sha>`.
    - Check `wrangler.toml` production vars: `RELATIONSHIP_REFRESH = "1"`, `REFRESH_MAX_JUDGEMENTS = "150"`, `REFRESH_MAX_TENSION_JUDGEMENTS = "100"`.
-3. Run the read-only status script. Never print secrets.
+3. Run the read-only status command. Never print secrets.
 
-       cd <workspace> && <load-secrets> && mise exec node@22 -- npx tsx <status-script>
+       cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant usr_1700450b-c2df-4421-8805-c308a63b4dea --bucket reading-lite --json
 
-   Ignore the multi-line pg SSL "SECURITY WARNING" on stderr. The script forces bucket reading-lite and imports from this workspace. If an import path moved, fix the path in the script; don't build a different data path.
+   Ignore a multi-line pg SSL "SECURITY WARNING" on stderr. The command reads bucket reading-lite and the production database paired with it. If a section's status is `unavailable` or `failed`, say so. Do not treat that section as zero.
 4. Read the tenant's spend (read-only; uses `NEON_MAIN_DATABASE_URL` and Wrangler's Cloudflare login):
 
        cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- system status --env production --tenant usr_1700450b-c2df-4421-8805-c308a63b4dea --details
@@ -244,14 +188,14 @@ Worker logs are optional (`wrangler tail` is live-only). Skip them without block
 ## Health checks
 
 Freshness and version:
-- The cursor's `lastModified` and `budget_at` should fall shortly after the most recent Sunday 03:07 UTC.
-- `fields.tensions_555` and `fields.repairs_556` should both be true. Either being false after a post-deploy Sunday means that deploy didn't take effect. Page.
-- `PG tension_refresh_jobs: TABLE MISSING` means migration 0009 is not applied: page.
+- `cursor.value.object.last_modified` and `cursor.value.budget_at` should fall shortly after the most recent Sunday 03:07 UTC.
+- `cursor.value.fields.tensions_555` and `cursor.value.fields.repairs_556` should both be true. Either being false after a post-deploy Sunday means that deploy didn't take effect. Page.
+- `checkpoints.tension.status` of `missing` means migration 0009 is not applied: page.
 
 Progress (`phase`):
 - "idle until next Sunday" means every batch was reserved and sent.
 - Any other phase at report time is normal on a heavy Sunday. Jobs run one at a time, and up to 200 paid calls can outlast the gap before this report. Report the phase and counts. Don't page.
-- Page only if the cursor did not advance at all at the last cron, or is missing or unparseable.
+- Page only if the cursor did not advance at all at the last cron, or its status is `missing` or `invalid`.
 
 Spend:
 - Report charged vs budget for the UTC day.
@@ -260,22 +204,22 @@ Spend:
 - A tenant lease still held long after the cursor went idle is deferral churn. Mention it.
 
 Repairs (#556):
-- After the pass, `repairs.remaining` and `repairs.pending` should be 0, because repairs are uncapped.
-- The corpus's `dangling` and `CORPUS dangling judged records` should be 0 after a pass that ran repairs, unless readings were purged after that scan. List the sample if not.
+- After the pass, `cursor.value.repairs.remaining` and `cursor.value.repairs.pending` should be 0, because repairs are uncapped.
+- `corpus.value.dangling` and `corpus.value.dangling_judged_records` should be 0 after a pass that ran repairs, unless readings were purged after that scan. List `dangling_sample` if not.
 - `one_sided` should stay at or near 0.
 
 Connection judges:
-- `dispatched <= limit`. Fewer is healthy when candidates run out first.
-- Checkpoint rows for the current `run_at` should be `<=` `judges.offset`. The gap is noop judges. Rows greater than the offset is a bug: page.
+- `cursor.value.judges.dispatched` is at most `cursor.value.judges.limit`. Fewer is healthy when candidates run out first.
+- Checkpoint rows for the current `run_at` should be at most `cursor.value.judges.offset`. The gap is noop judges. Rows greater than the offset is a bug: page.
 
 Tension pairs (#555):
-- `tensions.dispatched <= tensions.limit` (100).
-- Checkpoint rows for the latest tension `run_at` should be `<=` `tensions.offset`. Pairs judged since the scan, or no longer eligible, write no row.
-- `remaining_unsent > 0` is the backlog (229 after the first pass). Report it: `tensions.candidates` should shrink across fresh scans while the backlog clears.
+- `cursor.value.tensions.dispatched` is at most `cursor.value.tensions.limit` (100).
+- Checkpoint rows for the latest tension `run_at` should be at most `cursor.value.tensions.offset`. Pairs judged since the scan, or no longer eligible, write no row.
+- `cursor.value.tensions.remaining_unsent` above 0 is the backlog (229 after the first pass). Report it. `tensions.candidates` should shrink across fresh scans while the backlog clears.
 - Report the verdict mix for the latest run (none / contradicts / supersedes / qualifies).
 
 Uncertain dispatches:
-- Report any `no_result` rows in either table.
+- Report any `uncertain` rows in either checkpoint section. `counts.no_result` is that count.
 - One or two isolated rows is a ticket, not a page.
 - Page if the count grows from one Sunday to the next, or if rows cluster on one `run_at` along with `recent_retry` (that points to a provider incident).
 
@@ -296,10 +240,11 @@ Page clearly when the cursor is missing, unparseable, or didn't advance at the l
 
 ## Verify
 
-1. Run the status script by hand, exactly as step 3 of the prompt does. Expect
-   a `CURSOR` line with `phase` and both `fields` true, then `PG connection`,
-   `PG tension` and `CORPUS` lines. `CURSOR: MISSING` before the first weekly
-   pass of a fresh environment is expected. Afterwards it is a page.
+1. Run the status command by hand, exactly as step 3 of the prompt does. Expect
+   one JSON document whose `cursor.status` is `ok`, with `phase` and both
+   `fields` true, then `checkpoints.connection`, `checkpoints.tension`, and
+   `corpus`. `cursor.status` of `missing` before the first weekly pass of a
+   fresh environment is expected. Afterwards it is a page.
 2. Run the spend check in step 4 of the prompt, and confirm it prints the
    tenant's budget and `"accounting": "available"`.
 3. Run the routine once by hand on the shared box, the same way cron will
@@ -309,20 +254,20 @@ Page clearly when the cursor is missing, unparseable, or didn't advance at the l
 ## Maintenance
 
 - **When the weekly job changes** (a cursor field, a checkpoint table, a cap,
-  or an order), update the script and the prompt here in the same pull request
-  as the change, then reapply both to the routine on the shared box. The live
-  routine is this page with its placeholders filled in. This page is the original.
+  or an order), update `corpus refresh-status` and the prompt here in the same
+  pull request, then reapply the prompt on the shared box. The live routine is
+  this page with its placeholders filled in. This page is the original. Merging
+  does not edit the saved host prompt or remove a host-installed copy.
 - **The prompt's history and spend numbers are dated.** When you recreate the
-  routine much later, refresh the Fixed context section from the current script
-  and spend output rather than leaving 2026-09-28 figures in place.
+  routine much later, refresh the Fixed context section from the current
+  command output and spend output rather than leaving 2026-09-28 figures in place.
 
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
-| `ERR_MODULE_NOT_FOUND` from the script | `<workspace>` has no `node_modules`, or the lockfile changed: run `npm ci` there. |
-| An import path in the script no longer exists | A repository module moved. Fix the path in the script (and here); don't read the data another way. |
-| `PG tension_refresh_jobs: TABLE MISSING` | Migration 0009 is not applied in production: page. |
+| `ERR_MODULE_NOT_FOUND` from `npm run ops` | `<workspace>` has no `node_modules`, or the lockfile changed: run `npm ci` there. |
+| `checkpoints.tension.status` is `missing` | Migration 0009 is not applied in production: page. |
 | `Accounting unavailable` from the spend check | Wrangler's Cloudflare login lapsed or `OperatorStatus` isn't deployed. Run `npx wrangler login` on the host. |
 | A pg "SECURITY WARNING" about SSL modes on stderr | Noise from the pg client. Ignore it. |
 | Tension checkpoint rows well below `tensions.dispatched` with the day's spend near the budget | Pairs deferred on budget. They retry for up to 24 hours and new saves stay pending until 00:00 UTC. Raise the tenant's cap with `ops system policy`, or lower the refresh caps. |
