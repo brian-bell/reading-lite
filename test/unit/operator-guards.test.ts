@@ -11,9 +11,10 @@ import type { PersistedSidecar } from "../../scripts/corpus-lib/batch/types";
 import { checkWipeDeployGate } from "../../scripts/lib/wipe-deploy-gate";
 import { spawnWrangler } from "../../scripts/lib/wrangler-cli";
 import { runCli } from "../../scripts/ops-lib/cli";
-import { corpusRefreshStatusCommand, type RefreshStatusDeps, type RefreshStatusSql } from "../../scripts/ops-lib/commands/corpus-refresh-status";
-import { assertRefreshStatusRead } from "../../scripts/ops-lib/refresh-status";
+import { corpusRefreshStatusCommand, type RefreshStatusDeps } from "../../scripts/ops-lib/commands/corpus-refresh-status";
 import { LOCAL_DATABASE_URL } from "../../scripts/pg-lib/local-postgres";
+import { sqlFromConnectionString, type Sql } from "../../src/modules/db/sql";
+import pg from "pg";
 import { deployWorkerCommand, type DeployWorkerDeps } from "../../scripts/ops-lib/commands/deploy-worker";
 import type { CommandIo } from "../../scripts/ops-lib/contract";
 import { defaultRegistry } from "../../scripts/ops-lib/registry";
@@ -313,16 +314,29 @@ function refreshDeps(options: {
   lastModified?: string;
   present?: boolean;
   failQuery?: boolean;
+  failIf?: (text: string) => boolean;
+  listError?: Error;
+  listMiss?: boolean;
   env?: Record<string, string | undefined>;
   r2Error?: Error;
-}): { queries: string[]; r2Calls: string[]; opened: string[]; io: ReturnType<typeof captureIo>; key: string; deps: RefreshStatusDeps } {
+}): {
+  queries: string[];
+  transactions: Array<{ readOnly?: boolean }>;
+  r2Calls: string[];
+  opened: string[];
+  io: ReturnType<typeof captureIo>;
+  key: string;
+  deps: RefreshStatusDeps;
+} {
   const queries: string[] = [];
+  const transactions: Array<{ readOnly?: boolean }> = [];
   const r2Calls: string[] = [];
   const opened: string[] = [];
   const io = captureIo();
   const key = `u/${REFRESH_TENANT}/index/refresh-cursor.json`;
   return {
     queries,
+    transactions,
     r2Calls,
     opened,
     io,
@@ -331,33 +345,50 @@ function refreshDeps(options: {
       io: io.io,
       env: options.env ?? { PRODUCTION_DATABASE_URL: DATABASE_SECRET },
       loadVars: () => ({ CORPUS_R2_SECRET_KEY: "r2-secret-value-not-printed" }),
-      openSql: (url: string): RefreshStatusSql => {
+      openSql: (url: string): Sql => {
         opened.push(url);
+        let aborted = false;
+        const query: Sql["query"] = async <Row extends Record<string, unknown>>(text: string): Promise<Row[]> => {
+          if (aborted) throw new Error("current transaction is aborted");
+          queries.push(text);
+          if (options.failQuery || options.failIf?.(text)) {
+            aborted = true;
+            throw new Error(`connect failed ${DATABASE_SECRET}`);
+          }
+          let rows: Record<string, unknown>[];
+          if (text.includes("to_regclass")) rows = [{ present: options.present !== false }];
+          else if (text.includes("FROM relationship_refresh_jobs") && text.includes("AS total")) {
+            rows = [{ total: 2, with_result: 1, no_result: 1, recent_retry: 0 }];
+          } else if (text.includes("FROM relationship_refresh_jobs") && text.includes("GROUP BY")) {
+            rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 2, with_result: 1 }];
+          } else if (text.includes("FROM relationship_refresh_jobs")) {
+            rows = [{ reading_id: "rd_a", run_at: "2026-11-01T03:07:13.000Z", retry_at: null }];
+          } else if (text.includes("FROM tension_refresh_jobs") && text.includes("AS total")) {
+            rows = [{ total: 1, with_result: 1, no_result: 0, recent_retry: 0 }];
+          } else if (text.includes("FROM tension_refresh_jobs") && text.includes("GROUP BY run_at")) {
+            rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 1, with_result: 1 }];
+          } else if (text.includes("AS verdict")) rows = [{ verdict: "none", n: 1 }];
+          else if (text.includes("FROM tension_refresh_jobs")) rows = [];
+          else if (text.includes("tension_rows")) {
+            rows = [{ tension_rows: 1, readings_with_tensions: 1, dangling: 1, one_sided: 0 }];
+          } else if (text.includes("tensions_judged")) rows = [{ n: 0 }];
+          else if (text.includes("kind = 'tension'")) rows = [{ source_id: "rd_a", target_id: "rd_missing" }];
+          else {
+            aborted = true;
+            throw new Error(`unexpected sql: ${text}`);
+          }
+          return rows as Row[];
+        };
         return {
-          async query<Row extends Record<string, unknown>>(text: string): Promise<Row[]> {
-            queries.push(text);
-            if (options.failQuery) throw new Error(`connect failed ${DATABASE_SECRET}`);
-            if (!/^\s*(select|with)\b/i.test(text)) throw new Error(`write attempted: ${text}`);
-            let rows: Record<string, unknown>[];
-            if (text.includes("to_regclass")) rows = [{ present: options.present !== false }];
-            else if (text.includes("FROM relationship_refresh_jobs") && text.includes("AS total")) {
-              rows = [{ total: 2, with_result: 1, no_result: 1, recent_retry: 0 }];
-            } else if (text.includes("FROM relationship_refresh_jobs") && text.includes("GROUP BY")) {
-              rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 2, with_result: 1 }];
-            } else if (text.includes("FROM relationship_refresh_jobs")) {
-              rows = [{ reading_id: "rd_a", run_at: "2026-11-01T03:07:13.000Z", retry_at: null }];
-            } else if (text.includes("FROM tension_refresh_jobs") && text.includes("AS total")) {
-              rows = [{ total: 1, with_result: 1, no_result: 0, recent_retry: 0 }];
-            } else if (text.includes("FROM tension_refresh_jobs") && text.includes("GROUP BY run_at")) {
-              rows = [{ run_at: "2026-11-01T03:07:13.000Z", n: 1, with_result: 1 }];
-            } else if (text.includes("AS verdict")) rows = [{ verdict: "none", n: 1 }];
-            else if (text.includes("FROM tension_refresh_jobs")) rows = [];
-            else if (text.includes("tension_rows")) {
-              rows = [{ tension_rows: 1, readings_with_tensions: 1, dangling: 1, one_sided: 0 }];
-            } else if (text.includes("tensions_judged")) rows = [{ n: 0 }];
-            else if (text.includes("kind = 'tension'")) rows = [{ source_id: "rd_a", target_id: "rd_missing" }];
-            else throw new Error(`unexpected sql: ${text}`);
-            return rows as Row[];
+          query,
+          async execute() {
+            throw new Error("refresh status refused a write");
+          },
+          async transaction(run, opts) {
+            if (opts?.readOnly !== true) throw new Error("refresh status opened a writable transaction");
+            transactions.push({ readOnly: true });
+            aborted = false;
+            return run({ query, execute: async () => { throw new Error("refresh status refused a write"); } });
           },
           async end() {},
         };
@@ -371,7 +402,8 @@ function refreshDeps(options: {
           },
           async listObjects(prefix?: string) {
             r2Calls.push(`list ${prefix}`);
-            if (options.body === null) return [];
+            if (options.listError) throw options.listError;
+            if (options.body === null || options.listMiss) return [];
             return [{
               key: prefix ?? key,
               etag: options.etag ?? "abc12345",
@@ -388,8 +420,9 @@ describe("corpus refresh-status", () => {
   const argv = ["--tenant", REFRESH_TENANT, "--bucket", "reading-lite"];
 
   it("prints the cursor, checkpoints, verdict mix, and corpus counts, and only reads", async () => {
-    const { deps, io, queries, r2Calls, opened } = refreshDeps({});
+    const { deps, io, queries, transactions, r2Calls, opened } = refreshDeps({});
     expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(0);
+    expect(transactions).toEqual([{ readOnly: true }, { readOnly: true }, { readOnly: true }]);
     expect(opened).toEqual([DATABASE_SECRET]);
     expect(r2Calls).toEqual([
       `get u/${REFRESH_TENANT}/index/refresh-cursor.json`,
@@ -501,8 +534,8 @@ describe("corpus refresh-status", () => {
       body: null,
       present: true,
     });
-    zeros.deps.openSql = (): RefreshStatusSql => ({
-      async query<Row extends Record<string, unknown>>(text: string): Promise<Row[]> {
+    zeros.deps.openSql = (): Sql => {
+      const query: Sql["query"] = async <Row extends Record<string, unknown>>(text: string): Promise<Row[]> => {
         let rows: Record<string, unknown>[];
         if (text.includes("to_regclass")) rows = [{ present: true }];
         else if (text.includes("AS total")) rows = [{ total: 0, with_result: 0, no_result: 0, recent_retry: 0 }];
@@ -511,9 +544,19 @@ describe("corpus refresh-status", () => {
         } else if (text.includes("tensions_judged")) rows = [{ n: 0 }];
         else rows = [];
         return rows as Row[];
-      },
-      async end() {},
-    });
+      };
+      return {
+        query,
+        async execute() {
+          throw new Error("refresh status refused a write");
+        },
+        async transaction(run, opts) {
+          if (opts?.readOnly !== true) throw new Error("refresh status opened a writable transaction");
+          return run({ query, execute: async () => { throw new Error("refresh status refused a write"); } });
+        },
+        async end() {},
+      };
+    };
     expect(await corpusRefreshStatusCommand.run([...argv, "--json"], zeros.deps)).toBe(0);
     const zeroReport = JSON.parse(zeros.io.out.join("\n"));
     expect(zeroReport.cursor.status).toBe("missing");
@@ -683,11 +726,69 @@ describe("corpus refresh-status", () => {
     expect(io.out.join("\n")).not.toContain("127.0.0.1");
   });
 
-  it("refuses a statement that is not a read", () => {
-    expect(() => assertRefreshStatusRead("DELETE FROM relationship_refresh_jobs WHERE tenant_id = $1")).toThrow(
-      "refresh status refused a statement that is not a read",
-    );
-    expect(assertRefreshStatusRead("SELECT 1")).toBeUndefined();
+  it("keeps a failed connection read from aborting the tension and corpus reads", async () => {
+    const { deps, io, transactions } = refreshDeps({
+      failIf: (text) => text.includes("FROM relationship_refresh_jobs"),
+    });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(1);
+    const report = JSON.parse(io.out.join("\n"));
+    expect(report.checkpoints.connection.status).toBe("failed");
+    expect(report.checkpoints.tension.status).toBe("ok");
+    expect(report.corpus.status).toBe("ok");
+    expect(transactions).toEqual([{ readOnly: true }, { readOnly: true }, { readOnly: true }]);
+  });
+
+  it("exits 1 when cursor metadata cannot be read, and keeps a missing or invalid cursor at exit 0", async () => {
+    const listed = refreshDeps({ listError: new Error(`list failed ${DATABASE_SECRET}`) });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], listed.deps)).toBe(1);
+    const listedReport = JSON.parse(listed.io.out.join("\n"));
+    expect(listedReport.cursor.status).toBe("ok");
+    expect(listedReport.cursor.value.phase).toBe("idle until next Sunday");
+    expect(listedReport.cursor.value.object.status).toBe("unavailable");
+    expect(listedReport.cursor.value.object.reason).toContain("[redacted]");
+    expect(listedReport.checkpoints.connection.status).toBe("ok");
+    expect(listed.io.out.join("\n")).not.toContain("super-secret-value");
+
+    const missed = refreshDeps({ listMiss: true });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], missed.deps)).toBe(1);
+    expect(JSON.parse(missed.io.out.join("\n")).cursor.value.object).toEqual({
+      status: "unavailable",
+      reason: "object metadata was not listed",
+    });
+
+    const missing = refreshDeps({ body: null });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], missing.deps)).toBe(0);
+    expect(JSON.parse(missing.io.out.join("\n")).cursor.status).toBe("missing");
+
+    const invalid = refreshDeps({ body: "not-json" });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], invalid.deps)).toBe(0);
+    expect(JSON.parse(invalid.io.out.join("\n")).cursor.status).toBe("invalid");
+  });
+
+  it("opens PostgreSQL with BEGIN READ ONLY", async () => {
+    const sent: string[] = [];
+    const query = vi.spyOn(pg.Client.prototype, "query").mockImplementation(async (text: unknown) => {
+      sent.push(typeof text === "string" ? text : String(text));
+      return { rows: [], rowCount: 0 } as never;
+    });
+    const connect = vi.spyOn(pg.Client.prototype, "connect").mockResolvedValue();
+    const end = vi.spyOn(pg.Client.prototype, "end").mockResolvedValue();
+    try {
+      const sql = sqlFromConnectionString("postgres://reading_lite:reading_lite@127.0.0.1:1/reading_lite");
+      await sql.transaction(async (tx) => {
+        await tx.query("WITH written AS (DELETE FROM relationship_refresh_jobs RETURNING reading_id) SELECT reading_id FROM written");
+      }, { readOnly: true });
+      await sql.end();
+    } finally {
+      query.mockRestore();
+      connect.mockRestore();
+      end.mockRestore();
+    }
+    expect(sent).toEqual([
+      "BEGIN READ ONLY",
+      "WITH written AS (DELETE FROM relationship_refresh_jobs RETURNING reading_id) SELECT reading_id FROM written",
+      "COMMIT",
+    ]);
   });
 });
 

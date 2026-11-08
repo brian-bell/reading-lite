@@ -13,10 +13,10 @@ import {
   resolveOperatorDatabaseUrl,
 } from "../../pg-lib/operator-db";
 import { requireTenantRows } from "../../pg-lib/operator-corpus";
+import type { Sql, SqlQuery } from "../../../src/modules/db/sql";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 import { requireOperatorTenant, TENANT_FLAG_HELP } from "../tenant-flag";
 import {
-  assertRefreshStatusRead,
   cursorObservation,
   formatRefreshStatus,
   parseConnectionUncertain,
@@ -134,15 +134,10 @@ export interface RefreshStatusR2 {
   listObjects(prefix?: string): Promise<Array<{ key: string; etag: string; lastModified?: string }>>;
 }
 
-export interface RefreshStatusSql {
-  query<Row extends Record<string, unknown> = Record<string, unknown>>(text: string, values?: unknown[]): Promise<Row[]>;
-  end(): Promise<void>;
-}
-
 export interface RefreshStatusDeps extends BaseDeps {
   env: Record<string, string | undefined>;
   loadVars: () => Record<string, string | undefined>;
-  openSql: (url: string) => RefreshStatusSql;
+  openSql: (url: string) => Sql;
   openR2: (vars: Record<string, string | undefined>, bucket: string) => RefreshStatusR2;
 }
 
@@ -215,12 +210,15 @@ async function readCursor(
   return cursorObservation(key, body, object);
 }
 
+function readOnly<T>(sql: Sql, run: (tx: SqlQuery) => Promise<T>): Promise<T> {
+  return sql.transaction(run, { readOnly: true });
+}
+
 async function queryOne<Row extends Record<string, unknown>>(
-  sql: RefreshStatusSql,
+  sql: SqlQuery,
   text: string,
   values: unknown[],
 ): Promise<Row> {
-  assertRefreshStatusRead(text);
   const rows = await sql.query<Row>(text, values);
   const row = rows[0];
   if (!row) throw new Error("PostgreSQL returned no row for a count");
@@ -228,11 +226,10 @@ async function queryOne<Row extends Record<string, unknown>>(
 }
 
 async function queryAll<Row extends Record<string, unknown>>(
-  sql: RefreshStatusSql,
+  sql: SqlQuery,
   text: string,
   values: unknown[],
 ): Promise<Row[]> {
-  assertRefreshStatusRead(text);
   return sql.query<Row>(text, values);
 }
 
@@ -245,51 +242,57 @@ function failed<T>(error: unknown, secrets: readonly string[]): RefreshObservati
 }
 
 async function readConnection(
-  sql: RefreshStatusSql,
+  sql: Sql,
   tenantId: string,
   secrets: readonly string[],
 ): Promise<RefreshStatusReport["checkpoints"]["connection"]> {
   try {
-    const counts = parseCounts(await queryOne(sql, CONNECTION_COUNTS, [tenantId]));
-    const byRun = parseRunCounts(await queryAll(sql, CONNECTION_BY_RUN, [tenantId]));
-    const uncertain = parseConnectionUncertain(await queryAll(sql, CONNECTION_UNCERTAIN, [tenantId]));
-    return { status: "ok", value: { counts, by_run_at: byRun, uncertain } };
+    return await readOnly(sql, async (tx) => {
+      const counts = parseCounts(await queryOne(tx, CONNECTION_COUNTS, [tenantId]));
+      const byRun = parseRunCounts(await queryAll(tx, CONNECTION_BY_RUN, [tenantId]));
+      const uncertain = parseConnectionUncertain(await queryAll(tx, CONNECTION_UNCERTAIN, [tenantId]));
+      return { status: "ok" as const, value: { counts, by_run_at: byRun, uncertain } };
+    });
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
 }
 
 async function readTension(
-  sql: RefreshStatusSql,
+  sql: Sql,
   tenantId: string,
   secrets: readonly string[],
 ): Promise<RefreshObservation<TensionCheckpoint>> {
   try {
-    const present = parseTablePresent(await queryOne(sql, TENSION_TABLE, []));
-    if (!present) return { status: "missing", reason: "tension_refresh_jobs is not installed" };
-    const counts = parseCounts(await queryOne(sql, TENSION_COUNTS, [tenantId]));
-    const byRun = parseRunCounts(await queryAll(sql, TENSION_BY_RUN, [tenantId]));
-    const verdicts = parseVerdicts(await queryAll(sql, TENSION_VERDICTS, [tenantId]));
-    const uncertain = parseTensionUncertain(await queryAll(sql, TENSION_UNCERTAIN, [tenantId]));
-    return { status: "ok", value: { counts, by_run_at: byRun, verdicts, uncertain } };
+    return await readOnly(sql, async (tx) => {
+      const present = parseTablePresent(await queryOne(tx, TENSION_TABLE, []));
+      if (!present) return { status: "missing" as const, reason: "tension_refresh_jobs is not installed" };
+      const counts = parseCounts(await queryOne(tx, TENSION_COUNTS, [tenantId]));
+      const byRun = parseRunCounts(await queryAll(tx, TENSION_BY_RUN, [tenantId]));
+      const verdicts = parseVerdicts(await queryAll(tx, TENSION_VERDICTS, [tenantId]));
+      const uncertain = parseTensionUncertain(await queryAll(tx, TENSION_UNCERTAIN, [tenantId]));
+      return { status: "ok" as const, value: { counts, by_run_at: byRun, verdicts, uncertain } };
+    });
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
 }
 
 async function readCorpus(
-  sql: RefreshStatusSql,
+  sql: Sql,
   tenantId: string,
   secrets: readonly string[],
 ): Promise<RefreshObservation<CorpusHealth>> {
   try {
-    const totals = parseCorpusRow(await queryOne(sql, CORPUS_TENSIONS, [tenantId]));
-    const danglingJudged = parseJudgedCount(await queryOne(sql, DANGLING_JUDGED, [tenantId]));
-    const sample = parseDanglingSample(await queryAll(sql, DANGLING_SAMPLE, [tenantId]));
-    return {
-      status: "ok",
-      value: { ...totals, dangling_judged_records: danglingJudged, dangling_sample: sample },
-    };
+    return await readOnly(sql, async (tx) => {
+      const totals = parseCorpusRow(await queryOne(tx, CORPUS_TENSIONS, [tenantId]));
+      const danglingJudged = parseJudgedCount(await queryOne(tx, DANGLING_JUDGED, [tenantId]));
+      const sample = parseDanglingSample(await queryAll(tx, DANGLING_SAMPLE, [tenantId]));
+      return {
+        status: "ok" as const,
+        value: { ...totals, dangling_judged_records: danglingJudged, dangling_sample: sample },
+      };
+    });
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
@@ -301,7 +304,7 @@ function shapeError(error: unknown): Error {
 }
 
 async function readDatabase(
-  sql: RefreshStatusSql,
+  sql: Sql,
   tenantId: string,
   secrets: readonly string[],
 ): Promise<Pick<RefreshStatusReport, "checkpoints" | "corpus">> {
@@ -339,8 +342,14 @@ ${DATABASE_URL_ENV_FLAG_HELP}
 R2: CORPUS_R2_ACCOUNT_ID with CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or
 CLOUDFLARE_API_TOKEN / CORPUS_CF_API_TOKEN. Names only. Values are never printed.
 
-Exit 0 when every section is ok, missing, or invalid. Exit 1 when a section is
-unavailable or failed. Exit 2 for usage errors.`,
+Exit 0 when every section is ok, missing, or invalid. A missing cursor, an
+invalid cursor, and a missing tension table are exit 0, and they are not a
+healthy result. Healthy means every section is ok and cursor metadata is ok.
+Exit 1 when a section is unavailable or failed, including when the cursor
+body parsed and only its metadata is unavailable. Exit 2 for usage errors.
+
+PostgreSQL statements run in a read-only transaction. The database rejects
+writes there. A statement prefix is not that guarantee.`,
   defaultDeps: (io) => ({
     io,
     env: process.env,
@@ -387,7 +396,7 @@ unavailable or failed. Exit 2 for usage errors.`,
 
     let postgres: Pick<RefreshStatusReport, "checkpoints" | "corpus">;
     if ("url" in database) {
-      let sql: RefreshStatusSql | undefined;
+      let sql: Sql | undefined;
       try {
         sql = deps.openSql(database.url);
         postgres = await readDatabase(sql, tenant.tenantId, secrets);

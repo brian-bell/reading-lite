@@ -115,12 +115,6 @@ export function refreshCursorKey(tenant: OperatorTenant, local: boolean): string
   return `${operatorKeyRoot(tenant, local)}${REFRESH_CURSOR_KEY}`;
 }
 
-export function assertRefreshStatusRead(sql: string): void {
-  const statement = sql.trim().toLowerCase();
-  if (statement.startsWith("select") || statement.startsWith("with")) return;
-  throw new Error("refresh status refused a statement that is not a read");
-}
-
 export function redactOperatorText(text: string, secrets: readonly string[]): string {
   let redacted = text;
   for (const secret of secrets) {
@@ -273,14 +267,15 @@ export function parseTablePresent(row: unknown): boolean {
   return z.object({ present: z.boolean() }).strict().parse(row).present;
 }
 
+function readFailed(status: string): boolean {
+  return status === "unavailable" || status === "failed";
+}
+
 export function refreshStatusExit(report: RefreshStatusReport): number {
-  const sections = [
-    report.cursor,
-    report.checkpoints.connection,
-    report.checkpoints.tension,
-    report.corpus,
-  ];
-  return sections.some((section) => section.status === "unavailable" || section.status === "failed") ? 1 : 0;
+  const cursorMetadataFailed = report.cursor.status === "ok" && readFailed(report.cursor.value.object.status);
+  const sectionFailed = [report.cursor, report.checkpoints.connection, report.checkpoints.tension, report.corpus]
+    .some((section) => readFailed(section.status));
+  return cursorMetadataFailed || sectionFailed ? 1 : 0;
 }
 
 export function formatRefreshStatus(report: RefreshStatusReport): string {

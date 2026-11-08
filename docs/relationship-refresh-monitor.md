@@ -87,10 +87,17 @@ The same names as the other corpus commands. Put them in the environment or
 Each of `cursor`, `checkpoints.connection`, `checkpoints.tension`, and `corpus`
 is `ok`, `missing`, `invalid`, `unavailable`, or `failed`. A count of zero is
 `ok`. `missing` means the cursor object or `tension_refresh_jobs` is absent.
-`invalid` means the cursor bytes are not the refresh cursor schema.
-`unavailable` means a credential or connection variable is unset. `failed`
-means the read threw. Exit 0 for `ok`, `missing`, and `invalid`. Exit 1 when
-any section is `unavailable` or `failed`. Exit 2 for usage errors.
+`invalid` means the cursor bytes are not the refresh cursor schema. A missing
+cursor, an invalid cursor, and a missing tension table exit 0. They are not a
+healthy result. Healthy means every section is `ok` and `cursor.value.object`
+is `ok`. `unavailable` means a credential is unset, or the cursor object's
+etag and last-modified could not be listed. `failed` means the read threw.
+Those two exit 1, including when the cursor body parsed and only
+`cursor.value.object.status` is `unavailable`. Exit 2 is a usage error.
+
+The checkpoint and corpus statements run inside `BEGIN READ ONLY`. PostgreSQL
+rejects a write in that transaction, including a data-modifying `WITH`.
+A statement prefix is not that guarantee.
 
 `cursor.value.phase` is one of `sending connection judges`, `sending tension
 pairs`, `sending repairs`, `scanning`, `reserving repairs`, `reserving
