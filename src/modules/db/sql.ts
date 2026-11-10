@@ -67,8 +67,24 @@ export interface Sql extends SqlQuery {
   end(): Promise<void>;
 }
 
-export function sqlFromConnectionString(connectionString: string): Sql {
-  const client = new pg.Client({ connectionString, types });
+export interface SqlClientOptions {
+  // Omit both to keep pg's unlimited waits. A caller that sets them refuses
+  // to block past that bound on connect or on a query.
+  connectionTimeoutMillis?: number;
+  queryTimeoutMillis?: number;
+}
+
+export function sqlFromConnectionString(connectionString: string, options?: SqlClientOptions): Sql {
+  const client = new pg.Client({
+    connectionString,
+    types,
+    ...(options?.connectionTimeoutMillis === undefined
+      ? {}
+      : { connectionTimeoutMillis: options.connectionTimeoutMillis }),
+    ...(options?.queryTimeoutMillis === undefined
+      ? {}
+      : { query_timeout: options.queryTimeoutMillis }),
+  });
   let connecting: Promise<void> | null = null;
   const connected = (): Promise<void> => (connecting ??= client.connect().then(() => undefined));
 

@@ -1573,7 +1573,7 @@ first complete calibration run, its costs, and the retained thresholds.
 | `npm run ops -- corpus refresh-neighbours` | re-measure readings against the tenant's stored vectors, print the staleness inventory, and write `refresh-report.json` (no LLM; measures only what changed since the run marker by default, `--full` sweeps every ready reading; `--execute --sole-writer` rewrites drifted `similarity` snapshots) |
 | `npm run ops -- corpus refresh-connections` | consume `refresh-report.json`, plan relationship-only judgements with estimated cost, and selectively update connections, novelty, and the computation date |
 | `npm run ops -- corpus refresh-tensions` | pair each flagged reading in `refresh-report.json` with its neighbours, pre-filter on overlap evidence, and judge directional tensions written to both readings in one transaction (`--pair a,b` hand-picks a pair) |
-| `npm run ops -- corpus refresh-status` | read-only status of the hosted weekly refresh for one tenant: cursor phase and counts, checkpoint rows, uncertain dispatches, tension verdicts, and corpus tension health. `--json` prints one document. Rejects `--tenant global` |
+| `npm run ops -- corpus refresh-status` | read-only status of the hosted weekly refresh for one tenant: cursor phase and counts, checkpoint rows, uncertain dispatches, tension verdicts, and corpus tension health. `--json` prints one document. `--transport https` reads the database with the Neon serverless driver over HTTPS. The default `postgres` transport is unchanged. Rejects `--tenant global` |
 | `npm run ops -- corpus purge-connections` | delete every `reading_relationships` row naming one already-deleted reading as its target (plan-first; one statement; `--execute` requires `--sole-writer`) |
 | `npm run ops -- corpus redact-key-echoes` | find stored reading and attempt errors that still carry a provider key fragment and redact them in place (plan-first; no provider call; `--execute` re-scans and exits 1 on leftovers) |
 | `npm run ops -- corpus ingest` | bulk-ingest a fresh markdown directory through a provider Batch API |
@@ -2910,8 +2910,8 @@ See the [CPU diagnosis and recovery procedure](relationship-refresh-recovery.md)
 before resuming a run interrupted by CPU terminations.
 The weekly pass is watched by RL OpsBot's routine on the shared box.
 [Relationship refresh monitor](relationship-refresh-monitor.md) holds its prompt
-and recreates it from scratch. The read is `npm run ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite`.
-Add `--json` for one JSON document. The command only reads. Sunday 03:07 UTC is
+and recreates it from scratch. The read is `npm run ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite --transport https`.
+Add `--json` for one JSON document. Omit `--transport` to keep the direct PostgreSQL client. The command only reads. Sunday 03:07 UTC is
 Saturday 10:07 PM EST or 11:07 PM EDT.
 
 `RELATIONSHIP_REFRESH_JOBS` uses dedicated queues
