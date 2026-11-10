@@ -13,7 +13,9 @@ import { spawnWrangler } from "../../scripts/lib/wrangler-cli";
 import { runCli } from "../../scripts/ops-lib/cli";
 import { corpusRefreshStatusCommand, type RefreshStatusDeps } from "../../scripts/ops-lib/commands/corpus-refresh-status";
 import { LOCAL_DATABASE_URL } from "../../scripts/pg-lib/local-postgres";
+import { neonHttpsSession, POSTGRES_READ_TIMED_OUT, type SqlStatement } from "../../scripts/pg-lib/neon-https";
 import { sqlFromConnectionString, type Sql } from "../../src/modules/db/sql";
+import { neonConfig } from "@neondatabase/serverless";
 import pg from "pg";
 import { deployWorkerCommand, type DeployWorkerDeps } from "../../scripts/ops-lib/commands/deploy-worker";
 import type { CommandIo } from "../../scripts/ops-lib/contract";
@@ -345,6 +347,9 @@ function refreshDeps(options: {
       io: io.io,
       env: options.env ?? { PRODUCTION_DATABASE_URL: DATABASE_SECRET },
       loadVars: () => ({ CORPUS_R2_SECRET_KEY: "r2-secret-value-not-printed" }),
+      openHttps: () => {
+        throw new Error("https transport opened on the postgres path");
+      },
       openSql: (url: string): Sql => {
         opened.push(url);
         let aborted = false;
@@ -422,7 +427,12 @@ describe("corpus refresh-status", () => {
   it("prints the cursor, checkpoints, verdict mix, and corpus counts, and only reads", async () => {
     const { deps, io, queries, transactions, r2Calls, opened } = refreshDeps({});
     expect(await corpusRefreshStatusCommand.run([...argv, "--json"], deps)).toBe(0);
-    expect(transactions).toEqual([{ readOnly: true }, { readOnly: true }, { readOnly: true }]);
+    expect(transactions).toEqual([
+      { readOnly: true },
+      { readOnly: true },
+      { readOnly: true },
+      { readOnly: true },
+    ]);
     expect(opened).toEqual([DATABASE_SECRET]);
     expect(r2Calls).toEqual([
       `get u/${REFRESH_TENANT}/index/refresh-cursor.json`,
@@ -735,7 +745,12 @@ describe("corpus refresh-status", () => {
     expect(report.checkpoints.connection.status).toBe("failed");
     expect(report.checkpoints.tension.status).toBe("ok");
     expect(report.corpus.status).toBe("ok");
-    expect(transactions).toEqual([{ readOnly: true }, { readOnly: true }, { readOnly: true }]);
+    expect(transactions).toEqual([
+      { readOnly: true },
+      { readOnly: true },
+      { readOnly: true },
+      { readOnly: true },
+    ]);
   });
 
   it("exits 1 when cursor metadata cannot be read, and keeps a missing or invalid cursor at exit 0", async () => {
@@ -789,6 +804,305 @@ describe("corpus refresh-status", () => {
       "WITH written AS (DELETE FROM relationship_refresh_jobs RETURNING reading_id) SELECT reading_id FROM written",
       "COMMIT",
     ]);
+  });
+
+  it("bounds the default PostgreSQL client and leaves the unbounded opener unchanged", async () => {
+    const seen: pg.ClientConfig[] = [];
+    const spy = vi.spyOn(pg, "Client").mockImplementation(function (this: pg.Client, config?: string | pg.ClientConfig) {
+      const record = typeof config === "string" ? { connectionString: config } : (config ?? {});
+      seen.push(record);
+      return {
+        connect: () => Promise.resolve(),
+        query: async () => ({ rows: [], rowCount: 0 }),
+        end: () => Promise.resolve(),
+      } as unknown as pg.Client;
+    });
+    try {
+      const deps = corpusRefreshStatusCommand.defaultDeps!(captureIo().io);
+      const bounded = deps.openSql("postgres://reading_lite:reading_lite@127.0.0.1:1/reading_lite", 1500);
+      await bounded.query("select 1");
+      await bounded.end();
+      const unbounded = sqlFromConnectionString("postgres://reading_lite:reading_lite@127.0.0.1:1/reading_lite");
+      await unbounded.end();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(seen[0]?.connectionTimeoutMillis).toBe(1500);
+    expect(seen[0]?.query_timeout).toBe(1500);
+    expect(seen[1]?.connectionTimeoutMillis).toBeUndefined();
+    expect(seen[1]?.query_timeout).toBeUndefined();
+  });
+
+  it("prints the cursor when a PostgreSQL section times out and still reads the others", async () => {
+    const { deps, io, opened } = refreshDeps({});
+    deps.openSql = (url) => {
+      opened.push(url);
+      const query: Sql["query"] = async (text: string) => {
+        if (String(text).includes("relationship_refresh_jobs")) await new Promise(() => undefined);
+        if (String(text).includes("to_regclass")) return [{ present: true }] as never;
+        if (String(text).includes("AS total")) return [{ total: 0, with_result: 0, no_result: 0, recent_retry: 0 }] as never;
+        if (String(text).includes("tension_rows")) {
+          return [{ tension_rows: 0, readings_with_tensions: 0, dangling: 0, one_sided: 0 }] as never;
+        }
+        if (String(text).includes("tensions_judged")) return [{ n: 0 }] as never;
+        return [] as never;
+      };
+      return {
+        query,
+        async execute() {
+          throw new Error("refresh status refused a write");
+        },
+        async transaction(run, opts) {
+          if (opts?.readOnly !== true) throw new Error("refresh status opened a writable transaction");
+          return run({ query, execute: async () => { throw new Error("refresh status refused a write"); } });
+        },
+        async end() {},
+      };
+    };
+    expect(await corpusRefreshStatusCommand.run(
+      [...argv, "--json", "--section-timeout-ms", "50"],
+      deps,
+    )).toBe(1);
+    const report = JSON.parse(io.out.join("\n"));
+    expect(report.cursor.status).toBe("ok");
+    expect(report.cursor.value.phase).toBe("idle until next Sunday");
+    expect(report.checkpoints.connection).toEqual({ status: "failed", reason: POSTGRES_READ_TIMED_OUT });
+    expect(report.checkpoints.tension.status).toBe("ok");
+    expect(report.corpus.status).toBe("ok");
+    expect(io.out.join("\n")).not.toContain("super-secret-value");
+  }, 3000);
+
+  it("prints the cursor when closing PostgreSQL does not return", async () => {
+    const { deps, io } = refreshDeps({});
+    const original = deps.openSql;
+    deps.openSql = (url, timeoutMs) => {
+      const sql = original(url, timeoutMs);
+      return { ...sql, end: () => new Promise(() => undefined) };
+    };
+    expect(await corpusRefreshStatusCommand.run(
+      [...argv, "--json", "--section-timeout-ms", "50"],
+      deps,
+    )).toBe(0);
+    const report = JSON.parse(io.out.join("\n"));
+    expect(report.cursor.status).toBe("ok");
+    expect(report.checkpoints.connection.status).toBe("ok");
+    expect(report.corpus.value.tension_rows).toBe(1);
+  }, 3000);
+});
+
+describe("corpus refresh-status https", () => {
+  const argv = ["--tenant", REFRESH_TENANT, "--bucket", "reading-lite", "--transport", "https"];
+
+  it("sends one read-only HTTPS batch with bound parameters and parsed rows", async () => {
+    const calls: Array<{ body: { queries: Array<{ query: string; params: unknown[] }> }; readOnly: string | null; signal: AbortSignal | undefined }> = [];
+    const previous = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = async (_url: unknown, init?: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal }) => {
+      const headers = init?.headers ?? {};
+      calls.push({
+        body: JSON.parse(String(init?.body)) as { queries: Array<{ query: string; params: unknown[] }> },
+        readOnly: headers["Neon-Batch-Read-Only"] ?? null,
+        signal: init?.signal,
+      });
+      const queries = (JSON.parse(String(init?.body)) as { queries: unknown[] }).queries;
+      return new Response(JSON.stringify({
+        results: queries.map(() => ({
+          command: "SELECT",
+          rowCount: 1,
+          fields: [
+            { name: "n", dataTypeID: 20 },
+            { name: "run_at", dataTypeID: 1184 },
+            { name: "day", dataTypeID: 1082 },
+          ],
+          rows: [["2", "2026-11-01 03:07:13.123+00", "2026-11-01"]],
+        })),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    try {
+      const text = "SELECT count(*)::int AS n FROM relationship_refresh_jobs WHERE tenant_id = $1";
+      const write = "WITH written AS (DELETE FROM relationship_refresh_jobs RETURNING reading_id) SELECT reading_id FROM written";
+      const rows = await neonHttpsSession(DATABASE_SECRET).readOnly([
+        { text, values: [REFRESH_TENANT] },
+        { text: write, values: [] },
+      ], 1000);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.readOnly).toBe("true");
+      expect(calls[0]?.signal).toBeInstanceOf(AbortSignal);
+      expect(calls[0]?.body.queries).toEqual([
+        { query: text, params: [REFRESH_TENANT] },
+        { query: write, params: [] },
+      ]);
+      expect(rows).toEqual([
+        [{ n: 2, run_at: "2026-11-01T03:07:13.123Z", day: "2026-11-01" }],
+        [{ n: 2, run_at: "2026-11-01T03:07:13.123Z", day: "2026-11-01" }],
+      ]);
+      expect(JSON.stringify(calls)).not.toContain("super-secret-value");
+    } finally {
+      neonConfig.fetchFunction = previous;
+    }
+  });
+
+  it("replaces a timed-out HTTPS read with a reason that omits the connection string", async () => {
+    const previous = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = (_url: unknown, init?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(Object.assign(new Error(`aborted ${DATABASE_SECRET}`), { name: "TimeoutError" }));
+      });
+    });
+    try {
+      await expect(neonHttpsSession(DATABASE_SECRET).readOnly([
+        { text: "SELECT 1", values: [REFRESH_TENANT] },
+      ], 50)).rejects.toThrow(POSTGRES_READ_TIMED_OUT);
+    } finally {
+      neonConfig.fetchFunction = previous;
+    }
+  });
+
+  it("drops the connection string from an HTTPS driver error", async () => {
+    const previous = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = async () => {
+      throw new Error(`connect failed ${DATABASE_SECRET}`);
+    };
+    const error = await neonHttpsSession(DATABASE_SECRET).readOnly([
+      { text: "SELECT 1", values: [] },
+    ], 1000).then(() => undefined, (caught: unknown) => caught);
+    neonConfig.fetchFunction = previous;
+    expect(error).toBeInstanceOf(Error);
+    const message = error instanceof Error ? error.message : "";
+    expect(message).toContain("[redacted]");
+    expect(message).not.toContain("super-secret-value");
+    expect(message).not.toContain("postgres://");
+  });
+
+  it("redacts a password that is not valid percent-encoding", async () => {
+    const url = "postgres://reading:super%secret@db.example/reading_lite";
+    const previous = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = async () => {
+      throw new Error(`connect failed ${url}`);
+    };
+    const error = await neonHttpsSession(url).readOnly([
+      { text: "SELECT 1", values: [] },
+    ], 1000).then(() => undefined, (caught: unknown) => caught);
+    neonConfig.fetchFunction = previous;
+    const message = error instanceof Error ? error.message : "";
+    expect(message).toContain("[redacted]");
+    expect(message).not.toContain("super%secret");
+    expect(message).not.toContain("postgres://");
+  });
+
+  it("reports https sections, keeps a timed-out section from dropping the cursor, and redacts driver errors", async () => {
+    const statements: SqlStatement[] = [];
+    const base = refreshDeps({});
+    base.deps.openSql = () => {
+      throw new Error("postgres transport opened on the https path");
+    };
+    base.deps.openHttps = () => ({
+      async readOnly(batch) {
+        statements.push(...batch);
+        if (batch.some((statement) => statement.text.includes("relationship_refresh_jobs"))) {
+          await new Promise(() => undefined);
+        }
+        return batch.map((statement) => {
+          const text = statement.text;
+          expect(text.includes(REFRESH_TENANT)).toBe(false);
+          if (statement.values.length > 0) expect(statement.values).toEqual([REFRESH_TENANT]);
+          if (text.includes("to_regclass")) return [{ present: true }];
+          if (text.includes("AS total")) return [{ total: 0, with_result: 0, no_result: 0, recent_retry: 0 }];
+          if (text.includes("GROUP BY")) return [];
+          if (text.includes("AS verdict")) return [{ verdict: "none", n: 1 }];
+          if (text.includes("tension_rows")) {
+            return [{ tension_rows: 0, readings_with_tensions: 0, dangling: 0, one_sided: 0 }];
+          }
+          if (text.includes("tensions_judged")) return [{ n: 0 }];
+          return [];
+        });
+      },
+    });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json", "--section-timeout-ms", "50"], base.deps)).toBe(1);
+    const report = JSON.parse(base.io.out.join("\n"));
+    expect(report.cursor.status).toBe("ok");
+    expect(report.cursor.value.phase).toBe("idle until next Sunday");
+    expect(report.checkpoints.connection).toEqual({ status: "failed", reason: POSTGRES_READ_TIMED_OUT });
+    expect(report.checkpoints.tension.status).toBe("ok");
+    expect(report.checkpoints.tension.value.counts.total).toBe(0);
+    expect(report.corpus.status).toBe("ok");
+    expect(report.corpus.value.tension_rows).toBe(0);
+    expect(base.opened).toEqual([]);
+    expect(statements.some((statement) => statement.text.includes("tenant_id = $1"))).toBe(true);
+
+    const leaked = refreshDeps({});
+    leaked.deps.openSql = () => {
+      throw new Error("postgres transport opened on the https path");
+    };
+    leaked.deps.openHttps = () => ({
+      async readOnly() {
+        throw new Error(`connect failed ${DATABASE_SECRET}`);
+      },
+    });
+    expect(await corpusRefreshStatusCommand.run([...argv, "--json"], leaked.deps)).toBe(1);
+    const leakedReport = JSON.parse(leaked.io.out.join("\n"));
+    expect(leakedReport.cursor.status).toBe("ok");
+    expect(leakedReport.checkpoints.connection.status).toBe("failed");
+    expect(leakedReport.checkpoints.tension.status).toBe("failed");
+    expect(leakedReport.corpus.status).toBe("failed");
+    expect(leaked.io.out.join("\n")).not.toContain("super-secret-value");
+    expect(leaked.io.out.join("\n")).not.toContain("postgres://");
+    expect(leakedReport.checkpoints.connection.reason).toContain("[redacted]");
+  }, 3000);
+
+  it("rejects https with --local, a foreign database, and an unknown transport before any read", async () => {
+    const opened: string[] = [];
+    const depsFor = () => ({
+      io: captureIo().io,
+      env: {
+        PRODUCTION_DATABASE_URL: DATABASE_SECRET,
+        STAGING_DATABASE_URL: "postgres://staging:staging-secret@db.example/staging",
+      },
+      loadVars: () => ({}),
+      openSql: (url: string) => {
+        opened.push(url);
+        throw new Error("opened");
+      },
+      openHttps: (url: string) => {
+        opened.push(url);
+        throw new Error("opened");
+      },
+      openR2: () => {
+        opened.push("r2");
+        throw new Error("opened");
+      },
+    });
+    const local = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--local", "--transport", "https"],
+      { io: local.io, depsFor: () => ({ ...depsFor(), io: local.io }) },
+    )).toBe(2);
+    expect(local.err.join("\n")).toContain("--local uses this checkout's PostgreSQL");
+    expect(opened).toEqual([]);
+
+    const mismatch = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--transport", "https", "--database-url-env", "STAGING_DATABASE_URL"],
+      { io: mismatch.io, depsFor: () => ({ ...depsFor(), io: mismatch.io }) },
+    )).toBe(2);
+    expect(mismatch.err.join("\n")).toContain("names the staging database");
+    expect(mismatch.err.join("\n")).not.toContain("staging-secret");
+    expect(opened).toEqual([]);
+
+    const transport = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--transport", "websocket"],
+      { io: transport.io, depsFor: () => ({ ...depsFor(), io: transport.io }) },
+    )).toBe(2);
+    expect(transport.err.join("\n")).toContain("--transport must be postgres or https");
+    expect(opened).toEqual([]);
+
+    const timeout = captureIo();
+    expect(await runCli(
+      ["corpus", "refresh-status", "--tenant", REFRESH_TENANT, "--section-timeout-ms", "0"],
+      { io: timeout.io, depsFor: () => ({ ...depsFor(), io: timeout.io }) },
+    )).toBe(2);
+    expect(timeout.err.join("\n")).toContain("--section-timeout-ms must be a positive integer");
+    expect(opened).toEqual([]);
   });
 });
 

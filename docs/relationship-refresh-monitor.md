@@ -57,17 +57,28 @@ The command is read-only. It does not accept `--execute`. `--tenant` is
 required. `--tenant global` is rejected. The tenant id is an argument. The
 command does not embed a founder id, a bucket name, or a host path.
 
-Text:
+Text, over Neon HTTPS:
 
 ```sh
-cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite
+cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite --transport https
 ```
 
 JSON, one document:
 
 ```sh
-cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite --json
+cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant <usr_…> --bucket reading-lite --transport https --json
 ```
+
+`--transport` chooses how the database sections are read. `postgres` is the
+default. It opens a direct PostgreSQL connection, including `--local`.
+`https` sends each read-only batch with `@neondatabase/serverless` over HTTPS.
+Use `https` from a host where port 5432 does not answer. The flag does not
+change which database the bucket selects, and it does not retry a failed batch.
+
+Export the same variables as the direct path. Production needs
+`NEON_MAIN_DATABASE_URL` or `PRODUCTION_DATABASE_URL`, plus the R2 variables
+below. Node 22 runs the command. No extra secret is required for HTTPS.
+`--local` with `--transport https` is a usage error.
 
 `--bucket` defaults to `reading-lite` and selects the database. Production
 accepts `PRODUCTION_DATABASE_URL` or `NEON_MAIN_DATABASE_URL`. Staging is
@@ -95,9 +106,23 @@ etag and last-modified could not be listed. `failed` means the read threw.
 Those two exit 1, including when the cursor body parsed and only
 `cursor.value.object.status` is `unavailable`. Exit 2 is a usage error.
 
-The checkpoint and corpus statements run inside `BEGIN READ ONLY`. PostgreSQL
-rejects a write in that transaction, including a data-modifying `WITH`.
-A statement prefix is not that guarantee.
+The checkpoint and corpus statements run in a read-only transaction.
+PostgreSQL rejects a write there, including a data-modifying `WITH`.
+A statement prefix is not that guarantee. The `postgres` transport sends
+`BEGIN READ ONLY` on one direct session. The `https` transport sets the Neon
+driver's `readOnly` option. That becomes the `Neon-Batch-Read-Only` request
+header. Neon HTTPS has no session. The driver cannot await one row and then
+choose the next statement inside the same transaction, so the tension table
+check is its own request. The counts run only when that check says the table
+exists, in a second read-only request.
+
+`--section-timeout-ms` bounds each database batch. The default is 60000 and
+the maximum is 120000. The direct client also uses that value as its connect
+and query timeout. A batch that does not finish is `failed`, with reason
+`PostgreSQL read timed out`. The cursor and any section that already finished
+are still printed. Exit 1. Closing the direct client is bounded by the same
+timeout, so a stuck disconnect cannot hide the report. HTTPS aborts the fetch
+with the same bound. Neither transport retries.
 
 `cursor.value.phase` is one of `sending connection judges`, `sending tension
 pairs`, `sending repairs`, `scanning`, `reserving repairs`, `reserving
@@ -180,7 +205,7 @@ Every paid call first reserves its maximum possible cost against the tenant's da
    - Check `wrangler.toml` production vars: `RELATIONSHIP_REFRESH = "1"`, `REFRESH_MAX_JUDGEMENTS = "150"`, `REFRESH_MAX_TENSION_JUDGEMENTS = "100"`.
 3. Run the read-only status command. Never print secrets.
 
-       cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant usr_1700450b-c2df-4421-8805-c308a63b4dea --bucket reading-lite --json
+       cd <workspace> && <load-secrets> && mise exec node@22 -- npm run -s ops -- corpus refresh-status --tenant usr_1700450b-c2df-4421-8805-c308a63b4dea --bucket reading-lite --transport https --json
 
    Ignore a multi-line pg SSL "SECURITY WARNING" on stderr. The command reads bucket reading-lite and the production database paired with it. If a section's status is `unavailable` or `failed`, say so. Do not treat that section as zero.
 4. Read the tenant's spend (read-only; uses `NEON_MAIN_DATABASE_URL` and Wrangler's Cloudflare login):

@@ -9,11 +9,17 @@ import type { OperatorTenant } from "../../corpus-lib/tenant";
 import {
   databaseTargetForBucket,
   DATABASE_URL_ENV_FLAG_HELP,
-  openOperatorSql,
   resolveOperatorDatabaseUrl,
 } from "../../pg-lib/operator-db";
+import {
+  isPostgresTimeout,
+  neonHttpsSession,
+  POSTGRES_READ_TIMED_OUT,
+  type ReadOnlyBatch,
+  type SqlStatement,
+} from "../../pg-lib/neon-https";
 import { requireTenantRows } from "../../pg-lib/operator-corpus";
-import type { Sql, SqlQuery } from "../../../src/modules/db/sql";
+import { sqlFromConnectionString, type Sql } from "../../../src/modules/db/sql";
 import { UsageError, type BaseDeps, type CommandDefinition } from "../contract";
 import { requireOperatorTenant, TENANT_FLAG_HELP } from "../tenant-flag";
 import {
@@ -137,9 +143,15 @@ export interface RefreshStatusR2 {
 export interface RefreshStatusDeps extends BaseDeps {
   env: Record<string, string | undefined>;
   loadVars: () => Record<string, string | undefined>;
-  openSql: (url: string) => Sql;
+  openSql: (url: string, timeoutMs?: number) => Sql;
+  openHttps?: (url: string) => ReadOnlyBatch;
   openR2: (vars: Record<string, string | undefined>, bucket: string) => RefreshStatusR2;
 }
+
+type DbTransport = "postgres" | "https";
+
+const DEFAULT_SECTION_TIMEOUT_MS = 60_000;
+const MAX_SECTION_TIMEOUT_MS = 120_000;
 
 interface StatusArgs {
   tenant: OperatorTenant;
@@ -147,6 +159,8 @@ interface StatusArgs {
   databaseUrlEnv: string | undefined;
   local: boolean;
   json: boolean;
+  transport: DbTransport;
+  sectionTimeoutMs: number;
 }
 
 function parseStatusArgs(argv: string[]): Omit<StatusArgs, "tenant"> & { tenantSelector: string | undefined } {
@@ -160,6 +174,8 @@ function parseStatusArgs(argv: string[]): Omit<StatusArgs, "tenant"> & { tenantS
         "database-url-env": { type: "string" },
         local: { type: "boolean", default: false },
         json: { type: "boolean", default: false },
+        transport: { type: "string" },
+        "section-timeout-ms": { type: "string" },
       },
     }));
   } catch (error) {
@@ -171,7 +187,27 @@ function parseStatusArgs(argv: string[]): Omit<StatusArgs, "tenant"> & { tenantS
     databaseUrlEnv: values["database-url-env"],
     local: values.local === true,
     json: values.json === true,
+    transport: parseTransport(values.transport),
+    sectionTimeoutMs: parseSectionTimeout(values["section-timeout-ms"]),
   };
+}
+
+function parseTransport(value: string | undefined): DbTransport {
+  if (value === undefined || value === "postgres") return "postgres";
+  if (value === "https") return "https";
+  throw new UsageError("--transport must be postgres or https");
+}
+
+function parseSectionTimeout(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_SECTION_TIMEOUT_MS;
+  if (!/^[1-9]\d*$/.test(value)) {
+    throw new UsageError("--section-timeout-ms must be a positive integer number of milliseconds");
+  }
+  const parsed = Number(value);
+  if (parsed > MAX_SECTION_TIMEOUT_MS) {
+    throw new UsageError(`--section-timeout-ms must be at most ${MAX_SECTION_TIMEOUT_MS}`);
+  }
+  return parsed;
 }
 
 function configurationUnavailable(error: unknown): boolean {
@@ -210,27 +246,51 @@ async function readCursor(
   return cursorObservation(key, body, object);
 }
 
-function readOnly<T>(sql: Sql, run: (tx: SqlQuery) => Promise<T>): Promise<T> {
-  return sql.transaction(run, { readOnly: true });
+function postgresBatch(sql: Sql): ReadOnlyBatch {
+  return {
+    readOnly(statements) {
+      return sql.transaction(async (tx) => {
+        const rows: unknown[][] = [];
+        for (const statement of statements) rows.push(await tx.query(statement.text, statement.values));
+        return rows;
+      }, { readOnly: true });
+    },
+  };
 }
 
-async function queryOne<Row extends Record<string, unknown>>(
-  sql: SqlQuery,
-  text: string,
-  values: unknown[],
-): Promise<Row> {
-  const rows = await sql.query<Row>(text, values);
+function withDeadline<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(POSTGRES_READ_TIMED_OUT)), timeoutMs);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function readBatch(
+  source: ReadOnlyBatch,
+  statements: readonly SqlStatement[],
+  timeoutMs: number,
+): Promise<unknown[][]> {
+  try {
+    return await withDeadline(source.readOnly(statements, timeoutMs), timeoutMs);
+  } catch (error) {
+    if (isPostgresTimeout(error)) throw new Error(POSTGRES_READ_TIMED_OUT);
+    throw error;
+  }
+}
+
+function oneRow(rows: unknown[]): unknown {
   const row = rows[0];
-  if (!row) throw new Error("PostgreSQL returned no row for a count");
+  if (row === undefined) throw new Error("PostgreSQL returned no row for a count");
   return row;
-}
-
-async function queryAll<Row extends Record<string, unknown>>(
-  sql: SqlQuery,
-  text: string,
-  values: unknown[],
-): Promise<Row[]> {
-  return sql.query<Row>(text, values);
 }
 
 function failed<T>(error: unknown, secrets: readonly string[]): RefreshObservation<T> {
@@ -242,57 +302,81 @@ function failed<T>(error: unknown, secrets: readonly string[]): RefreshObservati
 }
 
 async function readConnection(
-  sql: Sql,
+  source: ReadOnlyBatch,
   tenantId: string,
   secrets: readonly string[],
+  timeoutMs: number,
 ): Promise<RefreshStatusReport["checkpoints"]["connection"]> {
   try {
-    return await readOnly(sql, async (tx) => {
-      const counts = parseCounts(await queryOne(tx, CONNECTION_COUNTS, [tenantId]));
-      const byRun = parseRunCounts(await queryAll(tx, CONNECTION_BY_RUN, [tenantId]));
-      const uncertain = parseConnectionUncertain(await queryAll(tx, CONNECTION_UNCERTAIN, [tenantId]));
-      return { status: "ok" as const, value: { counts, by_run_at: byRun, uncertain } };
-    });
+    const [counts, byRun, uncertain] = await readBatch(source, [
+      { text: CONNECTION_COUNTS, values: [tenantId] },
+      { text: CONNECTION_BY_RUN, values: [tenantId] },
+      { text: CONNECTION_UNCERTAIN, values: [tenantId] },
+    ], timeoutMs);
+    return {
+      status: "ok",
+      value: {
+        counts: parseCounts(oneRow(counts ?? [])),
+        by_run_at: parseRunCounts(byRun),
+        uncertain: parseConnectionUncertain(uncertain),
+      },
+    };
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
 }
 
 async function readTension(
-  sql: Sql,
+  source: ReadOnlyBatch,
   tenantId: string,
   secrets: readonly string[],
+  timeoutMs: number,
 ): Promise<RefreshObservation<TensionCheckpoint>> {
   try {
-    return await readOnly(sql, async (tx) => {
-      const present = parseTablePresent(await queryOne(tx, TENSION_TABLE, []));
-      if (!present) return { status: "missing" as const, reason: "tension_refresh_jobs is not installed" };
-      const counts = parseCounts(await queryOne(tx, TENSION_COUNTS, [tenantId]));
-      const byRun = parseRunCounts(await queryAll(tx, TENSION_BY_RUN, [tenantId]));
-      const verdicts = parseVerdicts(await queryAll(tx, TENSION_VERDICTS, [tenantId]));
-      const uncertain = parseTensionUncertain(await queryAll(tx, TENSION_UNCERTAIN, [tenantId]));
-      return { status: "ok" as const, value: { counts, by_run_at: byRun, verdicts, uncertain } };
-    });
+    const [presentRows] = await readBatch(source, [{ text: TENSION_TABLE, values: [] }], timeoutMs);
+    if (!parseTablePresent(oneRow(presentRows ?? []))) {
+      return { status: "missing", reason: "tension_refresh_jobs is not installed" };
+    }
+    const [counts, byRun, verdicts, uncertain] = await readBatch(source, [
+      { text: TENSION_COUNTS, values: [tenantId] },
+      { text: TENSION_BY_RUN, values: [tenantId] },
+      { text: TENSION_VERDICTS, values: [tenantId] },
+      { text: TENSION_UNCERTAIN, values: [tenantId] },
+    ], timeoutMs);
+    return {
+      status: "ok",
+      value: {
+        counts: parseCounts(oneRow(counts ?? [])),
+        by_run_at: parseRunCounts(byRun),
+        verdicts: parseVerdicts(verdicts),
+        uncertain: parseTensionUncertain(uncertain),
+      },
+    };
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
 }
 
 async function readCorpus(
-  sql: Sql,
+  source: ReadOnlyBatch,
   tenantId: string,
   secrets: readonly string[],
+  timeoutMs: number,
 ): Promise<RefreshObservation<CorpusHealth>> {
   try {
-    return await readOnly(sql, async (tx) => {
-      const totals = parseCorpusRow(await queryOne(tx, CORPUS_TENSIONS, [tenantId]));
-      const danglingJudged = parseJudgedCount(await queryOne(tx, DANGLING_JUDGED, [tenantId]));
-      const sample = parseDanglingSample(await queryAll(tx, DANGLING_SAMPLE, [tenantId]));
-      return {
-        status: "ok" as const,
-        value: { ...totals, dangling_judged_records: danglingJudged, dangling_sample: sample },
-      };
-    });
+    const [totals, danglingJudged, sample] = await readBatch(source, [
+      { text: CORPUS_TENSIONS, values: [tenantId] },
+      { text: DANGLING_JUDGED, values: [tenantId] },
+      { text: DANGLING_SAMPLE, values: [tenantId] },
+    ], timeoutMs);
+    return {
+      status: "ok",
+      value: {
+        ...parseCorpusRow(oneRow(totals ?? [])),
+        dangling_judged_records: parseJudgedCount(oneRow(danglingJudged ?? [])),
+        dangling_sample: parseDanglingSample(sample),
+      },
+    };
   } catch (error) {
     return failed(shapeError(error), secrets);
   }
@@ -304,13 +388,14 @@ function shapeError(error: unknown): Error {
 }
 
 async function readDatabase(
-  sql: Sql,
+  source: ReadOnlyBatch,
   tenantId: string,
   secrets: readonly string[],
+  timeoutMs: number,
 ): Promise<Pick<RefreshStatusReport, "checkpoints" | "corpus">> {
-  const connection = await readConnection(sql, tenantId, secrets);
-  const tension = await readTension(sql, tenantId, secrets);
-  const corpus = await readCorpus(sql, tenantId, secrets);
+  const connection = await readConnection(source, tenantId, secrets, timeoutMs);
+  const tension = await readTension(source, tenantId, secrets, timeoutMs);
+  const corpus = await readCorpus(source, tenantId, secrets, timeoutMs);
   return { checkpoints: { connection, tension }, corpus };
 }
 
@@ -336,7 +421,16 @@ Options:
                       selects the database. --tenant global is rejected.
   --json              Print one JSON document instead of text.
   --local             Read this checkout's PostgreSQL and the unprefixed cursor
-                      key. Never uses a deployed connection string.
+                      key. Never uses a deployed connection string. Cannot be
+                      combined with --transport https.
+  --transport <name>  postgres (default) or https. postgres opens a direct
+                      PostgreSQL connection. https sends each read-only batch
+                      with the Neon serverless driver over HTTPS. The flag does
+                      not change which database the bucket selects.
+  --section-timeout-ms <ms>
+                      Limit each database batch. Default ${DEFAULT_SECTION_TIMEOUT_MS}.
+                      Maximum ${MAX_SECTION_TIMEOUT_MS}. A timed-out section is
+                      failed. The cursor and any finished section are still printed.
 ${DATABASE_URL_ENV_FLAG_HELP}
 
 R2: CORPUS_R2_ACCOUNT_ID with CORPUS_R2_ACCESS_KEY and CORPUS_R2_SECRET_KEY, or
@@ -348,13 +442,21 @@ healthy result. Healthy means every section is ok and cursor metadata is ok.
 Exit 1 when a section is unavailable or failed, including when the cursor
 body parsed and only its metadata is unavailable. Exit 2 for usage errors.
 
-PostgreSQL statements run in a read-only transaction. The database rejects
-writes there. A statement prefix is not that guarantee.`,
+PostgreSQL statements run in a read-only transaction. The direct driver sends
+BEGIN READ ONLY. The https transport sets the Neon driver's readOnly option on
+one HTTPS request per batch. Neither transport retries, and neither inspects
+the statement text. The database rejects writes. A statement prefix is not
+that guarantee. https has no session, so the tension table check is its own
+request.`,
   defaultDeps: (io) => ({
     io,
     env: process.env,
     loadVars: () => ({ ...loadDotVars(".corpus.vars"), ...process.env }),
-    openSql: openOperatorSql,
+    openSql: (url, timeoutMs) => sqlFromConnectionString(url, timeoutMs === undefined ? undefined : {
+      connectionTimeoutMillis: timeoutMs,
+      queryTimeoutMillis: timeoutMs,
+    }),
+    openHttps: neonHttpsSession,
     openR2: (vars, bucket) => r2InventoryClientFromVars(vars, bucket),
   }),
   async run(argv, deps) {
@@ -362,6 +464,11 @@ writes there. A statement prefix is not that guarantee.`,
     const selected = requireOperatorTenant(parsed.tenantSelector);
     const tenant = requireTenantRows(selected);
     databaseTargetForBucket(parsed.bucket);
+    if (parsed.local && parsed.transport === "https") {
+      throw new UsageError(
+        "--transport https reads Neon over HTTPS. --local uses this checkout's PostgreSQL, so drop one of them.",
+      );
+    }
     const key = refreshCursorKey(selected, parsed.local);
     const vars = deps.loadVars();
     const secrets = secretValues({ ...vars, ...deps.env });
@@ -398,14 +505,20 @@ writes there. A statement prefix is not that guarantee.`,
     if ("url" in database) {
       let sql: Sql | undefined;
       try {
-        sql = deps.openSql(database.url);
-        postgres = await readDatabase(sql, tenant.tenantId, secrets);
+        let source: ReadOnlyBatch;
+        if (parsed.transport === "https") {
+          source = (deps.openHttps ?? neonHttpsSession)(database.url);
+        } else {
+          sql = deps.openSql(database.url, parsed.sectionTimeoutMs);
+          source = postgresBatch(sql);
+        }
+        postgres = await readDatabase(source, tenant.tenantId, secrets, parsed.sectionTimeoutMs);
       } catch (error) {
         const reason = redactOperatorText(error instanceof Error ? error.message : "PostgreSQL read failed", secrets);
         const section = { status: "failed" as const, reason };
         postgres = { checkpoints: { connection: section, tension: section }, corpus: section };
       } finally {
-        await sql?.end().catch(() => undefined);
+        if (sql) await withDeadline(sql.end().catch(() => undefined), parsed.sectionTimeoutMs).catch(() => undefined);
       }
     } else {
       postgres = databaseUnavailable(database.reason);
