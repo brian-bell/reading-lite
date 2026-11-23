@@ -18,6 +18,7 @@ export const MCP_TOOL_NAMES = [
   "submit_url",
   "import_markdown",
   "reprocess_reading",
+  "update_reading_title",
   "delete_reading",
   "get_diagnostics",
   "list_inbox",
@@ -41,6 +42,20 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+function readingToolPayload(ctx: McpToolContext, id: string, json: unknown): Record<string, unknown> {
+  const { relationship_targets: _targets, ...rec } = asRecord(json) ?? {};
+  const publicUrl = publicReadingUrl(ctx.webBaseUrl, id);
+  return {
+    ...rec,
+    ...(publicUrl
+      ? {
+          public_url: publicUrl,
+          public_markdown_link: publicMarkdownLink(readingTitleOf(json), publicUrl),
+        }
+      : {}),
+  };
 }
 
 function readingIdOf(value: unknown): string | undefined {
@@ -152,19 +167,7 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
     async (args) => {
       const out = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(args.id)}`);
       if (!out.ok) return apiErrorResult(out);
-      // relationship_targets is HTTP-only enrichment for the web UI; MCP
-      // reading output stays the manifest shape.
-      const { relationship_targets: _targets, ...rec } = asRecord(out.json) ?? {};
-      const publicUrl = publicReadingUrl(ctx.webBaseUrl, args.id);
-      return jsonToolResult({
-        ...rec,
-        ...(publicUrl
-          ? {
-              public_url: publicUrl,
-              public_markdown_link: publicMarkdownLink(readingTitleOf(out.json), publicUrl),
-            }
-          : {}),
-      });
+      return jsonToolResult(readingToolPayload(ctx, args.id, out.json));
     },
   );
 
@@ -304,6 +307,29 @@ export function registerMcpTools(server: McpServer, ctx: McpToolContext): void {
       );
       if (!out.ok) return apiErrorResult(out);
       return ingestResult(ctx, out.status, out.json);
+    },
+  );
+
+  server.registerTool(
+    "update_reading_title",
+    {
+      title: "Update reading title",
+      description:
+        "MUTATES one reading's title for the signed-in tenant, via PATCH /api/readings/:id. Requires readings:write. Keeps the reading id, its connections and its tensions. Returns the reading. An unknown id is an error.",
+      inputSchema: {
+        id: z.string().min(1).describe("Reading id (rd_…)"),
+        title: z.string().min(1).describe("Replacement title"),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const out = await dispatchApi(ctx.dispatch, `/api/readings/${encodeURIComponent(args.id)}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ title: args.title }),
+      });
+      if (!out.ok) return apiErrorResult(out);
+      return jsonToolResult(readingToolPayload(ctx, args.id, out.json));
     },
   );
 

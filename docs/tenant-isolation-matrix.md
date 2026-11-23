@@ -57,8 +57,8 @@ through `/mcp`:
 | Tools | Contract |
 | --- | --- |
 | `get_reading`, `get_reading_content`, `get_diagnostics` | Owner-positive, foreign/unknown equality, R2 inventory unchanged and no enqueued job. |
-| `reprocess_reading`, `delete_reading` | Foreign id matches an unknown id; the owner's reading survives ready. |
-| `submit_url`, `import_markdown`, `reprocess_reading`, `delete_reading` | A read-only token gets identical 403 results for known and unknown inputs, with no R2 changes or jobs. |
+| `reprocess_reading`, `update_reading_title`, `delete_reading` | Foreign id matches an unknown id; the owner's reading survives ready. |
+| `submit_url`, `import_markdown`, `reprocess_reading`, `update_reading_title`, `delete_reading` | A read-only token gets identical 403 results for known and unknown inputs, with no R2 changes or jobs. |
 | `list_readings`, `search_readings`, `list_inbox`, `get_inbox_item`, `discard_inbox_item`; per-tenant `submit_url` and `import_markdown` | _None._ Their integration tests were removed. |
 
 The fourth test refuses an MCP request from a foreign Origin.

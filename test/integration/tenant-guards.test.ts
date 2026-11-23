@@ -211,6 +211,14 @@ describe("tenant guards", () => {
         path: `/api/readings/${id}/reprocess`,
         unknown: `/api/readings/${UNKNOWN_ID}/reprocess`,
       },
+      {
+        label: "PATCH title",
+        method: "PATCH",
+        path: `/api/readings/${id}`,
+        unknown: `/api/readings/${UNKNOWN_ID}`,
+        json: { title: "Foreign title" },
+        unknownJson: { title: "Foreign title" },
+      },
       { label: "DELETE", method: "DELETE", path: `/api/readings/${id}`, unknown: `/api/readings/${UNKNOWN_ID}` },
       { label: "POST desk", method: "POST", path: "/api/desk", json: { id }, unknown: "/api/desk", unknownJson: { id: UNKNOWN_ID } },
       { label: "DELETE desk entry", method: "DELETE", path: `/api/desk/${id}`, unknown: `/api/desk/${UNKNOWN_ID}` },
@@ -247,6 +255,7 @@ describe("tenant guards", () => {
       { name: "get_reading_content", ownerReads: true },
       { name: "get_diagnostics", ownerReads: true },
       { name: "reprocess_reading", args: { body: { force: true } } },
+      { name: "update_reading_title", args: { title: "Foreign title" } },
       { name: "delete_reading" },
     ];
     for (const tool of tools) {
@@ -283,6 +292,7 @@ describe("tenant guards", () => {
         unknown: { source_url: NEVER_SUBMITTED, markdown: "# denied" },
       },
       { name: "reprocess_reading", known: { id, body: { force: true } }, unknown: { id: UNKNOWN_ID, body: { force: true } } },
+      { name: "update_reading_title", known: { id, title: "Nope" }, unknown: { id: UNKNOWN_ID, title: "Nope" } },
       { name: "delete_reading", known: { id }, unknown: { id: UNKNOWN_ID } },
     ];
     for (const row of denied) {
@@ -323,8 +333,9 @@ describe("tenant guards", () => {
     expect((await founder.manifest(id))?.status, "owner's reading").toBe("ready");
     expect(await founder.hasEmbedding(id), "owner's embedding").toBe(true);
     expect(await founder.urlOwnerId(url), "owner's URL claim").toBe(id);
-    const detail = (await (await bearer(app, TOKEN, `/api/readings/${id}`)).json()) as { desk_position?: number };
+    const detail = (await (await bearer(app, TOKEN, `/api/readings/${id}`)).json()) as { desk_position?: number; title?: string };
     expect(detail.desk_position, "owner's desk position").toBe(1);
+    expect(detail.title, "a foreign rename does not land").toBe("Test Article");
   });
 
   it("two tenants save the same URL and reach ready without observing each other", async () => {
@@ -599,6 +610,7 @@ describe("tenant guards", () => {
       ["cookie write with a wrong CSRF", "/api/readings", { ...write("wrong-csrf"), csrf: "0".repeat(64) }, 403],
       ["cookie write with another session's CSRF", "/api/readings", { ...write("sibling-csrf"), csrf: sibling.csrf }, 403],
       ["cookie DELETE without CSRF", `/api/readings/${UNKNOWN_ID}`, { method: "DELETE", cookie: session.cookie }, 403],
+      ["cookie PATCH without CSRF", `/api/readings/${UNKNOWN_ID}`, { method: "PATCH", cookie: session.cookie, body: { title: "Nope" } }, 403],
       [
         "invalid bearer beside a valid cookie and CSRF",
         "/api/readings",
@@ -642,6 +654,12 @@ describe("tenant guards", () => {
         202,
       ],
       ["cookie GET with sec-fetch-site same-origin", "/api/whoami", { cookie: session.cookie, origin: "", secFetchSite: "same-origin" }, 200],
+      [
+        "same-origin cookie PATCH with CSRF",
+        `/api/readings/${UNKNOWN_ID}`,
+        { method: "PATCH", cookie: session.cookie, csrf: session.csrf, body: { title: "Nope" } },
+        404,
+      ],
     ];
     for (const [label, path, init, status] of allowed) {
       expect((await call(path, init)).res.status, label).toBe(status);

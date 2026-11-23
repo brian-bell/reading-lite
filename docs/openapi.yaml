@@ -1564,6 +1564,50 @@ paths:
         "412":
           $ref: "#/components/responses/ExpectedTenantMismatch"
       x-required-scope: readings:read
+    patch:
+      tags: [readings]
+      operationId: patchReadingTitle
+      summary: Rename a reading
+      description: |
+        Replaces the reading's title and moves `updated_at`. The id, URL,
+        connections, tensions, captured content and embedding stay. List
+        search and relationship labels read this same title column. A later
+        successful publish still sets the title from the new summary. The
+        title is trimmed, 1 to 1000 UTF-16 code units, well-formed Unicode, and
+        contains no control characters. Another tenant's id is 404.
+      security:
+        - bearerAuth: []
+        - sessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PatchReadingBody"
+      responses:
+        "200":
+          description: The reading, the same body as GET /api/readings/{id}
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadingDetail"
+        "400":
+          description: Title missing, empty, too long, or not valid Unicode
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorMessage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "412":
+          $ref: "#/components/responses/ExpectedTenantMismatch"
+      x-required-scope: readings:write
     delete:
       tags: [readings]
       operationId: deleteReading
@@ -3367,6 +3411,19 @@ components:
         email:
           type: boolean
           description: Send completion email when configured (default true on submit)
+
+    PatchReadingBody:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: >
+            Trimmed. Well-formed Unicode with no unpaired surrogates and no
+            control characters. 1000 is a count of UTF-16 code units.
 
     PostReadingsImportMarkdownBody:
       type: object

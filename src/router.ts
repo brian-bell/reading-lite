@@ -23,6 +23,7 @@ import {
   PostDeskBodySchema,
   PostInboxBodySchema,
   PostInboxPromoteBodySchema,
+  PatchReadingBodySchema,
   PostReadingReprocessBodySchema,
   PostReadingsBodySchema,
   PostReadingsImportMarkdownBodySchema,
@@ -581,26 +582,21 @@ export function createApp(opts: AppOptions = {}) {
     }
   });
 
-  app.get("/api/readings/:id", requireScope("readings:read"), async (c) => {
+  app.patch("/api/readings/:id", requireScope("readings:write"), async (c) => {
+    const json = await c.req.json().catch(() => null);
+    const parsed = PatchReadingBodySchema.safeParse(json);
+    if (!parsed.success) {
+      return c.json({ error: "invalid body", details: parsed.error.message }, 400);
+    }
     const id = c.req.param("id");
-    const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
-    const found = await store.loadReadingById(id);
-    if (!found) return c.json({ error: "not found" }, 404);
-    const ttl = pendingTtlSeconds(c.env);
-    const now = services.now();
-    // Read-time only: one keyed read of the target rows, skipped when there is
-    // nothing to resolve. Never written back to the reading.
-    const targetIds = relationshipTargetIds(found.manifest);
-    const relationship_targets = targetIds.length === 0
-      ? {}
-      : projectRelationshipTargets(targetIds, await store.relationshipTargets(targetIds), ttl, now);
-    const body: GetReadingResponse = {
-      ...applyStaleness(found.manifest, ttl, now),
-      ...(found.deskPosition === undefined ? {} : { desk_position: found.deskPosition }),
-      relationship_targets,
-    };
-    return c.json(body);
+    const { writer } = storesFor(c.env, c.get("principal"), c.get("sql"));
+    const renamed = await writer.renameTitle(id, parsed.data.title, services.now());
+    if (renamed === "inactive") return c.json({ error: "forbidden" }, 403);
+    if (renamed === "missing") return c.json({ error: "not found" }, 404);
+    return readingDetail(c, services, id);
   });
+
+  app.get("/api/readings/:id", requireScope("readings:read"), (c) => readingDetail(c, services, c.req.param("id")));
 
   app.get("/api/readings/:id/content", requireScope("readings:read"), async (c) => {
     const id = c.req.param("id");
@@ -630,6 +626,26 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   return app;
+}
+
+async function readingDetail(c: Context<AppBindings>, services: Services, id: string) {
+  const { store } = storesFor(c.env, c.get("principal"), c.get("sql"));
+  const found = await store.loadReadingById(id);
+  if (!found) return c.json({ error: "not found" }, 404);
+  const ttl = pendingTtlSeconds(c.env);
+  const now = services.now();
+  // Read-time only: one keyed read of the target rows, skipped when there is
+  // nothing to resolve. Never written back to the reading.
+  const targetIds = relationshipTargetIds(found.manifest);
+  const relationship_targets = targetIds.length === 0
+    ? {}
+    : projectRelationshipTargets(targetIds, await store.relationshipTargets(targetIds), ttl, now);
+  const body: GetReadingResponse = {
+    ...applyStaleness(found.manifest, ttl, now),
+    ...(found.deskPosition === undefined ? {} : { desk_position: found.deskPosition }),
+    relationship_targets,
+  };
+  return c.json(body);
 }
 
 // A content read: the row's keys (never a spelling derived from key_prefix; a
