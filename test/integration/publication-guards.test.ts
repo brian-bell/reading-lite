@@ -1016,6 +1016,26 @@ describe("the queue consumer", () => {
     expect(res.status).toBe(200);
     expect(await res.text()).toBe(markdown);
   });
+
+  it("still records the empty content placeholder when the summarizer rejects the source", async () => {
+    const manifest = await runMarkdownSummarize("rd_REJECT", {}, {
+      anthropicBody: {
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5-5",
+        stop_reason: "tool_use",
+        content: [{ type: "tool_use", id: "toolu_01", name: "reject_source", input: { reason: "paywall preview" } }],
+        usage: { input_tokens: 100, output_tokens: 50 },
+      },
+    });
+    expect(manifest).toMatchObject({
+      status: "failed",
+      content_status: "failed",
+      content_bytes: 0,
+      error: { retryable: false },
+    });
+  });
 });
 
 const MARKDOWN = "# Interview\n\nPart 1 of 2. The first half of the conversation, with enough of the argument to summarize this part on its own.";
@@ -1035,7 +1055,11 @@ function readingFields(overrides: Record<string, unknown>): Record<string, unkno
   };
 }
 
-async function runMarkdownSummarize(id: string, toolInput: Record<string, unknown>): Promise<Manifest | null> {
+async function runMarkdownSummarize(
+  id: string,
+  toolInput: Record<string, unknown>,
+  stub: Omit<Parameters<typeof makeStubFetch>[0] & object, "toolInput"> = {},
+): Promise<Manifest | null> {
   const markdown = MARKDOWN;
   const url = `https://example.com/${id}`;
   const readings = testReadingsFor(founderTenant());
@@ -1074,7 +1098,7 @@ async function runMarkdownSummarize(id: string, toolInput: Record<string, unknow
   await processReading(
     job,
     { ...(env as unknown as Env), SUMMARIZER_PROVIDER: "anthropic" },
-    makeServices(makeStubFetch({ toolInput })),
+    makeServices(makeStubFetch({ ...stub, toolInput })),
     founderTenant(),
   );
   return readings.manifest(id);

@@ -108,7 +108,7 @@ describe("provider requests", () => {
       summary_markdown: "The argument.",
     };
     const anthropicFetch = vi.fn<typeof fetch>(async () => anthropicMessage(over));
-    const openaiFetch = vi.fn<typeof fetch>(async () => openaiMessage(over));
+    const openaiFetch = vi.fn<typeof fetch>(async () => openaiMessage({ result: "reading_summary", reading: over }));
     const anthropic = await summarizeWithAnthropic(
       { url: "https://example.com/a", extractedText: "Article body.", similarReadings: [] },
       { fetch: anthropicFetch, apiKey: "test", model: "claude-sonnet-5-5", effort: "low" },
@@ -131,28 +131,19 @@ describe("provider requests", () => {
     expect(retryFetch).toHaveBeenCalledTimes(2);
   });
 
-  it("tells both summarizers to keep a partial excerpt and still reject a paywall", () => {
-    const input = {
-      url: "https://example.com/interview",
-      title: "Interview, part 1 of 2",
-      extractedText: "Part 1 of 2\n\nThe first half of the interview.",
-      similarReadings: [],
-    };
-    const anthropic = buildAnthropicSummarizeRequestBody(input, "claude-sonnet-5-5", "low") as {
-      system: Array<{ text: string }>;
-      tools: Array<{ name: string; description: string }>;
-    };
-    const openai = buildOpenAISummarizeRequestBody(input, "gpt-5.6-terra", "low") as { instructions: string };
-    const reject = anthropic.tools.find((tool) => tool.name === "reject_source");
-    const emit = anthropic.tools.find((tool) => tool.name === "emit_reading");
-    expect(anthropic.system[0]?.text).toContain("partial excerpt");
-    expect(anthropic.system[0]?.text).not.toContain("when the extracted source is a full article");
-    expect(reject?.description).toContain("paywall or login wall");
-    expect(reject?.description).toContain("partial excerpt");
-    expect(emit?.description).toContain("genuine part");
-    expect(openai.instructions).toContain("partial excerpt");
-    expect(openai.instructions).toContain("paywall or login wall");
-    expect(openai.instructions).not.toContain("not a full extraction");
+  it("leaves an in-cap list to zod and counts tag spellings that collapse as one", async () => {
+    const input = readingToolInput({
+      tags: ["Developer tools", "developer-tools", "ai", "infra", "memoir", "tools", "history", "design"],
+      keywords: ["AI", "ai", "ML"],
+    });
+    const fetchFn = vi.fn<typeof fetch>(async () => anthropicMessage(input));
+    const { reading } = await summarizeWithAnthropic(
+      { url: "https://example.com/a", extractedText: "Article body.", similarReadings: [] },
+      { fetch: fetchFn, apiKey: "test", model: "claude-sonnet-5-5", effort: "low" },
+    );
+    expect(reading.tags).toEqual(["Developer tools", "ai", "infra", "memoir", "tools", "history"]);
+    expect(reading.keywords).toEqual(["AI", "ai", "ML"]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 });
 

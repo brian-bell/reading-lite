@@ -334,18 +334,7 @@ async function runAttempt(
         summary: llm.reading,
         similarity: similaritySnapshot,
         neighbourhoodIds: similarContext.map((neighbour) => neighbour.id),
-        content: {
-          content_type: extracted.content_type,
-          content_status: extracted.content_status,
-          content_bytes: extracted.content_bytes,
-          content_sha256: extracted.content_sha256,
-          ...(extracted.markdown
-            ? { extracted_bytes: new TextEncoder().encode(extracted.markdown).byteLength }
-            : {}),
-          ...(extracted.enrichment_degradation === undefined
-            ? {}
-            : { enrichment_degradation: extracted.enrichment_degradation }),
-        },
+        content: contentFactsOf(extracted),
         usage: {
           summarization: llm.usage,
           openai_embedding_tokens:
@@ -1092,6 +1081,10 @@ function capturedContentFacts(
   error: unknown,
 ): ContentFacts | undefined {
   if (extracted === undefined || io.capturedContent() === null || !retryableError(error)) return undefined;
+  return contentFactsOf(extracted);
+}
+
+function contentFactsOf(extracted: ExtractedContent): ContentFacts {
   return {
     content_type: extracted.content_type,
     content_status: extracted.content_status,
