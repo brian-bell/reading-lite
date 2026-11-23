@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeTag } from "../modules/tags";
 
 export const NoveltyVerdictSchema = z.enum(["novel", "familiar", "duplicate"]);
 export type NoveltyVerdict = z.infer<typeof NoveltyVerdictSchema>;
@@ -100,12 +101,57 @@ export const TensionJudgementSchema = z
   });
 export type TensionJudgement = z.infer<typeof TensionJudgementSchema>;
 
+const TITLE_MAX_CHARS = 120;
+const TAG_MAX_ITEMS = 6;
+const KEYWORD_MIN_ITEMS = 3;
+const KEYWORD_MAX_ITEMS = 15;
+
+// Strict tool use cannot express these caps, so an over-cap list or title is
+// trimmed here before ReadingSummarySchema parses it. A list within its cap is
+// passed through untouched, so zod alone decides the minimums.
+export function normalizeSummarizerToolInput(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+  const record = value as Record<string, unknown>;
+  return {
+    ...record,
+    ...(typeof record.title === "string" ? { title: clampChars(record.title, TITLE_MAX_CHARS) } : {}),
+    ...(Array.isArray(record.tags) ? { tags: clampTerms(record.tags, TAG_MAX_ITEMS, normalizeTag) } : {}),
+    ...(Array.isArray(record.keywords)
+      ? { keywords: clampTerms(record.keywords, KEYWORD_MAX_ITEMS, (term) => term.toLowerCase()) }
+      : {}),
+  };
+}
+
+function clampChars(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max).replace(/[\uD800-\uDBFF]$/, "");
+}
+
+// Keeps the first `max` distinct terms of an over-cap list. Tags are keyed by
+// their canonical form, so two spellings that readyManifest would collapse
+// into one tag take one slot, not two.
+function clampTerms(items: unknown[], max: number, key: (term: string) => string): unknown[] {
+  if (items.length <= max) return items;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    if (typeof item !== "string") continue;
+    const trimmed = item.trim();
+    const k = key(trimmed);
+    if (k.length === 0 || seen.has(k)) continue;
+    seen.add(k);
+    out.push(trimmed);
+    if (out.length === max) break;
+  }
+  return out;
+}
+
 export const ReadingSummarySchema = z
   .object({
-    title: z.string().min(1).max(120),
+    title: z.string().min(1).max(TITLE_MAX_CHARS),
     tldr: z.string().min(1),
-    tags: z.array(z.string().min(1)).min(1).max(6),
-    keywords: z.array(z.string().min(1)).min(3).max(15),
+    tags: z.array(z.string().min(1)).min(1).max(TAG_MAX_ITEMS),
+    keywords: z.array(z.string().min(1)).min(KEYWORD_MIN_ITEMS).max(KEYWORD_MAX_ITEMS),
     people: z.array(z.string().min(1)),
     orgs: z.array(z.string().min(1)),
     novelty_verdict: NoveltyVerdictSchema,
@@ -119,18 +165,18 @@ export const READING_SUMMARY_JSON_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
-    title: { type: "string", minLength: 1, maxLength: 120 },
+    title: { type: "string", minLength: 1, maxLength: TITLE_MAX_CHARS },
     tldr: { type: "string", minLength: 1 },
     tags: {
       type: "array",
       minItems: 1,
-      maxItems: 6,
+      maxItems: TAG_MAX_ITEMS,
       items: { type: "string", minLength: 1 },
     },
     keywords: {
       type: "array",
-      minItems: 3,
-      maxItems: 15,
+      minItems: KEYWORD_MIN_ITEMS,
+      maxItems: KEYWORD_MAX_ITEMS,
       items: { type: "string", minLength: 1 },
     },
     people: {

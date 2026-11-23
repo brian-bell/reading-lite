@@ -303,8 +303,10 @@ limits; they do not prove DNS rebinding impossible.
 selects and normalizes provider results; `openai-summarizer` uses Responses with
 strict structured output, and `anthropic` uses strict `emit_reading` /
 `reject_source` tools. Strict tool use cannot express string length bounds,
-`maxItems`, or `minItems` above 1, so zod enforces those at parse time and the
-realtime path calls once more when a tool call misses one (or skips the tool).
+`maxItems`, or `minItems` above 1. An over-cap title, tag list, or keyword
+list is trimmed to those bounds before zod parses the tool input. Zod still
+rejects a call that misses a minimum or another constraint, and the realtime
+path calls once more when a tool call misses one or skips the tool.
 The relationship and tension judges also send strict tools; their Anthropic
 schemas drop `minLength` and spell the nullable tension `side` as `anyOf`, and
 zod enforces the rest. Preserve the Anthropic system/tool cache prefix. `http-retry` retries

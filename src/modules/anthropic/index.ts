@@ -1,4 +1,5 @@
 import {
+  normalizeSummarizerToolInput,
   ReadingSummarySchema,
   type ReadingSummary,
 } from "../../schemas/reading-summary";
@@ -74,16 +75,17 @@ export interface SummarizeReadingResult {
 
 const SYSTEM_PROMPT = `${LIBRARIAN_INSTRUCTIONS}
 
-Call exactly one tool. Call emit_reading when the extracted source is a full article or transcript. Call reject_source when it is not. Do not write free-form prose.`;
+Call exactly one tool. Call emit_reading for an article, transcript, or a labeled part of one. Call reject_source for empty text, junk, a paywall or login wall, a paywall or truncated preview, a teaser, or a metadata-only page. Do not write free-form prose.`;
 
 // Sent with strict tool use, so the API guarantees every call matches it:
 // without strict, `required` and `type` are advisory, and production Sonnet 5
 // omitted `tags` and sent `keywords` as a string. Strict tool use supports no
 // string length bounds, no maxItems, and minItems of 0 or 1 only, so this is
 // READING_SUMMARY_JSON_SCHEMA with exactly those keywords removed and stated in
-// descriptions instead. ReadingSummarySchema still enforces them at parse time,
-// and summarizeReading asks once more when a call misses one. Guarded by an
-// alignment test against READING_SUMMARY_JSON_SCHEMA.
+// descriptions instead. normalizeSummarizerToolInput trims an over-cap title or
+// list before ReadingSummarySchema parses it; a missed minimum still fails
+// there, and summarizeReading asks once more. Guarded by an alignment test
+// against READING_SUMMARY_JSON_SCHEMA.
 const EMIT_READING_INPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -154,7 +156,7 @@ const REJECT_SOURCE_INPUT_SCHEMA = {
     reason: {
       type: "string",
       description:
-        "Why the extracted source is not a full article or transcript.",
+        "Why the extracted source is empty, junk, a paywall or login wall, a paywall or truncated preview, a teaser, or a metadata-only page. Do not use this for a labeled part of a multi-part source.",
     },
   },
   required: ["reason"],
@@ -207,14 +209,14 @@ export function buildSummarizeRequestBody(
       {
         name: EMIT_READING_TOOL_NAME,
         description:
-          "Emit the structured reading record when the extracted source is a full article or transcript.",
+          "Emit the structured reading record for an article, transcript, or a labeled part of one.",
         input_schema: EMIT_READING_INPUT_SCHEMA,
         strict: true,
       },
       {
         name: REJECT_SOURCE_TOOL_NAME,
         description:
-          "Reject the input when it is a teaser, metadata-only page, or a summary of the URL rather than a full article or transcript.",
+          "Reject the input when it is empty, junk, a paywall or login wall, a paywall or truncated preview, a teaser, or a metadata-only page. Do not reject a labeled part of a multi-part source.",
         input_schema: REJECT_SOURCE_INPUT_SCHEMA,
         strict: true,
       },
@@ -261,7 +263,7 @@ export function parseEmitReadingResult(
     );
   }
 
-  const parsed = ReadingSummarySchema.safeParse(toolUse.input);
+  const parsed = ReadingSummarySchema.safeParse(normalizeSummarizerToolInput(toolUse.input));
   if (!parsed.success) {
     throw new BadToolInputError(
       `tool_use input failed validation: ${parsed.error.message}`,
@@ -281,7 +283,7 @@ function rejectSourceReason(input: unknown): string {
   ) {
     return input.reason.trim();
   }
-  return "extracted source is not a full article or transcript";
+  return "extracted source is empty, junk, or not the article or transcript";
 }
 
 export async function summarizeReading(
