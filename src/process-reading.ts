@@ -39,7 +39,7 @@ import {
   itemRequestsImmediateEmail,
   resolveImmediateNotification,
 } from "./control-plane/reading-notification";
-import { failedManifest, readyManifest } from "./modules/manifest-drafting";
+import { failedManifest, readyManifest, type ContentFacts } from "./modules/manifest-drafting";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
 import type {
   Manifest,
@@ -111,6 +111,7 @@ async function runAttempt(
   let leases: ProcessingLeaseHold | null = null;
   let stopHeartbeat: (() => Promise<void>) | null = null;
   let source_date: string | undefined;
+  let extractedForFailure: ExtractedContent | undefined;
 
   try {
     // A purged reading has no row, and nothing may be recreated for it, so a
@@ -160,6 +161,7 @@ async function runAttempt(
     });
 
     const extracted = await extractSource(args, env, services, io, attempt);
+    extractedForFailure = extracted;
 
     await runStage(attempt, io, services, "write_raw", async () => {
       if (!(await readingCanWriteAttemptArtifacts(io, args))) return;
@@ -403,7 +405,19 @@ async function runAttempt(
         if (!readingSlotConsumed) {
           await releaseReadingSlot(env, tenantId, opId);
         }
-        await markFailed(io, args, services, attempt, new ProcessingDeferExpiredError(), env, tenantId, source_date);
+        const expired = new ProcessingDeferExpiredError();
+        await markFailed(
+          io,
+          args,
+          services,
+          attempt,
+          expired,
+          env,
+          tenantId,
+          source_date,
+          "done",
+          capturedContentFacts(extractedForFailure, io, expired),
+        );
         return;
       }
       await refreshReadingSlot(env, tenantId, opId, clockNow);
@@ -450,7 +464,18 @@ async function runAttempt(
     if (!readingSlotConsumed) {
       await releaseReadingSlot(env, tenantId, opId);
     }
-    await markFailed(io, args, services, attempt, e, env, tenantId, source_date);
+    await markFailed(
+      io,
+      args,
+      services,
+      attempt,
+      e,
+      env,
+      tenantId,
+      source_date,
+      "done",
+      capturedContentFacts(extractedForFailure, io, e),
+    );
   }
 }
 
@@ -722,6 +747,7 @@ async function markFailed(
   tenantId: string,
   sourceDate?: string,
   jobState: "done" | "dead" = "done",
+  content?: ContentFacts,
 ): Promise<void> {
   console.error(e);
   // A mid-flight purge after the opening check must not get anything recreated
@@ -743,14 +769,13 @@ async function markFailed(
 
   const sourceTypeOnFailure = await resolveSourceTypeOnFailure(io, args);
   const sourceDateOnFailure = sourceDate ?? await sourceDateFromPrior(io);
-  // content omitted → the empty-content placeholder with content_status
-  // "failed": on this path extraction may never have happened.
   const manifest = failedManifest(
     args,
     {
       sourceType: sourceTypeOnFailure,
       error,
       attempt,
+      ...(content === undefined ? {} : { content }),
       ...(sourceDateOnFailure === undefined ? {} : { source_date: sourceDateOnFailure }),
     },
     services.now(),
@@ -1059,6 +1084,26 @@ async function writeAttemptSafe(io: AttemptIo, attempt: ProcessingAttempt): Prom
   } catch (e) {
     console.error(e);
   }
+}
+
+function capturedContentFacts(
+  extracted: ExtractedContent | undefined,
+  io: AttemptIo,
+  error: unknown,
+): ContentFacts | undefined {
+  if (extracted === undefined || io.capturedContent() === null || !retryableError(error)) return undefined;
+  return {
+    content_type: extracted.content_type,
+    content_status: extracted.content_status,
+    content_bytes: extracted.content_bytes,
+    content_sha256: extracted.content_sha256,
+    ...(extracted.markdown
+      ? { extracted_bytes: new TextEncoder().encode(extracted.markdown).byteLength }
+      : {}),
+    ...(extracted.enrichment_degradation === undefined
+      ? {}
+      : { enrichment_degradation: extracted.enrichment_degradation }),
+  };
 }
 
 function durationMsBetween(startedAt: string, finishedAt: string): number | undefined {

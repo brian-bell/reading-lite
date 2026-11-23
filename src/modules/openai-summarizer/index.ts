@@ -1,5 +1,6 @@
 import { z } from "zod";
 import {
+  normalizeSummarizerToolInput,
   READING_SUMMARY_JSON_SCHEMA,
   ReadingSummarySchema,
   type ReadingSummary,
@@ -20,7 +21,7 @@ const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 
 const INSTRUCTIONS = `${LIBRARIAN_INSTRUCTIONS}
 
-If the source is adequate, emit result "reading_summary" with the structured reading. If the source is inadequate, emit result "reject_source" with a reason and reading null. Do not invent a reading_summary for a teaser, metadata-only page, or a summary of the URL.`;
+If the source is an article, transcript, or a partial excerpt, emit result "reading_summary" with the structured reading. If the source is empty, junk, a paywall or login wall, a teaser, or a metadata-only page, emit result "reject_source" with a reason and reading null. Do not invent a reading_summary for a teaser, metadata-only page, or a summary of the URL.`;
 
 // Strict Responses schema: a tagged outcome so thin sources can fail closed
 // instead of being forced into reading_summary. Native refusals stay reserved
@@ -298,11 +299,11 @@ function parseSummarizeOutputText(text: string): ReadingSummary {
     throw new OpenAISourceRejectedError(rejectSourceReason(value.reason));
   }
   if (isRecord(value) && value.result === "reading_summary") {
-    return ReadingSummarySchema.parse(value.reading);
+    return ReadingSummarySchema.parse(normalizeSummarizerToolInput(value.reading));
   }
   // Bare reading summaries remain parseable so in-flight OpenAI batches
   // submitted against the previous schema still commit.
-  return ReadingSummarySchema.parse(value);
+  return ReadingSummarySchema.parse(normalizeSummarizerToolInput(value));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -312,5 +313,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function rejectSourceReason(reason: unknown): string {
   return typeof reason === "string" && reason.trim().length > 0
     ? reason.trim()
-    : "extracted source is not a full article or transcript";
+    : "extracted source is empty, junk, or not the article or transcript";
 }
