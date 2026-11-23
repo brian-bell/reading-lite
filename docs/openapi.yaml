@@ -1569,7 +1569,8 @@ paths:
       operationId: patchReadingTitle
       summary: Rename a reading
       description: |
-        Replaces the reading's title and moves `updated_at`. The id, URL,
+        Replaces the reading's title and leaves `updated_at` where it is, so a
+        rename does not reopen tension judgements or the digest window. The id, URL,
         connections, tensions, captured content and embedding stay. List
         search and relationship labels read this same title column. A later
         successful publish still sets the title from the new summary. The

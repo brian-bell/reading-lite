@@ -370,14 +370,15 @@ export class PgReadingWriter {
     });
   }
 
-  async renameTitle(id: string, title: string, now: string): Promise<"renamed" | "missing" | "inactive"> {
+  // Leave updated_at. Tension refresh reads a newer value as a replaced summary and drops the pair.
+  async renameTitle(id: string, title: string): Promise<"renamed" | "missing" | "inactive"> {
     return this.sql.transaction(async (tx) => {
       if (!(await this.tenantIsActive(tx))) return "inactive";
       const row = await this.lock(tx, id);
       if (!row) return "missing";
       await tx.query(
-        "UPDATE readings SET title = $3, updated_at = $4 WHERE tenant_id = $1 AND id = $2",
-        [this.tenantId, id, title, now],
+        "UPDATE readings SET title = $3 WHERE tenant_id = $1 AND id = $2",
+        [this.tenantId, id, title],
       );
       return "renamed";
     });

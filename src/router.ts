@@ -590,7 +590,7 @@ export function createApp(opts: AppOptions = {}) {
     }
     const id = c.req.param("id");
     const { writer } = storesFor(c.env, c.get("principal"), c.get("sql"));
-    const renamed = await writer.renameTitle(id, parsed.data.title, services.now());
+    const renamed = await writer.renameTitle(id, parsed.data.title);
     if (renamed === "inactive") return c.json({ error: "forbidden" }, 403);
     if (renamed === "missing") return c.json({ error: "not found" }, 404);
     return readingDetail(c, services, id);

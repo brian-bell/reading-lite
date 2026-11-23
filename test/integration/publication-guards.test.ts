@@ -849,7 +849,7 @@ describe("renaming a reading", () => {
       connections: [{ id: "rd_target", reason: "same ground" }],
       tensions: [{ id: "rd_target", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
       created_at: EARLIER,
-      updated_at: "2026-04-26T20:00:00.000Z",
+      updated_at: EARLIER,
     });
     expect(patched.body.relationship_targets).toEqual({
       rd_target: { url: "https://example.com/rd_target", title: "Target stays", status: "ready", created_at: EARLIER },
@@ -911,7 +911,7 @@ describe("renaming a reading", () => {
     const s = sql();
     const tenant = mintTenantWithoutUser();
     await seedManifest(s, tenant, await readyManifest("rd_gone", { title: "Stays" }));
-    expect(await pgReadingWriterFor(s, tenant).renameTitle("rd_gone", "New", CREATED_AT)).toBe("inactive");
+    expect(await pgReadingWriterFor(s, tenant).renameTitle("rd_gone", "New")).toBe("inactive");
     expect((await pgReadingStoreFor(s, tenant).loadReadingById("rd_gone"))?.manifest.title).toBe("Stays");
   });
 });
