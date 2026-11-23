@@ -7,9 +7,16 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { AttemptIo } from "../../src/attempt-io";
 import { REFRESH_CRON, opensNewRefreshBudget } from "../../src/refresh-period";
-import { buildSummarizeRequestBody as buildAnthropicSummarizeRequestBody } from "../../src/modules/anthropic";
+import {
+  BadToolInputError,
+  buildSummarizeRequestBody as buildAnthropicSummarizeRequestBody,
+  summarizeReading as summarizeWithAnthropic,
+} from "../../src/modules/anthropic";
 import { isBlockedHost } from "../../src/modules/extractor";
-import { buildSummarizeRequestBody as buildOpenAISummarizeRequestBody } from "../../src/modules/openai-summarizer";
+import {
+  buildSummarizeRequestBody as buildOpenAISummarizeRequestBody,
+  summarizeReading as summarizeWithOpenAI,
+} from "../../src/modules/openai-summarizer";
 import { buildAnthropicRelationshipRequestBody } from "../../src/modules/relationship-judgement";
 import type { ContentStore } from "../../src/modules/stores/content-store";
 import { buildKeyPrefix, r2KeyLayout } from "../../src/modules/stores/layout";
@@ -82,7 +89,112 @@ describe("provider requests", () => {
       /unsupported ANTHROPIC_MODEL for effort: claude-haiku-4-5/,
     );
   });
+
+  it("clamps an over-cap summarize tool call and still rejects one that is under the keyword minimum", async () => {
+    const over = readingToolInput({
+      title: "T".repeat(150),
+      tags: ["ai", "AI", " infra ", "memoir", "tools", "history", "design"],
+      keywords: ["keyword 0", "  keyword 0  ", ...Array.from({ length: 15 }, (_, i) => `keyword ${i + 1}`)],
+    });
+    const expected = {
+      title: "T".repeat(120),
+      tldr: "A thesis.",
+      tags: ["ai", "infra", "memoir", "tools", "history", "design"],
+      keywords: Array.from({ length: 15 }, (_, i) => `keyword ${i}`),
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "The argument.",
+    };
+    const anthropicFetch = vi.fn<typeof fetch>(async () => anthropicMessage(over));
+    const openaiFetch = vi.fn<typeof fetch>(async () => openaiMessage(over));
+    const anthropic = await summarizeWithAnthropic(
+      { url: "https://example.com/a", extractedText: "Article body.", similarReadings: [] },
+      { fetch: anthropicFetch, apiKey: "test", model: "claude-sonnet-5-5", effort: "low" },
+    );
+    const openai = await summarizeWithOpenAI(
+      { url: "https://example.com/a", extractedText: "Article body.", similarReadings: [] },
+      { fetch: openaiFetch, apiKey: "test", model: "gpt-5.6-terra", reasoningEffort: "low" },
+    );
+    expect(anthropic.reading).toEqual(expected);
+    expect(openai.reading).toEqual(expected);
+    expect(anthropicFetch).toHaveBeenCalledTimes(1);
+
+    const short = readingToolInput({ keywords: ["only"] });
+    const retryFetch = vi.fn<typeof fetch>(async () => anthropicMessage(short));
+    const error = await summarizeWithAnthropic(
+      { url: "https://example.com/a", extractedText: "Article body.", similarReadings: [] },
+      { fetch: retryFetch, apiKey: "test", model: "claude-sonnet-5-5", effort: "low" },
+    ).catch((caught) => caught);
+    expect(error).toBeInstanceOf(BadToolInputError);
+    expect(retryFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("tells both summarizers to keep a partial excerpt and still reject a paywall", () => {
+    const input = {
+      url: "https://example.com/interview",
+      title: "Interview, part 1 of 2",
+      extractedText: "Part 1 of 2\n\nThe first half of the interview.",
+      similarReadings: [],
+    };
+    const anthropic = buildAnthropicSummarizeRequestBody(input, "claude-sonnet-5-5", "low") as {
+      system: Array<{ text: string }>;
+      tools: Array<{ name: string; description: string }>;
+    };
+    const openai = buildOpenAISummarizeRequestBody(input, "gpt-5.6-terra", "low") as { instructions: string };
+    const reject = anthropic.tools.find((tool) => tool.name === "reject_source");
+    const emit = anthropic.tools.find((tool) => tool.name === "emit_reading");
+    expect(anthropic.system[0]?.text).toContain("partial excerpt");
+    expect(anthropic.system[0]?.text).not.toContain("when the extracted source is a full article");
+    expect(reject?.description).toContain("paywall or login wall");
+    expect(reject?.description).toContain("partial excerpt");
+    expect(emit?.description).toContain("genuine part");
+    expect(openai.instructions).toContain("partial excerpt");
+    expect(openai.instructions).toContain("paywall or login wall");
+    expect(openai.instructions).not.toContain("not a full extraction");
+  });
 });
+
+function readingToolInput(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    title: "A title",
+    tldr: "A thesis.",
+    tags: ["ai"],
+    keywords: ["one", "two", "three"],
+    people: [],
+    orgs: [],
+    novelty_verdict: "novel",
+    connections: [],
+    summary_markdown: "The argument.",
+    ...overrides,
+  };
+}
+
+function anthropicMessage(input: Record<string, unknown>): Response {
+  return Response.json({
+    id: "msg_01",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input }],
+    usage: { input_tokens: 10, output_tokens: 5 },
+  });
+}
+
+function openaiMessage(input: Record<string, unknown>): Response {
+  return Response.json({
+    id: "resp_01",
+    object: "response",
+    status: "completed",
+    output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: JSON.stringify(input) }] }],
+    usage: {
+      input_tokens: 10,
+      output_tokens: 5,
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+      output_tokens_details: { reasoning_tokens: 0 },
+    },
+  });
+}
 
 describe("isBlockedHost", () => {
   // Takes a normalized hostname: lowercased, IPv6 brackets already stripped.

@@ -975,4 +975,107 @@ describe("the queue consumer", () => {
     const summarizes = fetchFn.mock.calls.filter(([input]) => String(input).startsWith("https://api.openai.com/v1/responses"));
     expect(summarizes, "summarizer calls across both deliveries").toHaveLength(1);
   });
+
+  it("publishes a reading whose summarize tool call exceeds the keyword, tag, and title caps", async () => {
+    const keywords = Array.from({ length: 16 }, (_, i) => `keyword ${i}`);
+    const tags = ["one", "two", "three", "four", "five", "six", "seven"];
+    const manifest = await runMarkdownSummarize("rd_OVER", readingFields({
+      title: "T".repeat(150),
+      tags,
+      keywords,
+    }));
+    expect(manifest).toMatchObject({
+      status: "ready",
+      title: "T".repeat(120),
+      tags: ["one", "two", "three", "four", "five", "six"],
+      keywords: keywords.slice(0, 15),
+    });
+  });
+
+  it("keeps captured markdown when summarize fails with too few keywords", async () => {
+    const markdown = MARKDOWN;
+    const manifest = await runMarkdownSummarize("rd_SHORT", readingFields({ keywords: ["only"] }));
+    expect(manifest).toMatchObject({
+      status: "failed",
+      content_status: "captured",
+      content_bytes: new TextEncoder().encode(markdown).byteLength,
+      content_sha256: await sha256Hex(markdown),
+      error: { code: "BadToolInputError", retryable: true },
+    });
+    const readings = testReadingsFor(founderTenant());
+    expect(await readings.extractedText("rd_SHORT")).toBe(markdown);
+    const ctx = createExecutionContext();
+    const res = await createApp({ services: makeServices(vi.fn()) }).fetch(
+      new Request("http://t/api/readings/rd_SHORT/content", {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      }),
+      env as unknown as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(markdown);
+  });
 });
+
+const MARKDOWN = "# Interview\n\nPart 1 of 2. The first half of the conversation, with enough of the argument to summarize this part on its own.";
+
+function readingFields(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    title: "Interview",
+    tldr: "A thesis.",
+    tags: ["interviews"],
+    keywords: ["one", "two", "three"],
+    people: [],
+    orgs: [],
+    novelty_verdict: "novel",
+    connections: [],
+    summary_markdown: "The argument.",
+    ...overrides,
+  };
+}
+
+async function runMarkdownSummarize(id: string, toolInput: Record<string, unknown>): Promise<Manifest | null> {
+  const markdown = MARKDOWN;
+  const url = `https://example.com/${id}`;
+  const readings = testReadingsFor(founderTenant());
+  const job: ProcessReadingArgs = {
+    id,
+    url,
+    urlHash: await sha256Hex(url),
+    createdAt: CREATED_AT,
+    keyPrefix: buildKeyPrefix(id, CREATED_AT),
+    attemptId: `at_${id}`,
+    attemptStartedAt: CREATED_AT,
+    trigger: "import",
+    email: false,
+    source: { kind: "markdown", markdown, title: "Interview" },
+    sourceTypeOnFailure: "markdown",
+  };
+  await readings.seed(
+    {
+      id,
+      url,
+      url_hash: job.urlHash,
+      source_type: "markdown",
+      status: "pending",
+      content_type: "text/markdown; charset=utf-8",
+      content_status: "captured",
+      content_bytes: new TextEncoder().encode(markdown).byteLength,
+      content_sha256: await sha256Hex(markdown),
+      created_at: CREATED_AT,
+      updated_at: CREATED_AT,
+      active_attempt: { id: job.attemptId!, trigger: "import", status: "running", started_at: CREATED_AT },
+    },
+    { keyPrefix: job.keyPrefix },
+  );
+  await reserveReadingSlot(env, founderTenant(), job);
+  vi.spyOn(console, "error").mockImplementation(() => {});
+  await processReading(
+    job,
+    { ...(env as unknown as Env), SUMMARIZER_PROVIDER: "anthropic" },
+    makeServices(makeStubFetch({ toolInput })),
+    founderTenant(),
+  );
+  return readings.manifest(id);
+}
