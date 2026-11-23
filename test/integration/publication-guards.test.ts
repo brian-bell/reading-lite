@@ -799,6 +799,123 @@ describe("the relationships read", () => {
   });
 });
 
+describe("renaming a reading", () => {
+  const TITLE = "All-In 🎙️ Sholto → Gavin → Dario";
+  const EARLIER = "2026-04-26T19:00:00.000Z";
+
+  it("keeps the id, connections and tensions, and the new title is what search returns", async () => {
+    const s = sql();
+    const tenant = founderTenant();
+    await seedManifest(s, tenant, await readyManifest("rd_target", { title: "Target stays", created_at: EARLIER, updated_at: EARLIER }));
+    await seedManifest(s, tenant, await readyManifest("rd_retitle", {
+      title: "Title rd_retitle",
+      created_at: EARLIER,
+      updated_at: EARLIER,
+      connections: [{ id: "rd_target", reason: "same ground" }],
+      tensions: [{ id: "rd_target", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
+    }), { embedding: axisVector(1) });
+
+    const before = await api("/api/readings/rd_retitle");
+    const rejected = [
+      [{}, "missing title"],
+      [{ title: "" }, "empty"],
+      [{ title: "   " }, "blank"],
+      [{ title: "a".repeat(1001) }, "too long"],
+      [{ title: "bad\uD800" }, "unpaired surrogate"],
+      [{ title: "line\nbreak" }, "control character"],
+      [{ title: TITLE, extra: true }, "unknown field"],
+    ] as const;
+    for (const [body, label] of rejected) {
+      const res = await api("/api/readings/rd_retitle", { method: "PATCH", json: body });
+      expect(res.status, label).toBe(400);
+      expect(res.body.error, label).toBe("invalid body");
+    }
+    expect((await api("/api/readings/rd_missing", { method: "PATCH", json: { title: TITLE } })).status).toBe(404);
+    expect((await api("/api/readings/rd_retitle")).body.title, "rejected patches write nothing").toBe("Title rd_retitle");
+
+    const capped = "b".repeat(1000);
+    const atCap = await api("/api/readings/rd_retitle", { method: "PATCH", json: { title: capped } });
+    expect(atCap.status).toBe(200);
+    expect(atCap.body.title).toBe(capped);
+
+    const patched = await api("/api/readings/rd_retitle", { method: "PATCH", json: { title: TITLE } });
+    expect(patched.status).toBe(200);
+    expect(patched.body).toMatchObject({
+      id: "rd_retitle",
+      url: before.body.url,
+      title: TITLE,
+      content_sha256: before.body.content_sha256,
+      summary_markdown: before.body.summary_markdown,
+      connections: [{ id: "rd_target", reason: "same ground" }],
+      tensions: [{ id: "rd_target", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
+      created_at: EARLIER,
+      updated_at: EARLIER,
+    });
+    expect(patched.body.relationship_targets).toEqual({
+      rd_target: { url: "https://example.com/rd_target", title: "Target stays", status: "ready", created_at: EARLIER },
+    });
+
+    const again = await api("/api/readings/rd_retitle", { method: "PATCH", json: { title: TITLE } });
+    expect(again.status).toBe(200);
+    expect(again.body.title).toBe(TITLE);
+    expect(again.body.connections).toEqual(patched.body.connections);
+    expect(again.body.tensions).toEqual(patched.body.tensions);
+
+    const found = (await api(`/api/readings?q=${encodeURIComponent("🎙️")}`)).body.readings as { id: string; title: string }[];
+    expect(found.map((row) => [row.id, row.title])).toEqual([["rd_retitle", TITLE]]);
+    expect((await api("/api/readings?q=Title%20rd_retitle")).body.readings).toEqual([]);
+
+    const graph = (await api("/api/readings/relationships")).body as {
+      readings: { id: string; title?: string }[];
+      relationships: unknown[];
+    };
+    expect(graph.readings.find((row) => row.id === "rd_retitle")?.title).toBe(TITLE);
+    expect(graph.relationships).toEqual([
+      { source_id: "rd_retitle", kind: "connection", target_id: "rd_target", reason: "same ground" },
+      { source_id: "rd_retitle", kind: "tension", target_id: "rd_target", tension_kind: "contradicts", reason: "disagrees" },
+    ]);
+
+    const [embedding] = await s.query<{ n: number }>(
+      "SELECT COUNT(*)::int AS n FROM reading_embeddings WHERE tenant_id = $1 AND reading_id = $2",
+      [String(tenant.tenantId), "rd_retitle"],
+    );
+    expect(embedding?.n).toBe(1);
+
+    const mcp = await api("/mcp", {
+      method: "POST",
+      json: {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "update_reading_title", arguments: { id: "rd_retitle", title: "Arrow → stays" } },
+      },
+    });
+    const tool = JSON.parse((mcp.body.result as { content: { text: string }[] }).content[0]!.text) as {
+      id: string;
+      title: string;
+      connections: unknown;
+      tensions: unknown;
+    };
+    expect(mcp.body).not.toHaveProperty("error");
+    expect(tool).toMatchObject({
+      id: "rd_retitle",
+      title: "Arrow → stays",
+      connections: [{ id: "rd_target", reason: "same ground" }],
+      tensions: [{ id: "rd_target", kind: "contradicts", reason: "disagrees", computed_at: CREATED_AT }],
+    });
+    expect(tool).not.toHaveProperty("relationship_targets");
+    expect((await api("/api/readings/rd_retitle")).body.title).toBe("Arrow → stays");
+  });
+
+  it("writes nothing when the tenant has no user row", async () => {
+    const s = sql();
+    const tenant = mintTenantWithoutUser();
+    await seedManifest(s, tenant, await readyManifest("rd_gone", { title: "Stays" }));
+    expect(await pgReadingWriterFor(s, tenant).renameTitle("rd_gone", "New")).toBe("inactive");
+    expect((await pgReadingStoreFor(s, tenant).loadReadingById("rd_gone"))?.manifest.title).toBe("Stays");
+  });
+});
+
 describe("more like this", () => {
   // rd_a's five connections and one tension all sit closer to it (0.95) than
   // rd_d (0.71), so excluding them after LIMIT 5 would leave nothing. rd_e

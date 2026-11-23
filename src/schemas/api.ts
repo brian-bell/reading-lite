@@ -53,6 +53,35 @@ export const PostReadingReprocessBodySchema = z
   .default({ force: false });
 export type PostReadingReprocessBody = z.infer<typeof PostReadingReprocessBodySchema>;
 
+export const READING_TITLE_MAX_CHARS = 1_000;
+
+// Unpaired surrogates are not Unicode scalar values: stored as text they become U+FFFD.
+
+function wellFormedTitle(value: string): boolean {
+  if (/\p{Cc}/u.test(value)) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff || Number.isNaN(next)) return false;
+      i++;
+      continue;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) return false;
+  }
+  return true;
+}
+
+export const ReadingTitleSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(READING_TITLE_MAX_CHARS)
+  .refine(wellFormedTitle, { message: "title must be valid Unicode without control characters" });
+
+export const PatchReadingBodySchema = z.object({ title: ReadingTitleSchema }).strict();
+export type PatchReadingBody = z.infer<typeof PatchReadingBodySchema>;
+
 export const SummarizationProviderSchema = z.enum(["openai", "anthropic"]);
 export type SummarizationProvider = z.infer<typeof SummarizationProviderSchema>;
 

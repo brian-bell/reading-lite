@@ -370,6 +370,20 @@ export class PgReadingWriter {
     });
   }
 
+  // Leave updated_at. Tension refresh reads a newer value as a replaced summary and drops the pair.
+  async renameTitle(id: string, title: string): Promise<"renamed" | "missing" | "inactive"> {
+    return this.sql.transaction(async (tx) => {
+      if (!(await this.tenantIsActive(tx))) return "inactive";
+      const row = await this.lock(tx, id);
+      if (!row) return "missing";
+      await tx.query(
+        "UPDATE readings SET title = $3 WHERE tenant_id = $1 AND id = $2",
+        [this.tenantId, id, title],
+      );
+      return "renamed";
+    });
+  }
+
   // Compare-and-replace on a published reading, for the relationship judge:
   // it rewrites relationship fields and the novelty verdict long after the
   // attempt that published them, so attempt ownership does not apply. `matches`

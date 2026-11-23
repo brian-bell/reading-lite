@@ -69,6 +69,7 @@ owners reprocess under the same ID. Tenant rate/quota denials return 429 with
 | `GET /api/readings/lookup?url=` | 200 `{ id }` for a valid owner, including pending/failed, otherwise 404. No claims, repair writes, or scans |
 | `GET /api/readings/relationships` | The tenant's relationship graph in one read: `{ readings, relationships }`. See [the relationships read](#the-relationships-read) |
 | `GET /api/readings/:id` | Full manifest with pending/ready/failed status, plus read-time `relationship_targets` |
+| `PATCH /api/readings/:id` | `{ title }`, trimmed, 1 to 1000 UTF-16 code units, well-formed Unicode, no control characters. Requires `readings:write`. Returns the same body as GET. Keeps the id, connections, tensions, captured content, embedding, and `updated_at`. 404 for an unknown id, including another tenant's. A later successful publish still sets the title from the new summary |
 | `GET /api/readings/:id/diagnostics` | Manifest, list row, URL ownership (reported in the `pointers` shape), the R2 objects under its key prefix, and up to 20 recent attempt records |
 | `GET /api/readings/:id/similar` | More like this: `{ items }`, at most 5 readings scoring at or above the 0.55 similarity floor against this reading's stored embedding. The reading and its connection and tension targets are excluded before the limit. No provider call. Empty when the reading has no embedding; 404 for an unknown ID |
 | `POST /api/readings/:id/reprocess` | Fresh attempt on the same ID; optional `force` bypasses an active-attempt conflict, and optional `source: { kind: "markdown", markdown, title? }` supplies replacement text |
@@ -211,6 +212,7 @@ no OAuth and no network re-fetch of the public host.
 | `get_reading`, `get_reading_content` | Manifest or opt-in extracted Markdown by ID |
 | `get_diagnostics` | URL-ownership/content/attempt diagnostics |
 | `submit_url`, `reprocess_reading` | Corpus writes subject to the caller's scopes. `reprocess_reading` refuses a Markdown source without dispatching |
+| `update_reading_title` | Renames one reading through `PATCH /api/readings/:id` (`{ id, title }`, requires `readings:write`) and returns the reading. A 400 or 404 from that route is a tool error with `http_status` and `error` |
 | `delete_reading` | Deletes one reading through `DELETE /api/readings/:id` (requires `readings:delete`) and returns the purge report. A 404 or 409 from that route is a tool error with `http_status` and `error` |
 | `import_markdown` | Stages Markdown through `POST /api/inbox`: `{ inbox_item_id, replaced, corpus_reading? }`, never a `public_url`. A ready or pending owner returns `{ existing: true, reading, public_url }` and stages nothing |
 | `list_inbox`, `get_inbox_item`, `discard_inbox_item` | The caller's inbox: metadata, one item's Markdown (chunked like `get_reading_content`), or a discard |

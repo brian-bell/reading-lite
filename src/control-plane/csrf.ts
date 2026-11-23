@@ -2,9 +2,8 @@ import { deriveHmacKey, hmacHex, timingSafeEqualHex, type AuthRoot } from "./cry
 
 const CSRF_HEX = /^[0-9a-f]{64}$/;
 const DUMMY_HMAC = "0".repeat(64);
-const COOKIE_CSRF_METHODS = new Set(["POST", "DELETE"]);
+const COOKIE_CSRF_METHODS = new Set(["POST", "PATCH", "DELETE"]);
 
-/** Session-authenticated POST/DELETE require the CSRF HMAC header. Bearer is exempt. */
 export function cookieCsrfRequired(method: string): boolean {
   return COOKIE_CSRF_METHODS.has(method.toUpperCase());
 }
