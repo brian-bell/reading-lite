@@ -46,8 +46,10 @@ const RULES: Rule[] = [
   // routes and bindings; its compatibility and assets settings shape the built
   // Worker, which the app job's smoke suite serves (backend 404s, cache
   // headers, sign-in redirects), so browser evidence waits for a rendering
-  // change.
-  [/^app\/(test|smoke|scripts)\/|^app\/(wrangler\.jsonc|vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
+  // change. The worker job also reads it: test/frontend-routes.test.ts pairs
+  // each frontend host/* route with the backend routes for that host.
+  [/^app\/wrangler\.jsonc$/, ["worker", "app"]],
+  [/^app\/(test|smoke|scripts)\/|^app\/(vitest\.config\.ts|vitest\.smoke\.config\.ts)$/, ["app"]],
   [/^app\/src\/server\/http-upgrade\.ts$/, ["worker", "app", "appBrowser"]],
   [/^app\//, ["app", "appBrowser"]],
 

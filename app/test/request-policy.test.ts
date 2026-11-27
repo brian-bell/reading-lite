@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { httpsRedirect, withResponsePolicy } from "../src/server/request-policy";
+import { httpsRedirect, isBackendPath, withResponsePolicy } from "../src/server/request-policy";
 
 describe("public HTTP", () => {
   it("redirects to the same path and query on https", () => {
@@ -30,5 +30,24 @@ describe("public HTTP", () => {
 
     const plain = withResponsePolicy(new Response("ok"), "/", "http://readinglite.ai/");
     expect(plain.headers.get("Strict-Transport-Security")).toBeNull();
+  });
+
+  it("answers OAuth discovery from the backend, and leaves other paths to the page", () => {
+    for (const path of [
+      "/api",
+      "/api/whoami",
+      "/health",
+      "/mcp",
+      "/mcp/extra",
+      "/.well-known/oauth-authorization-server",
+      "/.well-known/oauth-authorization-server/mcp",
+      "/.well-known/oauth-protected-resource",
+      "/.well-known/oauth-protected-resource/mcp",
+    ]) {
+      expect(isBackendPath(path), path).toBe(true);
+    }
+    expect(isBackendPath("/.well-known/security.txt")).toBe(false);
+    expect(isBackendPath("/.well-known/oauth-authorization-server-extra")).toBe(false);
+    expect(isBackendPath("/library")).toBe(false);
   });
 });
