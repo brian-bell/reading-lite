@@ -320,8 +320,8 @@ selection, the then-live ledger follow-up, and the scanner's certification limit
 | Environment | Worker | Bucket / database | Notes |
 |---|---|---|---|
 | local | `reading-lite-dev` | Miniflare-emulated R2; local PostgreSQL through Hyperdrive's `localConnectionString` | no Queue |
-| staging | `reading-lite-staging` | `reading-lite-staging`; Neon `rehearsal` branch through Hyperdrive | canonical `staging.readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*` and the four OAuth discovery paths); also `staging.readinglite.app`; `next-staging.readinglite.ai` and `reading-lite-staging.bbell.dev` retired |
-| production | `reading-lite` | `reading-lite`; Neon `main` branch through Hyperdrive | canonical `readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*` and the four OAuth discovery paths); also `readinglite.app`; `next.readinglite.ai` and `reading-lite.bbell.dev` retired |
+| staging | `reading-lite-staging` | `reading-lite-staging`; Neon `rehearsal` branch through Hyperdrive | canonical `staging.readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*` and the OAuth discovery paths); also `staging.readinglite.app`; `next-staging.readinglite.ai` and `reading-lite-staging.bbell.dev` retired |
+| production | `reading-lite` | `reading-lite`; Neon `main` branch through Hyperdrive | canonical `readinglite.ai` (frontend `/*` under `/api/*` `/health` `/mcp*` and the OAuth discovery paths); also `readinglite.app`; `next.readinglite.ai` and `reading-lite.bbell.dev` retired |
 
 Environments do **not** inherit top-level `[vars]` or bindings, `wrangler.toml`
 repeats them per environment. The distinct dev Worker name guards against an
@@ -761,7 +761,7 @@ service, applies the migrations, then bootstraps the founder's
 See [local Postgres](#local-postgres).
 
 Backend Worker routes are scoped to `/api/*`, `/health`, `/mcp*`, and the
-four OAuth discovery paths; the
+OAuth discovery paths; the
 `app/` frontend Worker's `host/*` route handles every other path on the
 staging and production hosts (see [New-frontend hosts](#new-frontend-hosts)).
 Staging canonical host is `https://staging.readinglite.ai`;
@@ -784,7 +784,7 @@ is an additional public host. Staging is the same shape on
 [#265](https://github.com/brian-bell/reading-lite/issues/265)).
 
 `[env.production.routes]` in `wrangler.toml` carries the same `/api/*`,
-`/health`, `/mcp*`, and four OAuth discovery paths on both public hostnames
+`/health`, `/mcp*`, and the OAuth discovery paths on both public hostnames
 (`zone_name` is `readinglite.ai` and `readinglite.app`). Both hit the same Worker
 script, R2 bucket and PostgreSQL database (through Hyperdrive). Staging's routes
 do the same on `staging.readinglite.ai` and `staging.readinglite.app`.

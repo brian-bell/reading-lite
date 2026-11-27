@@ -6,6 +6,8 @@ const OAUTH_DISCOVERY_PATHS = [
   "/.well-known/oauth-authorization-server/mcp",
   "/.well-known/oauth-protected-resource",
   "/.well-known/oauth-protected-resource/mcp",
+  "/.well-known/openid-configuration",
+  "/.well-known/openid-configuration/mcp",
 ] as const;
 
 const ENVS = ["staging", "production"] as const;

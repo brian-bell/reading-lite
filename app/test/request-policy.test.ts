@@ -43,11 +43,14 @@ describe("public HTTP", () => {
       "/.well-known/oauth-authorization-server/mcp",
       "/.well-known/oauth-protected-resource",
       "/.well-known/oauth-protected-resource/mcp",
+      "/.well-known/openid-configuration",
+      "/.well-known/openid-configuration/mcp",
     ]) {
       expect(isBackendPath(path), path).toBe(true);
     }
     expect(isBackendPath("/.well-known/security.txt")).toBe(false);
     expect(isBackendPath("/.well-known/oauth-authorization-server-extra")).toBe(false);
+    expect(isBackendPath("/.well-known/openid-configuration-extra")).toBe(false);
     expect(isBackendPath("/library")).toBe(false);
   });
 });

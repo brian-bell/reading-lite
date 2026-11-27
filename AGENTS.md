@@ -204,7 +204,7 @@ teardown, paid dispatch, provider-key binding), `pipeline-guards.test.ts`
 content sweep), `digest-schedule.test.ts` (the preview and the cron share
 one next-send rule, including an open period inside the due hour and a
 fallback longer than one hour), `test/frontend-routes.test.ts` (each frontend
-`host/*` route has backend routes for API, health, MCP, and the four OAuth
+`host/*` route has backend routes for API, health, MCP, and the OAuth
 discovery paths) and `test/unit/oauth-discovery.test.ts` (those paths answer
 JSON 404). The Workers pool is four files of
 guards in `test/integration/`: `tenant-guards.test.ts` (foreign equals unknown

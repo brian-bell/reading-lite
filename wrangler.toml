@@ -417,6 +417,14 @@ pattern = "staging.readinglite.ai/.well-known/oauth-protected-resource/mcp"
 zone_name = "readinglite.ai"
 
 [[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/openid-configuration"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/openid-configuration/mcp"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
 pattern = "staging.readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -442,6 +450,14 @@ zone_name = "readinglite.app"
 
 [[env.staging.routes]]
 pattern = "staging.readinglite.app/.well-known/oauth-protected-resource/mcp"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/openid-configuration"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/openid-configuration/mcp"
 zone_name = "readinglite.app"
 
 # ---- production ----
@@ -731,6 +747,14 @@ pattern = "readinglite.ai/.well-known/oauth-protected-resource/mcp"
 zone_name = "readinglite.ai"
 
 [[env.production.routes]]
+pattern = "readinglite.ai/.well-known/openid-configuration"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/openid-configuration/mcp"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
 pattern = "readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -756,4 +780,12 @@ zone_name = "readinglite.app"
 
 [[env.production.routes]]
 pattern = "readinglite.app/.well-known/oauth-protected-resource/mcp"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/openid-configuration"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/openid-configuration/mcp"
 zone_name = "readinglite.app"

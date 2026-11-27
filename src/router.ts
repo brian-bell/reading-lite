@@ -173,6 +173,8 @@ export function createApp(opts: AppOptions = {}) {
     "/.well-known/oauth-authorization-server/mcp",
     "/.well-known/oauth-protected-resource",
     "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/openid-configuration",
+    "/.well-known/openid-configuration/mcp",
   ]) {
     app.all(path, (c) => c.json({ error: "not found" }, 404));
   }

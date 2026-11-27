@@ -38,7 +38,8 @@ export function isBackendPath(pathname: string): boolean {
     // Mirrors the backend's `host/mcp*` route pattern, a plain prefix match.
     pathname.startsWith("/mcp") ||
     hasPathPrefix(pathname, "/.well-known/oauth-authorization-server") ||
-    hasPathPrefix(pathname, "/.well-known/oauth-protected-resource")
+    hasPathPrefix(pathname, "/.well-known/oauth-protected-resource") ||
+    hasPathPrefix(pathname, "/.well-known/openid-configuration")
   );
 }
 

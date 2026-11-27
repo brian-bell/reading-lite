@@ -45,7 +45,8 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
 
 - **Backend paths.** `/api`, `/api/*`, `/health`, `/mcp*`, and the OAuth
   discovery paths (`/.well-known/oauth-authorization-server`,
-  `/.well-known/oauth-protected-resource`, and each path's `/mcp` child)
+  `/.well-known/oauth-protected-resource`, `/.well-known/openid-configuration`,
+  and each path's `/mcp` child)
   return 404 from `src/start.ts` before rendering. The backend's more specific
   routes own them; the frontend never proxies.
 - **Caching and policy.** Authenticated HTML is `Cache-Control: private,
