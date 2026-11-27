@@ -6,9 +6,11 @@ export const ESSENTIAL_WORKERS_FILES = [
 ] as const;
 
 export const ESSENTIAL_NODE_FILES = [
+  "test/frontend-routes.test.ts",
   "test/unit/changed-jobs.test.ts",
   "test/unit/control-plane-guards.test.ts",
   "test/unit/digest-schedule.test.ts",
+  "test/unit/oauth-discovery.test.ts",
   "test/unit/operator-guards.test.ts",
   "test/unit/pipeline-guards.test.ts",
 ] as const;

@@ -5,8 +5,7 @@ export { httpsRedirect } from "./http-upgrade.ts";
 
 // Request rules from ADR 0003 (Routing, Rendering and caching).
 //
-// The backend Worker owns /api/*, /health, and /mcp* through more specific
-// routes. The frontend never renders or proxies those paths: if a misconfigured
+// The frontend never renders or proxies a backend path. If a misconfigured
 // route delivers one here, it answers 404 so the fault is visible.
 //
 // Authenticated HTML is private and uncacheable. Public pages (legal notices
@@ -27,13 +26,20 @@ export const HTML_CACHE_CONTROL = "private, no-store";
  */
 export const CONTENT_SECURITY_POLICY = "img-src 'self' https: data:";
 
+function hasPathPrefix(pathname: string, prefix: string): boolean {
+  return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
 export function isBackendPath(pathname: string): boolean {
   return (
     pathname === "/api" ||
     pathname.startsWith("/api/") ||
     pathname === "/health" ||
     // Mirrors the backend's `host/mcp*` route pattern, a plain prefix match.
-    pathname.startsWith("/mcp")
+    pathname.startsWith("/mcp") ||
+    hasPathPrefix(pathname, "/.well-known/oauth-authorization-server") ||
+    hasPathPrefix(pathname, "/.well-known/oauth-protected-resource") ||
+    hasPathPrefix(pathname, "/.well-known/openid-configuration")
   );
 }
 

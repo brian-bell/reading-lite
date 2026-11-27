@@ -196,14 +196,17 @@ run exits 1 with every test passing, or the run dies on an EPIPE.
 `vitest.workspace.ts` separates Workers and Node pools. Integration tests run
 on workerd; unit tests run in the Node pool unless they need `cloudflare:test`,
 `cloudflare:workers`, or workerd semantics, in which case list them in
-`WORKERS_RUNTIME_UNIT_TESTS`. The Node pool is four files no integration
+`WORKERS_RUNTIME_UNIT_TESTS`. The Node pool is six files no integration
 test owns: `test/unit/operator-guards.test.ts` (operator, deploy and batch
 refusals, app fixture freshness), `control-plane-guards.test.ts` (account
 teardown, paid dispatch, provider-key binding), `pipeline-guards.test.ts`
 (cached-prefix snapshots, provider config, SSRF hosts, R2 key spelling,
-content sweep) and `digest-schedule.test.ts` (the preview and the cron share
+content sweep), `digest-schedule.test.ts` (the preview and the cron share
 one next-send rule, including an open period inside the due hour and a
-fallback longer than one hour). The Workers pool is four files of
+fallback longer than one hour), `test/frontend-routes.test.ts` (each frontend
+`host/*` route has backend routes for API, health, MCP, and the OAuth
+discovery paths) and `test/unit/oauth-discovery.test.ts` (those paths answer
+JSON 404). The Workers pool is four files of
 guards in `test/integration/`: `tenant-guards.test.ts` (foreign equals unknown
 over HTTP, MCP and FrontendReads, two-tenant save-to-ready,
 session/token/account isolation, cookie CSRF and Origin, digest recipients),

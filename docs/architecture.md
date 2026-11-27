@@ -3,7 +3,7 @@
 Reading Lite runs on one Cloudflare Worker plus PostgreSQL with pgvector
 (through Hyperdrive), Durable Objects, R2, and Queues. Reading state,
 embeddings and the control plane live in PostgreSQL; captured content stays in R2
-([ADR 0005](decisions/0005-postgresql-storage.md)). The Worker owns `/api/*`, `/health`, and `/mcp*`;
+([ADR 0005](decisions/0005-postgresql-storage.md)). The Worker owns `/api/*`, `/health`, `/mcp*`, and the OAuth discovery paths;
 the TanStack Start frontend in `app/`, a separate Worker, handles the other
 routes ([ADR 0003](decisions/0003-frontend-worker-topology.md)). The legacy
 React SPA in `web/` was retired in reading-lite-gh335.3.

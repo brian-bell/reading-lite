@@ -168,6 +168,17 @@ export function createApp(opts: AppOptions = {}) {
 
   app.get("/health", (c) => c.text("ok", 200));
 
+  for (const path of [
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-authorization-server/mcp",
+    "/.well-known/oauth-protected-resource",
+    "/.well-known/oauth-protected-resource/mcp",
+    "/.well-known/openid-configuration",
+    "/.well-known/openid-configuration/mcp",
+  ]) {
+    app.all(path, (c) => c.json({ error: "not found" }, 404));
+  }
+
   const authNowMs = () => Date.parse(services.now());
 
   app.get("/api/auth/login-options", (c) => handleLoginOptions(c));

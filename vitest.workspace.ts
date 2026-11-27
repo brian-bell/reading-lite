@@ -81,7 +81,9 @@ export default [
   defineProject({
     test: {
       name: "node",
-      include: essentialScope ? [...ESSENTIAL_NODE_FILES] : ["test/unit/**/*.test.ts"],
+      include: essentialScope
+        ? [...ESSENTIAL_NODE_FILES]
+        : ["test/unit/**/*.test.ts", "test/frontend-routes.test.ts"],
       exclude: [...configDefaults.exclude, ...WORKERS_RUNTIME_UNIT_TESTS],
       environment: "node",
     },
