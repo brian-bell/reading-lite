@@ -14,8 +14,8 @@
 //
 // Routes (ADR 0003): each deployed environment's frontend owns `host/*` on its
 // two public hosts. The backend of the same environment keeps the more
-// specific /api/*, /health, and /mcp* routes there (root wrangler.toml), and
-// this Worker returns 404 for backend paths instead of proxying them.
+// specific routes there (root wrangler.toml), and this Worker returns 404
+// for backend paths instead of proxying them.
 // test/frontend-routes.test.ts fails when a route has no matching backend
 // routes. Staging switched at Phase 4 parity (#339, 2026-09-16) and owns
 // staging.readinglite.ai/* and staging.readinglite.app/*. Production switched

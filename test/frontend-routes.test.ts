@@ -1,6 +1,3 @@
-// Each frontend host/* route must have a more specific backend route for every
-// path the frontend refuses to render. app/wrangler.jsonc names this file.
-
 import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 

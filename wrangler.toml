@@ -381,7 +381,7 @@ class_name = "TenantUsageGuard"
 name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
-# Worker routes scoped to API, health, and MCP. Since the Phase 4 staging
+# Since the Phase 4 staging
 # switch (#339, 2026-09-16) the frontend Worker (app/wrangler.jsonc,
 # reading-lite-app-staging) owns `/*` on both staging hosts. Staging dual-serves
 # staging.readinglite.ai (canonical) and
@@ -401,6 +401,22 @@ pattern = "staging.readinglite.ai/mcp*"
 zone_name = "readinglite.ai"
 
 [[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/oauth-authorization-server"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/oauth-authorization-server/mcp"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/oauth-protected-resource"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/oauth-protected-resource/mcp"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
 pattern = "staging.readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -410,6 +426,22 @@ zone_name = "readinglite.app"
 
 [[env.staging.routes]]
 pattern = "staging.readinglite.app/mcp*"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/oauth-authorization-server"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/oauth-authorization-server/mcp"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/oauth-protected-resource"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/oauth-protected-resource/mcp"
 zone_name = "readinglite.app"
 
 # ---- production ----
@@ -650,7 +682,7 @@ class_name = "TenantUsageGuard"
 name = "GLOBAL_USAGE_GUARD"
 class_name = "GlobalUsageGuard"
 
-# Worker routes scoped to API, health, and MCP. Since the Phase 5 apex cutover
+# Since the Phase 5 apex cutover
 # (reading-lite-gh340.4) the frontend Worker (app/wrangler.jsonc,
 # reading-lite-app) owns every other path with `host/*`; these more specific
 # routes win over it.
@@ -683,6 +715,22 @@ pattern = "readinglite.ai/mcp*"
 zone_name = "readinglite.ai"
 
 [[env.production.routes]]
+pattern = "readinglite.ai/.well-known/oauth-authorization-server"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/oauth-authorization-server/mcp"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/oauth-protected-resource"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/oauth-protected-resource/mcp"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
 pattern = "readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -692,4 +740,20 @@ zone_name = "readinglite.app"
 
 [[env.production.routes]]
 pattern = "readinglite.app/mcp*"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/oauth-authorization-server"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/oauth-authorization-server/mcp"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/oauth-protected-resource"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/oauth-protected-resource/mcp"
 zone_name = "readinglite.app"
