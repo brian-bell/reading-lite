@@ -10,6 +10,15 @@ const OAUTH_DISCOVERY_PATHS = [
   "/.well-known/openid-configuration/mcp",
 ] as const;
 
+const MCP_AUTH_FALLBACK_PATHS = [
+  "/register",
+  "/authorize",
+  "/token",
+  "/sse",
+  "/.well-known/mcp.json",
+  "/.well-known/oauth-authorization-server.json",
+] as const;
+
 const ENVS = ["staging", "production"] as const;
 
 function backendPatterns(toml: string, env: (typeof ENVS)[number]): string[] {
@@ -44,7 +53,7 @@ function frontendHosts(jsonc: string, env: (typeof ENVS)[number]): string[] {
 const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
 const jsonc = readFileSync(new URL("../app/wrangler.jsonc", import.meta.url), "utf8");
 
-it.each(ENVS)("routes API, health, MCP, and OAuth discovery on every %s frontend host", (env) => {
+it.each(ENVS)("routes API, health, MCP, OAuth discovery, and MCP auth fallback on every %s frontend host", (env) => {
   const hosts = frontendHosts(jsonc, env);
   expect(hosts.length).toBeGreaterThan(0);
   const patterns = backendPatterns(toml, env);
@@ -54,6 +63,7 @@ it.each(ENVS)("routes API, health, MCP, and OAuth discovery on every %s frontend
       `${host}/health`,
       `${host}/mcp*`,
       ...OAUTH_DISCOVERY_PATHS.map((path) => `${host}${path}`),
+      ...MCP_AUTH_FALLBACK_PATHS.map((path) => `${host}${path}`),
     ];
     for (const pattern of required) {
       expect(patterns, pattern).toContain(pattern);
