@@ -15,6 +15,7 @@ import { buildArchiveExport } from "../../src/archive-export";
 import { archiveExportEnvelopeV1 } from "../../src/control-plane/export-envelope";
 import type { TenantContext } from "../../src/control-plane/ids";
 import { dispatchQueueMessage, type Env } from "../../src/index";
+import { RateLimitedError } from "../../src/modules/http-retry";
 import type { Sql } from "../../src/modules/db/sql";
 import { reprocessPending, submitPending } from "../../src/modules/manifest-drafting";
 import { contentStoreFor } from "../../src/modules/stores/content-store";
@@ -1106,6 +1107,42 @@ describe("the queue consumer", () => {
       title: "T".repeat(120),
       tags: ["one", "two", "three", "four", "five", "six"],
       keywords: keywords.slice(0, 15),
+    });
+  });
+
+  it("retries a rate-limited delivery after Retry-After", async () => {
+    const msg = { body: {}, ack: vi.fn(), retry: vi.fn(), attempts: 1 };
+    await dispatchQueueMessage(msg as unknown as Message<unknown>, async () => {
+      throw new RateLimitedError(429, 5_000, "https://api.anthropic.com/v1/messages");
+    });
+    expect(msg.retry.mock.calls).toEqual([[{ delaySeconds: 5 }]]);
+    expect(msg.ack.mock.calls).toEqual([]);
+  });
+
+  it("marks the reading failed when summarize never returns a tool call", async () => {
+    const markdown = MARKDOWN;
+    const manifest = await runMarkdownSummarize("rd_NOTOOL", {}, {
+      anthropicBody: {
+        id: "msg_01",
+        type: "message",
+        role: "assistant",
+        model: "claude-sonnet-5-5",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "no tool" }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    });
+    expect(manifest).toMatchObject({
+      status: "failed",
+      content_status: "captured",
+      content_bytes: new TextEncoder().encode(markdown).byteLength,
+      content_sha256: await sha256Hex(markdown),
+      error: {
+        code: "NoToolUseError",
+        message: "Anthropic response did not contain a tool_use block for emit_reading",
+        stage: "summarize",
+        retryable: true,
+      },
     });
   });
 

@@ -41,6 +41,7 @@ import {
 } from "./control-plane/reading-notification";
 import { failedManifest, readyManifest, type ContentFacts } from "./modules/manifest-drafting";
 import { RateLimitedError, type RetryDeps } from "./modules/http-retry";
+import { retryableError } from "./modules/retryable-error";
 import type {
   Manifest,
   ManifestError,
@@ -77,6 +78,7 @@ import {
 } from "./attempt-ownership";
 
 export type { ProcessReadingArgs, ProcessReadingSource };
+export { retryableError };
 
 export async function processReading(
   args: ProcessReadingArgs,
@@ -1125,35 +1127,6 @@ function errorFromUnknown(
     ...(provider === undefined ? {} : { provider }),
   };
 }
-
-export function retryableError(e: unknown): boolean {
-  if (!(e instanceof Error)) return false;
-  const status = (e as { status?: unknown }).status;
-  if (e.name === "BadStatusError") {
-    return typeof status === "number" && status >= 500;
-  }
-  if (e.name === "XApiError") {
-    return typeof status === "number" && status >= 500;
-  }
-  if (e.name === "AnthropicError" || e.name === "OpenAIError") {
-    return typeof status === "number" && (status === 429 || status >= 500);
-  }
-  if (e.name === "FetchTimeoutError") return true;
-  // The summarizer asked twice and both tool calls missed the schema. That is
-  // a property of those samples, not a verdict about the source.
-  if (e.name === "BadToolInputError" || e.name === "NoToolUseError") return true;
-  // The resolver returned nothing this time. That is a report about the
-  // resolver, not a verdict about the destination (BlockedHostError and
-  // TooManyRedirectsError are the verdicts, and stay terminal below), so a
-  // blip outlasting fetchWithRetry's attempt budget must still leave the row
-  // recoverable for corpus triage.
-  if (e.name === "DestinationResolutionError") return true;
-  if (e.name === "QueueRetriesExhaustedError") return true;
-  if (e.name === "ProcessingDeferExpiredError") return true;
-  if (e.name === "ReadingReservationExpiredError") return true;
-  return false;
-}
-
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
   if (!value) return fallback;

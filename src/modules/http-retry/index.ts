@@ -153,7 +153,7 @@ function abortError(): DOMException {
   return new DOMException("The operation was aborted.", "AbortError");
 }
 
-function jitteredBackoff(
+export function jitteredBackoff(
   attempt: number,
   baseDelayMs: number,
   maxDelayMs: number,
