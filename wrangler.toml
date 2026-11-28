@@ -425,6 +425,30 @@ pattern = "staging.readinglite.ai/.well-known/openid-configuration/mcp"
 zone_name = "readinglite.ai"
 
 [[env.staging.routes]]
+pattern = "staging.readinglite.ai/register"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/authorize"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/token"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/sse"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/mcp.json"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.ai/.well-known/oauth-authorization-server.json"
+zone_name = "readinglite.ai"
+
+[[env.staging.routes]]
 pattern = "staging.readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -458,6 +482,30 @@ zone_name = "readinglite.app"
 
 [[env.staging.routes]]
 pattern = "staging.readinglite.app/.well-known/openid-configuration/mcp"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/register"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/authorize"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/token"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/sse"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/mcp.json"
+zone_name = "readinglite.app"
+
+[[env.staging.routes]]
+pattern = "staging.readinglite.app/.well-known/oauth-authorization-server.json"
 zone_name = "readinglite.app"
 
 # ---- production ----
@@ -755,6 +803,30 @@ pattern = "readinglite.ai/.well-known/openid-configuration/mcp"
 zone_name = "readinglite.ai"
 
 [[env.production.routes]]
+pattern = "readinglite.ai/register"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/authorize"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/token"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/sse"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/mcp.json"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
+pattern = "readinglite.ai/.well-known/oauth-authorization-server.json"
+zone_name = "readinglite.ai"
+
+[[env.production.routes]]
 pattern = "readinglite.app/api/*"
 zone_name = "readinglite.app"
 
@@ -788,4 +860,28 @@ zone_name = "readinglite.app"
 
 [[env.production.routes]]
 pattern = "readinglite.app/.well-known/openid-configuration/mcp"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/register"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/authorize"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/token"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/sse"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/mcp.json"
+zone_name = "readinglite.app"
+
+[[env.production.routes]]
+pattern = "readinglite.app/.well-known/oauth-authorization-server.json"
 zone_name = "readinglite.app"

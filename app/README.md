@@ -43,10 +43,12 @@ deployment. `npm run prototype:dev` serves it on :5175; see its
 
 ## Rules this package enforces
 
-- **Backend paths.** `/api`, `/api/*`, `/health`, `/mcp*`, and the OAuth
+- **Backend paths.** `/api`, `/api/*`, `/health`, `/mcp*`, the OAuth
   discovery paths (`/.well-known/oauth-authorization-server`,
   `/.well-known/oauth-protected-resource`, `/.well-known/openid-configuration`,
-  and each path's `/mcp` child)
+  and each path's `/mcp` child), and the MCP auth fallback paths
+  (`/register`, `/authorize`, `/token`, `/sse`, `/.well-known/mcp.json`,
+  and `/.well-known/oauth-authorization-server.json`)
   return 404 from `src/start.ts` before rendering. The backend's more specific
   routes own them; the frontend never proxies.
 - **Caching and policy.** Authenticated HTML is `Cache-Control: private,
