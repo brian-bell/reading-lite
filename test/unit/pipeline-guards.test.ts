@@ -8,10 +8,14 @@ import { describe, expect, it, vi } from "vitest";
 import { AttemptIo } from "../../src/attempt-io";
 import { REFRESH_CRON, opensNewRefreshBudget } from "../../src/refresh-period";
 import {
+  AnthropicError,
   BadToolInputError,
+  NoToolUseError,
+  SourceRejectedError,
   buildSummarizeRequestBody as buildAnthropicSummarizeRequestBody,
   summarizeReading as summarizeWithAnthropic,
 } from "../../src/modules/anthropic";
+import { RateLimitedError, type RetryDeps } from "../../src/modules/http-retry";
 import { isBlockedHost } from "../../src/modules/extractor";
 import {
   buildSummarizeRequestBody as buildOpenAISummarizeRequestBody,
@@ -131,6 +135,135 @@ describe("provider requests", () => {
     expect(retryFetch).toHaveBeenCalledTimes(2);
   });
 
+  it("returns the summary when a missing tool call is transient", async () => {
+    const sleeps: number[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const good = readingToolInput({});
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(anthropicText({ input_tokens: 11, output_tokens: 1 }))
+      .mockResolvedValueOnce(anthropicText({ input_tokens: 12, output_tokens: 2 }))
+      .mockResolvedValueOnce(anthropicMessage(good, { input_tokens: 13, output_tokens: 3 }));
+    try {
+      const result = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps)));
+      expect(result).toEqual({
+        reading: {
+          title: "A title",
+          tldr: "A thesis.",
+          tags: ["ai"],
+          keywords: ["one", "two", "three"],
+          people: [],
+          orgs: [],
+          novelty_verdict: "novel",
+          connections: [],
+          summary_markdown: "The argument.",
+        },
+        usage: {
+          input_tokens: 36,
+          output_tokens: 6,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      });
+      expect(sleeps).toEqual([250, 500]);
+      expect(fetchFn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls.map((call) => call[0])).toEqual([
+        JSON.stringify({ event: "summarize_retry", attempt: 1, error: "NoToolUseError" }),
+        JSON.stringify({ event: "summarize_retry", attempt: 2, error: "NoToolUseError" }),
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("throws the same NoToolUseError after three missing tool calls", async () => {
+    const sleeps: number[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const fetchFn = vi.fn<typeof fetch>(async () => anthropicText({ input_tokens: 10, output_tokens: 5 }));
+    try {
+      const error = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps))).catch((caught) => caught);
+      expect(error).toBeInstanceOf(NoToolUseError);
+      expect(error).toMatchObject({
+        message: "Anthropic response did not contain a tool_use block for emit_reading",
+      });
+      expect(sleeps).toEqual([250, 500]);
+      expect(fetchFn).toHaveBeenCalledTimes(3);
+      expect(warn.mock.calls.map((call) => call[0])).toEqual([
+        JSON.stringify({ event: "summarize_retry", attempt: 1, error: "NoToolUseError" }),
+        JSON.stringify({ event: "summarize_retry", attempt: 2, error: "NoToolUseError" }),
+      ]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("retries a 500 from the summarizer and returns the summary", async () => {
+    const sleeps: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("unavailable", { status: 500 }))
+      .mockResolvedValueOnce(anthropicMessage(readingToolInput({})));
+    const result = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps)));
+    expect(result.reading).toEqual({
+      title: "A title",
+      tldr: "A thesis.",
+      tags: ["ai"],
+      keywords: ["one", "two", "three"],
+      people: [],
+      orgs: [],
+      novelty_verdict: "novel",
+      connections: [],
+      summary_markdown: "The argument.",
+    });
+    expect(result.usage).toEqual({ input_tokens: 10, output_tokens: 5 });
+    expect(sleeps).toEqual([250]);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops a persistent 500 at the HTTP retry budget", async () => {
+    const sleeps: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("unavailable", { status: 500 }));
+    const error = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps))).catch((caught) => caught);
+    expect(error).toBeInstanceOf(AnthropicError);
+    expect(error).toMatchObject({ status: 500, message: "unavailable" });
+    expect(fetchFn).toHaveBeenCalledTimes(3);
+    expect(sleeps).toEqual([250, 500]);
+  });
+
+  it("surfaces a 429 once so the queue can wait out Retry-After", async () => {
+    const sleeps: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("slow down", {
+      status: 429,
+      headers: { "retry-after": "5" },
+    }));
+    const error = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps))).catch((caught) => caught);
+    expect(error).toBeInstanceOf(RateLimitedError);
+    expect(error).toMatchObject({ status: 429, retryAfterMs: 5_000 });
+    expect(sleeps).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 401 from the summarizer", async () => {
+    const sleeps: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async () => new Response("unauthorized", { status: 401 }));
+    const error = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps))).catch((caught) => caught);
+    expect(error).toBeInstanceOf(AnthropicError);
+    expect(error).toMatchObject({ status: 401, message: "unauthorized" });
+    expect(sleeps).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a source rejection", async () => {
+    const sleeps: number[] = [];
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json({
+      content: [{ type: "tool_use", id: "toolu_01", name: "reject_source", input: { reason: "paywall preview" } }],
+      usage: { input_tokens: 4, output_tokens: 1 },
+    }));
+    const error = await summarizeWithAnthropic(summarizeInput, anthropicDeps(fetchFn, retryDeps(sleeps))).catch((caught) => caught);
+    expect(error).toBeInstanceOf(SourceRejectedError);
+    expect(error).toMatchObject({ message: "paywall preview" });
+    expect(sleeps).toEqual([]);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves an in-cap list to zod and counts tag spellings that collapse as one", async () => {
     const input = readingToolInput({
       tags: ["Developer tools", "developer-tools", "ai", "infra", "memoir", "tools", "history", "design"],
@@ -147,6 +280,28 @@ describe("provider requests", () => {
   });
 });
 
+const summarizeInput = {
+  url: "https://example.com/a",
+  extractedText: "Article body.",
+  similarReadings: [],
+};
+
+function retryDeps(sleeps: number[]): RetryDeps {
+  return {
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
+    random: () => 0.5,
+    maxAttempts: 3,
+    baseDelayMs: 500,
+    maxDelayMs: 8_000,
+  };
+}
+
+function anthropicDeps(fetchFn: typeof fetch, retry: RetryDeps) {
+  return { fetch: fetchFn, apiKey: "test", model: "claude-sonnet-5-5" as const, effort: "low" as const, retry };
+}
+
 function readingToolInput(overrides: Record<string, unknown>): Record<string, unknown> {
   return {
     title: "A title",
@@ -162,13 +317,26 @@ function readingToolInput(overrides: Record<string, unknown>): Record<string, un
   };
 }
 
-function anthropicMessage(input: Record<string, unknown>): Response {
+function anthropicMessage(
+  input: Record<string, unknown>,
+  usage: { input_tokens: number; output_tokens: number } = { input_tokens: 10, output_tokens: 5 },
+): Response {
   return Response.json({
     id: "msg_01",
     type: "message",
     role: "assistant",
     content: [{ type: "tool_use", id: "toolu_01", name: "emit_reading", input }],
-    usage: { input_tokens: 10, output_tokens: 5 },
+    usage,
+  });
+}
+
+function anthropicText(usage: { input_tokens: number; output_tokens: number }): Response {
+  return Response.json({
+    id: "msg_01",
+    type: "message",
+    role: "assistant",
+    content: [{ type: "text", text: "no tool" }],
+    usage,
   });
 }
 
