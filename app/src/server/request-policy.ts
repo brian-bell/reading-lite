@@ -39,7 +39,13 @@ export function isBackendPath(pathname: string): boolean {
     pathname.startsWith("/mcp") ||
     hasPathPrefix(pathname, "/.well-known/oauth-authorization-server") ||
     hasPathPrefix(pathname, "/.well-known/oauth-protected-resource") ||
-    hasPathPrefix(pathname, "/.well-known/openid-configuration")
+    hasPathPrefix(pathname, "/.well-known/openid-configuration") ||
+    hasPathPrefix(pathname, "/register") ||
+    hasPathPrefix(pathname, "/authorize") ||
+    hasPathPrefix(pathname, "/token") ||
+    hasPathPrefix(pathname, "/sse") ||
+    hasPathPrefix(pathname, "/.well-known/mcp.json") ||
+    hasPathPrefix(pathname, "/.well-known/oauth-authorization-server.json")
   );
 }
 

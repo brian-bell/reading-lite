@@ -32,7 +32,7 @@ describe("public HTTP", () => {
     expect(plain.headers.get("Strict-Transport-Security")).toBeNull();
   });
 
-  it("answers OAuth discovery from the backend, and leaves other paths to the page", () => {
+  it("answers OAuth discovery and MCP auth fallbacks from the backend, and leaves other paths to the page", () => {
     for (const path of [
       "/api",
       "/api/whoami",
@@ -45,12 +45,23 @@ describe("public HTTP", () => {
       "/.well-known/oauth-protected-resource/mcp",
       "/.well-known/openid-configuration",
       "/.well-known/openid-configuration/mcp",
+      "/register",
+      "/register/child",
+      "/authorize",
+      "/token",
+      "/sse",
+      "/.well-known/mcp.json",
+      "/.well-known/oauth-authorization-server.json",
     ]) {
       expect(isBackendPath(path), path).toBe(true);
     }
     expect(isBackendPath("/.well-known/security.txt")).toBe(false);
     expect(isBackendPath("/.well-known/oauth-authorization-server-extra")).toBe(false);
     expect(isBackendPath("/.well-known/openid-configuration-extra")).toBe(false);
+    expect(isBackendPath("/.well-known/oauth-authorization-server.json-extra")).toBe(false);
+    expect(isBackendPath("/registered")).toBe(false);
+    expect(isBackendPath("/tokens")).toBe(false);
+    expect(isBackendPath("/authorize-extra")).toBe(false);
     expect(isBackendPath("/library")).toBe(false);
   });
 });
