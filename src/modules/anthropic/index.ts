@@ -3,8 +3,9 @@ import {
   ReadingSummarySchema,
   type ReadingSummary,
 } from "../../schemas/reading-summary";
-import { fetchWithRetry, type RetryDeps } from "../http-retry";
+import { fetchWithRetry, jitteredBackoff, type RetryDeps } from "../http-retry";
 import { providerErrorText } from "../provider-error-text";
+import { retryableError } from "../retryable-error";
 import {
   LIBRARIAN_INSTRUCTIONS,
   buildSummarizeUserMessage,
@@ -77,15 +78,9 @@ const SYSTEM_PROMPT = `${LIBRARIAN_INSTRUCTIONS}
 
 Call exactly one tool. Call emit_reading for an article, transcript, or a labeled part of one. Call reject_source for empty text, junk, a paywall or login wall, a paywall or truncated preview, a teaser, or a metadata-only page. Do not write free-form prose.`;
 
-// Sent with strict tool use, so the API guarantees every call matches it:
-// without strict, `required` and `type` are advisory, and production Sonnet 5
-// omitted `tags` and sent `keywords` as a string. Strict tool use supports no
-// string length bounds, no maxItems, and minItems of 0 or 1 only, so this is
-// READING_SUMMARY_JSON_SCHEMA with exactly those keywords removed and stated in
-// descriptions instead. normalizeSummarizerToolInput trims an over-cap title or
-// list before ReadingSummarySchema parses it; a missed minimum still fails
-// there, and summarizeReading asks once more. Guarded by an alignment test
-// against READING_SUMMARY_JSON_SCHEMA.
+// Strict tool use supports no string length bounds, no maxItems, and minItems
+// of 0 or 1 only, so this is READING_SUMMARY_JSON_SCHEMA with exactly those
+// keywords removed and stated in descriptions instead.
 const EMIT_READING_INPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -305,9 +300,6 @@ export async function summarizeReading(
     },
     body: JSON.stringify(body),
   };
-  // A call that misses a bound strict tool use cannot express (or skips the
-  // tool) is one bad sample, so ask once more. Each call is its own paid
-  // dispatch through deps.fetch; the returned usage covers both.
   let spent: AnthropicMessageResponse["usage"] | undefined;
   for (let call = 1; ; call++) {
     const response = deps.retry
@@ -327,13 +319,26 @@ export async function summarizeReading(
     try {
       return parseEmitReadingResult(json.content, spent);
     } catch (e) {
-      const slip = e instanceof BadToolInputError || e instanceof NoToolUseError;
-      if (!slip || call >= SUMMARIZE_CALLS) throw e;
+      if (!retryableError(e) || call >= SUMMARIZE_CALLS) throw e;
+      console.warn(JSON.stringify({
+        event: "summarize_retry",
+        attempt: call,
+        error: e.name,
+      }));
+      if (deps.retry) {
+        const wait = jitteredBackoff(
+          call - 1,
+          deps.retry.baseDelayMs,
+          deps.retry.maxDelayMs,
+          deps.retry.random ?? Math.random,
+        );
+        await deps.retry.sleep(wait);
+      }
     }
   }
 }
 
-const SUMMARIZE_CALLS = 2;
+const SUMMARIZE_CALLS = 3;
 
 function addUsage(
   a: AnthropicMessageResponse["usage"],

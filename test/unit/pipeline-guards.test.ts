@@ -132,7 +132,7 @@ describe("provider requests", () => {
       { fetch: retryFetch, apiKey: "test", model: "claude-sonnet-5-5", effort: "low" },
     ).catch((caught) => caught);
     expect(error).toBeInstanceOf(BadToolInputError);
-    expect(retryFetch).toHaveBeenCalledTimes(2);
+    expect(retryFetch).toHaveBeenCalledTimes(3);
   });
 
   it("returns the summary when a missing tool call is transient", async () => {
